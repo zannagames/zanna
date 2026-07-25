@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_debug.c
+/// @file
+/// @brief Implements immediate line-oriented stdout diagnostics.
+///
 // Purpose: Minimal debug-print helpers used by IL test harnesses, integration
 //   tools, and golden-output tests. Functions write to stdout via the C stdio
 //   layer and flush immediately, so deterministic traces are captured even when
@@ -36,6 +39,7 @@
 ///          crashes immediately afterwards.  The function is intentionally tiny
 ///          to keep runtime dependencies minimal.
 /// @param value Value to emit for diagnostic output.
+/// @note Output and flush errors are intentionally ignored by this debug ABI.
 void rt_println_i32(int32_t value) {
     printf("%d\n", value);
     fflush(stdout);
@@ -47,6 +51,8 @@ void rt_println_i32(int32_t value) {
 ///          Output is flushed immediately to keep debugger tooling responsive
 ///          and deterministic.
 /// @param text Null-terminated string to print (may be null).
+/// @note Bytes are forwarded unchanged through the C stdio layer; encoding is
+///       a caller convention rather than validated by this function.
 void rt_println_str(const char *text) {
     if (!text)
         text = "";

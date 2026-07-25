@@ -10,7 +10,8 @@
 // Key invariants:
 //   - The same (name, type) pair always yields the same stable address.
 //   - Addresses are allocated once per name+type combination and never moved.
-//   - Variable names must be non-empty; duplicate registrations return the existing address.
+//   - Variable names may be empty; identity uses NUL-terminated text plus kind,
+//     so bytes after an embedded NUL do not distinguish variables.
 //   - String variables store rt_string pointers; the slot is initialized to NULL.
 //
 // Ownership/Lifetime:
@@ -21,6 +22,13 @@
 // Links: src/runtime/core/rt_modvar.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares stable per-context storage for module-level variables.
+/// @details Each accessor borrows the name, creates zero-initialized storage
+///   on first use, and returns a context-owned address that remains stable until
+///   that context is destroyed.
+
 #pragma once
 
 #include "rt_string.h"
@@ -33,38 +41,42 @@ extern "C" {
 
 /// @brief Get the address of a 64-bit integer module variable.
 /// @details Provides stable storage for BASIC global variables. Looks up or
-///          creates a slot keyed by name and returns its address. The returned
-///          pointer remains valid for the lifetime of the owning runtime context.
-/// @param name Runtime string containing the variable name.
-/// @return Pointer to the module variable's storage (never NULL).
+///          creates an eight-byte slot keyed by name and integer kind. Reusing
+///          the key validates the same storage size.
+/// @param name Borrowed valid runtime string; NULL or invalid handles trap.
+/// @return Context-owned stable storage address, or NULL if an error trap returns.
 void *rt_modvar_addr_i64(rt_string name);
 
 /// @brief Get the address of a 64-bit floating-point module variable.
 /// @details Provides stable storage for BASIC global variables. Looks up or
-///          creates a slot keyed by name and returns its address.
-/// @param name Runtime string containing the variable name.
-/// @return Pointer to the module variable's storage (never NULL).
+///          creates a zero-initialized eight-byte slot keyed by name and
+///          floating-point kind.
+/// @param name Borrowed valid runtime string; NULL or invalid handles trap.
+/// @return Context-owned stable storage address, or NULL if an error trap returns.
 void *rt_modvar_addr_f64(rt_string name);
 
 /// @brief Get the address of a boolean (i1) module variable.
 /// @details Provides stable storage for BASIC global variables. Looks up or
-///          creates a slot keyed by name and returns its address.
-/// @param name Runtime string containing the variable name.
-/// @return Pointer to the module variable's storage (never NULL).
+///          creates a zero-initialized one-byte slot keyed by name and boolean kind.
+/// @param name Borrowed valid runtime string; NULL or invalid handles trap.
+/// @return Context-owned stable storage address, or NULL if an error trap returns.
 void *rt_modvar_addr_i1(rt_string name);
 
 /// @brief Get the address of a pointer module variable.
 /// @details Provides stable storage for BASIC global variables. Looks up or
-///          creates a slot keyed by name and returns its address.
-/// @param name Runtime string containing the variable name.
-/// @return Pointer to the module variable's storage (never NULL).
+///          creates a zero-initialized eight-byte slot keyed by name and
+///          pointer kind, matching the module ABI storage width.
+/// @param name Borrowed valid runtime string; NULL or invalid handles trap.
+/// @return Context-owned stable storage address, or NULL if an error trap returns.
 void *rt_modvar_addr_ptr(rt_string name);
 
 /// @brief Get the address of a string module variable.
 /// @details Provides stable storage for BASIC global variables. Looks up or
-///          creates a slot keyed by name and returns its address.
-/// @param name Runtime string containing the variable name.
-/// @return Pointer to the module variable's storage (never NULL).
+///          creates a pointer-sized, NULL-initialized slot keyed by name and
+///          string kind. The slot stores an `rt_string` handle; callers remain
+///          responsible for retain/release operations when replacing its value.
+/// @param name Borrowed valid runtime string; NULL or invalid handles trap.
+/// @return Context-owned stable storage address, or NULL if an error trap returns.
 void *rt_modvar_addr_str(rt_string name);
 
 /// @brief Get the address of a module variable block with arbitrary size.
@@ -72,9 +84,10 @@ void *rt_modvar_addr_str(rt_string name);
 ///          or creates a slot keyed by name and returns its address. The
 ///          allocated block is zero-initialized on first creation. Reusing the
 ///          same name with a different requested size traps.
-/// @param name Runtime string containing the variable name.
-/// @param size Size of the variable block in bytes.
-/// @return Pointer to the module variable's storage (never NULL).
+/// @param name Borrowed valid runtime string; NULL or invalid handles trap.
+/// @param size Positive size of the variable block in bytes.
+/// @return Context-owned stable storage address, or NULL if validation,
+///   allocation, or context acquisition traps and returns.
 void *rt_modvar_addr_block(rt_string name, int64_t size);
 
 #ifdef __cplusplus

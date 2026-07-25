@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/collections/rt_trie.c
+/// @file
+/// @brief Implements the GC-managed bytewise Trie collection.
+///
 // Purpose: Implements a prefix tree (Trie) for string keys with associated
 //   object values. Each trie node stores up to TRIE_ALPHABET_SIZE (256) child
 //   pointers indexed by ASCII byte value. Supports exact lookup, prefix search
@@ -30,6 +33,9 @@
 //   - Trie objects are GC-managed (rt_obj_new_i64). All trie nodes are
 //     malloc'd individually and freed iteratively by the GC finalizer via
 //     free_node. Values stored in nodes are released on node free.
+//   - Stored keys are represented structurally and are not retained as string
+//     objects. Returned key strings and owning Seq snapshots are independent
+//     of the trie. Exact lookup returns a borrowed value.
 //
 // Links: src/runtime/collections/rt_trie.h (public API)
 //
@@ -54,12 +60,24 @@
 
 #include "rt_trap.h"
 
+/// @brief Installs @p buf as the current thread's non-local trap recovery target.
+/// @param buf Jump buffer that receives control when a runtime trap is raised.
 void rt_trap_set_recovery(jmp_buf *buf);
+
+/// @brief Removes the current thread's trap recovery target.
 void rt_trap_clear_recovery(void);
+
+/// @brief Returns the diagnostic text associated with the latest runtime trap.
+/// @return Borrowed null-terminated diagnostic text, if available.
 const char *rt_trap_get_error(void);
 
+/// @brief Number of possible one-byte edges from each trie node.
 #define TRIE_ALPHABET_SIZE 256
 
+/// @brief Trie node representing one byte of a structurally stored key.
+///
+/// The root represents the empty prefix. A terminal node may hold a null value,
+/// so terminal status—not value nullness—determines whether a key exists.
 typedef struct rt_trie_node {
     struct rt_trie_node *children[TRIE_ALPHABET_SIZE];
     void *value;        // Non-NULL if this node marks end of a key
@@ -67,17 +85,20 @@ typedef struct rt_trie_node {
                         // NULL even at a terminal node)
 } rt_trie_node;
 
+/// @brief Runtime object payload for a Trie.
 typedef struct rt_trie_impl {
     void **vptr;
     rt_trie_node *root;
     size_t count;
 } rt_trie_impl;
 
+/// @brief Explicit depth-first traversal frame used for freeing and GC tracing.
 typedef struct {
     rt_trie_node *node;
     size_t next_child;
 } trie_walk_frame;
 
+/// @brief Explicit depth-first traversal frame used while reconstructing keys.
 typedef struct {
     rt_trie_node *node;
     size_t next_child;
@@ -85,11 +106,13 @@ typedef struct {
     int8_t emitted;
 } trie_collect_frame;
 
+/// @brief Source/destination node pair awaiting iterative deep cloning.
 typedef struct {
     rt_trie_node *src;
     rt_trie_node *dst;
 } trie_clone_pair;
 
+/// @brief Parent edge recorded while locating a key for suffix pruning.
 typedef struct {
     rt_trie_node *parent;
     unsigned char edge;
@@ -97,6 +120,9 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the Trie implementation;
 ///        traps with @p what if @p obj is NULL or not a Trie.
+/// @param obj Opaque runtime object to validate.
+/// @param what Diagnostic raised when validation fails.
+/// @return Validated Trie implementation, or `NULL` after raising a trap.
 static rt_trie_impl *as_trie(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_TRIE_CLASS_ID, sizeof(rt_trie_impl))) {
         rt_trap(what);
@@ -105,17 +131,24 @@ static rt_trie_impl *as_trie(void *obj, const char *what) {
     return (rt_trie_impl *)obj;
 }
 
+/// @brief Releases one retained runtime object and frees it at reference count zero.
+/// @param obj Nullable object reference to release.
 static void trie_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Copies the active trap diagnostic into a fixed caller-owned buffer.
+/// @param buffer Destination for the null-terminated message.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Message used when no nonempty trap diagnostic is available.
 static void trie_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
-/// @brief Allocate a zero-initialized trie node (traps on OOM).
+/// @brief Allocates a zero-initialized, nonterminal trie node.
+/// @return New node, or `NULL` after raising an out-of-memory trap.
 static rt_trie_node *new_node(void) {
     rt_trie_node *n = (rt_trie_node *)calloc(1, sizeof(rt_trie_node));
     if (!n) {
@@ -125,7 +158,10 @@ static rt_trie_node *new_node(void) {
     return n;
 }
 
-/// @brief Borrow the byte buffer + length of an rt_string (empty "" if null).
+/// @brief Borrows the byte buffer and byte length of a runtime string.
+/// @param s String to inspect; null and unavailable data normalize to empty.
+/// @param out_len Receives the number of bytes in the returned buffer.
+/// @return Borrowed string bytes, or a stable empty C string for zero length.
 static const char *trie_string_data(rt_string s, size_t *out_len) {
     int64_t len = rt_str_len(s);
     if (len <= 0) {
@@ -145,6 +181,9 @@ static const char *trie_string_data(rt_string s, size_t *out_len) {
 
 /// @brief Compute the next traversal-stack capacity (double, or 64 from
 ///        empty); traps on size overflow. Shared by the explicit-stack walks.
+/// @param cap Current element capacity.
+/// @param elem_size Size of one stack element in bytes.
+/// @return New element capacity, or zero after raising an overflow trap.
 static size_t grow_stack_capacity(size_t cap, size_t elem_size) {
     size_t new_cap = cap ? cap * 2 : 64;
     if (cap && cap > SIZE_MAX / 2) {
@@ -160,6 +199,10 @@ static size_t grow_stack_capacity(size_t cap, size_t elem_size) {
 
 /// @brief Push a node onto the explicit DFS walk stack, growing it if full
 ///        (NULL node ignored). Traps on OOM.
+/// @param stack Address of the heap-allocated frame buffer.
+/// @param len Address of the current frame count.
+/// @param cap Address of the current frame capacity.
+/// @param node Node to push; null is ignored.
 static void push_walk_frame(trie_walk_frame **stack, size_t *len, size_t *cap, rt_trie_node *node) {
     if (!node)
         return;
@@ -180,6 +223,11 @@ static void push_walk_frame(trie_walk_frame **stack, size_t *len, size_t *cap, r
 
 /// @brief Push a node (with key depth) onto the key-collection stack,
 ///        growing it if full. Traps on OOM.
+/// @param stack Address of the heap-allocated collection-frame buffer.
+/// @param len Address of the current frame count.
+/// @param cap Address of the current frame capacity.
+/// @param node Node to push; null is ignored.
+/// @param depth Reconstructed key length represented by @p node.
 static void push_collect_frame(
     trie_collect_frame **stack, size_t *len, size_t *cap, rt_trie_node *node, size_t depth) {
     if (!node)
@@ -202,6 +250,11 @@ static void push_collect_frame(
 
 /// @brief Push a (src,dst) node pair onto the deep-clone stack, growing it
 ///        if full (ignored unless both nodes are non-NULL). Traps on OOM.
+/// @param stack Address of the heap-allocated clone-pair buffer.
+/// @param len Address of the current pair count.
+/// @param cap Address of the current pair capacity.
+/// @param src Source node whose children remain to be copied.
+/// @param dst Corresponding destination node.
 static void push_clone_pair(
     trie_clone_pair **stack, size_t *len, size_t *cap, rt_trie_node *src, rt_trie_node *dst) {
     if (!src || !dst)
@@ -223,6 +276,10 @@ static void push_clone_pair(
 
 /// @brief Grow the reusable key-reconstruction buffer to >= @p needed bytes
 ///        (doubling). Traps on overflow/OOM.
+/// @param buf Address of the heap buffer pointer to grow.
+/// @param buf_cap Address of the buffer capacity in bytes.
+/// @param needed Minimum required capacity in bytes.
+/// @return Nonzero on success; zero after raising an overflow/allocation trap.
 static int ensure_key_buf(char **buf, size_t *buf_cap, size_t needed) {
     if (needed <= *buf_cap)
         return 1;
@@ -246,6 +303,8 @@ static int ensure_key_buf(char **buf, size_t *buf_cap, size_t needed) {
 
 /// @brief Free a subtree iteratively (explicit stack, no recursion) and
 ///        release each terminal node's stored value.
+/// @param node Subtree root to destroy; null is ignored.
+/// @note The function may raise a trap if its traversal stack cannot grow.
 static void free_node(rt_trie_node *node) {
     if (!node)
         return;
@@ -279,6 +338,9 @@ static void free_node(rt_trie_node *node) {
 
 /// @brief Iteratively visit every terminal node's value under @p node
 ///        (explicit-stack DFS, GC tracing helper).
+/// @param node Root of the subtree to trace.
+/// @param visitor GC callback invoked for each terminal node's nullable value.
+/// @param ctx Opaque context forwarded unchanged to @p visitor.
 static void traverse_node(rt_trie_node *node, rt_gc_visitor_t visitor, void *ctx) {
     if (!node || !visitor)
         return;
@@ -302,6 +364,9 @@ static void traverse_node(rt_trie_node *node, rt_gc_visitor_t visitor, void *ctx
 }
 
 /// @brief GC traversal entry point: visit every stored value in the trie.
+/// @param obj Trie whose outgoing references are being traced.
+/// @param visitor Callback invoked for every stored nullable value.
+/// @param ctx Opaque context forwarded unchanged to @p visitor.
 static void rt_trie_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -311,8 +376,18 @@ static void rt_trie_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     traverse_node(trie->root, visitor, ctx);
 }
 
-/// Collect all keys under a node into a Seq.
-/// buf/buf_cap are passed by pointer so the buffer can grow as needed.
+/// @brief Collects all terminal keys in a subtree into an owning sequence.
+///
+/// Traversal follows child indexes from 0 through 255, producing bytewise
+/// lexicographic order. On a recovered construction/append trap, the helper
+/// frees its traversal state and key buffer, releases the partially populated
+/// sequence, and re-raises the saved diagnostic.
+///
+/// @param node Subtree root corresponding to the prefix already in @p buf.
+/// @param buf Address of the reusable key reconstruction buffer.
+/// @param buf_cap Address of the current buffer capacity in bytes.
+/// @param depth Prefix length and starting depth for @p node.
+/// @param seq Owning Seq receiving copied runtime strings; consumed on a trap.
 static void collect_keys(rt_trie_node *node, char **buf, size_t *buf_cap, size_t depth, void *seq) {
     if (!node)
         return;
@@ -369,7 +444,10 @@ static void collect_keys(rt_trie_node *node, char **buf, size_t *buf_cap, size_t
     free(stack);
 }
 
-/// Check if any descendant (or node itself) is a terminal.
+/// @brief Checks whether a node or any descendant terminates a stored key.
+/// @param node Subtree root to search.
+/// @return Nonzero if a terminal node exists, otherwise zero.
+/// @note Uses an explicit stack and may raise an allocation trap.
 static int has_any_key(rt_trie_node *node) {
     if (!node)
         return 0;
@@ -412,6 +490,7 @@ static int trie_node_has_children(const rt_trie_node *node) {
 }
 
 /// @brief GC finalizer: free the entire node tree and reset the trie.
+/// @param obj Trie instance being finalized; null is ignored.
 static void rt_trie_finalize(void *obj) {
     if (!obj)
         return;
@@ -425,6 +504,8 @@ static void rt_trie_finalize(void *obj) {
 
 /// @brief Construct an empty trie. Each node has a 256-way child array (one slot per byte
 /// value), so memory cost is high per node but lookups are O(key length).
+/// @return New GC-managed Trie, or `NULL` after an allocation trap.
+/// @note The returned object must not be freed directly by callers.
 void *rt_trie_new(void) {
     rt_trie_impl *trie =
         (rt_trie_impl *)rt_obj_new_i64(RT_TRIE_CLASS_ID, (int64_t)sizeof(rt_trie_impl));
@@ -448,6 +529,9 @@ void *rt_trie_new(void) {
 }
 
 /// @brief Number of keys (terminal nodes) currently stored in the trie.
+/// @param obj Trie handle, or null to query an empty trie.
+/// @return Number of exact keys, including a stored empty key.
+/// @note A nonnull object of the wrong runtime class raises a trap.
 int64_t rt_trie_len(void *obj) {
     if (!obj)
         return 0;
@@ -455,12 +539,18 @@ int64_t rt_trie_len(void *obj) {
 }
 
 /// @brief Returns 1 if the trie has no keys.
+/// @param obj Trie handle, or null to query an empty trie.
+/// @return One when no terminal keys exist; otherwise zero.
 int8_t rt_trie_is_empty(void *obj) {
     return rt_trie_len(obj) == 0;
 }
 
 /// @brief Insert or update `key → value`. Walks the trie one byte at a time, allocating new
 /// nodes for each missing branch. Existing key replaces (and releases) the old value. O(|key|).
+/// @param obj Trie to mutate; null is ignored.
+/// @param key Byte string to store; null denotes the empty key.
+/// @param value Nullable object retained while the key remains stored.
+/// @note Raises a trap for invalid objects, allocation failure, or count overflow.
 void rt_trie_set(void *obj, rt_string key, void *value) {
     if (!obj)
         return;
@@ -508,6 +598,11 @@ void rt_trie_set(void *obj, rt_string key, void *value) {
 }
 
 /// @brief Look up `key`. Returns the borrowed value or NULL if not present. O(|key|).
+/// @param obj Trie to search; null returns `NULL`.
+/// @param key Exact byte string to find; null denotes the empty key.
+/// @return Borrowed stored value, or `NULL` for absent and null-valued keys.
+/// @note Use rt_trie_has() when an absent key must be distinguished from a
+///       key whose stored value is null.
 void *rt_trie_get(void *obj, rt_string key) {
     if (!obj)
         return NULL;
@@ -529,6 +624,9 @@ void *rt_trie_get(void *obj, rt_string key) {
 }
 
 /// @brief Returns 1 if `key` is exactly stored (terminal). Distinct from `_has_prefix`.
+/// @param obj Trie to search; null returns false.
+/// @param key Exact byte string to find; null denotes the empty key.
+/// @return One for an exact terminal match, otherwise zero.
 int8_t rt_trie_has(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -551,6 +649,11 @@ int8_t rt_trie_has(void *obj, rt_string key) {
 
 /// @brief Returns 1 if any stored key starts with `prefix` (or `prefix` itself is stored).
 /// Useful for autocomplete "any matches?" probes.
+/// @param obj Trie to search; null returns false.
+/// @param prefix Byte prefix to locate; null denotes the empty prefix.
+/// @return One when the located subtree contains any terminal key.
+/// @note Querying the empty prefix is equivalent to asking whether the trie
+///       contains at least one key.
 int8_t rt_trie_has_prefix(void *obj, rt_string prefix) {
     if (!obj)
         return 0;
@@ -573,6 +676,11 @@ int8_t rt_trie_has_prefix(void *obj, rt_string prefix) {
 
 /// @brief Return a Seq of all stored keys that start with `prefix` (the typical autocomplete
 /// query). Walks the subtrie rooted at the prefix node and reconstructs full keys via DFS.
+/// @param obj Trie to search; null produces an empty sequence.
+/// @param prefix Byte prefix to match; null denotes the empty prefix.
+/// @return New owning Seq of copied strings in bytewise lexicographic order.
+/// @note Snapshot allocation/collection failures raise a trap and clean up the
+///       partially constructed snapshot.
 void *rt_trie_with_prefix(void *obj, rt_string prefix) {
     void *result = rt_seq_new();
     rt_seq_set_owns_elements(result, 1);
@@ -610,6 +718,12 @@ void *rt_trie_with_prefix(void *obj, rt_string prefix) {
 
 /// @brief Find the longest stored key that is a prefix of `str`. Useful for tokenizers, IP
 /// routing, and dictionary-based segmentation. Empty result if no prefix matches.
+/// @param obj Trie to search; null produces a newly allocated empty string.
+/// @param str Byte string whose prefixes are examined; null denotes empty.
+/// @return New string containing the longest matching key, or a new empty
+///         string when no stored key is a prefix.
+/// @note Because the empty key is valid, this API cannot distinguish an
+///       empty-key match from no match; use rt_trie_longest_prefix_option().
 rt_string rt_trie_longest_prefix(void *obj, rt_string str) {
     if (!obj)
         return rt_string_from_bytes("", 0);
@@ -648,6 +762,9 @@ rt_string rt_trie_longest_prefix(void *obj, rt_string str) {
 /// @brief LongestPrefix preserving the empty-key match: Some(prefix) when any
 ///        stored key (including "") is a prefix of `str`, None when nothing
 ///        matches (VDOC-103).
+/// @param obj Trie to search; null returns `None`.
+/// @param str Byte string whose prefixes are examined; null denotes empty.
+/// @return New Option containing an owned matching string, or a new `None`.
 void *rt_trie_longest_prefix_option(void *obj, rt_string str) {
     if (!obj)
         return rt_option_none();
@@ -764,6 +881,9 @@ int8_t rt_trie_remove(void *obj, rt_string key) {
 }
 
 /// @brief Free every node and reset the trie to empty. Releases all stored values.
+/// @param obj Trie to clear; null is ignored.
+/// @note A fresh root is allocated before the old tree is destroyed, so an
+///       allocation trap leaves the original trie unchanged.
 void rt_trie_clear(void *obj) {
     if (!obj)
         return;
@@ -787,6 +907,10 @@ void rt_trie_clear(void *obj) {
 
 /// @brief Return a Seq of every stored key in lexicographic order. Owned-element Seq (releases
 /// the strings on its own destruction). Implemented via DFS over the trie.
+/// @param obj Trie to snapshot; null produces an empty sequence.
+/// @return New owning Seq of copied keys in bytewise lexicographic order, or
+///         `NULL` if the initial sequence allocation fails.
+/// @note Later trie mutations do not affect the returned strings.
 void *rt_trie_keys(void *obj) {
     void *result = rt_seq_new();
     if (!result)
@@ -812,6 +936,10 @@ void *rt_trie_keys(void *obj) {
 }
 
 /// @brief Iteratively clone a trie node and all its descendants.
+/// @param src Root of the source subtree; null produces a null result.
+/// @return Newly allocated structural copy whose values have been retained,
+///         or `NULL` after an allocation trap.
+/// @note A failed clone releases all nodes and value references already copied.
 static rt_trie_node *clone_node(rt_trie_node *src) {
     if (!src)
         return NULL;
@@ -871,6 +999,9 @@ static rt_trie_node *clone_node(rt_trie_node *src) {
 
 /// @brief Deep-copy the trie structure (all nodes); values are shared via reference-count
 /// retain. Modifying the clone's structure (insertions/removals) doesn't affect the source.
+/// @param obj Source Trie; null creates a new empty Trie.
+/// @return New GC-managed Trie with independent nodes and retained shared
+///         values, or `NULL` after an allocation failure.
 void *rt_trie_clone(void *obj) {
     if (!obj)
         return rt_trie_new();

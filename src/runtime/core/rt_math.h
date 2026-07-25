@@ -14,12 +14,20 @@
 //   - Integer and float variants of abs/sgn avoid unnecessary type conversions.
 //
 // Ownership/Lifetime:
-//   - All functions are thin wrappers around the platform math library.
+//   - Functions use only scalar values; several are runtime-defined
+//     compositions rather than direct platform-library wrappers.
 //   - No heap allocation; parameters and return values are plain numeric types.
 //
 // Links: src/runtime/core/rt_math.c (implementation), src/runtime/core/rt_numeric.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares unchecked scalar math helpers used by BASIC and Zia.
+/// @details Floating operations preserve platform `libm` special-value
+///   behavior and do not trap. The integer absolute-value helper is the sole
+///   exception, trapping when the positive magnitude cannot be represented.
+
 #pragma once
 
 #include <stdint.h>
@@ -72,7 +80,8 @@ double rt_tan(double x);
 /// @brief Compute the arctangent of a value.
 /// @details Wraps the platform's atan() for BASIC trigonometric support.
 /// @param x Input value.
-/// @return atan(x) in the range (-pi/2, pi/2).
+/// @return atan(x) in the closed range [-pi/2, pi/2], with endpoints reached
+///   for signed infinities.
 double rt_atan(double x);
 
 /// @brief Compute the exponential e^x.
@@ -96,9 +105,10 @@ double rt_log(double x);
 long long rt_sgn_i64(long long x);
 
 /// @brief Compute the sign of a double as -1.0, 0.0, or +1.0.
-/// @details Implements BASIC's SGN for floating-point values.
+/// @details Implements BASIC's SGN for floating-point values. Either signed
+///   zero becomes positive zero, while a NaN is returned unchanged.
 /// @param x Input value.
-/// @return -1.0, 0.0, or +1.0 accordingly (NaN propagation is implementation-defined).
+/// @return -1.0, +0.0, or +1.0 according to sign, or @p x when it is NaN.
 double rt_sgn_f64(double x);
 
 /// @brief Compute the absolute value of an integer.
@@ -172,21 +182,23 @@ double rt_asin(double x);
 double rt_acos(double x);
 
 /// @brief Compute the hyperbolic sine of x.
-/// @details Wraps the platform's sinh().
+/// @details Wraps the platform's sinh(); large magnitudes may overflow to
+///   signed infinity without trapping.
 /// @param x Input value.
 /// @return sinh(x).
 double rt_sinh(double x);
 
 /// @brief Compute the hyperbolic cosine of x.
-/// @details Wraps the platform's cosh().
+/// @details Wraps the platform's cosh(); large magnitudes may overflow to
+///   positive infinity without trapping.
 /// @param x Input value.
 /// @return cosh(x).
 double rt_cosh(double x);
 
 /// @brief Compute the hyperbolic tangent of x.
-/// @details Wraps the platform's tanh().
+/// @details Wraps the platform's tanh(); signed infinities map to signed one.
 /// @param x Input value.
-/// @return tanh(x) in the range (-1, 1).
+/// @return tanh(x) in the closed range [-1, 1], or NaN for NaN input.
 double rt_tanh(double x);
 
 /// @brief Round x to the nearest integer (half-away-from-zero).
@@ -202,33 +214,40 @@ double rt_round(double x);
 double rt_trunc(double x);
 
 /// @brief Compute the base-10 logarithm of x.
-/// @details Wraps the platform's log10().
+/// @details Wraps the platform's log10(). Zero produces negative infinity and
+///   negative finite values produce NaN without trapping.
 /// @param x Input value (x > 0 for a real result).
 /// @return log10(x).
 double rt_log10(double x);
 
 /// @brief Compute the base-2 logarithm of x.
-/// @details Wraps the platform's log2().
+/// @details Wraps the platform's log2(). Zero produces negative infinity and
+///   negative finite values produce NaN without trapping.
 /// @param x Input value (x > 0 for a real result).
 /// @return log2(x).
 double rt_log2(double x);
 
 /// @brief Compute the floating-point remainder of x / y.
-/// @details Wraps the platform's fmod(). The result has the same sign as x.
+/// @details Wraps the platform's fmod(). A finite result has the dividend's
+///   sign; a zero divisor or infinite dividend produces NaN.
 /// @param x Dividend.
 /// @param y Divisor (must not be zero).
 /// @return Remainder of x / y.
 double rt_fmod(double x, double y);
 
-/// @brief Compute sqrt(x*x + y*y) without intermediate overflow.
-/// @details Wraps the platform's hypot() for safe Euclidean distance computation.
+/// @brief Compute sqrt(x*x + y*y) without spurious intermediate overflow.
+/// @details Wraps the platform's hypot() for scaled Euclidean distance
+///   computation. The result may still be infinite when the true magnitude
+///   exceeds the representable range.
 /// @param x First component.
 /// @param y Second component.
 /// @return Hypotenuse length.
 double rt_hypot(double x, double y);
 
 /// @brief Clamp a double value to the range [lo, hi].
-/// @details Returns lo if val < lo, hi if val > hi, otherwise val.
+/// @details Swaps finite inverted bounds, then returns lo if val < lo, hi if
+///   val > hi, otherwise val. A NaN value propagates; NaN bounds follow normal
+///   unordered comparison behavior.
 /// @param val Value to clamp.
 /// @param lo  Lower bound (inclusive).
 /// @param hi  Upper bound (inclusive).
@@ -236,7 +255,8 @@ double rt_hypot(double x, double y);
 double rt_clamp_f64(double val, double lo, double hi);
 
 /// @brief Clamp an integer value to the range [lo, hi].
-/// @details Returns lo if val < lo, hi if val > hi, otherwise val.
+/// @details Swaps inverted bounds, then returns lo if val < lo, hi if val > hi,
+///   otherwise val.
 /// @param val Value to clamp.
 /// @param lo  Lower bound (inclusive).
 /// @param hi  Upper bound (inclusive).
@@ -256,7 +276,9 @@ double rt_lerp(double a, double b, double t);
 
 /// @brief Wrap a double value to the range [lo, hi).
 /// @details Computes val modulo the range width so the result lies
-///          within [lo, hi). Useful for cyclic quantities like angles.
+///          within [lo, hi) for finite inputs and a positive finite width.
+///          A non-positive width returns @p lo; non-finite arithmetic may
+///          produce NaN.
 /// @param val Value to wrap.
 /// @param lo  Lower bound (inclusive).
 /// @param hi  Upper bound (exclusive).
@@ -266,7 +288,7 @@ double rt_wrap_f64(double val, double lo, double hi);
 /// @brief Wrap an integer value to the range [lo, hi).
 /// @details Computes val modulo the range width so the result lies
 ///          within [lo, hi). The arithmetic is overflow-safe across the full
-///          signed 64-bit domain.
+///          signed 64-bit domain. A non-positive range returns @p lo.
 /// @param val Value to wrap.
 /// @param lo  Lower bound (inclusive).
 /// @param hi  Upper bound (exclusive).

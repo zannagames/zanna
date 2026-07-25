@@ -36,3 +36,5 @@
 //        src/runtime/core/rt_string_specialized.c
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Symbol-free build placeholder and implementation map for rt_string.h.

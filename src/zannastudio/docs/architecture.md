@@ -374,6 +374,17 @@ preview pixels only. The controller also owns typed multi-object property
 set/remove transactions: every selected row is verified before one canonical
 commit, and any rejection reloads the complete pre-edit snapshot.
 
+`SceneEditor2D` presents a three-pane workbench: a left Objects pane
+(search, full-height tree, parent chooser, and the hierarchy-owned
+creation/duplication/removal/ordering rows) beside the canvas/inspector
+split, with the tile palette in a vertical strip under the canvas. All three
+divider fractions persist per document; hosts narrower than the
+hierarchy-pane threshold collapse the Objects pane automatically. The
+inspector carries explicit Object | Scene tabs that auto-follow
+selection-presence changes while manual choices hold between them; object
+fields and component groups live on the Object tab and scene-scoped groups
+on the Scene tab through `UpdateInspectorScope`.
+
 The 2D object outliner is a bounded retained `TreeView`, not a flat draw-order
 ListBox. `SceneDocument.ObjectParent` provides the structural model while
 absolute `x`/`y` positions remain unchanged. Refresh snapshots expanded object
@@ -427,10 +438,20 @@ Replace, Shift-add, Control/Command-toggle, and blank-clear selection all remain
 workspace-only. Shift plus middle/right drag moves the camera target along its
 exact right/up basis, so pan follows the pointer at every orbit angle without
 entering canonical VSCN history.
-The active transform button is also the viewport's keyboard-focus proxy:
-W/E/R mode switching is accepted only while one of those buttons owns native
-focus, so scene shortcuts cannot consume text intended for another workbench
-surface. Numeric multi-selection inspector edits are explicitly relative:
+The viewport Image is a real focusable widget: clicking it takes keyboard
+focus through the GUI's standard click-to-focus path and paints the shared
+theme focus ring. W/E/R, F framing, and the workspace-only Escape
+selection-clear are accepted while the viewport surface (or, for keyboard
+toolbar workflows, a transform tool button) owns native focus, so scene
+shortcuts cannot consume text intended for another workbench surface. Single-node numeric transform edits commit live: spinner changes mutate the
+live node immediately (matching the gizmo-preview model), serialize exactly
+once when the transform spinners lose keyboard focus, and Escape restores
+the captured values without history. Only values differing beyond display
+epsilon count as edits, and only differing groups re-apply — re-applying an
+untouched rotation would perturb the quaternion through the lossy euler
+round trip and fold drift into the next unrelated commit. Programmatic
+refresh edges are drained at pump end, where no user input can exist.
+Numeric multi-selection inspector edits remain explicitly relative:
 position/rotation fields add local deltas and scale fields multiply each
 selected local scale before one rollback-safe commit. Duplicate Selection and
 Delete use the same hierarchy/viewport focus boundary; command-palette
@@ -454,6 +475,18 @@ keeps local TRS instead. The adjacent Earlier/Later controls use the runtime's
 allocation-free `SceneNode.TryMoveChild` primitive to move one contiguous
 same-parent selection as a stable block, then remap selection and commit once.
 Mixed-parent, gapped, and boundary selections are no-ops.
+
+`SceneEditor3D` presents a three-pane workbench: a left Hierarchy pane
+(search, full-height tree, parent and sibling-order controls) beside the
+viewport/inspector split, with both divider fractions persisted per document.
+Hosts narrower than the hierarchy-pane threshold collapse the pane
+automatically. The inspector carries explicit Object | Scene tabs that
+auto-follow selection-presence changes while manual choices hold between
+them: `UpdateInspectorScope` shows node groups on the Object tab only for
+selected nodes (single-selection groups for exactly one node) and
+scene-scoped groups on the Scene tab, then re-baselines the Visible/Static
+checkbox revision trackers so programmatic visibility toggles can never
+masquerade as a user resolving those states.
 
 The visible 3D hierarchy is a retained `TreeView`, not a text-indented flat list.
 Every scene parent owns its actual child rows; expansion survives live refresh

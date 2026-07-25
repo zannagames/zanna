@@ -22,11 +22,15 @@
 //
 // Ownership/Lifetime:
 //   - Helpers may allocate small stack buffers for formatted diagnostics only.
+//   - Runtime string messages are borrowed, validated, and escaped by stored
+//     byte length so embedded NULs cannot truncate diagnostics.
 //
 // Links: src/runtime/core/rt_trap.h (public API),
 //        src/runtime/core/rt_internal.h (rt_trap macro shim)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Runtime trap adapters and diagnostic assertion implementations.
 
 #include <inttypes.h>
 #include <math.h>
@@ -46,6 +50,9 @@
 ///          messages bounded for log output. Backslash and double-quote are escaped;
 ///          non-printable bytes render as `\xNN`. The function is append-only: existing
 ///          contents of @p dst are preserved.
+/// @param dst Existing NUL-terminated destination buffer; may be NULL.
+/// @param dst_cap Total destination capacity.
+/// @param s Borrowed runtime string; NULL renders as no bytes.
 static void append_escaped_string(char *dst, size_t dst_cap, rt_string s) {
     if (!dst || dst_cap == 0)
         return;
@@ -91,6 +98,8 @@ static void append_escaped_string(char *dst, size_t dst_cap, rt_string s) {
 /// @details NULL and empty strings return 0 so the caller falls back to a fixed
 ///          diagnostic. Invalid non-NULL handles trap at the diagnostic boundary
 ///          instead of being silently replaced by the fallback text.
+/// @param message Borrowed optional diagnostic string.
+/// @return One only for a valid handle with at least one stored byte.
 static int message_has_bytes(rt_string message) {
     if (message && !rt_string_is_handle((const void *)message)) {
         rt_trap("Zanna.Core.Diagnostics: invalid message string handle");
@@ -106,6 +115,11 @@ static int message_has_bytes(rt_string message) {
 ///          @p fallback C-string verbatim. Otherwise zeroes @p buf, escapes the message via
 ///          `append_escaped_string`, and returns @p buf. The escaped form is guaranteed to
 ///          fit inside @p cap and to be NUL-terminated.
+/// @param message Borrowed optional runtime diagnostic.
+/// @param fallback Borrowed fallback C string.
+/// @param buf Writable escape buffer; may be NULL when @p cap is zero.
+/// @param cap Total capacity of @p buf.
+/// @return @p buf for a rendered non-empty message; otherwise @p fallback.
 static const char *format_message(rt_string message, const char *fallback, char *buf, size_t cap) {
     if (!message_has_bytes(message))
         return fallback;
@@ -132,6 +146,11 @@ void rt_trap_ovf(void) {
 }
 
 /// @brief Trap with a managed runtime string message.
+/// @details Null, empty, or unavailable data uses `"trap"`. Invalid handles
+///          raise a dedicated diagnostics trap. Valid stored bytes are escaped
+///          into a bounded stack buffer before dispatch, preserving embedded
+///          NUL and nonprintable bytes.
+/// @param msg Borrowed runtime message; may be NULL.
 void rt_trap_string(rt_string msg) {
     if (!msg) {
         rt_trap("trap");
@@ -174,6 +193,9 @@ void rt_diag_assert(int8_t condition, rt_string message) {
 }
 
 /// @brief Assert two integers are equal.
+/// @param expected Expected signed value.
+/// @param actual Observed signed value.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_eq(int64_t expected, int64_t actual, rt_string message) {
     if (expected == actual)
         return;
@@ -186,6 +208,9 @@ void rt_diag_assert_eq(int64_t expected, int64_t actual, rt_string message) {
 }
 
 /// @brief Assert two integers are not equal.
+/// @param a First signed value.
+/// @param b Second signed value.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_neq(int64_t a, int64_t b, rt_string message) {
     if (a != b)
         return;
@@ -197,7 +222,14 @@ void rt_diag_assert_neq(int64_t a, int64_t b, rt_string message) {
     rt_trap(buf);
 }
 
-/// @brief Assert two numbers are approximately equal.
+/// @brief Assert two floating-point numbers are approximately equal.
+/// @details Exact equality (including same-signed infinities) succeeds, as do
+///          two NaNs. Otherwise uses absolute error below `1e-9` when the
+///          maximum magnitude is below one and relative error below `1e-9`
+///          for larger magnitudes.
+/// @param expected Expected floating-point value.
+/// @param actual Observed floating-point value.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_eq_num(double expected, double actual, rt_string message) {
     // Use a relative epsilon for float comparison
     double epsilon = 1e-9;
@@ -222,7 +254,13 @@ void rt_diag_assert_eq_num(double expected, double actual, rt_string message) {
     rt_trap(buf);
 }
 
-/// @brief Assert two strings are equal.
+/// @brief Assert two runtime strings are byte-equal.
+/// @details Two nulls succeed. Valid non-null handles compare through
+///          @ref rt_str_eq; invalid handles force failure and are rendered as
+///          bounded invalid-string markers.
+/// @param expected Borrowed expected string; may be NULL.
+/// @param actual Borrowed observed string; may be NULL.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_eq_str(rt_string expected, rt_string actual, rt_string message) {
     int expected_valid = !expected || rt_string_is_handle((const void *)expected);
     int actual_valid = !actual || rt_string_is_handle((const void *)actual);
@@ -246,6 +284,8 @@ void rt_diag_assert_eq_str(rt_string expected, rt_string actual, rt_string messa
 }
 
 /// @brief Assert an object reference is null.
+/// @param obj Borrowed opaque pointer expected to be NULL.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_null(void *obj, rt_string message) {
     if (obj == NULL)
         return;
@@ -258,6 +298,8 @@ void rt_diag_assert_null(void *obj, rt_string message) {
 }
 
 /// @brief Assert an object reference is not null.
+/// @param obj Borrowed opaque pointer expected to be non-null.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_not_null(void *obj, rt_string message) {
     if (obj != NULL)
         return;
@@ -270,6 +312,7 @@ void rt_diag_assert_not_null(void *obj, rt_string message) {
 }
 
 /// @brief Unconditionally fail with a message.
+/// @param message Optional borrowed failure message.
 void rt_diag_assert_fail(rt_string message) {
     char msg_buf[160];
     const char *msg = format_message(message, "AssertFail called", msg_buf, sizeof(msg_buf));
@@ -277,6 +320,9 @@ void rt_diag_assert_fail(rt_string message) {
 }
 
 /// @brief Assert first value is greater than second.
+/// @param a Left signed operand.
+/// @param b Right signed operand.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_gt(int64_t a, int64_t b, rt_string message) {
     if (a > b)
         return;
@@ -289,6 +335,9 @@ void rt_diag_assert_gt(int64_t a, int64_t b, rt_string message) {
 }
 
 /// @brief Assert first value is less than second.
+/// @param a Left signed operand.
+/// @param b Right signed operand.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_lt(int64_t a, int64_t b, rt_string message) {
     if (a < b)
         return;
@@ -301,6 +350,9 @@ void rt_diag_assert_lt(int64_t a, int64_t b, rt_string message) {
 }
 
 /// @brief Assert first value is greater than or equal to second.
+/// @param a Left signed operand.
+/// @param b Right signed operand.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_gte(int64_t a, int64_t b, rt_string message) {
     if (a >= b)
         return;
@@ -313,6 +365,9 @@ void rt_diag_assert_gte(int64_t a, int64_t b, rt_string message) {
 }
 
 /// @brief Assert first value is less than or equal to second.
+/// @param a Left signed operand.
+/// @param b Right signed operand.
+/// @param message Optional borrowed failure prefix.
 void rt_diag_assert_lte(int64_t a, int64_t b, rt_string message) {
     if (a <= b)
         return;

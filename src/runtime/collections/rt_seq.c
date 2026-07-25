@@ -15,23 +15,34 @@
 //   - Initial capacity is SEQ_DEFAULT_CAP (16); grows by SEQ_GROWTH_FACTOR (2).
 //   - The items array is a separate malloc allocation; the header is GC-managed.
 //   - len is the number of valid elements; cap is the allocated array size.
-//     Accessing index >= len is always an error (returns NULL or traps).
-//   - Seq does NOT retain elements (no rt_obj_retain on append); it stores raw
-//     void* pointers. Element lifetime is the caller's responsibility.
-//   - Sorting uses qsort with a comparator appropriate to element type
-//     (string lexicographic order is the default).
-//   - rt_seq_get returns NULL for out-of-bounds indices (no trap for read).
+//     Indexed access outside [0, len) traps.
+//   - Borrowing sequences store raw pointers; owning sequences retain inserted
+//     elements and release them on replacement, removal, clear, or finalization.
+//   - Ownership mode may change only while the sequence is empty.
+//   - Core operations live here; stable merge sorting and functional operators
+//     are implemented in the linked Seq support translation units.
 //   - Not thread-safe; external synchronization required for concurrent writes.
 //
 // Ownership/Lifetime:
 //   - Seq objects are GC-managed (rt_obj_new_i64). The items array is
 //     malloc-managed and freed by the GC finalizer (seq_finalizer).
+//   - Borrowed accessors return raw stored pointers. Removal from an owning Seq
+//     returns a caller-retained reference; removal from a borrowing Seq does
+//     not extend element lifetime.
 //
 // Links: src/runtime/collections/rt_seq_internal.h (shared struct definition),
 //        src/runtime/collections/rt_seq_ops.c (sorting and functional operations),
 //        src/runtime/collections/rt_seq_functional.c (void* wrapper layer)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements allocation, indexing, mutation, search, and basic order
+///        operations for the runtime dynamic Seq.
+/// @details Seq is a growable pointer array with selectable borrowed or
+///          retained-element ownership. Mutations run inside GC mutator
+///          regions, and growth helpers unwind speculative retains if
+///          allocation traps before an element can be published.
 
 #include "rt_seq.h"
 #include "rt_box.h"
@@ -48,15 +59,25 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Pointer slots reserved by the default constructor.
 #define SEQ_DEFAULT_CAP 16
+/// @brief Multiplicative capacity increase used during automatic growth.
 #define SEQ_GROWTH_FACTOR 2
 
+/// @brief Install a non-local trap recovery target for the current thread.
+/// @param buf Jump buffer that receives control when a runtime trap occurs.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's non-local trap recovery target.
 void rt_trap_clear_recovery(void);
+/// @brief Borrow the current thread's most recent trap diagnostic.
+/// @return NUL-terminated diagnostic text, or `NULL` when unavailable.
 const char *rt_trap_get_error(void);
 
 /// @brief Checked cast of an opaque handle to the Seq implementation;
 ///        traps with @p what if @p obj is NULL or not a Seq.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated Seq implementation, or `NULL` after trapping.
 static rt_seq_impl *as_seq(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_SEQ_CLASS_ID, sizeof(rt_seq_impl))) {
         rt_trap(what);
@@ -65,20 +86,8 @@ static rt_seq_impl *as_seq(void *obj, const char *what) {
     return (rt_seq_impl *)obj;
 }
 
-/// @brief Finalizer callback invoked when a Seq is garbage collected.
-///
-/// This function is automatically called by Zanna's garbage collector when a
-/// Seq object becomes unreachable. It frees the internal items array to
-/// prevent memory leaks.
-///
-/// @param obj Pointer to the Seq object being finalized. May be NULL (no-op).
-///
-/// @note The Seq does NOT own the elements it contains. Elements are not
-///       freed during finalization - they must be managed separately.
-/// @note This function is idempotent - safe to call on already-finalized seqs.
-///
-/// @see rt_seq_clear For removing elements without finalization
 /// @brief Release a single element via the object API (safe for strings and objects).
+/// @param val Runtime object/string reference, or `NULL` for a no-op.
 static void seq_release_element(void *val) {
     if (!val)
         return;
@@ -88,6 +97,9 @@ static void seq_release_element(void *val) {
 
 /// @brief GC traversal: visit every live element (only when the seq owns
 ///        its elements).
+/// @param obj Seq whose live owned slots are to be traced.
+/// @param visitor Collector callback invoked in index order.
+/// @param ctx Opaque collector context forwarded unchanged.
 static void rt_seq_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -104,6 +116,7 @@ static void rt_seq_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// flag). Borrowed-element sequences (typed views over a parent
 /// container, etc.) skip the per-element release pass to avoid
 /// double-free.
+/// @param obj Seq object being finalized; `NULL` is ignored.
 static void rt_seq_finalize(void *obj) {
     if (!obj)
         return;
@@ -131,6 +144,8 @@ static void rt_seq_finalize(void *obj) {
 ///
 /// @param seq Pointer to the sequence implementation. Must not be NULL.
 /// @param needed Minimum required capacity after this call.
+/// @return 1 when capacity is sufficient, or 0 after an overflow/allocation
+///         trap.
 ///
 /// @note Traps on memory allocation failure with "Seq: memory allocation failed".
 /// @note Never shrinks the capacity - only grows when needed.
@@ -164,11 +179,26 @@ static int seq_ensure_capacity(rt_seq_impl *seq, int64_t needed) {
     return 1;
 }
 
+/// @brief Save the active trap text before clearing a recovery frame.
+/// @param buffer Destination for a bounded NUL-terminated diagnostic copy.
+/// @param buffer_size Size of @p buffer in bytes.
+/// @param fallback Text used when the trap subsystem has no non-empty message.
 static void seq_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Grow a Seq while protecting a retain performed before publication.
+/// @details Catches growth traps, re-enters a balanced mutator region to
+///          release @p retained_value when needed, then propagates the saved
+///          diagnostic. This keeps Push/Insert failure-atomic with respect to
+///          element ownership.
+/// @param seq Sequence whose allocation may grow.
+/// @param needed Required element capacity.
+/// @param retained_value Value speculatively retained by the caller.
+/// @param retained Nonzero when @p retained_value must be released on failure.
+/// @param fallback Diagnostic used if the caught trap supplied none.
+/// @return 1 on success, or 0 after cleanup and trap propagation.
 static int seq_ensure_capacity_or_release(
     rt_seq_impl *seq, int64_t needed, void *retained_value, int retained, const char *fallback) {
     jmp_buf recovery;
@@ -221,8 +251,8 @@ static int seq_ensure_capacity_or_release(
 ///         return if memory allocation fails.
 ///
 /// @note Initial capacity is 16 elements (SEQ_DEFAULT_CAP).
-/// @note The Seq does not own the elements stored in it - they must be
-///       managed separately by the caller.
+/// @note This constructor creates a borrowing Seq. Use
+///       @ref rt_seq_new_owned for retained-element ownership.
 /// @note Thread safety: Not thread-safe. External synchronization required.
 ///
 /// @see rt_seq_with_capacity For creating with a specific initial capacity
@@ -254,6 +284,7 @@ void *rt_seq_new(void) {
 }
 
 /// @brief Creates a public Seq that retains pushed elements.
+/// @return New runtime-managed empty owning Seq with default capacity.
 void *rt_seq_new_owned(void) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -262,6 +293,8 @@ void *rt_seq_new_owned(void) {
 
 /// @brief Create an empty seq inheriting @p source's element-ownership mode
 ///        (defaults to owning when @p source is NULL).
+/// @param source Source implementation whose mode should be copied, or `NULL`.
+/// @return New runtime-managed empty Seq.
 static void *seq_new_empty_like(rt_seq_impl *source) {
     void *seq = rt_seq_new();
     if (!source || source->owns_elements)
@@ -270,6 +303,10 @@ static void *seq_new_empty_like(rt_seq_impl *source) {
 }
 
 /// @brief Creates a public Seq with a fixed initial length.
+/// @details The result is owning, has at least one reserved slot, and exposes
+///          exactly @p len initialized `NULL` elements.
+/// @param len Initial logical length; negative values trap.
+/// @return New runtime-managed owning Seq.
 void *rt_seq_new_sized(int64_t len) {
     if (len < 0) {
         rt_trap("Seq.NewSized: negative length");
@@ -312,7 +349,7 @@ void *rt_seq_new_sized(int64_t len) {
 ///         return if memory allocation fails.
 ///
 /// @note The Seq is empty after creation (length 0) - capacity is just reserved space.
-/// @note The Seq does not own the elements stored in it.
+/// @note This constructor creates a borrowing Seq.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_new For creating with default capacity (16)
@@ -349,6 +386,8 @@ void *rt_seq_with_capacity(int64_t cap) {
 }
 
 /// @brief Creates a public capacity-reserved Seq that retains pushed elements.
+/// @param cap Initial reserved capacity, clamped to at least one.
+/// @return New runtime-managed empty owning Seq.
 void *rt_seq_with_capacity_owned(int64_t cap) {
     void *seq = rt_seq_with_capacity(cap);
     if (!seq)
@@ -366,8 +405,9 @@ void *rt_seq_with_capacity_owned(int64_t cap) {
 /// @param obj Pointer to a Seq object. Must not be NULL.
 /// @param owns 1 to enable ownership, 0 to disable.
 ///
-/// @note Must be called before any elements are pushed. Changing ownership
-///       mode on a non-empty Seq may cause leaks or double-frees.
+/// @note Must be called before any elements are pushed. A requested mode
+///       change on a non-empty Seq traps; requesting its current mode is
+///       accepted.
 void rt_seq_set_owns_elements(void *obj, int8_t owns) {
     if (!obj)
         return;
@@ -475,8 +515,9 @@ int8_t rt_seq_is_empty(void *obj) {
 /// @note O(1) time complexity.
 /// @note Traps with "Seq.Get: null sequence" if obj is NULL.
 /// @note Traps with "Seq.Get: index out of bounds" if idx < 0 or idx >= len.
-/// @note The Seq retains ownership - the returned pointer is valid as long as
-///       the element remains in the Seq.
+/// @note No retain is created. In owning mode the result is borrowed from the
+///       Seq and remains valid only while its stored retain survives; in
+///       borrowing mode the producer controls lifetime.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_set For modifying an element
@@ -509,6 +550,7 @@ void *rt_seq_get(void *obj, int64_t idx) {
 /// @param obj Opaque Seq object pointer.
 /// @param idx Index of element to retrieve.
 /// @return String element at the index (raw rt_string pointer).
+/// @note The returned string handle is owned by the caller.
 struct rt_string_impl *rt_seq_get_str(void *obj, int64_t idx) {
     void *val = rt_seq_get(obj, idx);
     if (rt_string_is_handle(val))
@@ -539,7 +581,9 @@ struct rt_string_impl *rt_seq_get_str(void *obj, int64_t idx) {
 /// @param val The new value to store at this index. May be NULL.
 ///
 /// @note O(1) time complexity.
-/// @note The Seq does not take ownership of val - the caller manages its lifetime.
+/// @note Owning Seqs retain @p val before releasing the replaced slot;
+///       borrowing Seqs store the pointer raw. Retain-before-release makes
+///       self-replacement safe.
 /// @note Traps with "Seq.Set: null sequence" if obj is NULL.
 /// @note Traps with "Seq.Set: index out of bounds" if idx < 0 or idx >= len.
 /// @note Thread safety: Not thread-safe.
@@ -637,7 +681,8 @@ void rt_seq_set_raw(void *obj, int64_t idx, void *val) {
 /// @param val The element to add. May be NULL (NULL is a valid element).
 ///
 /// @note O(1) amortized time complexity. Occasional O(n) when resizing occurs.
-/// @note The Seq does not take ownership of val - the caller manages its lifetime.
+/// @note Owning Seqs retain @p val before publication; borrowing Seqs store
+///       the pointer raw.
 /// @note Traps with "Seq.Push: null sequence" if obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -682,6 +727,8 @@ void rt_seq_push(void *obj, void *val) {
 /// Used by typed-view paths (e.g. `Seq[Int]` over a packed int64
 /// array) where the underlying storage is not GC-managed and a
 /// retain would be a noop. Public-facing code should use `rt_seq_push`.
+/// @param obj Non-null Seq to mutate.
+/// @param val Raw pointer appended without a retain.
 void rt_seq_push_raw(void *obj, void *val) {
     if (!obj) {
         rt_trap("Seq.Push: null sequence");
@@ -744,6 +791,9 @@ void rt_seq_push_raw(void *obj, void *val) {
 ///
 /// @note O(n) time complexity where n is the length of other.
 /// @note The source Seq is not modified (elements are copied, not moved).
+/// @note An owning destination independently retains each appended element;
+///       a borrowing destination copies pointers raw. Destination ownership,
+///       not source ownership, controls the result.
 /// @note Traps with "Seq.PushAll: null sequence" if obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -859,7 +909,8 @@ void rt_seq_push_all(void *obj, void *other) {
 /// @return The element that was at the end of the Seq.
 ///
 /// @note O(1) time complexity.
-/// @note The Seq releases its reference - the caller now owns the element.
+/// @note Owning Seqs return a caller-retained value. Borrowing Seqs return the
+///       raw stored pointer without extending its lifetime.
 /// @note Traps with "Seq.Pop: null sequence" if obj is NULL.
 /// @note Traps with "Seq.Pop: sequence is empty" if the Seq is empty.
 /// @note Thread safety: Not thread-safe.
@@ -918,8 +969,8 @@ void *rt_seq_pop(void *obj) {
 /// @return The element at the end of the Seq (not removed).
 ///
 /// @note O(1) time complexity.
-/// @note The Seq retains ownership - the returned pointer is valid as long as
-///       the element remains in the Seq.
+/// @note No retain is created. The result is borrowed from an owning Seq or
+///       from the original producer for a borrowing Seq.
 /// @note Traps with "Seq.Peek: null sequence" if obj is NULL.
 /// @note Traps with "Seq.Peek: sequence is empty" if the Seq is empty.
 /// @note Thread safety: Not thread-safe.
@@ -965,8 +1016,8 @@ void *rt_seq_peek(void *obj) {
 /// @return The element at index 0 (not removed).
 ///
 /// @note O(1) time complexity.
-/// @note The Seq retains ownership - the returned pointer is valid as long as
-///       the element remains in the Seq.
+/// @note No retain is created. The result is borrowed from an owning Seq or
+///       from the original producer for a borrowing Seq.
 /// @note Traps with "Seq.First: null sequence" if obj is NULL.
 /// @note Traps with "Seq.First: sequence is empty" if the Seq is empty.
 /// @note Thread safety: Not thread-safe.
@@ -1011,8 +1062,8 @@ void *rt_seq_first(void *obj) {
 /// @return The element at index (len - 1) (not removed).
 ///
 /// @note O(1) time complexity.
-/// @note The Seq retains ownership - the returned pointer is valid as long as
-///       the element remains in the Seq.
+/// @note No retain is created. The result is borrowed from an owning Seq or
+///       from the original producer for a borrowing Seq.
 /// @note Traps with "Seq.Last: null sequence" if obj is NULL.
 /// @note Traps with "Seq.Last: sequence is empty" if the Seq is empty.
 /// @note Thread safety: Not thread-safe.
@@ -1070,7 +1121,8 @@ void *rt_seq_last(void *obj) {
 /// @param val The element to insert. May be NULL.
 ///
 /// @note O(n) time complexity due to element shifting.
-/// @note The Seq does not take ownership of val.
+/// @note Owning Seqs retain @p val before any reallocating growth; borrowing
+///       Seqs store it raw.
 /// @note Traps with "Seq.Insert: null sequence" if obj is NULL.
 /// @note Traps with "Seq.Insert: index out of bounds" if idx < 0 or idx > len.
 /// @note Thread safety: Not thread-safe.
@@ -1152,7 +1204,8 @@ void rt_seq_insert(void *obj, int64_t idx, void *val) {
 /// @return The element that was removed.
 ///
 /// @note O(n) time complexity due to element shifting.
-/// @note The Seq releases its reference - the caller now owns the element.
+/// @note Owning Seqs return a caller-retained value. Borrowing Seqs return the
+///       raw stored pointer without extending its lifetime.
 /// @note Traps with "Seq.Remove: null sequence" if obj is NULL.
 /// @note Traps with "Seq.Remove: index out of bounds" if idx < 0 or idx >= len.
 /// @note Thread safety: Not thread-safe.
@@ -1494,6 +1547,9 @@ void rt_seq_shuffle(void *obj) {
 /// @note O(n) time complexity where n is the slice length.
 /// @note The source Seq is not modified.
 /// @note Elements are shallow-copied (pointers, not deep copies).
+/// @note The result preserves the source ownership mode and independently
+///       retains copied elements when that mode is owning. A null source
+///       produces an empty owning Seq.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_clone For copying the entire Seq
@@ -1560,6 +1616,9 @@ void *rt_seq_slice(void *obj, int64_t start, int64_t end) {
 /// @note O(n) time complexity where n is the length.
 /// @note The source Seq is not modified.
 /// @note Elements are shallow-copied (same pointers as original).
+/// @note The result preserves the source ownership mode and independently
+///       retains shared objects when that mode is owning. A null source
+///       produces an empty owning Seq.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_slice For copying a subset

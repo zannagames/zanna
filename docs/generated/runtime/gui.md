@@ -1965,6 +1965,7 @@ Constructor: `Zanna.GUI.Image.New`
 | <a id="zanna-gui-image-clear"></a>`Clear` | `void()` | `Zanna.GUI.Image.Clear` |
 | <a id="zanna-gui-image-setscalemode"></a>`SetScaleMode` | `void(i64)` | `Zanna.GUI.Image.SetScaleMode` |
 | <a id="zanna-gui-image-setopacity"></a>`SetOpacity` | `void(f64)` | `Zanna.GUI.Image.SetOpacity` |
+| <a id="zanna-gui-image-setfocusable"></a>`SetFocusable` | `void(i1)` | `Zanna.GUI.Image.SetFocusable` |
 | <a id="zanna-gui-image-loadfile"></a>`LoadFile` | `i64(str)` | `Zanna.GUI.Image.LoadFile` |
 | <a id="zanna-gui-image-new"></a>`New` | `obj(obj)` | `Zanna.GUI.Image.New` |
 | <a id="zanna-gui-image-trysetpixels"></a>`TrySetPixels` | `i1(obj,obj,i64,i64)` | `Zanna.GUI.Image.TrySetPixels` |
@@ -2918,6 +2919,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Image.SetFilter` | `void(obj,i64)` | `rt_image_set_filter` |
 | `Zanna.GUI.Image.GetFilter` | `i64(obj)` | `rt_image_get_filter` |
 | `Zanna.GUI.Image.SetOpacity` | `void(obj,f64)` | `rt_image_set_opacity` |
+| `Zanna.GUI.Image.SetFocusable` | `void(obj,i1)` | `rt_image_set_focusable` |
 | `Zanna.GUI.Image.LoadFile` | `i64(obj,str)` | `rt_image_load_file` |
 | `Zanna.GUI.FloatingPanel.Destroy` | `void(obj)` | `rt_floatingpanel_destroy` |
 | `Zanna.GUI.Theme.SetDark` | `void()` | `rt_theme_set_dark` |

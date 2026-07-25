@@ -6,27 +6,26 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_string_format.c
-// Purpose: Implements BASIC's numeric/string conversion pipeline for the
-//          native runtime. Provides parsing helpers for INPUT-style statements
-//          and allocation routines that format numeric types (int, float) into
-//          fresh reference-counted runtime strings.
+// Purpose: Implements strict INPUT-style numeric parsing, permissive BASIC VAL
+//          prefix parsing, and allocation of runtime strings for integer and
+//          floating-point values.
 //
 // Key invariants:
-//   - Parsing trims leading/trailing ASCII whitespace before conversion;
-//     trailing non-numeric characters after a valid number cause a trap.
-//   - Overflow (ERANGE from strtoll/strtod) is detected and trapped with a
-//     BASIC-style diagnostic rather than silently wrapping.
-//   - Formatting always produces locale-stable output (decimal separator is
-//     always '.'); locale-specific separators are rewritten post-format.
-//   - All allocation routines return reference-counted runtime strings that
-//     transfer ownership to the caller (caller must eventually rt_string_unref).
-//   - Errors surface through rt_trap so VM and native executions diverge only
-//     at the diagnostic boundary.
+//   - Strict integer/double entry points reject embedded NUL and require the
+//     complete ASCII-trimmed input to satisfy their numeric grammar.
+//   - Strict floating parsing and all formatting are C-locale stable; VAL calls
+//     process-locale strtod directly and intentionally accepts a prefix.
+//   - Integer ERANGE and strict-double overflow trap. VAL traps only when
+//     ERANGE produces a non-finite value.
+//   - Formatting preserves the declared source precision: Float32 conversion
+//     narrows before formatting, while Float64 uses round-trip text.
 //
 // Ownership/Lifetime:
-//   - Returned rt_string values are newly allocated; the caller owns the
-//     reference and must call rt_string_unref when done.
+//   - String-returning functions transfer one owned reference, potentially the
+//     shared empty singleton on a returning error path.
 //   - Intermediate scratch buffers are stack-allocated or freed before return.
+//   - Parser inputs are borrowed; temporary integer parsing storage is obtained
+//     through rt_alloc and released through rt_free.
 //
 // Links: src/runtime/core/rt_string.h (rt_string type),
 //        src/runtime/core/rt_format.c (double formatting helpers),
@@ -34,6 +33,8 @@
 //        docs/runtime/strings.md#numeric-formatting
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Runtime numeric parsing and numeric-to-string formatting.
 
 #include "rt_format.h"
 #include "rt_int_format.h"
@@ -50,14 +51,16 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Validate @p s as a runtime string and return its byte view, trapping on misuse.
-/// @details Central input-validation helper used by `rt_to_int`, `rt_to_double`, and
-///          related parsers. Traps with @p fn_name as the diagnostic when @p s is NULL,
-///          with a generic "INPUT: invalid string handle" message when the pointer fails
-///          `rt_string_is_handle`, and with "INPUT: invalid string data" when the underlying
-///          data pointer is somehow NULL despite a valid handle. On success writes the
-///          byte length to @p len and returns the bytes pointer (aliasing the string's
-///          storage; valid only for the lifetime of @p s).
+/// @brief Validate @p s and borrow its length-counted byte storage.
+/// @details Initializes an optional output length to zero, then verifies the
+///          non-null handle through the live string registry. Null input traps
+///          with @p fn_name; invalid handles and data use INPUT diagnostics. A
+///          returning trap yields the static empty C string and zero length.
+/// @param s Borrowed runtime string expected to be live and non-null.
+/// @param len Optional output receiving the stored byte length on success.
+/// @param fn_name Borrowed diagnostic used for a null-input trap.
+/// @return Borrowed internal byte buffer, or the static empty C string after a
+///         returning validation trap.
 static const char *rt_string_format_bytes(rt_string s, size_t *len, const char *fn_name) {
     if (len)
         *len = 0;
@@ -80,11 +83,12 @@ static const char *rt_string_format_bytes(rt_string s, size_t *len, const char *
     return data;
 }
 
-/// @brief Return true if @p s contains an embedded NUL byte before its declared end.
-/// @details Used by `rt_to_double` to reject strings that would silently truncate when
-///          handed to `strtod`. Routes through `rt_string_format_bytes` so handle
-///          validation happens up front; a NULL string is treated as "no NUL" without
-///          trapping (the strict path is the validation in `rt_string_format_bytes`).
+/// @brief Test whether @p s contains NUL within its stored byte length.
+/// @details Validates non-null inputs through
+///          @ref rt_string_format_bytes. NULL itself returns false without
+///          trapping so the strict caller can issue its own null diagnostic.
+/// @param s Borrowed runtime string; may be NULL.
+/// @return True when a stored payload byte is NUL; otherwise false.
 static bool rt_string_contains_embedded_nul(rt_string s) {
     if (!s)
         return false;
@@ -94,24 +98,22 @@ static bool rt_string_contains_embedded_nul(rt_string s) {
 }
 
 /// @brief Locale-independent test for ASCII whitespace characters.
-/// @details Mirrors the ASCII-only behaviour of the BASIC runtime so input parsing
-///          doesn't depend on the host's `LC_CTYPE` setting. Recognises space, tab,
-///          newline, carriage return, form-feed, and vertical-tab.
+/// @details Avoids host `LC_CTYPE` state and recognizes exactly space, tab,
+///          newline, carriage return, form feed, and vertical tab.
+/// @param ch Unsigned byte to classify.
+/// @return True only for one of the six accepted ASCII whitespace bytes.
 static bool rt_string_format_is_ascii_space(unsigned char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
 }
 
 /// @brief Parse a runtime string as a signed 64-bit integer.
-/// @details Performs a staged conversion so diagnostics match the historical
-///          BASIC runtime:
-///          1. Trim leading/trailing ASCII whitespace without touching locale
-///             state.
-///          2. Reject embedded NUL bytes, then copy the trimmed slice into a
-///             scratch buffer allocated via @ref rt_alloc.
-///          3. Invoke @ref strtoll to honour sign handling and detect overflow.
-///          4. Trap with a BASIC-style message on overflow or trailing junk.
-/// @param s Runtime string containing the textual representation.
-/// @return Parsed 64-bit integer value.
+/// @details Trims the six ASCII whitespace bytes, rejects empty input and
+///          embedded NUL, copies the remaining span to terminated scratch
+///          storage, and invokes base-10 `strtoll`. The conversion must consume
+///          the complete trimmed span. Size, allocation, syntax, and ERANGE
+///          failures trap with INPUT diagnostics.
+/// @param s Borrowed live runtime string containing signed decimal text.
+/// @return Parsed value, or zero after a returning validation/parse trap.
 int64_t rt_to_int(rt_string s) {
     size_t len = 0;
     const char *p = rt_string_format_bytes(s, &len, "rt_to_int: null");
@@ -159,13 +161,13 @@ int64_t rt_to_int(rt_string s) {
 }
 
 /// @brief Parse a runtime string into a double.
-/// @details Uses the strict low-level parser so the entire string must be a
-///          decimal floating literal after ASCII trimming. Overflow raises a
-///          dedicated BASIC diagnostic while any other parse failure becomes
-///          the generic "expected numeric value" trap, mirroring INPUT
-///          semantics.
-/// @param s Runtime string handle.
-/// @return Parsed floating-point value.
+/// @details Rejects embedded NUL before delegating to the C-locale strict
+///          parser, which trims accepted ASCII whitespace and requires complete
+///          consumption of a decimal or supported signed non-finite token.
+///          Overflow receives a dedicated INPUT trap; every other parse error
+///          uses the expected-numeric diagnostic.
+/// @param s Borrowed live runtime string containing floating-point text.
+/// @return Parsed value, or `0.0` after a returning validation/parse trap.
 double rt_to_double(rt_string s) {
     if (rt_string_contains_embedded_nul(s)) {
         rt_trap("INPUT: expected numeric value");
@@ -188,12 +190,14 @@ double rt_to_double(rt_string s) {
 }
 
 /// @brief Format a signed 64-bit integer into a newly allocated runtime string.
-/// @details Builds the textual representation in a @ref rt_string_builder so the
-///          implementation benefits from the builder's overflow-aware reserve
-///          logic.  Formatting failures propagate through status codes and are
-///          converted to rt_trap messages to preserve BASIC's fatal-error model.
+/// @details Appends locale-independent base-10 text to an inline-first
+///          @ref rt_string_builder, copies its bytes into immutable string
+///          storage, and frees builder storage. Builder failure maps to a
+///          context-specific trap and uses an owned empty-string fallback when
+///          the hook returns.
 /// @param v Integer value to format.
-/// @return Fresh runtime string containing the decimal representation.
+/// @return Owned decimal string, empty fallback, or `NULL` if final string
+///         allocation fails.
 rt_string rt_int_to_str(int64_t v) {
     rt_string_builder sb;
     rt_sb_init(&sb);
@@ -218,22 +222,21 @@ rt_string rt_int_to_str(int64_t v) {
 
 /// @brief Convert a double to a runtime string using exact round-trip formatting.
 /// @details Relies on @ref rt_format_f64_roundtrip to produce locale-stable
-///          decimal text that parses back to the same IEEE-754 value, then
-///          copies the result into a freshly allocated runtime string whose
-///          ownership transfers to the caller.
+///          text for finite values and the runtime's canonical spellings for
+///          non-finite values, then copies through the generated terminator.
 /// @param v Floating-point value to format.
-/// @return Newly allocated runtime string containing the formatted value.
+/// @return Owned formatted runtime string, or `NULL` on allocation failure.
 rt_string rt_f64_to_str(double v) {
     char buf[64];
     rt_format_f64_roundtrip(v, buf, sizeof(buf));
     return rt_string_from_bytes(buf, strlen(buf));
 }
 
-/// @brief Legacy entry point that forwards to @ref rt_f64_to_str.
-/// @details Retained for ABI compatibility with historical runtime releases
-///          that exported @c rt_str_d_alloc directly.
+/// @brief Legacy Float64 allocation entry point.
+/// @details Retained for ABI compatibility and independently applies the same
+///          round-trip formatter and copy sequence as @ref rt_f64_to_str.
 /// @param v Floating-point value to format.
-/// @return Newly allocated runtime string containing the formatted value.
+/// @return Owned formatted runtime string, or `NULL` on allocation failure.
 rt_string rt_str_d_alloc(double v) {
     char buf[64];
     rt_format_f64_roundtrip(v, buf, sizeof(buf));
@@ -242,13 +245,11 @@ rt_string rt_str_d_alloc(double v) {
 
 /// @brief Format a value with single-precision (Float32) semantics.
 /// @details Accepts a C `double` so the exported ABI matches the registered
-///          `str(f64)` signature on every dispatch path (VDOC-162: taking a
-///          C `float` here made direct symbol dispatch read the wrong bit
-///          layout). The value is narrowed to `float` first so the output
-///          reflects single precision, then formatted through
-///          @ref rt_format_f64 for consistent rounding.
+///          `str(f64)` dispatch signature. It narrows to `float`, promotes that
+///          rounded value back to double, and applies ordinary runtime float
+///          formatting rather than Float64 round-trip formatting.
 /// @param v Value to format (narrowed to single precision).
-/// @return Newly allocated runtime string with the formatted value.
+/// @return Owned formatted runtime string, or `NULL` on allocation failure.
 rt_string rt_str_f_alloc(double v) {
     char buf[64];
     rt_format_f64((double)(float)v, buf, sizeof(buf));
@@ -256,11 +257,10 @@ rt_string rt_str_f_alloc(double v) {
 }
 
 /// @brief Format a 32-bit integer into a runtime string.
-/// @details Uses @ref rt_str_from_i32 to write into a stack buffer before
-///          wrapping that buffer in a runtime-managed allocation.  Using the
-///          shared helper keeps zero-padding and sign handling consistent.
+/// @details Writes minimal signed base-10 text into a fixed stack buffer with
+///          @ref rt_str_from_i32, then copies through its terminating NUL.
 /// @param v Integer value to format.
-/// @return Newly allocated runtime string containing the decimal text.
+/// @return Owned decimal runtime string, or `NULL` on allocation failure.
 rt_string rt_str_i32_alloc(int32_t v) {
     char buf[32];
     rt_str_from_i32(v, buf, sizeof(buf), NULL);
@@ -268,10 +268,10 @@ rt_string rt_str_i32_alloc(int32_t v) {
 }
 
 /// @brief Format a 16-bit integer into a runtime string.
-/// @details Calls @ref rt_str_from_i16 so behaviour matches the runtime's other
-///          integer printers, including sign handling and overflow checking.
+/// @details Writes minimal signed base-10 text into a fixed stack buffer with
+///          @ref rt_str_from_i16, then copies through its terminating NUL.
 /// @param v Integer value to format.
-/// @return Newly allocated runtime string containing the decimal text.
+/// @return Owned decimal runtime string, or `NULL` on allocation failure.
 rt_string rt_str_i16_alloc(int16_t v) {
     char buf[16];
     rt_str_from_i16(v, buf, sizeof(buf), NULL);
@@ -279,16 +279,14 @@ rt_string rt_str_i16_alloc(int16_t v) {
 }
 
 /// @brief Parse a runtime string using BASIC's `VAL` semantics.
-/// @details BASIC `VAL` is forgiving: it skips leading whitespace, parses the
-///          longest valid numeric prefix, and returns whatever strtod produced
-///          (stopping at the first non-numeric character). Trailing garbage is
-///          silently ignored — `VAL("  -12.5E+1x")` returns -125.0, not zero.
-///          This differs from the stricter @ref rt_val_to_double which rejects
-///          any residue. Null handles trap eagerly to avoid dereferencing
-///          invalid pointers; overflow traps so callers don't silently accept
-///          infinity from user input.
-/// @param s Runtime string handle.
-/// @return Parsed floating-point value; 0.0 when no numeric prefix is present.
+/// @details Skips the six ASCII whitespace bytes, then calls process-locale
+///          `strtod` and accepts its longest numeric prefix. Trailing bytes are
+///          ignored, and an embedded NUL terminates the visible input. Null
+///          handles trap; empty/no-prefix input returns zero. ERANGE traps only
+///          when the parsed result is non-finite, while underflow/subnormal
+///          results are returned.
+/// @param s Borrowed runtime string; must be non-null and valid.
+/// @return Parsed prefix, or `0.0` when no numeric prefix exists.
 double rt_val(rt_string s) {
     if (!s) {
         rt_trap("rt_val: null");
@@ -297,10 +295,8 @@ double rt_val(rt_string s) {
     const char *data = s->data;
     if (!data)
         return 0.0;
-    // BASIC VAL semantics: skip leading ASCII whitespace, parse longest
-    // numeric prefix via strtod, ignore any trailing garbage. Process-default
-    // LC_NUMERIC is C across every runtime path (we never call setlocale),
-    // so plain strtod is safe without the C-locale-swap dance.
+    // BASIC VAL semantics: skip leading ASCII whitespace, parse the longest
+    // numeric prefix via process-locale strtod, and ignore trailing garbage.
     while (*data == ' ' || *data == '\t' || *data == '\n' || *data == '\r' || *data == '\v' ||
            *data == '\f')
         ++data;
@@ -318,10 +314,9 @@ double rt_val(rt_string s) {
 
 /// @brief Convenience wrapper mirroring the historic `STR$` intrinsic.
 /// @details Forwards to @ref rt_f64_to_str so the intrinsic reuses the same
-///          formatting code path and therefore shares rounding and NaN/INF
-///          behaviour with the rest of the runtime.
+///          Float64 round-trip, locale, and non-finite formatting behavior.
 /// @param v Floating-point value to format.
-/// @return Newly allocated runtime string containing the formatted value.
+/// @return Owned formatted runtime string, or `NULL` on allocation failure.
 rt_string rt_str(double v) {
     return rt_f64_to_str(v);
 }

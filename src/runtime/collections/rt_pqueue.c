@@ -32,6 +32,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime integer-priority binary heap.
+/// @details The same packed `(priority, value)` representation supports
+///          min-heap and max-heap ordering. Values are retained while queued;
+///          destructive retrieval transfers that retain to the caller, while
+///          non-destructive retrieval creates an additional retain.
+
 #include "rt_pqueue.h"
 #include "rt_collection_ids.h"
 #include "rt_gc.h"
@@ -43,10 +50,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Number of entries allocated for a new priority queue.
 #define HEAP_DEFAULT_CAP 16
+/// @brief Multiplicative capacity increase applied when the heap is full.
 #define HEAP_GROWTH_FACTOR 2
 
 /// @brief A single entry in the heap containing priority and value.
+/// @details Equal priorities are legal. The heap does not record an insertion
+///          sequence number, so their relative removal order is unspecified.
 typedef struct heap_entry {
     int64_t priority; ///< Priority value (lower = higher priority for min-heap)
     void *value;      ///< The stored object
@@ -82,6 +93,9 @@ typedef struct rt_pqueue_impl {
 
 /// @brief Checked cast of an opaque handle to the priority-queue impl;
 ///        traps with @p what if @p obj is NULL or not a PriorityQueue/Heap.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated heap implementation, or `NULL` after trapping.
 static rt_pqueue_impl *as_pqueue(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_PQUEUE_CLASS_ID, sizeof(rt_pqueue_impl))) {
         rt_trap(what);
@@ -91,12 +105,16 @@ static rt_pqueue_impl *as_pqueue(void *obj, const char *what) {
 }
 
 /// @brief Drop one GC reference to a heap element and free it at zero.
+/// @param value Runtime object reference, or `NULL` for a no-op.
 static void heap_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
 }
 
 /// @brief GC traversal: visit every value currently stored in the heap array.
+/// @param obj Priority queue whose stored values are to be traced.
+/// @param visitor Collector callback invoked for each occupied entry.
+/// @param ctx Opaque collector context forwarded unchanged.
 static void rt_pqueue_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -110,6 +128,9 @@ static void rt_pqueue_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 }
 
 /// @brief Finalizer callback invoked when a Heap is garbage collected.
+/// @details Releases all still-queued values, clears occupied slots, and frees
+///          the native entry allocation.
+/// @param obj Priority queue being finalized; `NULL` is ignored.
 static void rt_pqueue_finalize(void *obj) {
     if (!obj)
         return;
@@ -129,6 +150,10 @@ static void rt_pqueue_finalize(void *obj) {
 }
 
 /// @brief Grows the heap capacity.
+/// @details Allocates and copies into a new array before freeing the old one,
+///          leaving the original storage unchanged on allocation failure.
+/// @param h Full heap whose positive capacity is to be doubled.
+/// @return 1 after publishing the larger allocation, or 0 after trapping.
 static int heap_grow(rt_pqueue_impl *h) {
     if (h->cap > INT64_MAX / HEAP_GROWTH_FACTOR) {
         rt_trap("Heap: capacity overflow");
@@ -162,7 +187,12 @@ static int heap_grow(rt_pqueue_impl *h) {
 }
 
 /// @brief Compare two priorities based on heap type.
-/// Returns true if a should be higher in the heap than b.
+/// @details Uses strict comparison: equal priorities are equivalent and
+///          therefore receive no stable FIFO/LIFO guarantee.
+/// @param h Heap whose min/max mode selects the comparison direction.
+/// @param a Candidate priority.
+/// @param b Reference priority.
+/// @return Nonzero when @p a belongs closer to the root than @p b.
 static inline int heap_compare(rt_pqueue_impl *h, int64_t a, int64_t b) {
     if (h->is_max)
         return a > b; // Max-heap: larger values go up
@@ -171,6 +201,9 @@ static inline int heap_compare(rt_pqueue_impl *h, int64_t a, int64_t b) {
 }
 
 /// @brief Swap two entries in the heap.
+/// @param items Heap entry allocation.
+/// @param i First valid array index.
+/// @param j Second valid array index.
 static inline void heap_swap(heap_entry *items, int64_t i, int64_t j) {
     heap_entry tmp = items[i];
     items[i] = items[j];
@@ -178,6 +211,10 @@ static inline void heap_swap(heap_entry *items, int64_t i, int64_t j) {
 }
 
 /// @brief Restore heap property by moving an element up.
+/// @details Repeatedly exchanges @p k with its parent while the child's
+///          priority is more extreme for the configured min/max mode.
+/// @param h Heap containing the newly appended entry.
+/// @param k Valid index from which to begin the sift-up.
 static void heap_swim(rt_pqueue_impl *h, int64_t k) {
     while (k > 0) {
         int64_t parent = (k - 1) / 2;
@@ -189,6 +226,11 @@ static void heap_swim(rt_pqueue_impl *h, int64_t k) {
 }
 
 /// @brief Restore heap property by moving an element down.
+/// @details Selects the more extreme child at each level, exchanging until the
+///          parent dominates both children. Arithmetic is guarded by the loop
+///          bound so child-index calculation cannot overflow.
+/// @param h Heap whose root/replacement may violate ordering.
+/// @param k Valid index from which to begin the sift-down.
 static void heap_sink(rt_pqueue_impl *h, int64_t k) {
     while (h->len >= 2 && k <= (h->len - 2) / 2) {
         int64_t child = k * 2 + 1; // Left child. Safe because of the loop guard.
@@ -207,12 +249,15 @@ static void heap_sink(rt_pqueue_impl *h, int64_t k) {
 
 /// @brief Construct a min-heap priority queue (smallest priority extracted first). Default
 /// behavior — call `_new_max` for a max-heap.
+/// @return New runtime-managed empty min-heap.
 void *rt_pqueue_new(void) {
     return rt_pqueue_new_max(0); // Default to min-heap
 }
 
 /// @brief Construct a priority queue. `is_max=1` makes it a max-heap (largest priority first);
 /// `is_max=0` makes it a min-heap. Internal storage is a binary heap on a dynamic array.
+/// @param is_max Nonzero for maximum-first order; zero for minimum-first.
+/// @return New runtime-managed empty heap, or `NULL` after an allocation trap.
 void *rt_pqueue_new_max(int8_t is_max) {
     rt_pqueue_impl *h =
         (rt_pqueue_impl *)rt_obj_new_i64(RT_PQUEUE_CLASS_ID, (int64_t)sizeof(rt_pqueue_impl));
@@ -239,6 +284,10 @@ void *rt_pqueue_new_max(int8_t is_max) {
 }
 
 /// @brief Number of items currently in the queue.
+/// @details A null handle is treated as an empty heap; an invalid non-null
+///          handle traps.
+/// @param obj Opaque priority-queue handle, or `NULL`.
+/// @return Occupied entry count, or 0 for `NULL`.
 int64_t rt_pqueue_len(void *obj) {
     if (!obj)
         return 0;
@@ -247,6 +296,8 @@ int64_t rt_pqueue_len(void *obj) {
 }
 
 /// @brief Returns 1 if the queue has no items.
+/// @param obj Opaque priority-queue handle, or `NULL`.
+/// @return 1 when empty, otherwise 0; `NULL` is empty.
 int8_t rt_pqueue_is_empty(void *obj) {
     if (!obj)
         return 1;
@@ -255,6 +306,9 @@ int8_t rt_pqueue_is_empty(void *obj) {
 }
 
 /// @brief Returns 1 if the queue is a max-heap, 0 if min-heap.
+/// @param obj Opaque priority-queue handle, or `NULL`.
+/// @return 1 for maximum-first order and 0 for minimum-first order; `NULL`
+///         reports 0.
 int8_t rt_pqueue_is_max(void *obj) {
     if (!obj)
         return 0;
@@ -264,6 +318,11 @@ int8_t rt_pqueue_is_max(void *obj) {
 
 /// @brief Insert `val` with the given `priority`. O(log n) — sift-up to restore heap order.
 /// Auto-grows internal storage when capacity is reached.
+/// @details The queue retains @p val before publication. Equal priorities are
+///          accepted but do not have stable removal order. Null handles trap.
+/// @param obj Priority queue to mutate.
+/// @param priority Signed ordering key.
+/// @param val Runtime value to retain; `NULL` is a valid queued value.
 void rt_pqueue_push(void *obj, int64_t priority, void *val) {
     if (!obj) {
         rt_trap("Heap.Push: null heap");
@@ -302,6 +361,12 @@ void rt_pqueue_push(void *obj, int64_t priority, void *val) {
 
 /// @brief Remove and return the highest-priority item. O(log n) — replace root with last
 /// element then sift-down. Traps if the queue is empty (use `_try_pop` for safe variant).
+/// @details "Highest" means the smallest integer in a min-heap and the largest
+///          in a max-heap. The queue-owned retain is transferred to the caller;
+///          no additional retain or release occurs.
+/// @param obj Non-null priority queue.
+/// @return Caller-owned transferred value; may be `NULL` when a null value was
+///         queued.
 void *rt_pqueue_pop(void *obj) {
     if (!obj) {
         rt_trap("Heap.Pop: null heap");
@@ -336,6 +401,10 @@ void *rt_pqueue_pop(void *obj) {
 }
 
 /// @brief Look at the highest-priority item without removing it. Traps on empty queue.
+/// @details The stored association remains unchanged and the returned runtime
+///          value is retained for the caller.
+/// @param obj Non-null, non-empty priority queue.
+/// @return Caller-owned retained top value; may be a stored `NULL`.
 void *rt_pqueue_peek(void *obj) {
     if (!obj) {
         rt_trap("Heap.Peek: null heap");
@@ -362,6 +431,12 @@ void *rt_pqueue_peek(void *obj) {
 }
 
 /// @brief Like `_pop` but returns NULL on an empty queue instead of trapping.
+/// @details On success transfers the heap-owned reference exactly like
+///          @ref rt_pqueue_pop. Since `NULL` is a valid queued value, use the
+///          Option variant when absence must be distinguished.
+/// @param obj Priority queue, or `NULL`.
+/// @return Caller-owned transferred top value, or `NULL` for empty/null queue
+///         or a stored null value.
 void *rt_pqueue_try_pop(void *obj) {
     if (!obj)
         return NULL;
@@ -397,7 +472,8 @@ void *rt_pqueue_try_pop(void *obj) {
 ///          wrapping the transferred value in an Option, this helper releases
 ///          the temporary transfer so the Option owns the result.
 /// @param obj Opaque Heap object pointer.
-/// @return `Some(value)` when an item is removed, otherwise `None`.
+/// @return New runtime-managed `Some(value)` when an item is removed,
+///         otherwise `None`.
 void *rt_pqueue_try_pop_option(void *obj) {
     if (!obj)
         return rt_option_none();
@@ -414,6 +490,12 @@ void *rt_pqueue_try_pop_option(void *obj) {
 }
 
 /// @brief Like `_peek` but returns NULL on an empty queue instead of trapping.
+/// @details Retains the returned value without removing it. Since `NULL` is a
+///          valid queued value, use the Option variant when absence must be
+///          distinguished.
+/// @param obj Priority queue, or `NULL`.
+/// @return Caller-owned retained top value, or `NULL` for empty/null queue or
+///         a stored null value.
 void *rt_pqueue_try_peek(void *obj) {
     if (!obj)
         return NULL;
@@ -442,7 +524,8 @@ void *rt_pqueue_try_peek(void *obj) {
 ///          wrapper releases that temporary transfer after the Option has
 ///          retained the value.
 /// @param obj Opaque Heap object pointer.
-/// @return `Some(value)` when an item exists, otherwise `None`.
+/// @return New runtime-managed `Some(value)` when an item exists, otherwise
+///         `None`.
 void *rt_pqueue_try_peek_option(void *obj) {
     if (!obj)
         return rt_option_none();
@@ -459,6 +542,10 @@ void *rt_pqueue_try_peek_option(void *obj) {
 }
 
 /// @brief Reset the queue to empty (length 0). Capacity is preserved.
+/// @details Releases every queued value and clears occupied slots. The min/max
+///          mode and current entry allocation remain available for reuse. A
+///          null handle is a no-op.
+/// @param obj Priority queue to clear, or `NULL`.
 void rt_pqueue_clear(void *obj) {
     if (!obj)
         return;
@@ -482,6 +569,12 @@ void rt_pqueue_clear(void *obj) {
 
 /// @brief Drain a copy of the queue into a Seq, ordered by priority. The original queue is
 /// preserved (operates on a temporary clone).
+/// @details The result contains values only, not their integer priorities.
+///          Min-heaps produce ascending priorities and max-heaps descending
+///          priorities; equal-priority order is unspecified. The fresh owning
+///          `Seq` independently retains every value. A null heap traps.
+/// @param obj Source priority queue.
+/// @return New runtime-managed owning `Seq` in extraction order.
 void *rt_pqueue_to_seq(void *obj) {
     if (!obj) {
         rt_trap("Heap.ToSeq: null heap");

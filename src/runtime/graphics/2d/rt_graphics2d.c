@@ -29,6 +29,21 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Assembles the CPU-backed implementation of the 2D graphics runtime.
+///
+/// The implementation is divided into ordered `.inc` fragments so that the
+/// private types and static helpers from the former monolithic translation
+/// unit remain visible to later subsystems without exporting them through an
+/// internal header.  Consequently, these fragments are implementation details
+/// and must be compiled only through this file.
+///
+/// The assembled translation unit provides render targets, textures, retained
+/// drawing commands, materials and post-processing, paths and shapes, tiled
+/// content, text, particles, lighting, collision, and debug drawing.  Public
+/// ABI declarations live in @ref rt_graphics2d.h; shared private declarations
+/// live in @ref rt_graphics2d_internal.h.
+
 #include "rt_graphics2d.h"
 #include "rt_graphics2d_internal.h"
 
@@ -50,6 +65,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @name Ordered implementation fragments
+/// @{
+/// @brief Includes every 2D subsystem in dependency order.
+///
+/// Earlier fragments deliberately define private helpers used by later
+/// fragments, so reordering or compiling an included fragment independently
+/// can change visibility and initialization behavior.
 // clang-format off
 #include "rt_graphics2d_core.inc"
 #include "rt_graphics2d_surface.inc"
@@ -58,3 +80,4 @@
 #include "rt_graphics2d_path.inc"
 #include "rt_graphics2d_extended.inc"
 // clang-format on
+/// @}

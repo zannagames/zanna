@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_scenemanager.c
+/// @file
+/// @brief Implements bounded named-scene registration, immediate switching,
+///        timed transitions, and one-update edge flags.
 // Purpose: Multi-scene manager — named scenes, switch, transitions, edge flags.
 // Key invariants:
 //   - Scene names are unique within one manager and switches never target unknown scenes.
@@ -25,16 +28,24 @@
 
 #include <string.h>
 
+/// @brief Maximum number of named scenes held by one manager.
 #define SM_MAX_SCENES 64
+/// @brief Fixed storage size for each NUL-terminated scene name.
 #define SM_SCENE_NAME_MAX 128
 
+/// @brief One registered scene name and its retained activation metadata.
 typedef struct {
+    /// @brief NUL-terminated UTF-8 scene name.
     char name[SM_SCENE_NAME_MAX];
+    /// @brief Reserved activation marker initialized for registered scenes.
     int8_t active;
 } sm_scene_t;
 
+/// @brief Inline state owned by the SceneManager runtime object.
 typedef struct {
+    /// @brief Fixed-capacity scene registry.
     sm_scene_t scenes[SM_MAX_SCENES];
+    /// @brief Number of occupied entries in @ref scenes.
     int32_t count;
     int32_t current;  // Index into scenes[] (-1 = none)
     int32_t previous; // Previous scene index
@@ -49,7 +60,10 @@ typedef struct {
 } scenemanager_impl;
 
 /// @brief Safe-cast a handle to the SceneManager impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p mgr is NULL.
+///        class-id mismatch.
+/// @param mgr Borrowed candidate SceneManager handle.
+/// @param api Trap message identifying the calling API.
+/// @return Borrowed implementation pointer, or `NULL` if @p mgr is `NULL`.
 static scenemanager_impl *checked_scenemanager(void *mgr, const char *api) {
     if (!mgr)
         return NULL;
@@ -64,8 +78,11 @@ static scenemanager_impl *checked_scenemanager(void *mgr, const char *api) {
 /// @details Rejects a name that does not fit the fixed buffer instead of
 ///          truncating it, so two distinct long names sharing a 127-byte prefix
 ///          cannot alias under the strcmp-based lookup (VDOC-243). Also rejects an
-///          embedded NUL, which would corrupt the comparison. @return 1 on
-///          success, 0 on bad or over-long input.
+///          embedded NUL, which would corrupt the comparison.
+/// @param name Borrowed runtime string handle.
+/// @param out Destination with capacity @ref SM_SCENE_NAME_MAX.
+/// @return `1` after a complete copy; `0` for null, malformed, embedded-NUL,
+///         or overlong input.
 static int scene_name_from_handle(void *name, char out[SM_SCENE_NAME_MAX]) {
     if (!name || !out)
         return 0;
@@ -82,7 +99,9 @@ static int scene_name_from_handle(void *name, char out[SM_SCENE_NAME_MAX]) {
 }
 
 /// @brief Linear-search registered scenes by name.
-/// @return The scene's index, or -1 if not found / bad input.
+/// @param sm Borrowed manager implementation.
+/// @param name NUL-terminated exact scene name.
+/// @return The scene's zero-based index, or `-1` for absent or invalid input.
 static int find_scene(scenemanager_impl *sm, const char *name) {
     if (!sm || !name)
         return -1;
@@ -96,6 +115,7 @@ static int find_scene(scenemanager_impl *sm, const char *name) {
 /// @brief Create a new scene manager for named game state transitions.
 /// @details Manages a flat list of named scenes (e.g., "menu", "gameplay", "pause").
 ///          Supports instant switching and timed transitions with progress tracking.
+/// @return Owned SceneManager runtime object, or `NULL` if allocation fails.
 void *rt_scenemanager_new(void) {
     scenemanager_impl *sm = (scenemanager_impl *)rt_obj_new_i64(RT_SCENEMANAGER_CLASS_ID,
                                                                 (int64_t)sizeof(scenemanager_impl));
@@ -108,7 +128,12 @@ void *rt_scenemanager_new(void) {
     return sm;
 }
 
-/// @brief Register a named scene. The first scene added becomes the current scene.
+/// @brief Register a uniquely named scene.
+/// @details The first successfully added scene becomes current and raises the
+///          entered edge. Null, malformed, duplicate, overlong, and
+///          over-capacity additions are ignored.
+/// @param mgr Borrowed SceneManager handle.
+/// @param name Borrowed runtime scene-name string.
 void rt_scenemanager_add(void *mgr, void *name) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.Add: expected Zanna.Game.SceneManager");
@@ -132,7 +157,12 @@ void rt_scenemanager_add(void *mgr, void *name) {
     }
 }
 
-/// @brief Instantly switch to a named scene (sets just_entered and just_exited flags).
+/// @brief Instantly switch to a registered named scene.
+/// @details A successful switch updates current/previous indices, raises both
+///          edge flags, and cancels any timed transition. Unknown names and
+///          requests for the already-current scene are ignored.
+/// @param mgr Borrowed SceneManager handle.
+/// @param name Borrowed runtime scene-name string.
 void rt_scenemanager_switch(void *mgr, void *name) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.Switch: expected Zanna.Game.SceneManager");
@@ -155,7 +185,13 @@ void rt_scenemanager_switch(void *mgr, void *name) {
     sm->trans_duration = 0;
 }
 
-/// @brief Begin a timed transition to a new scene (completes after duration_ms).
+/// @brief Begin or retarget a timed transition to a registered scene.
+/// @details Nonpositive durations are normalized to one millisecond. Requests
+///          for an unknown/current scene or the active transition target are
+///          ignored.
+/// @param mgr Borrowed SceneManager handle.
+/// @param name Borrowed target scene-name string.
+/// @param duration_ms Requested transition duration in milliseconds.
 void rt_scenemanager_switch_transition(void *mgr, void *name, int64_t duration_ms) {
     scenemanager_impl *sm = checked_scenemanager(
         mgr, "SceneManager.SwitchTransition: expected Zanna.Game.SceneManager");
@@ -174,8 +210,13 @@ void rt_scenemanager_switch_transition(void *mgr, void *name, int64_t duration_m
     sm->trans_timer = sm->trans_duration;
 }
 
-/// @brief Advance the scene manager by dt milliseconds. Clears one-shot flags, completes
-/// transitions.
+/// @brief Advance transition state by a number of milliseconds.
+/// @details Clears all one-update edge flags before processing. Positive time
+///          decrements an active countdown; completion commits the target,
+///          updates the previous scene, and raises entered, exited, and
+///          transition-completed state for the current update.
+/// @param mgr Borrowed SceneManager handle.
+/// @param dt Elapsed milliseconds; nonpositive values do not advance time.
 void rt_scenemanager_update(void *mgr, int64_t dt) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.Update: expected Zanna.Game.SceneManager");
@@ -201,6 +242,9 @@ void rt_scenemanager_update(void *mgr, int64_t dt) {
 }
 
 /// @brief Get the name of the currently active scene.
+/// @param mgr Borrowed SceneManager handle.
+/// @return Runtime-owned immutable name string, or an immutable empty string
+///         when no current scene is available.
 void *rt_scenemanager_current(void *mgr) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.Current: expected Zanna.Game.SceneManager");
@@ -212,6 +256,9 @@ void *rt_scenemanager_current(void *mgr) {
 }
 
 /// @brief Get the name of the previously active scene (before the last transition).
+/// @param mgr Borrowed SceneManager handle.
+/// @return Runtime-owned immutable previous-name string, or an immutable empty
+///         string when no previous scene is available.
 void *rt_scenemanager_previous(void *mgr) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.Previous: expected Zanna.Game.SceneManager");
@@ -223,6 +270,9 @@ void *rt_scenemanager_previous(void *mgr) {
 }
 
 /// @brief Check whether the current scene matches the given name.
+/// @param mgr Borrowed SceneManager handle.
+/// @param name Borrowed runtime scene-name string.
+/// @return `1` for an exact current-name match; otherwise `0`.
 int8_t rt_scenemanager_is_scene(void *mgr, void *name) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.IsScene: expected Zanna.Game.SceneManager");
@@ -237,6 +287,8 @@ int8_t rt_scenemanager_is_scene(void *mgr, void *name) {
 }
 
 /// @brief Check whether a scene was entered this frame (one-shot, cleared on next update).
+/// @param mgr Borrowed SceneManager handle.
+/// @return `1` when the entered edge is pending; otherwise `0`.
 int8_t rt_scenemanager_just_entered(void *mgr) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.JustEntered: expected Zanna.Game.SceneManager");
@@ -244,6 +296,8 @@ int8_t rt_scenemanager_just_entered(void *mgr) {
 }
 
 /// @brief Check whether a scene was exited this frame (one-shot, cleared on next update).
+/// @param mgr Borrowed SceneManager handle.
+/// @return `1` when the exited edge is pending; otherwise `0`.
 int8_t rt_scenemanager_just_exited(void *mgr) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.JustExited: expected Zanna.Game.SceneManager");
@@ -251,6 +305,8 @@ int8_t rt_scenemanager_just_exited(void *mgr) {
 }
 
 /// @brief Check whether a timed scene transition is currently in progress.
+/// @param mgr Borrowed SceneManager handle.
+/// @return `1` while a target countdown is active; otherwise `0`.
 int8_t rt_scenemanager_is_transitioning(void *mgr) {
     scenemanager_impl *sm =
         checked_scenemanager(mgr, "SceneManager.IsTransitioning: expected Zanna.Game.SceneManager");
@@ -258,6 +314,11 @@ int8_t rt_scenemanager_is_transitioning(void *mgr) {
 }
 
 /// @brief Get the transition progress as a ratio (0.0 = start, 1.0 = complete).
+/// @details Returns exactly `1.0` for the update in which a transition
+///          completed, then returns `0.0` after the next update clears that
+///          completion edge.
+/// @param mgr Borrowed SceneManager handle.
+/// @return Clamped transition progress in `[0.0, 1.0]`, or `0.0` when idle.
 double rt_scenemanager_transition_progress(void *mgr) {
     scenemanager_impl *sm = checked_scenemanager(
         mgr, "SceneManager.TransitionProgress: expected Zanna.Game.SceneManager");

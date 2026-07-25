@@ -17,22 +17,35 @@
 //     buckets and separate chaining using FNV-1a hashing.
 //   - Resizes (doubles) when key_count/capacity exceeds 75%.
 //   - `key_count` tracks distinct keys; `total_count` tracks total values added.
-//   - Each bucket entry stores a Seq (rt_seq); adding a value appends to that
-//     Seq. Removing the last value for a key removes the entry entirely.
+//   - Each published bucket entry owns a non-empty Seq; adding a value appends
+//     to that Seq, including duplicate and NULL values.
+//   - Entries are removed only as a whole by RemoveAll or Clear; there is no
+//     single-value removal operation.
 //   - Getting a non-existent key returns an empty Seq (not NULL) so callers can
 //     always iterate the result without a null-check.
-//   - All operations are O(1) average case for key lookup; O(k) for removing
-//     a specific value from a key with k values.
+//   - Key lookup and insertion are O(1) average case. Snapshot creation and
+//     removal are linear in the number of values retained by the selected key.
 //   - Not thread-safe; external synchronization required.
 //
 // Ownership/Lifetime:
 //   - MultiMap objects are GC-managed (rt_obj_new_i64). The bucket array, entry
 //     nodes, and per-key Seq objects are freed by the GC finalizer.
+//   - Keys are copied by byte length. Each owning Seq retains its values; a
+//     returned snapshot independently retains the same values.
 //
 // Links: src/runtime/collections/rt_multimap.h (public API),
 //        src/runtime/collections/rt_seq.h (value list backing type)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements the runtime's string-keyed multi-valued hash map.
+/// @details Each distinct byte-string key owns an insertion-ordered `Seq` of
+///          values. Repeated puts preserve duplicates, total length counts
+///          values rather than keys, and read operations return independent
+///          owning snapshots instead of exposing internal storage. The table
+///          uses separate chaining and doubles before a new key would exceed a
+///          75-percent load factor.
 
 #include "rt_multimap.h"
 
@@ -49,15 +62,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Number of buckets allocated for a newly constructed MultiMap.
 #define MM_INITIAL_CAPACITY 16
+/// @brief Numerator of the maximum distinct-key load factor.
 #define MM_LOAD_FACTOR_NUM 3
+/// @brief Denominator of the maximum distinct-key load factor.
 #define MM_LOAD_FACTOR_DEN 4
 #include "rt_hash_util.h"
 
+/// @brief Install a non-local trap recovery target for the current thread.
+/// @param buf Jump buffer that receives control when a runtime trap occurs.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's non-local trap recovery target.
 void rt_trap_clear_recovery(void);
+/// @brief Borrow the current thread's most recently recorded trap message.
+/// @return NUL-terminated diagnostic text, or `NULL` when none is available.
 const char *rt_trap_get_error(void);
 
+/// @brief One separately chained hash-table entry for a copied string key.
+/// @details `values` is an owning runtime `Seq`; `next` links entries that
+///          hash to the same bucket. The key buffer includes a convenience
+///          trailing NUL, but `key_len` defines identity and permits embedded
+///          NUL bytes.
 typedef struct rt_mm_entry {
     char *key;
     size_t key_len;
@@ -65,6 +91,9 @@ typedef struct rt_mm_entry {
     struct rt_mm_entry *next;
 } rt_mm_entry;
 
+/// @brief GC-managed implementation payload for the public MultiMap object.
+/// @details `key_count` counts chain entries while `total_count` counts every
+///          stored value, including duplicates and `NULL`.
 typedef struct rt_multimap_impl {
     void **vptr;
     rt_mm_entry **buckets;
@@ -75,6 +104,9 @@ typedef struct rt_multimap_impl {
 
 /// @brief Checked cast of an opaque handle to the MultiMap implementation.
 /// @details Traps with @p what if @p obj is NULL or not a MultiMap.
+/// @param obj Opaque runtime object to validate.
+/// @param what Diagnostic passed to the trap subsystem on type failure.
+/// @return The validated implementation pointer, or `NULL` after trapping.
 static rt_multimap_impl *as_multimap(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_MULTIMAP_CLASS_ID, sizeof(rt_multimap_impl))) {
         rt_trap(what);
@@ -83,7 +115,12 @@ static rt_multimap_impl *as_multimap(void *obj, const char *what) {
     return (rt_multimap_impl *)obj;
 }
 
-/// @brief Borrow the byte buffer + length of a key string (empty "" if null).
+/// @brief Borrow the byte buffer and byte length of a runtime key string.
+/// @details A null, empty, or unreadable string handle is normalized to the
+///          empty byte string. The returned storage remains owned by @p key.
+/// @param key Runtime string key to inspect; `NULL` denotes the empty key.
+/// @param out_len Receives the number of identity bytes in the returned key.
+/// @return Borrowed key bytes, never `NULL`.
 static const char *get_key_data(rt_string key, size_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -103,7 +140,11 @@ static const char *get_key_data(rt_string key, size_t *out_len) {
     return cstr;
 }
 
-/// @brief Linear scan of a bucket chain for an exact key match (NULL if none).
+/// @brief Find an exact byte-string key in one collision chain.
+/// @param head First entry in the bucket chain, or `NULL`.
+/// @param key Key bytes to compare.
+/// @param key_len Number of bytes in @p key.
+/// @return The borrowed matching entry, or `NULL` when the chain lacks the key.
 static rt_mm_entry *find_entry(rt_mm_entry *head, const char *key, size_t key_len) {
     for (rt_mm_entry *e = head; e; e = e->next) {
         if (e->key_len == key_len && memcmp(e->key, key, key_len) == 0)
@@ -112,13 +153,17 @@ static rt_mm_entry *find_entry(rt_mm_entry *head, const char *key, size_t key_le
     return NULL;
 }
 
-/// @brief Drop a GC-managed temporary object and free it at zero refs.
+/// @brief Release one runtime object reference and finalize it at zero.
+/// @param obj Runtime-managed object, or `NULL` for a no-op.
 static void mm_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
-/// @brief Free a chain entry: its key buffer and its retained values list.
+/// @brief Destroy an unpublished or detached chain entry.
+/// @details Frees the copied key, releases the entry's owning value `Seq`, and
+///          then frees the entry node itself.
+/// @param entry Entry to destroy, or `NULL` for a no-op.
 static void free_entry(rt_mm_entry *entry) {
     if (!entry)
         return;
@@ -127,11 +172,24 @@ static void free_entry(rt_mm_entry *entry) {
     free(entry);
 }
 
+/// @brief Copy the active trap diagnostic into bounded local storage.
+/// @details Uses @p fallback when the trap subsystem has no non-empty message,
+///          allowing recovery paths to clear the trap frame before retrapping.
+/// @param buffer Destination buffer for the saved NUL-terminated diagnostic.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Diagnostic to use when no active trap text is available.
 static void mm_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Append the first value to a not-yet-published entry transactionally.
+/// @details Catches a trap from the owning `Seq` retain/growth path, destroys
+///          the entire partial entry, restores the diagnostic, and retraps.
+/// @param entry Fully allocated entry whose owning `Seq` is initially empty.
+/// @param value Value to append and retain; `NULL` is a valid stored value.
+/// @return 1 after the append succeeds, or 0 after cleanup and a propagated
+///         trap.
 static int mm_push_value_or_release_entry(rt_mm_entry *entry, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -149,6 +207,13 @@ static int mm_push_value_or_release_entry(rt_mm_entry *entry, void *value) {
     return 1;
 }
 
+/// @brief Append a value to a result snapshot or release the snapshot on trap.
+/// @details This helper provides failure-atomic construction for Get results:
+///          if `Seq.Push` traps, every value retained so far is released with
+///          @p seq before the original diagnostic is propagated.
+/// @param seq Owning result `Seq` under construction.
+/// @param value Borrowed value to append and retain; may be `NULL`.
+/// @param fallback Diagnostic used when the trapped operation supplied none.
 static void mm_push_value_or_release_seq(void *seq, void *value, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -165,6 +230,14 @@ static void mm_push_value_or_release_seq(void *seq, void *value, const char *fal
     rt_trap_clear_recovery();
 }
 
+/// @brief Copy one stored key into an owning key-snapshot `Seq`.
+/// @details Both string construction and `Seq.Push` are trap-protected. A
+///          failure releases the temporary string and the entire partial
+///          result before propagating the saved diagnostic.
+/// @param seq Owning key `Seq` under construction.
+/// @param key Borrowed key bytes from an internal entry.
+/// @param key_len Number of bytes to copy, including any embedded NUL bytes
+///                in the key identity.
 static void mm_append_key_or_release_seq(void *seq, const char *key, size_t key_len) {
     volatile rt_string key_copy = NULL;
 
@@ -189,7 +262,12 @@ static void mm_append_key_or_release_seq(void *seq, const char *key, size_t key_
 }
 
 /// @brief Rehash all entries into a fresh @p new_cap bucket array.
-/// @details Traps on allocation overflow/OOM.
+/// @details Entry and value ownership is unchanged; only collision links and
+///          the bucket array are replaced. Traps on allocation overflow or
+///          exhaustion and leaves the original table intact.
+/// @param mm MultiMap whose existing entries are to be redistributed.
+/// @param new_cap Nonzero target bucket count.
+/// @return 1 after publication of the new table, or 0 after trapping.
 static int mm_resize(rt_multimap_impl *mm, size_t new_cap) {
     if (new_cap > SIZE_MAX / sizeof(rt_mm_entry *)) {
         rt_trap("MultiMap: allocation size overflow");
@@ -219,6 +297,9 @@ static int mm_resize(rt_multimap_impl *mm, size_t new_cap) {
 
 /// @brief Double the bucket array once the key load factor exceeds the
 ///        MM_LOAD_FACTOR_NUM/MM_LOAD_FACTOR_DEN threshold (capped).
+/// @param mm MultiMap about to receive one previously absent key.
+/// @return 1 when the existing or resized table can accept the key, or 0 after
+///         a capacity/allocation trap.
 static int maybe_resize_for_insert(rt_multimap_impl *mm) {
     size_t next_count = mm->key_count + 1;
     if ((long double)next_count * (long double)MM_LOAD_FACTOR_DEN >
@@ -234,6 +315,7 @@ static int maybe_resize_for_insert(rt_multimap_impl *mm) {
 
 /// @brief GC finalizer: clear all entries (via rt_multimap_clear) then free
 ///        the bucket array.
+/// @param obj MultiMap object being finalized; `NULL` is ignored.
 static void rt_multimap_finalize(void *obj) {
     if (!obj)
         return;
@@ -248,7 +330,12 @@ static void rt_multimap_finalize(void *obj) {
     mm->capacity = 0;
 }
 
-/// @brief GC traversal: visit each key's values-list across all chains.
+/// @brief Visit every runtime object directly retained by a MultiMap.
+/// @details The copied keys and chain nodes are native allocations, so only
+///          each entry's owning value `Seq` participates in GC traversal.
+/// @param obj MultiMap object to traverse; `NULL` is ignored.
+/// @param visitor Collector callback invoked once per internal value `Seq`.
+/// @param ctx Opaque collector context forwarded unchanged to @p visitor.
 static void rt_multimap_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -263,9 +350,12 @@ static void rt_multimap_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) 
     }
 }
 
-/// @brief Construct an empty multimap (string → list-of-values). Internal storage is a chained
-/// hash table where each bucket holds a Seq of values per key. Useful when one key maps to
-/// many values (URL params, headers, multiset, etc.).
+/// @brief Construct an empty string-to-values MultiMap.
+/// @details Allocates the initial chained hash table, installs the native
+///          finalizer, and registers value-`Seq` traversal with the collector.
+///          The returned object begins with zero distinct keys and zero values.
+/// @return New runtime-managed MultiMap object, or `NULL` after an allocation
+///         trap.
 void *rt_multimap_new(void) {
     rt_multimap_impl *mm =
         (rt_multimap_impl *)rt_obj_new_i64(RT_MULTIMAP_CLASS_ID, (int64_t)sizeof(rt_multimap_impl));
@@ -290,6 +380,10 @@ void *rt_multimap_new(void) {
 }
 
 /// @brief Return the total number of values across all keys in the multimap.
+/// @details Duplicate and `NULL` values each contribute one. A null handle is
+///          treated as an empty map; an invalid non-null handle traps.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @return Aggregate value count, or 0 for `NULL`.
 int64_t rt_multimap_len(void *obj) {
     if (!obj)
         return 0;
@@ -297,8 +391,10 @@ int64_t rt_multimap_len(void *obj) {
 }
 
 /// @brief Return the number of distinct keys in the multimap.
-/// @param obj Multimap object pointer; returns 0 if NULL.
-/// @return Number of unique keys.
+/// @details The count is independent of the number of values stored for each
+///          key. A null handle is treated as an empty map.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @return Number of unique byte-string keys, or 0 for `NULL`.
 int64_t rt_multimap_key_count(void *obj) {
     if (!obj)
         return 0;
@@ -306,13 +402,24 @@ int64_t rt_multimap_key_count(void *obj) {
 }
 
 /// @brief Check whether the multimap has no entries.
+/// @details Emptiness is defined by aggregate value count. A null handle is
+///          therefore empty.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @return 1 when the map stores no values, otherwise 0.
 int8_t rt_multimap_is_empty(void *obj) {
     return rt_multimap_len(obj) == 0;
 }
 
 /// @brief Add a value under a key in the multimap.
-/// @details Unlike a regular map, multimaps allow multiple values per key.
-///          The value is appended to the key's value list.
+/// @details Normalizes a null key to the empty byte string. For a new key, the
+///          bytes are copied and a private owning `Seq` is created before the
+///          entry is published. For an existing key, @p value is appended in
+///          insertion order. Duplicates and `NULL` values are preserved. A
+///          null map is a no-op; invalid or finalized non-null handles trap.
+/// @param obj Opaque MultiMap object, or `NULL` for a no-op.
+/// @param key Runtime string key; `NULL` identifies the empty key.
+/// @param value Runtime value retained by the internal owning `Seq`; may be
+///              `NULL`.
 void rt_multimap_put(void *obj, rt_string key, void *value) {
     if (!obj)
         return;
@@ -400,8 +507,14 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
     rt_gc_mutator_exit();
 }
 
-/// @brief Return all values stored under `key` as a fresh Seq (not a borrowed view). Empty
-/// Seq if key is absent. Useful when caller may mutate the returned list independently.
+/// @brief Snapshot all values stored under a key.
+/// @details Returns a fresh owning `Seq` in per-key insertion order. The
+///          snapshot independently retains every non-null value and may be
+///          mutated without changing the MultiMap. A null map, finalized map,
+///          or absent key produces an empty owning `Seq`.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @param key Runtime string key; `NULL` identifies the empty key.
+/// @return New caller-owned `Seq`, never `NULL` unless allocation traps.
 void *rt_multimap_get(void *obj, rt_string key) {
     if (!obj)
         return rt_seq_new_owned();
@@ -428,8 +541,14 @@ void *rt_multimap_get(void *obj, rt_string key) {
     return result;
 }
 
-/// @brief Return the first value stored under `key` (most recently inserted is at the tail —
-/// this returns the *first* inserted). NULL if the key is absent or has no values.
+/// @brief Return the earliest value inserted under a key.
+/// @details The result is retained for the caller before the GC mutator region
+///          closes. Because `NULL` is a valid stored value, a null result
+///          cannot distinguish an absent key from a first value of `NULL`.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @param key Runtime string key; `NULL` identifies the empty key.
+/// @return Caller-owned retained first value, or `NULL` when unavailable or
+///         when the stored first value is itself `NULL`.
 void *rt_multimap_get_first(void *obj, rt_string key) {
     if (!obj)
         return NULL;
@@ -457,6 +576,11 @@ void *rt_multimap_get_first(void *obj, rt_string key) {
 }
 
 /// @brief Check whether a key exists in the multimap.
+/// @details Key identity uses the complete runtime-string byte length. A null
+///          map or finalized map reports absence.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @param key Runtime string key; `NULL` identifies the empty key.
+/// @return 1 when an entry exists for @p key, otherwise 0.
 int8_t rt_multimap_has(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -472,9 +596,11 @@ int8_t rt_multimap_has(void *obj, rt_string key) {
 }
 
 /// @brief Return the number of values associated with a specific key.
-/// @param obj Multimap object pointer; returns 0 if NULL.
-/// @param key Key to count values for.
-/// @return Number of values stored under the key, 0 if key not found.
+/// @details Counts duplicates and `NULL` values independently.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @param key Runtime string key; `NULL` identifies the empty key.
+/// @return Number of values stored under the key, or 0 when the map/key is
+///         absent.
 int64_t rt_multimap_count_for(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -492,10 +618,12 @@ int64_t rt_multimap_count_for(void *obj, rt_string key) {
 }
 
 /// @brief Remove all values associated with a key from the multimap.
-/// @details Frees the key's entry and releases all value references in its list.
-/// @param obj Multimap object pointer; returns 0 if NULL.
-/// @param key Key whose entries should be removed.
-/// @return 1 if the key was found and removed, 0 otherwise.
+/// @details Unlinks the complete entry, subtracts its `Seq` length from the
+///          aggregate count, releases every retained value, and frees the
+///          copied key. Other keys and bucket capacity are unchanged.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @param key Runtime string key; `NULL` identifies the empty key.
+/// @return 1 if the key existed and was removed, otherwise 0.
 int8_t rt_multimap_remove_all(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -530,6 +658,11 @@ int8_t rt_multimap_remove_all(void *obj, rt_string key) {
 }
 
 /// @brief Remove all entries from the multimap.
+/// @details Releases all per-key value snapshots and copied keys while
+///          retaining the current bucket allocation for reuse. Resets both
+///          distinct-key and aggregate-value counts to zero. A null map is a
+///          no-op.
+/// @param obj Opaque MultiMap object, or `NULL`.
 void rt_multimap_clear(void *obj) {
     if (!obj)
         return;
@@ -554,6 +687,12 @@ void rt_multimap_clear(void *obj) {
 }
 
 /// @brief Return a Seq of every distinct key in the multimap (bucket-iteration order).
+/// @details Each key is copied into a new runtime string retained by the
+///          owning result `Seq`. Ordering reflects current bucket and chain
+///          layout and is not an insertion-order or stable-order contract. A
+///          null map returns an empty owning `Seq`.
+/// @param obj Opaque MultiMap object, or `NULL`.
+/// @return New caller-owned `Seq` of copied string handles.
 void *rt_multimap_keys(void *obj) {
     if (!obj) {
         void *empty = rt_seq_new();

@@ -14,16 +14,26 @@
 //   - Functional operations (map, filter) return new Seq objects.
 //
 // Ownership/Lifetime:
-//   - Seq objects are heap-allocated opaque pointers.
-//   - Caller is responsible for lifetime management.
+//   - Seq objects are runtime/GC-managed opaque pointers.
+//   - Borrowing accessors return raw pointers. Owning removals return
+//     caller-retained values; borrowing removals do not extend lifetime.
 //
 // Error conventions:
 //   - Out-of-bounds index → rt_trap()
-//   - Allocation failure → returns NULL
+//   - Allocation failure → trap with a NULL fallback return
 //
 // Links: src/runtime/collections/rt_seq.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Public C ABI for the runtime growable Seq collection.
+/// @details Seq stores an indexed dynamic array of runtime value pointers and
+///          supports either borrowed or retained-element ownership. The core
+///          ABI covers allocation/mutation/search, while sorting and
+///          callback-driven functional operations are implemented by the Seq
+///          support translation units behind this same interface.
+
 #pragma once
 
 #include <stdint.h>
@@ -35,16 +45,19 @@ extern "C" {
 #endif
 
 /// @brief Create a new empty sequence with default capacity.
-/// @return Opaque pointer to the new Seq object.
+/// @details Creates a borrowing Seq with sixteen reserved slots.
+/// @return New runtime-managed Seq.
 void *rt_seq_new(void);
 
 /// @brief Create a new public sequence that owns pushed elements.
-/// @return Opaque pointer to the new Seq object.
+/// @return New runtime-managed owning Seq with default capacity.
 void *rt_seq_new_owned(void);
 
 /// @brief Create a new public sequence with a fixed initial length.
+/// @details The result owns later inserted/replaced values and initializes all
+///          exposed slots to `NULL`.
 /// @param len Initial length. Slots are initialized to null.
-/// @return Opaque pointer to the new Seq object.
+/// @return New runtime-managed owning Seq; negative lengths trap.
 void *rt_seq_new_sized(int64_t len);
 
 /// @brief Enable or disable element ownership for an empty Seq.
@@ -63,33 +76,35 @@ void rt_seq_push_raw(void *obj, void *val);
 
 /// @brief Create a new empty sequence with specified initial capacity.
 /// @param cap Initial capacity (minimum 1).
-/// @return Opaque pointer to the new Seq object.
+/// @return New runtime-managed borrowing Seq.
 void *rt_seq_with_capacity(int64_t cap);
 
 /// @brief Create a new public sequence with specified capacity that owns pushed elements.
 /// @param cap Initial capacity (minimum 1).
-/// @return Opaque pointer to the new Seq object.
+/// @return New runtime-managed owning Seq.
 void *rt_seq_with_capacity_owned(int64_t cap);
 
 /// @brief Get the number of elements in the sequence.
-/// @param obj Opaque Seq object pointer.
-/// @return Number of elements currently in the sequence.
+/// @param obj Seq handle, or `NULL`.
+/// @return Number of live slots, or 0 for `NULL`.
 int64_t rt_seq_len(void *obj);
 
 /// @brief Get the current capacity of the sequence.
-/// @param obj Opaque Seq object pointer.
-/// @return Current capacity.
+/// @param obj Seq handle, or `NULL`.
+/// @return Reserved pointer-slot capacity, or 0 for `NULL`.
 int64_t rt_seq_cap(void *obj);
 
 /// @brief Check if the sequence is empty.
-/// @param obj Opaque Seq object pointer.
-/// @return 1 if empty, 0 otherwise.
+/// @param obj Seq handle, or `NULL`.
+/// @return 1 if empty, otherwise 0; `NULL` is empty.
 int8_t rt_seq_is_empty(void *obj);
 
 /// @brief Get the element at the specified index.
-/// @param obj Opaque Seq object pointer.
-/// @param idx Index of element to retrieve.
-/// @return Element at the index; traps if out of bounds.
+/// @details Creates no retain; the result is borrowed from the owning Seq or
+///          from the producer of a borrowing Seq.
+/// @param obj Non-null Seq handle.
+/// @param idx Zero-based element index.
+/// @return Borrowed element; null/out-of-range handles and indices trap.
 void *rt_seq_get(void *obj, int64_t idx);
 
 /// @brief Get a string element at the specified index from a string sequence.
@@ -97,13 +112,16 @@ void *rt_seq_get(void *obj, int64_t idx);
 ///          pushed through the public Object ABI. Returns an owned string.
 /// @param obj Opaque Seq object pointer.
 /// @param idx Index of element to retrieve.
-/// @return String element at the index; traps if out of bounds.
+/// @return Caller-owned string handle; wrong element kinds and invalid indices
+///         trap.
 struct rt_string_impl *rt_seq_get_str(void *obj, int64_t idx);
 
 /// @brief Set the element at the specified index.
-/// @param obj Opaque Seq object pointer.
+/// @details Owning Seqs retain the replacement before releasing the old value;
+///          borrowing Seqs store it raw. Length is unchanged.
+/// @param obj Non-null Seq handle.
 /// @param idx Index of element to set.
-/// @param val Value to store.
+/// @param val Value to store; may be `NULL`.
 void rt_seq_set(void *obj, int64_t idx, void *val);
 
 /// @brief Set an element without retaining the new value.
@@ -117,8 +135,10 @@ void rt_seq_set(void *obj, int64_t idx, void *val);
 void rt_seq_set_raw(void *obj, int64_t idx, void *val);
 
 /// @brief Add an element to the end of the sequence.
-/// @param obj Opaque Seq object pointer.
-/// @param val Element to add.
+/// @details Runs in amortized O(1). Owning Seqs retain @p val; borrowing Seqs
+///          append it raw.
+/// @param obj Non-null Seq handle.
+/// @param val Element to add; may be `NULL`.
 void rt_seq_push(void *obj, void *val);
 
 /// @brief Append all elements of @p other onto @p obj.
@@ -130,44 +150,57 @@ void rt_seq_push(void *obj, void *val);
 void rt_seq_push_all(void *obj, void *other);
 
 /// @brief Remove and return the last element from the sequence.
-/// @param obj Opaque Seq object pointer.
-/// @return The removed element; traps if empty.
+/// @details Owning Seqs return a caller-retained value; borrowing Seqs return
+///          the raw stored pointer. Null/empty Seqs trap.
+/// @param obj Non-null Seq handle.
+/// @return Removed value, which may be a stored `NULL`.
 void *rt_seq_pop(void *obj);
 
 /// @brief Get the last element without removing it.
-/// @param obj Opaque Seq object pointer.
-/// @return The last element; traps if empty.
+/// @details Creates no retain.
+/// @param obj Non-null Seq handle.
+/// @return Borrowed last value; null/empty Seqs trap.
 void *rt_seq_peek(void *obj);
 
 /// @brief Get the first element.
-/// @param obj Opaque Seq object pointer.
-/// @return The first element; traps if empty.
+/// @details Creates no retain.
+/// @param obj Non-null Seq handle.
+/// @return Borrowed first value; null/empty Seqs trap.
 void *rt_seq_first(void *obj);
 
 /// @brief Get the last element.
-/// @param obj Opaque Seq object pointer.
-/// @return The last element; traps if empty.
+/// @details Creates no retain and is equivalent to @ref rt_seq_peek.
+/// @param obj Non-null Seq handle.
+/// @return Borrowed last value; null/empty Seqs trap.
 void *rt_seq_last(void *obj);
 
 /// @brief Insert an element at the specified position.
-/// @param obj Opaque Seq object pointer.
+/// @details Shifts the suffix right in O(n). Owning Seqs retain @p val;
+///          borrowing Seqs store it raw.
+/// @param obj Non-null Seq handle.
 /// @param idx Position to insert at (0 to len inclusive).
-/// @param val Element to insert.
+/// @param val Element to insert; may be `NULL`.
 void rt_seq_insert(void *obj, int64_t idx, void *val);
 
 /// @brief Remove and return the element at the specified position.
-/// @param obj Opaque Seq object pointer.
+/// @details Shifts the suffix left in O(n). Owning Seqs return a
+///          caller-retained value; borrowing Seqs return the raw pointer.
+/// @param obj Non-null Seq handle.
 /// @param idx Position to remove from.
-/// @return The removed element; traps if out of bounds.
+/// @return Removed element; invalid indices trap.
 void *rt_seq_remove(void *obj, int64_t idx);
 
 /// @brief Remove all elements from the sequence.
-/// @param obj Opaque Seq object pointer.
+/// @details Releases live values in owning mode, clears all active slots, and
+///          preserves capacity/ownership mode. A null Seq is a no-op.
+/// @param obj Seq handle, or `NULL`.
 void rt_seq_clear(void *obj);
 
 /// @brief Find the index of an element in the sequence.
-/// @param obj Opaque Seq object pointer.
-/// @param val Element to find (compared by pointer equality).
+/// @details Boxed numbers/strings compare by content; ordinary objects compare
+///          by identity.
+/// @param obj Seq handle, or `NULL`.
+/// @param val Element to find; may be `NULL`.
 /// @return Index of element, or -1 if not found.
 int64_t rt_seq_find(void *obj, void *val);
 
@@ -175,13 +208,13 @@ int64_t rt_seq_find(void *obj, void *val);
 /// @details Returns `SomeI64(index)` when @p val is present and `None` when it
 ///          is absent or @p obj is NULL.
 /// @param obj Opaque Seq object pointer, or NULL.
-/// @param val Element to find (compared by pointer equality).
+/// @param val Element compared with boxed-value equality.
 /// @return Opaque Zanna.Option containing the first index, or None.
 void *rt_seq_find_option(void *obj, void *val);
 
 /// @brief Check if the sequence contains an element.
-/// @param obj Opaque Seq object pointer.
-/// @param val Element to check for (compared by pointer equality).
+/// @param obj Seq handle, or `NULL`.
+/// @param val Element compared with boxed-value equality.
 /// @return 1 if found, 0 otherwise.
 int8_t rt_seq_has(void *obj, void *val);
 
@@ -196,24 +229,29 @@ void rt_seq_reverse(void *obj);
 void rt_seq_shuffle(void *obj);
 
 /// @brief Create a new sequence containing elements from [start, end).
-/// @param obj Source Seq object pointer.
+/// @details Preserves source ownership mode and independently retains shared
+///          values when owning. A null source returns an empty owning Seq.
+/// @param obj Source Seq handle, or `NULL`.
 /// @param start Start index (inclusive, clamped to 0).
 /// @param end End index (exclusive, clamped to len).
 /// @return New sequence containing the slice.
 void *rt_seq_slice(void *obj, int64_t start, int64_t end);
 
 /// @brief Create a shallow copy of the sequence.
-/// @param obj Source Seq object pointer.
-/// @return New sequence with same elements.
+/// @details Preserves source ownership mode and independently retains shared
+///          values when owning. A null source returns an empty owning Seq.
+/// @param obj Source Seq handle, or `NULL`.
+/// @return New runtime-managed Seq with the same element pointers.
 void *rt_seq_clone(void *obj);
 
 /// @brief Sort the elements in the sequence in ascending order.
-/// @details Uses a stable merge sort algorithm. Elements are compared
-///          using string comparison if they are strings, or by pointer
-///          value for other objects. For custom ordering, use SortBy.
+/// @details Uses the shared total boxed-value order so strings and integers
+///          sort consistently with other runtime collections. Ordinary object
+///          handles fall back to the shared deterministic order. For custom
+///          ordering, use SortBy.
 /// @param obj Opaque Seq object pointer. If NULL, this is a no-op.
 /// @note O(n log n) time complexity.
-/// @note Modifies the Seq in place (no new allocation).
+/// @note Modifies the Seq in place and allocates O(n) temporary merge storage.
 /// @note Thread safety: Not thread-safe.
 /// @see rt_seq_sort_by For custom comparison functions
 void rt_seq_sort(void *obj);
@@ -224,17 +262,16 @@ void rt_seq_sort(void *obj);
 /// @param obj Opaque Seq object pointer. If NULL, this is a no-op.
 /// @param cmp Comparison function receiving two element pointers.
 /// @note O(n log n) time complexity.
-/// @note Modifies the Seq in place (no new allocation).
+/// @note Modifies the Seq in place and allocates O(n) temporary merge storage.
 /// @note Thread safety: Not thread-safe.
 void rt_seq_sort_by(void *obj, int64_t (*cmp)(void *, void *));
 
 /// @brief Sort the elements in descending order.
-/// @details Uses a stable merge sort algorithm. Elements are compared
-///          using string comparison if they are strings, or by pointer
-///          value for other objects. Results are reversed from rt_seq_sort.
+/// @details Uses the reverse of the shared total boxed-value order directly,
+///          preserving stability among elements that compare equal.
 /// @param obj Opaque Seq object pointer. If NULL, this is a no-op.
 /// @note O(n log n) time complexity.
-/// @note Modifies the Seq in place (no new allocation).
+/// @note Modifies the Seq in place and allocates O(n) temporary merge storage.
 /// @note Thread safety: Not thread-safe.
 void rt_seq_sort_desc(void *obj);
 

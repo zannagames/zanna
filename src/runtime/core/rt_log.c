@@ -36,6 +36,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements atomic level filtering and serialized structured log output.
+
 #include "rt_log.h"
 #include "rt_internal.h"
 #include "rt_platform.h"
@@ -105,6 +108,7 @@ static void rt_log_unlock(void) {
 ///
 /// @note If localtime fails (extremely rare), buf[0] is set to '\0'.
 /// @note Uses local date and 24-hour time.
+/// @pre @p buf is non-NULL and @p size is greater than zero.
 static void get_time_str(char *buf, size_t size) {
     time_t now = time(NULL);
     struct tm tm_buf;
@@ -122,6 +126,9 @@ static void get_time_str(char *buf, size_t size) {
 ///          (`\0`/`\n`/`\r`/`\t` → 2 bytes; other control chars → `\xNN` 4 bytes; all
 ///          other bytes → 1 byte). Returns `SIZE_MAX` if accumulation would overflow so
 ///          the caller can refuse to allocate. Returns 0 on a NULL or invalid handle.
+/// @param message Borrowed runtime string to validate and size.
+/// @return Required escaped byte count, zero for NULL/invalid input, or
+///   `SIZE_MAX` on size overflow.
 static size_t log_escaped_message_len(rt_string message) {
     if (!message || !rt_string_is_handle((const void *)message) || !message->data)
         return 0;
@@ -149,6 +156,9 @@ static size_t log_escaped_message_len(rt_string message) {
 ///          same set: NUL → `\0`, newline → `\n`, return → `\r`, tab → `\t`, other
 ///          control chars → `\xNN`, printable bytes copied verbatim. The cursor `*pos`
 ///          is updated in place; caller is responsible for the final NUL terminator.
+/// @param dst Pre-sized writable destination; NULL is a no-op.
+/// @param pos Non-NULL in/out write offset.
+/// @param message Borrowed runtime string; NULL or invalid handles append nothing.
 static void log_append_escaped_message(char *dst, size_t *pos, rt_string message) {
     static const char hex[] = "0123456789ABCDEF";
     if (!dst || !pos || !message || !rt_string_is_handle((const void *)message) || !message->data)
@@ -194,6 +204,8 @@ static void log_append_escaped_message(char *dst, size_t *pos, rt_string message
 ///          caller wants no intermediate buffer (typical for direct stderr/stdout
 ///          flushes in the unbuffered path). Uses the same escape rules as
 ///          `log_append_escaped_message`. NULL stream / message is a silent no-op.
+/// @param stream Open output stream receiving escaped bytes.
+/// @param message Borrowed runtime string; NULL or invalid handles emit nothing.
 static void log_write_escaped_message(FILE *stream, rt_string message) {
     static const char hex[] = "0123456789ABCDEF";
     if (!stream || !message || !rt_string_is_handle((const void *)message) || !message->data)
@@ -257,6 +269,8 @@ static void log_write_escaped_message(FILE *stream, rt_string message) {
 ///
 /// @note Messages below g_log_level are silently discarded.
 /// @note Output is flushed immediately after each message.
+/// @note Prefix formatting or size overflow drops the record. Allocation
+///   failure falls back to direct locked streaming, and stream errors are ignored.
 static void log_message(int64_t level, const char *level_str, rt_string message) {
     int64_t current_level = __atomic_load_n(&g_log_level, __ATOMIC_ACQUIRE);
     if (level < current_level)

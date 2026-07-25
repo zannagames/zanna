@@ -24,8 +24,8 @@
 //   - All operations require an active RtContext; passing NULL traps.
 //
 // Ownership/Lifetime:
-//   - Storage blocks and the entry table are allocated via rt_alloc and are
-//     owned by the RtContext; they are freed when the context is destroyed.
+//   - Storage/name blocks use rt_alloc; entry and index tables use the C
+//     allocator. All are owned and freed by the RtContext.
 //   - Variable names are compared by value (strcmp); no ownership of the
 //     name pointer is taken beyond the duration of the lookup call.
 //
@@ -33,6 +33,10 @@
 //        src/runtime/core/rt_context.h (RtContext definition),
 //        src/runtime/core/rt_memory.c (rt_alloc)
 //
+//===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements per-context, name-and-kind keyed module-variable storage.
 
 #include "rt_modvar.h"
 #include "rt_context.h"
@@ -45,6 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Internal aliases for the stable module-variable ABI kind tags.
 typedef enum {
     MV_I64 = RT_MODVAR_KIND_I64,
     MV_F64 = RT_MODVAR_KIND_F64,
@@ -60,6 +65,9 @@ typedef enum {
 ///          kinds occupying the same name hash to different bucket slots. Returns 1 if
 ///          the natural hash happened to land on 0 so the caller can use 0 as a
 ///          "free slot" sentinel in the index.
+/// @param key Non-NULL NUL-terminated variable name.
+/// @param kind Storage-kind tag included in the hash identity.
+/// @return Nonzero salted FNV-1a hash.
 static uint64_t mv_hash_key(const char *key, mv_kind_t kind) {
     uint64_t hash = 1469598103934665603ULL ^ (uint64_t)kind;
     for (const unsigned char *p = (const unsigned char *)key; *p; ++p) {
@@ -72,9 +80,10 @@ static uint64_t mv_hash_key(const char *key, mv_kind_t kind) {
 /// @brief Grow the module-variable index when it would otherwise exceed 70% load.
 /// @details Open-addressing hash tables degrade rapidly past ~0.7 load. This helper
 ///          checks the projected load and doubles the capacity (rehashing every existing
-///          entry) when needed. Capacity stays a power of two so the modulo can use
-///          `& mask` instead of division. Traps on `SIZE_MAX/2` overflow or a `calloc`
-///          failure during rehash.
+///          entry) when needed. This predicate performs no allocation itself.
+/// @param existing_count Number of currently indexed entries.
+/// @param capacity Current power-of-two slot count, or zero before initialization.
+/// @return 1 when inserting one more entry requires capacity growth, otherwise 0.
 static int mv_index_needs_grow(size_t existing_count, size_t capacity) {
     if (capacity == 0)
         return 1;
@@ -88,6 +97,14 @@ static int mv_index_needs_grow(size_t existing_count, size_t capacity) {
     return projected >= threshold;
 }
 
+/// @brief Ensure the context hash index can accept one additional entry.
+/// @details Chooses an initial 32 slots or doubles a power-of-two table until
+///   projected load is below 70 percent, then rehashes all entries. Overflow
+///   and allocation failure raise a trap while leaving the old index installed.
+/// @param ctx Active context whose module-variable state is exclusively held.
+/// @param existing_count Number of entries that will remain during rehash.
+/// @return 1 when sufficient capacity is available, otherwise 0 after a
+///   returning error trap.
 static int mv_ensure_index_capacity(RtContext *ctx, size_t existing_count) {
     if (!mv_index_needs_grow(existing_count, ctx->modvar_index_capacity))
         return 1;
@@ -129,6 +146,12 @@ static int mv_ensure_index_capacity(RtContext *ctx, size_t existing_count) {
 ///          "empty"). On a match, validates the stored size against @p size — a size
 ///          mismatch traps because it indicates a programming bug where two callers
 ///          declared the same name with incompatible storage shapes.
+/// @param ctx Active context whose module-variable state is locked.
+/// @param key Non-NULL NUL-terminated variable name.
+/// @param hash Precomputed nonzero hash for @p key and @p kind.
+/// @param kind Required storage-kind tag.
+/// @param size Required byte size used to validate an existing declaration.
+/// @return Matching borrowed table entry, or NULL when absent.
 static RtModvarEntry *mv_lookup(
     RtContext *ctx, const char *key, uint64_t hash, mv_kind_t kind, size_t size) {
     if (!ctx->modvar_index_slots || ctx->modvar_index_capacity == 0)
@@ -153,6 +176,8 @@ static RtModvarEntry *mv_lookup(
 ///          finds its bucket slot by linear probing from `entry->hash & mask` and stores
 ///          `entry_index + 1` (the +1 keeps 0 reserved as the empty marker). Caller
 ///          must hold capacity room — `mv_ensure_index_capacity` should have run first.
+/// @param ctx Active context with an allocated index and appended entry.
+/// @param entry_index Zero-based entry-table index to publish.
 static void mv_insert_index(RtContext *ctx, size_t entry_index) {
     RtModvarEntry *entry = &ctx->modvar_entries[entry_index];
     size_t mask = ctx->modvar_index_capacity - 1;
@@ -168,7 +193,8 @@ static void mv_insert_index(RtContext *ctx, size_t entry_index) {
 ///          the entire region to zero. The pointer is suitable for use as the
 ///          backing storage of a module-level variable of @p size bytes.
 /// @param size Size in bytes of the requested storage.
-/// @return Pointer to zeroed storage; never NULL (traps on failure).
+/// @return Caller-owned zeroed storage, or NULL after a returning overflow or
+///   allocation trap.
 static void *mv_alloc(size_t size) {
     if (size > (size_t)INT64_MAX) {
         rt_trap("rt_modvar: storage size overflow");
@@ -193,7 +219,8 @@ static void *mv_alloc(size_t size) {
 /// @param key  Canonical variable name.
 /// @param kind Kind tag used to distinguish same-named variables of different types.
 /// @param size Size in bytes for the associated storage.
-/// @return Pointer to the entry describing the variable.
+/// @return Borrowed context-owned entry, or NULL after a returning allocation,
+///   sizing, or index-growth trap.
 static RtModvarEntry *mv_find_or_create(RtContext *ctx,
                                         const char *key,
                                         mv_kind_t kind,
@@ -267,11 +294,14 @@ static RtModvarEntry *mv_find_or_create(RtContext *ctx,
 ///
 /// @details Converts the runtime string to a C string (trapping on NULL),
 ///          looks up or creates the corresponding entry in the active runtime
-///          context, and returns the stable address of the storage.
-/// @param name Runtime string name of the variable.
+///          context, and returns the stable address of the storage. Names are
+///          keyed as NUL-terminated text; embedded bytes after the first NUL do
+///          not participate in identity. Empty names are accepted.
+/// @param name Borrowed valid runtime string naming the variable.
 /// @param kind Module variable kind tag (I64/F64/I1/PTR/STR).
 /// @param size Size of the storage to allocate for new entries.
-/// @return Stable pointer to the variable’s storage.
+/// @return Stable context-owned storage address, or NULL after a returning
+///   validation, context-acquisition, or allocation trap.
 static void *mv_addr(rt_string name, mv_kind_t kind, size_t size) {
     if (!name) {
         rt_trap("rt_modvar: null name");
@@ -302,32 +332,46 @@ static void *mv_addr(rt_string name, mv_kind_t kind, size_t size) {
 }
 
 /// @brief Address of a 64-bit integer module variable.
+/// @param name Borrowed runtime string key.
+/// @return Stable context-owned address of zero-initialized 8-byte storage.
 void *rt_modvar_addr_i64(rt_string name) {
     return mv_addr(name, MV_I64, 8);
 }
 
 /// @brief Address of a 64-bit floating module variable.
+/// @param name Borrowed runtime string key.
+/// @return Stable context-owned address of zero-initialized 8-byte storage.
 void *rt_modvar_addr_f64(rt_string name) {
     return mv_addr(name, MV_F64, 8);
 }
 
 /// @brief Address of a boolean (i1) module variable.
+/// @param name Borrowed runtime string key.
+/// @return Stable context-owned address of zero-initialized one-byte storage.
 void *rt_modvar_addr_i1(rt_string name) {
     return mv_addr(name, MV_I1, 1);
 }
 
 /// @brief Address of a pointer module variable.
+/// @param name Borrowed runtime string key.
+/// @return Stable context-owned address of zero-initialized 8-byte storage.
 void *rt_modvar_addr_ptr(rt_string name) {
     return mv_addr(name, MV_PTR, 8);
 }
 
 /// @brief Address of a string module variable (stores rt_string handle).
+/// @param name Borrowed runtime string key.
+/// @return Stable context-owned address of a NULL-initialized `rt_string` slot.
 void *rt_modvar_addr_str(rt_string name) {
     return mv_addr(name, MV_STR, sizeof(void *));
 }
 
 /// @brief Address of a module variable block with arbitrary size.
 /// @details Used for arrays and records that need more than 8 bytes.
+/// @param name Borrowed runtime string key.
+/// @param size Positive storage size in bytes; negative and zero sizes trap.
+/// @return Stable context-owned zero-initialized block, or NULL after a
+///   returning validation or allocation trap.
 void *rt_modvar_addr_block(rt_string name, int64_t size) {
     if (size < 0) {
         rt_trap("rt_modvar: negative block size");

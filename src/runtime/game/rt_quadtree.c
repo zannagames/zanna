@@ -6,6 +6,10 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_quadtree.c
+/// @file
+/// @brief Implements a growable spatial quadtree, transient queries, and
+///        immutable query/pair snapshots.
+//
 // Purpose: Spatial quadtree for Zanna games. Accelerates nearest-neighbour and
 //   rectangular-region queries from O(n) linear scans to approximately
 //   O(n log n) by recursively subdividing a 2D world region into four equal
@@ -39,10 +43,8 @@
 //     against each other AND against all ancestor items.
 //
 // Ownership/Lifetime:
-//   - The root struct is GC-managed (rt_obj_new_i64). Node memory is freed by
-//     quadtree_finalizer via recursive destroy_node(). Callers may also call
-//     rt_quadtree_destroy() explicitly, but it is a documented no-op — rely on
-//     the finalizer for cleanup.
+//   - The root is runtime reference-counted. rt_quadtree_destroy() releases one
+//     reference; the finalizer recursively frees nodes and flat buffers.
 //
 // Links: src/runtime/game/rt_quadtree.h (public API),
 //        docs/zannalib/game.md (Quadtree section, truncation notes)
@@ -59,13 +61,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// Default total item reservation. The storage grows on demand.
+/// @brief Initial flat-item reservation; storage grows on demand.
 #define QT_DEFAULT_ITEM_CAPACITY 256
 
-/// Default collision pair reservation. The storage grows on demand.
+/// @brief Initial collision-pair reservation; storage grows on demand.
 #define MAX_PAIRS 1024
 
-/// Item entry.
+/// @brief One flat item record referenced by node-local index arrays.
 struct qt_item {
     int64_t id;
     int64_t x, y;          ///< Center position.
@@ -73,7 +75,7 @@ struct qt_item {
     int8_t active;
 };
 
-/// Quadtree node.
+/// @brief One recursively allocated spatial subdivision node.
 struct qt_node {
     int64_t x, y;          ///< Bounds top-left.
     int64_t width, height; ///< Bounds dimensions.
@@ -85,13 +87,13 @@ struct qt_node {
     int8_t is_split;
 };
 
-/// Collision pair.
+/// @brief One unordered broad-phase candidate pair of item IDs.
 struct qt_pair {
     int64_t first;
     int64_t second;
 };
 
-/// Internal quadtree structure.
+/// @brief Root object owning the node hierarchy and growable flat buffers.
 struct rt_quadtree_impl {
     struct qt_node *root;
     struct qt_item *items;
@@ -107,22 +109,25 @@ struct rt_quadtree_impl {
     int8_t pairs_truncated; ///< 1 if allocation prevented complete pair results.
 };
 
-/// Immutable snapshot of a quadtree ID query.
+/// @brief Immutable, independently allocated snapshot of query IDs.
 struct rt_game_query_result_impl {
     int64_t *ids;
     int64_t count;
     int8_t truncated;
 };
 
-/// Immutable snapshot of quadtree broad-phase pairs.
+/// @brief Immutable, independently allocated snapshot of candidate pairs.
 struct rt_quadtree_pair_result_impl {
     struct qt_pair *pairs;
     int64_t count;
     int8_t truncated;
 };
 
-/// @brief Safe-cast a handle to the QuadTree impl, trapping @p api on a
-///        class-id mismatch. @return The tree, or NULL if @p tree is NULL.
+/// @brief Validate and cast an opaque Quadtree handle.
+/// @param tree Candidate handle; `NULL` is accepted.
+/// @param api Trap message for a non-null class mismatch.
+/// @return @p tree when valid, otherwise `NULL`.
+/// @details A class mismatch raises a runtime trap before returning `NULL`.
 static rt_quadtree checked_quadtree(rt_quadtree tree, const char *api) {
     if (!tree)
         return NULL;
@@ -133,7 +138,11 @@ static rt_quadtree checked_quadtree(rt_quadtree tree, const char *api) {
     return tree;
 }
 
-/// @brief Safe-cast a handle to QueryResult.
+/// @brief Validate and cast an opaque QueryResult handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message for a non-null class mismatch.
+/// @return QueryResult implementation when valid, otherwise `NULL`.
+/// @details A class mismatch raises a runtime trap.
 static struct rt_game_query_result_impl *checked_query_result(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -144,7 +153,11 @@ static struct rt_game_query_result_impl *checked_query_result(void *ptr, const c
     return (struct rt_game_query_result_impl *)ptr;
 }
 
-/// @brief Safe-cast a handle to QuadtreePairResult.
+/// @brief Validate and cast an opaque QuadtreePairResult handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message for a non-null class mismatch.
+/// @return Pair-result implementation when valid, otherwise `NULL`.
+/// @details A class mismatch raises a runtime trap.
 static struct rt_quadtree_pair_result_impl *checked_pair_result(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -155,7 +168,8 @@ static struct rt_quadtree_pair_result_impl *checked_pair_result(void *ptr, const
     return (struct rt_quadtree_pair_result_impl *)ptr;
 }
 
-/// @brief Finalizer that releases a QueryResult ID array.
+/// @brief Release a QueryResult's copied ID array during finalization.
+/// @param obj QueryResult supplied by the runtime finalizer system.
 static void query_result_finalizer(void *obj) {
     struct rt_game_query_result_impl *result = (struct rt_game_query_result_impl *)obj;
     free(result->ids);
@@ -163,7 +177,8 @@ static void query_result_finalizer(void *obj) {
     result->count = 0;
 }
 
-/// @brief Finalizer that releases a QuadtreePairResult pair array.
+/// @brief Release a pair result's copied pair array during finalization.
+/// @param obj QuadtreePairResult supplied by the runtime finalizer system.
 static void pair_result_finalizer(void *obj) {
     struct rt_quadtree_pair_result_impl *result = (struct rt_quadtree_pair_result_impl *)obj;
     free(result->pairs);
@@ -171,7 +186,13 @@ static void pair_result_finalizer(void *obj) {
     result->count = 0;
 }
 
-/// @brief Copy current quadtree query IDs into an immutable result object.
+/// @brief Copy transient query IDs into an immutable result object.
+/// @param ids Source array; may be `NULL`.
+/// @param count Requested source count.
+/// @param truncated Whether the originating query was already partial.
+/// @return New QueryResult, or `NULL` if object allocation fails.
+/// @details Array size overflow or copy allocation failure returns a valid
+///          empty result marked truncated.
 static void *query_result_from_ids(const int64_t *ids, int64_t count, int8_t truncated) {
     struct rt_game_query_result_impl *result = (struct rt_game_query_result_impl *)rt_obj_new_i64(
         RT_GAME_QUERY_RESULT_CLASS_ID, (int64_t)sizeof(struct rt_game_query_result_impl));
@@ -198,7 +219,13 @@ static void *query_result_from_ids(const int64_t *ids, int64_t count, int8_t tru
     return result;
 }
 
-/// @brief Copy current quadtree broad-phase pairs into an immutable result object.
+/// @brief Copy transient candidate pairs into an immutable result object.
+/// @param pairs Source array; may be `NULL`.
+/// @param count Requested source count.
+/// @param truncated Whether the originating collection was already partial.
+/// @return New QuadtreePairResult, or `NULL` if object allocation fails.
+/// @details Array size overflow or copy allocation failure returns a valid
+///          empty result marked truncated.
 static void *pair_result_from_pairs(const struct qt_pair *pairs, int64_t count, int8_t truncated) {
     struct rt_quadtree_pair_result_impl *result =
         (struct rt_quadtree_pair_result_impl *)rt_obj_new_i64(
@@ -226,7 +253,10 @@ static void *pair_result_from_pairs(const struct qt_pair *pairs, int64_t count, 
     return result;
 }
 
-/// @brief Saturating int64 addition (clamps to INT64_MIN/MAX on overflow).
+/// @brief Add two signed integers without overflow.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return Exact sum or nearest int64 endpoint.
 static int64_t qt_saturating_add(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -235,14 +265,20 @@ static int64_t qt_saturating_add(int64_t a, int64_t b) {
     return a + b;
 }
 
-/// @brief Saturating int64 subtraction (a - b), clamped to the int64 range.
+/// @brief Subtract two signed integers without overflow.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @return Saturated difference; an INT64_MIN subtrahend maps to INT64_MAX.
 static int64_t qt_saturating_sub(int64_t a, int64_t b) {
     if (b == INT64_MIN)
         return INT64_MAX;
     return qt_saturating_add(a, -b);
 }
 
-/// @brief Saturating int64 multiply (128-bit or long-double widened; clamps).
+/// @brief Multiply two signed integers without overflow.
+/// @param a First factor.
+/// @param b Second factor.
+/// @return Exact product or nearest int64 endpoint.
 static int64_t qt_saturating_mul(int64_t a, int64_t b) {
 #if defined(__SIZEOF_INT128__)
     __int128 result = (__int128)a * (__int128)b;
@@ -261,7 +297,13 @@ static int64_t qt_saturating_mul(int64_t a, int64_t b) {
 #endif
 }
 
-/// Creates a new node.
+/// @brief Allocate an empty node and its initial item-index array.
+/// @param x Bounds top-left X.
+/// @param y Bounds top-left Y.
+/// @param width Bounds width.
+/// @param height Bounds height.
+/// @param depth Tree depth assigned to the node.
+/// @return New node, or `NULL` if either allocation fails.
 static struct qt_node *create_node(
     int64_t x, int64_t y, int64_t width, int64_t height, int64_t depth) {
     struct qt_node *node = malloc(sizeof(struct qt_node));
@@ -289,7 +331,8 @@ static struct qt_node *create_node(
     return node;
 }
 
-/// Destroys a node and its children.
+/// @brief Recursively free a node hierarchy.
+/// @param node Root of the subtree to destroy; `NULL` is a no-op.
 static void destroy_node(struct qt_node *node) {
     if (!node)
         return;
@@ -302,7 +345,8 @@ static void destroy_node(struct qt_node *node) {
     free(node);
 }
 
-/// Clears a node (keeps structure but removes items).
+/// @brief Empty a node and discard all of its descendants.
+/// @param node Node to retain as an unsplit empty leaf; `NULL` is a no-op.
 static void clear_node(struct qt_node *node) {
     if (!node)
         return;
@@ -319,6 +363,8 @@ static void clear_node(struct qt_node *node) {
 }
 
 /// @brief Grow a quadtree node's item array to hold at least @p needed entries.
+/// @param node Node whose index buffer may grow.
+/// @param needed Required number of entries.
 /// @return 1 on success, 0 on allocation failure.
 static int8_t ensure_node_capacity(struct qt_node *node, int64_t needed) {
     if (!node || needed <= node->item_capacity)
@@ -345,6 +391,9 @@ static int8_t ensure_node_capacity(struct qt_node *node, int64_t needed) {
 }
 
 /// @brief Grow a positive int64 capacity by doubling until it reaches @p needed.
+/// @param current Existing capacity; nonpositive values start from one.
+/// @param needed Required positive capacity.
+/// @param elem_size Bytes per element.
 /// @return The new capacity, or 0 if the request cannot fit in size_t.
 static int64_t grow_capacity_for(int64_t current, int64_t needed, size_t elem_size) {
     if (needed <= 0 || elem_size == 0)
@@ -361,6 +410,10 @@ static int64_t grow_capacity_for(int64_t current, int64_t needed, size_t elem_si
 }
 
 /// @brief Ensure the flat item array can store at least @p needed slots.
+/// @param tree Tree whose item storage may grow.
+/// @param needed Required slots.
+/// @return `1` when sufficient, otherwise `0`.
+/// @details Newly allocated item records are zero-initialized.
 static int8_t ensure_item_capacity(struct rt_quadtree_impl *tree, int64_t needed) {
     if (!tree || needed <= tree->item_capacity)
         return 1;
@@ -381,7 +434,10 @@ static int8_t ensure_item_capacity(struct rt_quadtree_impl *tree, int64_t needed
     return 1;
 }
 
-/// @brief Ensure the query-result array can store at least @p needed slots.
+/// @brief Ensure the transient query array can store @p needed IDs.
+/// @param tree Tree whose result storage may grow.
+/// @param needed Required ID slots.
+/// @return `1` when sufficient, otherwise `0`.
 static int8_t ensure_result_capacity(struct rt_quadtree_impl *tree, int64_t needed) {
     if (!tree || needed <= tree->result_capacity)
         return 1;
@@ -396,7 +452,10 @@ static int8_t ensure_result_capacity(struct rt_quadtree_impl *tree, int64_t need
     return 1;
 }
 
-/// @brief Ensure the pair array can store at least @p needed slots.
+/// @brief Ensure the transient pair array can store @p needed pairs.
+/// @param tree Tree whose pair storage may grow.
+/// @param needed Required pair slots.
+/// @return `1` when sufficient, otherwise `0`.
 static int8_t ensure_pair_capacity(struct rt_quadtree_impl *tree, int64_t needed) {
     if (!tree || needed <= tree->pair_capacity)
         return 1;
@@ -412,6 +471,11 @@ static int8_t ensure_pair_capacity(struct rt_quadtree_impl *tree, int64_t needed
     return 1;
 }
 
+/// @brief Append one ID to the current transient query.
+/// @param tree Tree receiving the result.
+/// @param id Matching item ID.
+/// @return `1` on success, or `0` if storage cannot grow.
+/// @details Failure marks the current query truncated.
 static int8_t append_query_result(struct rt_quadtree_impl *tree, int64_t id) {
     if (!ensure_result_capacity(tree, tree->result_count + 1)) {
         tree->query_truncated = 1;
@@ -421,6 +485,12 @@ static int8_t append_query_result(struct rt_quadtree_impl *tree, int64_t id) {
     return 1;
 }
 
+/// @brief Append one broad-phase candidate pair.
+/// @param tree Tree receiving the pair.
+/// @param first First item ID.
+/// @param second Second item ID.
+/// @return `1` on success, or `0` if storage cannot grow.
+/// @details Failure marks the current pair collection truncated.
 static int8_t append_pair(struct rt_quadtree_impl *tree, int64_t first, int64_t second) {
     if (!ensure_pair_capacity(tree, tree->pair_count + 1)) {
         tree->pairs_truncated = 1;
@@ -432,9 +502,15 @@ static int8_t append_pair(struct rt_quadtree_impl *tree, int64_t first, int64_t 
     return 1;
 }
 
-/// Check if a rectangle intersects a node's bounds.
 /// @brief True if rect (x,y,w,h) overlaps @p node's bounds (saturating AABB
 ///        test) — used to decide which quadrants a query/insert touches.
+/// @param node Node whose bounds are tested.
+/// @param x Rectangle top-left X.
+/// @param y Rectangle top-left Y.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @return `1` for positive-area overlap, otherwise `0`; touching edges do not
+///         overlap.
 static int8_t intersects(struct qt_node *node, int64_t x, int64_t y, int64_t w, int64_t h) {
     int64_t node_right = qt_saturating_add(node->x, node->width);
     int64_t node_bottom = qt_saturating_add(node->y, node->height);
@@ -443,6 +519,17 @@ static int8_t intersects(struct qt_node *node, int64_t x, int64_t y, int64_t w, 
     return !(x >= node_right || right <= node->x || y >= node_bottom || bottom <= node->y);
 }
 
+/// @brief Test two top-left AABBs for positive-area overlap.
+/// @param ax First rectangle X.
+/// @param ay First rectangle Y.
+/// @param aw First rectangle width.
+/// @param ah First rectangle height.
+/// @param bx Second rectangle X.
+/// @param by Second rectangle Y.
+/// @param bw Second rectangle width.
+/// @param bh Second rectangle height.
+/// @return `1` when interiors overlap, otherwise `0`.
+/// @details Edge coordinates use saturating addition.
 static int8_t rects_intersect(int64_t ax,
                               int64_t ay,
                               int64_t aw,
@@ -458,7 +545,16 @@ static int8_t rects_intersect(int64_t ax,
     return !(ax >= br || ar <= bx || ay >= bb || ab <= by);
 }
 
-/// Check whether an AABB intersects a circle.
+/// @brief Test a top-left AABB against a circle.
+/// @param rx Rectangle X.
+/// @param ry Rectangle Y.
+/// @param rw Rectangle width.
+/// @param rh Rectangle height.
+/// @param cx Circle center X.
+/// @param cy Circle center Y.
+/// @param radius Nonnegative circle radius.
+/// @return `1` when the closest rectangle point lies inside or on the circle.
+/// @details Distance arithmetic saturates to avoid signed overflow.
 static int8_t rect_intersects_circle(
     int64_t rx, int64_t ry, int64_t rw, int64_t rh, int64_t cx, int64_t cy, int64_t radius) {
     int64_t nearest_x = cx;
@@ -480,7 +576,11 @@ static int8_t rect_intersects_circle(
     return qt_saturating_add(dx2, dy2) <= rr;
 }
 
-/// Split a node into 4 children. Returns 0 if any child allocation fails.
+/// @brief Split a leaf into NW, NE, SW, and SE children.
+/// @param node Leaf to split.
+/// @return `1` on success, or `0` when already split, at maximum depth, too
+///         small, or any child allocation fails.
+/// @details Partial child allocation is rolled back transactionally.
 static int8_t split_node(struct qt_node *node) {
     if (node->is_split || node->depth >= RT_QUADTREE_MAX_DEPTH)
         return 0;
@@ -517,8 +617,14 @@ static int8_t split_node(struct qt_node *node) {
     return 1;
 }
 
-/// Get which child quadrant(s) an item belongs to.
-/// Returns -1 if item spans multiple quadrants.
+/// @brief Select the single child fully containing an AABB.
+/// @param node Parent supplying subdivision midpoints.
+/// @param x AABB top-left X.
+/// @param y AABB top-left Y.
+/// @param w AABB width.
+/// @param h AABB height.
+/// @return Child index 0–3 for NW/NE/SW/SE, or `-1` when the AABB spans a
+///         midpoint or cannot be assigned.
 static int get_quadrant(struct qt_node *node, int64_t x, int64_t y, int64_t w, int64_t h) {
     int64_t mid_x = qt_saturating_add(node->x, node->width / 2);
     int64_t mid_y = qt_saturating_add(node->y, node->height / 2);
@@ -544,7 +650,14 @@ static int get_quadrant(struct qt_node *node, int64_t x, int64_t y, int64_t w, i
     return -1;
 }
 
-/// Insert item into node.
+/// @brief Insert a flat item index into the deepest suitable node.
+/// @param tree Tree owning the flat item.
+/// @param node Subtree root.
+/// @param item_idx Valid flat item index.
+/// @return `1` on success, or `0` when node/index storage allocation fails.
+/// @details Full leaves split when possible and redistribute contained items.
+///          Midpoint-spanning items remain in the parent, whose buffer grows
+///          beyond the nominal leaf threshold as needed.
 static int8_t insert_into_node(struct rt_quadtree_impl *tree,
                                struct qt_node *node,
                                int64_t item_idx) {
@@ -613,7 +726,15 @@ static int8_t insert_into_node(struct rt_quadtree_impl *tree,
     return 1;
 }
 
-/// Query items in a region.
+/// @brief Recursively append active items intersecting an AABB.
+/// @param tree Tree owning items and transient results.
+/// @param node Subtree root.
+/// @param x Query top-left X.
+/// @param y Query top-left Y.
+/// @param w Query width.
+/// @param h Query height.
+/// @details Recursion prunes nonintersecting child bounds and stops after a
+///          result-allocation failure marks the query truncated.
 static void query_node(struct rt_quadtree_impl *tree,
                        struct qt_node *node,
                        int64_t x,
@@ -651,7 +772,13 @@ static void query_node(struct rt_quadtree_impl *tree,
     }
 }
 
-/// Remove item from node.
+/// @brief Remove the first node reference to an item ID.
+/// @param tree Tree owning flat items.
+/// @param node Subtree to scan.
+/// @param id Item ID to remove.
+/// @return `1` when removed, otherwise `0`.
+/// @details Node removal swaps in the last local index and does not merge
+///          underfull nodes.
 static int8_t remove_from_node(struct rt_quadtree_impl *tree, struct qt_node *node, int64_t id) {
     if (!node)
         return 0;
@@ -677,7 +804,17 @@ static int8_t remove_from_node(struct rt_quadtree_impl *tree, struct qt_node *no
     return 0;
 }
 
-/// Collect all item pairs that could potentially collide.
+/// @brief Collect broad-phase pairs sharing a node or ancestor relationship.
+/// @param tree Tree receiving transient pairs.
+/// @param node Subtree root.
+/// @param ancestors Shared scratch array of ancestor item indices.
+/// @param ancestor_count Valid scratch entries.
+/// @param ancestor_cap Scratch capacity.
+/// @details The routine deliberately does not test AABB overlap: it returns
+///          candidate pairs for a later narrow phase. Sibling-subtree items
+///          cannot overlap because fully contained items are partitioned;
+///          parent-spanning items are compared with descendants. Allocation
+///          failure marks collection truncated and stops recursion.
 static void collect_pairs_node(struct rt_quadtree_impl *tree,
                                struct qt_node *node,
                                int64_t *ancestors,
@@ -732,6 +869,8 @@ static void collect_pairs_node(struct rt_quadtree_impl *tree,
     }
 }
 
+/// @brief Recursively release all node and flat-buffer storage.
+/// @param obj Quadtree supplied by the runtime finalizer system.
 static void quadtree_finalizer(void *obj) {
     struct rt_quadtree_impl *tree = (struct rt_quadtree_impl *)obj;
     destroy_node(tree->root);
@@ -744,7 +883,15 @@ static void quadtree_finalizer(void *obj) {
     tree->pairs = NULL;
 }
 
-/// @brief Create a new quadtree object.
+/// @brief Create a quadtree covering a fixed rectangular world region.
+/// @param x Root bounds top-left X.
+/// @param y Root bounds top-left Y.
+/// @param width Positive root width.
+/// @param height Positive root height.
+/// @return New runtime-managed Quadtree reference, or `NULL` for invalid
+///         dimensions or allocation failure.
+/// @details Item, result, and pair buffers receive initial reservations; all
+///          can grow later. The root begins as one empty unsplit node.
 rt_quadtree rt_quadtree_new(int64_t x, int64_t y, int64_t width, int64_t height) {
     if (width <= 0 || height <= 0)
         return NULL;
@@ -780,14 +927,21 @@ rt_quadtree rt_quadtree_new(int64_t x, int64_t y, int64_t width, int64_t height)
     return tree;
 }
 
-/// @brief Release resources and destroy the quadtree.
+/// @brief Release one runtime reference to a Quadtree.
+/// @param tree Handle to release; `NULL` is a no-op.
+/// @details The final reference triggers recursive node and buffer teardown. A
+///          non-null wrong-class handle raises a runtime trap.
 void rt_quadtree_destroy(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.Destroy: expected Zanna.Game.Quadtree");
     if (tree && rt_obj_release_check0(tree))
         rt_obj_free(tree);
 }
 
-/// @brief Remove all entries from the quadtree.
+/// @brief Remove all items, results, pairs, and child subdivisions.
+/// @param tree Tree to clear; `NULL` is a no-op.
+/// @details Flat buffer allocations and root bounds are retained for reuse;
+///          the item high-water mark resets to zero. A non-null wrong-class
+///          handle raises a runtime trap.
 void rt_quadtree_clear(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.Clear: expected Zanna.Game.Quadtree");
     if (!tree)
@@ -812,6 +966,18 @@ void rt_quadtree_clear(rt_quadtree tree) {
 /// (x, y) is the item *center*; (width, height) is its full extent. Returns 0
 /// if the tree is full, the item lies outside the world bounds, or the ID is
 /// already present (use `_update` to move an existing item instead).
+/// @param tree Destination tree.
+/// @param id Unique caller-defined identifier.
+/// @param x AABB center X.
+/// @param y AABB center Y.
+/// @param width Positive full width.
+/// @param height Positive full height.
+/// @return `1` on success, otherwise `0`.
+/// @details Any positive-area intersection with root bounds is accepted; the
+///          item need not be fully contained. Inactive flat slots are reused.
+///          Duplicate active IDs, invalid dimensions, disjoint bounds, and
+///          allocation failure are rejected transactionally. A non-null
+///          wrong-class handle raises a runtime trap.
 int8_t rt_quadtree_insert(
     rt_quadtree tree, int64_t id, int64_t x, int64_t y, int64_t width, int64_t height) {
     tree = checked_quadtree(tree, "Quadtree.Insert: expected Zanna.Game.Quadtree");
@@ -868,7 +1034,13 @@ int8_t rt_quadtree_insert(
     return 0;
 }
 
-/// @brief Remove an entry from the quadtree.
+/// @brief Remove the active item with a given ID.
+/// @param tree Tree to modify.
+/// @param id Unique item identifier.
+/// @return `1` when found and removed, otherwise `0`.
+/// @details The flat slot becomes reusable; node subdivisions are not merged.
+///          Existing transient query/pair buffers are not recomputed. A
+///          non-null wrong-class handle raises a runtime trap.
 int8_t rt_quadtree_remove(rt_quadtree tree, int64_t id) {
     tree = checked_quadtree(tree, "Quadtree.Remove: expected Zanna.Game.Quadtree");
     if (!tree)
@@ -888,6 +1060,17 @@ int8_t rt_quadtree_remove(rt_quadtree tree, int64_t id) {
 
 /// @brief Move/resize an existing item; equivalent to remove + insert but cheaper.
 /// Returns 0 if the ID is not present.
+/// @param tree Tree to modify.
+/// @param id Existing active item identifier.
+/// @param x New AABB center X.
+/// @param y New AABB center Y.
+/// @param width New positive width.
+/// @param height New positive height.
+/// @return `1` on success, otherwise `0`.
+/// @details Disjoint root bounds and invalid dimensions are rejected before
+///          mutation. If reinsertion fails, the old record and placement are
+///          restored. Existing transient results are not recomputed. A
+///          non-null wrong-class handle raises a runtime trap.
 int8_t rt_quadtree_update(
     rt_quadtree tree, int64_t id, int64_t x, int64_t y, int64_t width, int64_t height) {
     tree = checked_quadtree(tree, "Quadtree.Update: expected Zanna.Game.Quadtree");
@@ -933,6 +1116,15 @@ int8_t rt_quadtree_update(
 /// Results are stored internally and accessed via `_get_result(i)`. If more than
 /// the internal result buffer grows to hold every match. `_query_was_truncated`
 /// returns 1 only if allocation fails and a partial result had to be returned.
+/// @param tree Tree to query.
+/// @param x Query top-left X.
+/// @param y Query top-left Y.
+/// @param width Positive query width.
+/// @param height Positive query height.
+/// @return Number of stored matching IDs, or zero for invalid input.
+/// @details Edge touching is not intersection. Each call replaces the previous
+///          transient result and truncation flag. A non-null wrong-class handle
+///          raises a runtime trap.
 int64_t rt_quadtree_query_rect(
     rt_quadtree tree, int64_t x, int64_t y, int64_t width, int64_t height) {
     tree = checked_quadtree(tree, "Quadtree.QueryRect: expected Zanna.Game.Quadtree");
@@ -948,6 +1140,17 @@ int64_t rt_quadtree_query_rect(
     return tree->result_count;
 }
 
+/// @brief Query an AABB and copy its IDs into an immutable snapshot.
+/// @param tree Tree to query.
+/// @param x Query top-left X.
+/// @param y Query top-left Y.
+/// @param width Query width.
+/// @param height Query height.
+/// @return New QueryResult, or `NULL` if result-object allocation fails.
+/// @details Search behavior matches rt_quadtree_query_rect(). A null tree
+///          produces an empty, nontruncated snapshot. ID-copy failure produces
+///          a valid empty snapshot marked truncated. A non-null wrong-class
+///          handle raises a runtime trap.
 void *rt_quadtree_query_rect_result(
     rt_quadtree tree, int64_t x, int64_t y, int64_t width, int64_t height) {
     tree = checked_quadtree(tree, "Quadtree.QueryRectResult: expected Zanna.Game.Quadtree");
@@ -957,13 +1160,25 @@ void *rt_quadtree_query_rect_result(
     return query_result_from_ids(tree->results, tree->result_count, tree->query_truncated);
 }
 
-/// @brief Check whether the last query hit the result capacity limit.
+/// @brief Test whether result allocation truncated the latest spatial query.
+/// @param tree Tree to query.
+/// @return Stored truncation flag, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int8_t rt_quadtree_query_was_truncated(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.QueryWasTruncated: expected Zanna.Game.Quadtree");
     return tree ? tree->query_truncated : 0;
 }
 
-/// @brief Find all items within a circular area centered at (x, y) with given radius.
+/// @brief Find item AABBs intersecting a circle.
+/// @param tree Tree to query.
+/// @param x Circle center X.
+/// @param y Circle center Y.
+/// @param radius Radius; negative values become zero.
+/// @return Number of stored matching IDs, or zero for invalid input.
+/// @details The operation first runs a bounding-square query, then filters with
+///          an AABB-to-circle test. Radius zero uses a 1×1 broad-phase square.
+///          It replaces the previous transient query. A non-null wrong-class
+///          handle raises a runtime trap.
 int64_t rt_quadtree_query_point(rt_quadtree tree, int64_t x, int64_t y, int64_t radius) {
     tree = checked_quadtree(tree, "Quadtree.QueryPoint: expected Zanna.Game.Quadtree");
     if (!tree)
@@ -995,6 +1210,16 @@ int64_t rt_quadtree_query_point(rt_quadtree tree, int64_t x, int64_t y, int64_t 
     return filtered_count;
 }
 
+/// @brief Query a circle and copy its IDs into an immutable snapshot.
+/// @param tree Tree to query.
+/// @param x Circle center X.
+/// @param y Circle center Y.
+/// @param radius Radius; negative values become zero.
+/// @return New QueryResult, or `NULL` if result-object allocation fails.
+/// @details Search behavior matches rt_quadtree_query_point(). A null tree
+///          produces an empty nontruncated snapshot; copy failure marks the
+///          returned empty snapshot truncated. A non-null wrong-class handle
+///          raises a runtime trap.
 void *rt_quadtree_query_point_result(rt_quadtree tree, int64_t x, int64_t y, int64_t radius) {
     tree = checked_quadtree(tree, "Quadtree.QueryPointResult: expected Zanna.Game.Quadtree");
     if (!tree)
@@ -1003,7 +1228,12 @@ void *rt_quadtree_query_point_result(rt_quadtree tree, int64_t x, int64_t y, int
     return query_result_from_ids(tree->results, tree->result_count, tree->query_truncated);
 }
 
-/// @brief Return the item ID at a given index in the most recent query result set.
+/// @brief Read one ID from the transient result of the latest spatial query.
+/// @param tree Tree whose result buffer is read.
+/// @param index Zero-based result index.
+/// @return Item ID, or `-1` for null/out-of-range input.
+/// @details The sentinel is ambiguous when `-1` is a stored ID. A non-null
+///          wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_get_result(rt_quadtree tree, int64_t index) {
     tree = checked_quadtree(tree, "Quadtree.GetResult: expected Zanna.Game.Quadtree");
     if (!tree || index < 0 || index >= tree->result_count)
@@ -1011,18 +1241,30 @@ int64_t rt_quadtree_get_result(rt_quadtree tree, int64_t index) {
     return tree->results[index];
 }
 
-/// @brief Get the number of results from the most recent query.
+/// @brief Read the latest transient spatial-query count.
+/// @param tree Tree to query.
+/// @return Stored result count, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_result_count(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.ResultCount: expected Zanna.Game.Quadtree");
     return tree ? tree->result_count : 0;
 }
 
+/// @brief Read an immutable QueryResult's ID count.
+/// @param ptr QueryResult to inspect.
+/// @return Stored count, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_game_query_result_count(void *ptr) {
     struct rt_game_query_result_impl *result =
         checked_query_result(ptr, "QueryResult.Count: expected Zanna.Game.QueryResult");
     return result ? result->count : 0;
 }
 
+/// @brief Read one ID from an immutable QueryResult.
+/// @param ptr QueryResult to inspect.
+/// @param index Zero-based ID index.
+/// @return Stored ID, or `-1` for null/out-of-range input.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_game_query_result_get_id(void *ptr, int64_t index) {
     struct rt_game_query_result_impl *result =
         checked_query_result(ptr, "QueryResult.GetId: expected Zanna.Game.QueryResult");
@@ -1031,6 +1273,11 @@ int64_t rt_game_query_result_get_id(void *ptr, int64_t index) {
     return result->ids[index];
 }
 
+/// @brief Test whether an immutable QueryResult contains an ID.
+/// @param ptr QueryResult to scan.
+/// @param id Identifier to find.
+/// @return `1` on the first match, otherwise `0`.
+/// @details The scan is linear. A non-null wrong-class handle raises a trap.
 int8_t rt_game_query_result_contains(void *ptr, int64_t id) {
     struct rt_game_query_result_impl *result =
         checked_query_result(ptr, "QueryResult.Contains: expected Zanna.Game.QueryResult");
@@ -1043,12 +1290,23 @@ int8_t rt_game_query_result_contains(void *ptr, int64_t id) {
     return 0;
 }
 
+/// @brief Read an immutable QueryResult's partial-result flag.
+/// @param ptr QueryResult to inspect.
+/// @return `1` when originating collection or snapshot copying was truncated,
+///         otherwise `0`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int8_t rt_game_query_result_truncated(void *ptr) {
     struct rt_game_query_result_impl *result =
         checked_query_result(ptr, "QueryResult.Truncated: expected Zanna.Game.QueryResult");
     return result ? result->truncated : 0;
 }
 
+/// @brief Copy immutable query IDs into a new owning Seq.
+/// @param ptr QueryResult to copy.
+/// @return New `Seq[Integer]`, an empty Seq for `NULL`, or `NULL` if Seq
+///         allocation fails.
+/// @details Each ID is boxed and the Seq owns its element references. A
+///          non-null wrong-class handle raises a runtime trap.
 void *rt_game_query_result_ids(void *ptr) {
     struct rt_game_query_result_impl *result =
         checked_query_result(ptr, "QueryResult.Ids: expected Zanna.Game.QueryResult");
@@ -1067,7 +1325,11 @@ void *rt_game_query_result_ids(void *ptr) {
     return seq;
 }
 
-/// @brief Get the total number of active items in the quadtree.
+/// @brief Count active flat-item records.
+/// @param tree Tree to inspect.
+/// @return Active item count, or zero for `NULL`.
+/// @details The scan is linear in the flat high-water mark. A non-null
+///          wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_item_count(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.ItemCount: expected Zanna.Game.Quadtree");
     if (!tree)
@@ -1082,7 +1344,14 @@ int64_t rt_quadtree_item_count(rt_quadtree tree) {
 }
 
 /// @brief Compute all potentially-colliding pairs in the quadtree and return the count.
-/// @details Traverses the tree collecting pairs of items that share a leaf node.
+/// @param tree Tree to traverse.
+/// @return Number of stored candidate pairs, or zero for `NULL` or scratch
+///         allocation failure.
+/// @details Pairs share a node or an ancestor/descendant relationship. No AABB
+///          overlap test is performed; callers must run a narrow phase. Each
+///          call replaces the transient pair list. Scratch or result-storage
+///          allocation failure marks the collection truncated. A non-null
+///          wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_get_pairs(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.GetPairs: expected Zanna.Game.Quadtree");
     if (!tree)
@@ -1107,6 +1376,13 @@ int64_t rt_quadtree_get_pairs(rt_quadtree tree) {
     return tree->pair_count;
 }
 
+/// @brief Collect broad-phase pairs into an immutable snapshot.
+/// @param tree Tree to traverse.
+/// @return New QuadtreePairResult, or `NULL` if result-object allocation fails.
+/// @details Collection matches rt_quadtree_get_pairs(). A null tree produces an
+///          empty nontruncated snapshot. Pair-copy failure produces a valid
+///          empty snapshot marked truncated. A non-null wrong-class handle
+///          raises a runtime trap.
 void *rt_quadtree_query_pairs(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.QueryPairs: expected Zanna.Game.Quadtree");
     if (!tree)
@@ -1115,7 +1391,11 @@ void *rt_quadtree_query_pairs(rt_quadtree tree) {
     return pair_result_from_pairs(tree->pairs, tree->pair_count, tree->pairs_truncated);
 }
 
-/// @brief Return the first item ID in a collision pair at the given index.
+/// @brief Read the first ID of a transient broad-phase pair.
+/// @param tree Tree whose latest pair buffer is read.
+/// @param pair_index Zero-based pair index.
+/// @return First ID, or `-1` for null/out-of-range input.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_pair_first(rt_quadtree tree, int64_t pair_index) {
     tree = checked_quadtree(tree, "Quadtree.PairFirst: expected Zanna.Game.Quadtree");
     if (!tree || pair_index < 0 || pair_index >= tree->pair_count)
@@ -1123,7 +1403,11 @@ int64_t rt_quadtree_pair_first(rt_quadtree tree, int64_t pair_index) {
     return tree->pairs[pair_index].first;
 }
 
-/// @brief Return the second item ID in a collision pair at the given index.
+/// @brief Read the second ID of a transient broad-phase pair.
+/// @param tree Tree whose latest pair buffer is read.
+/// @param pair_index Zero-based pair index.
+/// @return Second ID, or `-1` for null/out-of-range input.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_pair_second(rt_quadtree tree, int64_t pair_index) {
     tree = checked_quadtree(tree, "Quadtree.PairSecond: expected Zanna.Game.Quadtree");
     if (!tree || pair_index < 0 || pair_index >= tree->pair_count)
@@ -1132,19 +1416,30 @@ int64_t rt_quadtree_pair_second(rt_quadtree tree, int64_t pair_index) {
 }
 
 /// @brief Check whether the last rt_quadtree_get_pairs() returned partial pairs.
+/// @param tree Tree to inspect.
+/// @return Stored truncation flag, or zero for `NULL`.
 /// @details Mirrors rt_quadtree_query_was_truncated() for the broad-phase pair
-///          list: returns 1 if allocation failure prevented collecting every pair.
+///          list. A non-null wrong-class handle raises a runtime trap.
 int8_t rt_quadtree_pairs_was_truncated(rt_quadtree tree) {
     tree = checked_quadtree(tree, "Quadtree.PairsWasTruncated: expected Zanna.Game.Quadtree");
     return tree ? tree->pairs_truncated : 0;
 }
 
+/// @brief Read an immutable pair snapshot's count.
+/// @param ptr QuadtreePairResult to inspect.
+/// @return Stored pair count, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_pair_result_count(void *ptr) {
     struct rt_quadtree_pair_result_impl *result = checked_pair_result(
         ptr, "QuadtreePairResult.Count: expected Zanna.Game.QuadtreePairResult");
     return result ? result->count : 0;
 }
 
+/// @brief Read the first ID of an immutable candidate pair.
+/// @param ptr QuadtreePairResult to inspect.
+/// @param index Zero-based pair index.
+/// @return First ID, or `-1` for null/out-of-range input.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_pair_result_first(void *ptr, int64_t index) {
     struct rt_quadtree_pair_result_impl *result = checked_pair_result(
         ptr, "QuadtreePairResult.First: expected Zanna.Game.QuadtreePairResult");
@@ -1153,6 +1448,11 @@ int64_t rt_quadtree_pair_result_first(void *ptr, int64_t index) {
     return result->pairs[index].first;
 }
 
+/// @brief Read the second ID of an immutable candidate pair.
+/// @param ptr QuadtreePairResult to inspect.
+/// @param index Zero-based pair index.
+/// @return Second ID, or `-1` for null/out-of-range input.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_quadtree_pair_result_second(void *ptr, int64_t index) {
     struct rt_quadtree_pair_result_impl *result = checked_pair_result(
         ptr, "QuadtreePairResult.Second: expected Zanna.Game.QuadtreePairResult");
@@ -1161,6 +1461,11 @@ int64_t rt_quadtree_pair_result_second(void *ptr, int64_t index) {
     return result->pairs[index].second;
 }
 
+/// @brief Read an immutable pair snapshot's partial-result flag.
+/// @param ptr QuadtreePairResult to inspect.
+/// @return `1` when collection or snapshot copying was truncated, otherwise
+///         `0`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int8_t rt_quadtree_pair_result_truncated(void *ptr) {
     struct rt_quadtree_pair_result_impl *result = checked_pair_result(
         ptr, "QuadtreePairResult.Truncated: expected Zanna.Game.QuadtreePairResult");

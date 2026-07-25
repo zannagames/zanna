@@ -35,6 +35,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic, allocation-owning value formatters.
+/// @details Numeric conversion is isolated from the process locale, and public
+///   failure paths return an owned empty runtime string instead of trapping.
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
 #endif
@@ -960,11 +965,16 @@ rt_string rt_fmt_currency(double value, int64_t decimals, rt_string symbol) {
     return result;
 }
 
-// English number word tables
+/// @brief English words for values from zero through nineteen.
+/// @details Index zero is empty because callers emit it only as a placeholder
+///   while composing a nonzero sub-thousand chunk.
 static const char *ones[] = {"",        "one",     "two",       "three",    "four",
                              "five",    "six",     "seven",     "eight",    "nine",
                              "ten",     "eleven",  "twelve",    "thirteen", "fourteen",
                              "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"};
+/// @brief English tens words indexed by the tens digit.
+/// @details Indices zero and one are empty because units and teens use
+///   @ref ones instead.
 static const char *tens_words[] = {
     "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
 

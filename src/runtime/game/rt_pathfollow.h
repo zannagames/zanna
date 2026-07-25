@@ -4,6 +4,10 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/game/rt_pathfollow.h
+/// @file
+/// @brief Declares fixed-point waypoint traversal with once, loop, and
+///        ping-pong modes.
+//
 // Purpose: Path follower for moving objects along waypoint paths with linear interpolation,
 // supporting one-shot, looping, and ping-pong traversal modes.
 //
@@ -30,147 +34,170 @@
 extern "C" {
 #endif
 
+/// @brief Runtime class ID used to validate PathFollower handles.
 #define RT_PATHFOLLOW_CLASS_ID INT64_C(-0x510208)
 
-/// Maximum waypoints per path.
+/// @brief Maximum number of inline waypoints in one follower.
 #define RT_PATHFOLLOW_MAX_POINTS 64
 
-/// Path following modes.
+/// @brief Endpoint behavior used when traversal reaches either path end.
 typedef enum {
     RT_PATHFOLLOW_ONCE = 0,     ///< Play once and stop at end.
     RT_PATHFOLLOW_LOOP = 1,     ///< Loop back to start.
     RT_PATHFOLLOW_PINGPONG = 2, ///< Reverse at endpoints.
 } rt_pathfollow_mode_t;
 
-/// Opaque handle to a PathFollower instance.
+/// @brief Opaque handle to a runtime reference-counted PathFollower.
 typedef struct rt_pathfollow_impl *rt_pathfollow;
 
-/// @brief Allocates and initializes a new PathFollower with no waypoints.
-/// @return A new PathFollower handle. The caller must free it with
-///   rt_pathfollow_destroy().
+/// @brief Allocate an empty, inactive PathFollower.
+/// @return A new PathFollower reference, or `NULL` on allocation failure.
+/// @details Defaults are ONCE mode, position `(0,0)`, and speed 100000
+///          fixed-point units per second (100 world units per second).
 rt_pathfollow rt_pathfollow_new(void);
 
-/// @brief Destroys a PathFollower and releases its memory.
-/// @param path The path follower to destroy. Passing NULL is a no-op.
+/// @brief Release one runtime reference to a PathFollower.
+/// @param path Handle to release; `NULL` is a no-op.
+/// @details The lazy segment-length cache is reclaimed with the final object
+///          reference. A non-null wrong-class handle raises a runtime trap.
 void rt_pathfollow_destroy(rt_pathfollow path);
 
-/// @brief Removes all waypoints from the path, resetting it to empty.
-/// @param path The path follower to clear.
+/// @brief Remove all waypoints and reset traversal state.
+/// @param path Follower to clear; `NULL` is a no-op.
+/// @details Position becomes `(0,0)` and cached lengths are freed. Speed and
+///          mode are preserved. A non-null wrong-class handle raises a trap.
 void rt_pathfollow_clear(rt_pathfollow path);
 
-/// @brief Appends a waypoint to the end of the path.
-/// @param path The path follower to modify.
-/// @param x X coordinate of the waypoint in fixed-point units (1000 = 1
-///   world unit).
-/// @param y Y coordinate of the waypoint in fixed-point units (1000 = 1
-///   world unit).
-/// @return 1 if the waypoint was added successfully, 0 if the path has
-///   reached RT_PATHFOLLOW_MAX_POINTS and cannot accept more.
+/// @brief Append one fixed-point waypoint.
+/// @param path Follower to modify.
+/// @param x X coordinate where 1000 equals one world unit.
+/// @param y Y coordinate where 1000 equals one world unit.
+/// @return `1` when appended, or `0` for a null/full follower.
+/// @details The first point becomes current position. Length recomputation is
+///          deferred until needed. A non-null wrong-class handle traps.
 int8_t rt_pathfollow_add_point(rt_pathfollow path, int64_t x, int64_t y);
 
-/// @brief Retrieves the number of waypoints currently in the path.
-/// @param path The path follower to query.
-/// @return The number of waypoints, in [0, RT_PATHFOLLOW_MAX_POINTS].
+/// @brief Count stored waypoints.
+/// @param path Follower to query.
+/// @return Count in `[0, RT_PATHFOLLOW_MAX_POINTS]`, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_point_count(rt_pathfollow path);
 
-/// @brief Sets the traversal mode for the path follower.
-/// @param path The path follower to modify.
-/// @param mode Traversal mode: 0 = RT_PATHFOLLOW_ONCE (stop at end),
-///   1 = RT_PATHFOLLOW_LOOP (jump back to start), 2 = RT_PATHFOLLOW_PINGPONG
-///   (reverse direction at each endpoint).
+/// @brief Set endpoint traversal behavior.
+/// @param path Follower to modify; `NULL` is a no-op.
+/// @param mode RT_PATHFOLLOW_ONCE, RT_PATHFOLLOW_LOOP, or
+///        RT_PATHFOLLOW_PINGPONG. Other values are ignored.
+/// @details Current position and state are preserved. A non-null wrong-class
+///          handle raises a runtime trap.
 void rt_pathfollow_set_mode(rt_pathfollow path, int64_t mode);
 
-/// @brief Retrieves the current traversal mode.
-/// @param path The path follower to query.
-/// @return The mode as an integer matching the rt_pathfollow_mode_t enum.
+/// @brief Read endpoint traversal behavior.
+/// @param path Follower to query.
+/// @return An rt_pathfollow_mode_t integer, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_mode(rt_pathfollow path);
 
-/// @brief Sets the movement speed along the path.
-/// @param path The path follower to modify.
-/// @param speed Speed in fixed-point units per second (1000 = 1 world unit
-///   per second). Must be > 0.
+/// @brief Set path traversal speed.
+/// @param path Follower to modify.
+/// @param speed Positive fixed-point units per second, where 1000 equals one
+///        world unit per second. Nonpositive values are ignored.
+/// @details A non-null wrong-class handle raises a runtime trap.
 void rt_pathfollow_set_speed(rt_pathfollow path, int64_t speed);
 
-/// @brief Retrieves the current movement speed setting.
-/// @param path The path follower to query.
-/// @return Speed in fixed-point units per second.
+/// @brief Read path traversal speed.
+/// @param path Follower to query.
+/// @return Fixed-point units per second, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_speed(rt_pathfollow path);
 
-/// @brief Starts or resumes path traversal from the current position.
-///
-/// Requires at least two waypoints to have been added. If called after
-/// rt_pathfollow_pause(), movement continues from where it left off.
-/// @param path The path follower to start.
+/// @brief Start or resume traversal.
+/// @param path Follower to start.
+/// @details At least two waypoints are required. A paused follower resumes;
+///          a previously finished follower rewinds before restarting. Null or
+///          underspecified paths are no-ops. A non-null wrong-class handle
+///          raises a runtime trap.
 void rt_pathfollow_start(rt_pathfollow path);
 
-/// @brief Pauses path traversal at the current position.
-///
-/// The follower retains its position and can be resumed with
-/// rt_pathfollow_start().
-/// @param path The path follower to pause.
+/// @brief Pause traversal at the current position.
+/// @param path Follower to pause; `NULL` is a no-op.
+/// @details Segment progress is retained for rt_pathfollow_start(). A non-null
+///          wrong-class handle raises a runtime trap.
 void rt_pathfollow_pause(rt_pathfollow path);
 
-/// @brief Stops traversal and resets the position to the first waypoint.
-/// @param path The path follower to stop.
+/// @brief Stop traversal and rewind to the first waypoint.
+/// @param path Follower to stop; `NULL` is a no-op.
+/// @details Waypoints, speed, and mode are preserved; active, finished,
+///          reverse, progress, and carried fractions are cleared. A non-null
+///          wrong-class handle raises a runtime trap.
 void rt_pathfollow_stop(rt_pathfollow path);
 
-/// @brief Queries whether the path follower is currently moving.
-/// @param path The path follower to query.
-/// @return 1 if the follower is actively traversing the path, 0 if paused
-///   or stopped.
+/// @brief Test whether traversal updates are enabled.
+/// @param path Follower to query.
+/// @return `1` when active, or `0` when paused, stopped, finished, or null.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int8_t rt_pathfollow_is_active(rt_pathfollow path);
 
-/// @brief Queries whether the path traversal has completed.
-///
-/// Only meaningful in RT_PATHFOLLOW_ONCE mode; looping and ping-pong paths
-/// never finish.
-/// @param path The path follower to query.
-/// @return 1 if the follower has reached the last waypoint and stopped,
-///   0 otherwise.
+/// @brief Test whether an ONCE traversal reached its last waypoint.
+/// @param path Follower to query.
+/// @return Stored finished flag, or zero for `NULL`.
+/// @details LOOP and PINGPONG traversal do not normally set this flag. Stop,
+///          clear, and restart clear it. A non-null wrong-class handle traps.
 int8_t rt_pathfollow_is_finished(rt_pathfollow path);
 
-/// @brief Advances the path follower by the given time delta.
-///
-/// Moves the follower along the path at the configured speed. Must be
-/// called once per frame while the follower is active.
-/// @param path The path follower to update.
-/// @param dt Elapsed time since the last update in milliseconds.
+/// @brief Advance traversal by an elapsed time interval.
+/// @param path Follower to update.
+/// @param dt Elapsed milliseconds; nonpositive values do nothing.
+/// @details Movement may cross multiple segments. Sub-unit distance and
+///          sub-per-mille progress are carried across calls. Endpoint behavior
+///          follows the selected mode, zero-length segments are skipped, and a
+///          fully degenerate path becomes inactive. Cache-allocation failure
+///          leaves the follower active for retry. A non-null wrong-class handle
+///          raises a runtime trap.
 void rt_pathfollow_update(rt_pathfollow path, int64_t dt);
 
-/// @brief Retrieves the follower's current interpolated X position.
-/// @param path The path follower to query.
-/// @return X coordinate in fixed-point units (1000 = 1 world unit).
+/// @brief Read the current interpolated X coordinate.
+/// @param path Follower to query.
+/// @return Fixed-point X where 1000 equals one world unit, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_x(rt_pathfollow path);
 
-/// @brief Retrieves the follower's current interpolated Y position.
-/// @param path The path follower to query.
-/// @return Y coordinate in fixed-point units (1000 = 1 world unit).
+/// @brief Read the current interpolated Y coordinate.
+/// @param path Follower to query.
+/// @return Fixed-point Y where 1000 equals one world unit, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_y(rt_pathfollow path);
 
-/// @brief Retrieves the overall traversal progress as a fixed-point
-///   fraction.
-/// @param path The path follower to query.
-/// @return Progress from 0 (at first waypoint) to 1000 (at last waypoint).
+/// @brief Measure current positional distance along the entire path.
+/// @param path Follower to query.
+/// @return Per-mille distance from the first waypoint in `[0,1000]`, or zero
+///         for an empty, degenerate, unavailable, or null path.
+/// @details This value decreases during reverse ping-pong motion and resets
+///          after a loop wrap. Lengths are rebuilt lazily. A non-null
+///          wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_progress(rt_pathfollow path);
 
-/// @brief Sets the traversal progress directly, teleporting the follower
-///   to the corresponding position on the path.
-/// @param path The path follower to modify.
-/// @param progress Progress value in [0, 1000]. Values outside this range
-///   are clamped.
+/// @brief Teleport to a fractional distance along the path.
+/// @param path Follower to reposition.
+/// @param progress Requested per-mille distance, clamped to `[0,1000]`.
+/// @details Carried fractions are cleared, while active, finished, mode, and
+///          reverse state are preserved. Null, fewer-than-two-point, and
+///          zero-length paths are no-ops. A non-null wrong-class handle traps.
 void rt_pathfollow_set_progress(rt_pathfollow path, int64_t progress);
 
-/// @brief Retrieves the index of the path segment the follower is currently
-///   traversing.
-/// @param path The path follower to query.
-/// @return Segment index in [0, point_count - 2]. A segment connects
-///   waypoint[i] to waypoint[i+1].
+/// @brief Read the current segment index.
+/// @param path Follower to query.
+/// @return Index connecting `waypoint[i]` to `waypoint[i+1]`, or zero for
+///         `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_segment(rt_pathfollow path);
 
-/// @brief Retrieves the current direction of travel as an angle.
-/// @param path The path follower to query.
-/// @return Direction angle in fixed-point degrees (1000 = 1 degree), in
-///   the range [0, 360000). 0 = rightward, 90000 = downward.
+/// @brief Quantize the current direction of travel to eight compass headings.
+/// @param path Follower to query.
+/// @return One of `0, 45000, ..., 315000` fixed-point degrees, or zero when
+///         unavailable or the segment endpoints coincide.
+/// @details Zero is right and 90000 is down in screen coordinates. Reverse
+///          traversal flips the direction. A non-null wrong-class handle
+///          raises a runtime trap.
 int64_t rt_pathfollow_get_angle(rt_pathfollow path);
 
 #ifdef __cplusplus

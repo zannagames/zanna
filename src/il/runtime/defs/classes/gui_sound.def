@@ -883,6 +883,7 @@ RT_CLASS_BEGIN("Zanna.GUI.Image", GuiImage, "obj", GuiImageNew, "Zanna.GUI.Widge
     RT_METHOD("Clear", "void()", GuiImageClear)
     RT_METHOD("SetScaleMode", "void(i64)", GuiImageSetScaleMode)
     RT_METHOD("SetOpacity", "void(f64)", GuiImageSetOpacity)
+    RT_METHOD("SetFocusable", "void(i1)", GuiImageSetFocusable)
     RT_METHOD("LoadFile", "i64(str)", GuiImageLoadFile)
 RT_CLASS_END()
 

@@ -33,6 +33,7 @@
 ///          while invalid input or allocation failure leaves existing content
 ///          intact. The paint path clips all writes to both the widget and
 ///          canvas clip rectangles.
+#include "../../include/vg_theme.h"
 #include "../../include/vg_widget.h"
 #include "../../include/vg_widgets.h"
 #include "vgfx.h"
@@ -51,6 +52,7 @@
 static void image_destroy(vg_widget_t *widget);
 static void image_measure(vg_widget_t *widget, float available_width, float available_height);
 static void image_paint(vg_widget_t *widget, void *canvas);
+static bool image_can_focus(vg_widget_t *widget);
 
 static vg_widget_vtable_t g_image_vtable = {
     .destroy = image_destroy,
@@ -58,7 +60,15 @@ static vg_widget_vtable_t g_image_vtable = {
     .arrange = NULL,
     .paint = image_paint,
     .handle_event = NULL,
+    .can_focus = image_can_focus,
 };
+
+/// @brief Focus participation is opt-in: only focusable-flagged images (scene
+///        canvases) join click-to-focus and keyboard traversal.
+static bool image_can_focus(vg_widget_t *widget) {
+    const vg_image_t *image = (const vg_image_t *)widget;
+    return image->focusable && widget->enabled && widget->visible;
+}
 
 /// @brief Restrict an integer to an inclusive range.
 /// @param value Value to restrict.
@@ -530,7 +540,7 @@ static void image_measure(vg_widget_t *widget, float available_width, float avai
 ///          geometry falls back to deterministic per-pixel sampling.
 /// @param widget Arranged image widget base to render.
 /// @param canvas Backend window handle accepted by the ZannaGFX framebuffer API.
-static void image_paint(vg_widget_t *widget, void *canvas) {
+static void image_paint_content(vg_widget_t *widget, void *canvas) {
     vg_image_t *image = (vg_image_t *)widget;
     vgfx_framebuffer_t fb;
     if (!vgfx_get_framebuffer((vgfx_window_t)canvas, &fb))
@@ -682,6 +692,44 @@ static void image_paint(vg_widget_t *widget, void *canvas) {
             image_blend_pixel(dst, src, alpha);
         }
     }
+}
+
+/// @brief Paint the image content, then a keyboard-focus ring when owned.
+/// @details The ring draws only for focusable-flagged images so presentation
+///          images never gain chrome. It uses the shared theme focus colour,
+///          keeping shortcut ownership visible exactly like other focusable
+///          widgets.
+static void image_paint(vg_widget_t *widget, void *canvas) {
+    image_paint_content(widget, canvas);
+
+    vg_image_t *image = (vg_image_t *)widget;
+    if (!image->focusable || (widget->state & VG_STATE_FOCUSED) == 0)
+        return;
+    vgfx_framebuffer_t fb;
+    if (!vgfx_get_framebuffer((vgfx_window_t)canvas, &fb))
+        return;
+    const vg_theme_t *theme = vg_theme_get_current();
+    if (!theme)
+        return;
+
+    const int dx = (int)widget->x;
+    const int dy = (int)widget->y;
+    const int dw = (int)widget->width;
+    const int dh = (int)widget->height;
+    if (dw <= 1 || dh <= 1)
+        return;
+    int thickness = (int)(theme->focus.glow_width + 0.5f);
+    if (thickness < 1)
+        thickness = 1;
+    if (thickness * 2 > dw || thickness * 2 > dh)
+        thickness = 1;
+    const uint32_t ring = 0xFF000000u | (theme->focus.glow_color & 0x00FFFFFFu);
+    vgfx_fill_rect((vgfx_window_t)canvas, dx, dy, dw, thickness, ring);
+    vgfx_fill_rect((vgfx_window_t)canvas, dx, dy + dh - thickness, dw, thickness, ring);
+    vgfx_fill_rect((vgfx_window_t)canvas, dx, dy + thickness, thickness, dh - thickness * 2, ring);
+    vgfx_fill_rect(
+        (vgfx_window_t)canvas, dx + dw - thickness, dy + thickness, thickness, dh - thickness * 2,
+        ring);
 }
 
 /// @brief Create an image widget with no initial pixel data.
@@ -990,5 +1038,15 @@ void vg_image_set_opacity(vg_image_t *image, float opacity) {
         return;
     image->opacity = opacity;
     vg_widget_note_revision(&image->base);
+    vg_widget_invalidate(&image->base);
+}
+
+/// @brief Opt an image into keyboard focus (click-to-focus plus a focus ring).
+/// @param image Image widget; NULL is ignored.
+/// @param focusable true to accept focus; false restores presentation-only.
+void vg_image_set_focusable(vg_image_t *image, bool focusable) {
+    if (!image || image->focusable == focusable)
+        return;
+    image->focusable = focusable;
     vg_widget_invalidate(&image->base);
 }

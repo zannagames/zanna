@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_datetime.c
+/// @file
+/// @brief Implements Unix-second DateTime queries, formatting, parsing, and arithmetic.
+///
 // Purpose: Implements the Zanna.DateTime class — wall-clock date/time
 //          operations backed by Unix timestamps (seconds since epoch). Provides
 //          current time query (NowMs/NowSec), component extraction (Year, Month,
@@ -55,6 +58,10 @@
 // performing the operation to avoid signed-overflow UB.
 
 /// @brief Overflow-checked signed 64-bit addition. Returns 1 on overflow.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Receives the sum on success.
+/// @return One on overflow; zero after writing the exact sum.
 static int dt_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
         return 1;
@@ -63,6 +70,10 @@ static int dt_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
 }
 
 /// @brief Overflow-checked signed 64-bit subtraction. Returns 1 on overflow.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @param out Receives the difference on success.
+/// @return One on overflow; zero after writing the exact difference.
 static int dt_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b))
         return 1;
@@ -71,6 +82,10 @@ static int dt_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
 }
 
 /// @brief Overflow-checked signed 64-bit multiplication. Returns 1 on overflow.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @param out Receives the product on success.
+/// @return One on overflow; zero after writing the exact product.
 static int dt_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_mul_overflow(a, b, out);
@@ -100,6 +115,9 @@ static int dt_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 }
 
 /// @brief Narrow @p value into a `int`, returning 0 on out-of-range inputs.
+/// @param value Signed 64-bit input.
+/// @param out Receives the exactly represented native integer.
+/// @return One on exact conversion, otherwise zero.
 static int dt_i64_to_int(int64_t value, int *out) {
     if (value < INT_MIN || value > INT_MAX)
         return 0;
@@ -107,6 +125,9 @@ static int dt_i64_to_int(int64_t value, int *out) {
     return 1;
 }
 
+/// @brief Reconstructs the full civil year from a C `struct tm`.
+/// @param tm Broken-down time whose `tm_year` is relative to 1900.
+/// @return Signed full year.
 static int64_t dt_tm_year_full(const struct tm *tm) {
     return (int64_t)tm->tm_year + 1900;
 }
@@ -115,6 +136,9 @@ static int64_t dt_tm_year_full(const struct tm *tm) {
 /// @details `time_t` may be 32- or 64-bit depending on ABI; the round-trip cast detects
 ///          truncation and returns 0 in that case. On success, @p out holds the
 ///          converted value.
+/// @param value Unix-second value to narrow.
+/// @param out Receives the exact platform timestamp.
+/// @return One on exact conversion, otherwise zero.
 static int dt_i64_to_time_t(int64_t value, time_t *out) {
     time_t t = (time_t)value;
     if ((int64_t)t != value)
@@ -127,6 +151,9 @@ static int dt_i64_to_time_t(int64_t value, time_t *out) {
 /// @details Inverse of `dt_i64_to_time_t`. On a 64-bit `time_t` the conversion is
 ///          always exact; on a 32-bit `time_t` the round-trip cast confirms the
 ///          conversion preserved the bit pattern.
+/// @param value Platform timestamp to widen.
+/// @param out Receives the exact signed 64-bit value.
+/// @return One on exact conversion, otherwise zero.
 static int dt_time_t_to_i64(time_t value, int64_t *out) {
     int64_t result = (int64_t)value;
     if ((time_t)result != value)
@@ -135,6 +162,8 @@ static int dt_time_t_to_i64(time_t value, int64_t *out) {
     return 1;
 }
 
+/// @brief Checks a fully decomposed civil datetime for calendar/range validity.
+/// @return One only when every field is in range.
 static int dt_is_valid_datetime(int64_t year, int month, int day, int hour, int minute, int second);
 
 /// @brief Convert validated local civil fields to epoch seconds without a `-1` collision.
@@ -144,6 +173,15 @@ static int dt_is_valid_datetime(int64_t year, int month, int day, int hour, int 
 ///          not accept negative timestamps. In that case, advancing the same valid
 ///          civil input by one second must map exactly to epoch zero; this uniquely
 ///          distinguishes the valid `-1` instant from an unrepresentable input.
+/// @param value Mutable `struct tm` populated with the requested local fields.
+/// @param year Full input year used for round-trip validation.
+/// @param month One-based input month.
+/// @param day One-based input day.
+/// @param hour Input hour.
+/// @param minute Input minute.
+/// @param second Input second.
+/// @param out Receives epoch seconds on success.
+/// @return One when the local civil instant is valid/representable, otherwise zero.
 static int dt_mktime_local_checked(struct tm *value,
                                    int64_t year,
                                    int month,
@@ -186,6 +224,9 @@ static int dt_mktime_local_checked(struct tm *value,
 ///          (checked). Either overflow path traps with `rt_trap_ovf()` rather than
 ///          silently wrapping. Used wherever DateTime input arrives as a split
 ///          seconds/millis pair (e.g. interop with system epoch APIs).
+/// @param seconds Whole epoch seconds.
+/// @param millis_part Millisecond remainder to add.
+/// @return Combined epoch milliseconds, or zero after an overflow trap.
 static int64_t dt_epoch_millis_from_parts(int64_t seconds, int64_t millis_part) {
     int64_t millis;
     int64_t result;
@@ -207,6 +248,7 @@ static int64_t dt_epoch_millis_from_parts(int64_t seconds, int64_t millis_part) 
 ///          failure the same way instead of aliasing it to a plausible date.
 /// @param out Receives the current epoch seconds on success; untouched on failure.
 /// @return 1 on success, 0 when the wall clock is unavailable.
+/// @pre @p out is nonnull.
 int rt_datetime_wall_seconds(int64_t *out) {
     errno = 0;
     time_t t = time(NULL);
@@ -282,6 +324,8 @@ int64_t rt_datetime_now(void) {
 /// @note Uses gettimeofday on macOS, clock_gettime on other platforms.
 /// @note Unlike Stopwatch, this is wall-clock time and can be affected by
 ///       system time adjustments (NTP, manual changes, etc.).
+/// @note macOS/POSIX clock-read failure returns zero, which is indistinguishable
+///       from the Unix epoch; arithmetic overflow raises a trap.
 ///
 /// @see rt_datetime_now For second-precision timestamps
 /// @see rt_stopwatch.c For monotonic elapsed time measurement
@@ -839,6 +883,14 @@ static int dt_create_impl(int64_t year,
 /// @see rt_datetime_year For extracting components from a timestamp
 /// @see rt_datetime_to_iso For formatting timestamps
 /// @see rt_datetime_create_option For the unambiguous Option-returning form
+/// @brief Creates a local-time Unix timestamp from validated civil components.
+/// @param year Full local civil year.
+/// @param month One-based month in 1–12.
+/// @param day Valid day for @p year and @p month.
+/// @param hour Hour in 0–23.
+/// @param minute Minute in 0–59.
+/// @param second Second in 0–59; leap-second value 60 is rejected.
+/// @return Representable Unix seconds, or `-1` on failure.
 /// @note Legacy sentinel form: `-1` marks failure but is also a valid instant
 ///       (one second before the Unix epoch), so callers that must distinguish
 ///       failure from a pre-epoch result should use @ref rt_datetime_create_option.
@@ -856,6 +908,12 @@ int64_t rt_datetime_create(
 ///          so callers can distinguish failure from a genuine pre-epoch result
 ///          (VDOC-225). Components are interpreted in the local time zone,
 ///          exactly as `Create`.
+/// @param year Full local civil year.
+/// @param month One-based month in 1–12.
+/// @param day Valid day for @p year and @p month.
+/// @param hour Hour in 0–23.
+/// @param minute Minute in 0–59.
+/// @param second Second in 0–59.
 /// @return Opaque Zanna.Option holding the timestamp, or None on failure.
 void *rt_datetime_create_option(
     int64_t year, int64_t month, int64_t day, int64_t hour, int64_t minute, int64_t second) {
@@ -1010,11 +1068,17 @@ int64_t rt_datetime_diff(int64_t ts1, int64_t ts2) {
 //=============================================================================
 
 /// @brief Helper to check if a character is a digit.
+/// @param c Byte to classify.
+/// @return Nonzero only for ASCII `0` through `9`.
 static int dt_is_digit(char c) {
     return c >= '0' && c <= '9';
 }
 
 /// @brief Borrow a runtime string as bytes, rejecting embedded NULs for C-style parsers.
+/// @param s Runtime string to inspect.
+/// @param len_out Receives the byte length on success.
+/// @return Borrowed null-terminated data, or `NULL` for invalid arguments,
+///         unrepresentable length, unavailable data, or an embedded null byte.
 static const char *dt_cstr_without_embedded_nul(rt_string s, size_t *len_out) {
     if (!s || !len_out)
         return NULL;
@@ -1032,7 +1096,11 @@ static const char *dt_cstr_without_embedded_nul(rt_string s, size_t *len_out) {
 }
 
 /// @brief Helper to parse exactly N digits from a string.
-/// @return The parsed integer, or -1 if insufficient digits.
+/// @param s First candidate digit.
+/// @param limit One-past-end byte bound.
+/// @param n Exact number of digits required.
+/// @param end Receives the first byte after the parsed digits.
+/// @return Parsed nonnegative integer, or -1 for insufficient/non-digit input.
 static int dt_parse_digits(const char *s, const char *limit, int n, const char **end) {
     int val = 0;
     for (int i = 0; i < n; ++i) {
@@ -1046,6 +1114,9 @@ static int dt_parse_digits(const char *s, const char *limit, int n, const char *
 
 /// @brief Consume an optional fractional seconds suffix. If '.' is present, at least one digit is
 /// required. Fractions are truncated because DateTime stores whole seconds.
+/// @param p Address of the current parser cursor, advanced past the fraction.
+/// @param limit One-past-end byte bound.
+/// @return One if no fraction exists or a valid fraction is consumed; otherwise zero.
 static int dt_parse_optional_fraction(const char **p, const char *limit) {
     if (*p >= limit || **p != '.')
         return 1;
@@ -1058,6 +1129,8 @@ static int dt_parse_optional_fraction(const char **p, const char *limit) {
 }
 
 /// @brief Gregorian leap-year predicate.
+/// @param year Proleptic Gregorian year.
+/// @return Nonzero for a leap year.
 static int dt_is_leap_year(int64_t year) {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
 }
@@ -1065,6 +1138,9 @@ static int dt_is_leap_year(int64_t year) {
 /// @brief Number of days in @p month (1–12) of @p year, with leap-year adjustment.
 /// @details Out-of-range months return 0 so callers can detect bad input via the
 ///          zero return.
+/// @param year Gregorian year used for February.
+/// @param month One-based month number.
+/// @return 28–31 for a valid month, otherwise zero.
 static int dt_days_in_month(int64_t year, int month) {
     static const int days[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     if (month < 1 || month > 12)
@@ -1078,6 +1154,13 @@ static int dt_days_in_month(int64_t year, int month) {
 /// @details Checks month-aware day-of-month upper bounds and the standard 0-23 / 0-59
 ///          / 0-59 ranges for hour/minute/second. Returns 1 only when every component
 ///          is in range. Note: leap seconds (`second == 60`) are not accepted.
+/// @param year Gregorian year.
+/// @param month One-based month.
+/// @param day One-based day of month.
+/// @param hour Hour in 0–23.
+/// @param minute Minute in 0–59.
+/// @param second Second in 0–59.
+/// @return One for valid components, otherwise zero.
 static int dt_is_valid_datetime(
     int64_t year, int month, int day, int hour, int minute, int second) {
     int max_day = dt_days_in_month(year, month);
@@ -1088,6 +1171,11 @@ static int dt_is_valid_datetime(
 /// @brief Convert civil (year, month, day) UTC to days-since-Unix-epoch with overflow check.
 /// @details Implements Howard Hinnant's `days_from_civil` algorithm with checked arithmetic.
 ///          Returns 1 with the result in @p out on success, 0 on overflow without writing.
+/// @param year Proleptic Gregorian year.
+/// @param month One-based month.
+/// @param day One-based day.
+/// @param out Receives the signed epoch-day offset.
+/// @return One on success, otherwise zero.
 static int dt_days_from_civil_utc(int64_t year, int64_t month, int64_t day, int64_t *out) {
     year -= month <= 2;
     int64_t era = (year >= 0 ? year : year - 399) / 400;
@@ -1108,6 +1196,14 @@ static int dt_days_from_civil_utc(int64_t year, int64_t month, int64_t day, int6
 /// @details Resolves the date through `dt_days_from_civil_utc`, multiplies up to seconds
 ///          (`* 86400`), then adds hour/minute/second offsets. Each step uses checked
 ///          arithmetic so overflow is reported via the 0 return rather than wrapping.
+/// @param year Gregorian year.
+/// @param month One-based month.
+/// @param day One-based day.
+/// @param hour Hour in 0–23.
+/// @param minute Minute in 0–59.
+/// @param second Second in 0–59.
+/// @param out Receives Unix epoch seconds.
+/// @return One on success, zero on arithmetic overflow.
 static int dt_make_utc_timestamp(
     int year, int month, int day, int hour, int minute, int second, int64_t *out) {
     int64_t days;
@@ -1133,6 +1229,14 @@ static int dt_make_utc_timestamp(
 ///          the input, rejecting skipped local hours that `mktime` normalizes. A repeated
 ///          hour can round-trip through either occurrence, so `tm_isdst = -1` leaves that
 ///          choice to the host implementation (VDOC-226).
+/// @param year Local civil year.
+/// @param month One-based local month.
+/// @param day One-based local day.
+/// @param hour Local hour.
+/// @param minute Local minute.
+/// @param second Local second.
+/// @param out Receives Unix epoch seconds.
+/// @return One when the local civil instant is valid and representable.
 static int dt_make_local_timestamp(
     int year, int month, int day, int hour, int minute, int second, int64_t *out) {
     struct tm tm = {0};
@@ -1151,6 +1255,9 @@ static int dt_make_local_timestamp(
 /// @details Accepts `YYYY-MM-DD[T| ]HH:MM:SS[.fff][±HH:MM]` and `Z` UTC marker. Returns
 ///          1 with @p out populated on success, 0 on any malformed input. Used by the
 ///          DateTime parser entry points.
+/// @param s Exact input string with no embedded nulls or trailing bytes.
+/// @param out Receives Unix epoch seconds.
+/// @return One on success, otherwise zero.
 static int dt_parse_iso_impl(rt_string s, int64_t *out) {
     size_t len = 0;
     const char *str = dt_cstr_without_embedded_nul(s, &len);
@@ -1241,6 +1348,9 @@ static int dt_parse_iso_impl(rt_string s, int64_t *out) {
 
 /// @brief Parse `YYYY-MM-DD` into an epoch-seconds value (local midnight).
 /// @details Returns 1 with @p out populated on success, 0 on malformed input.
+/// @param s Exact ten-byte date string.
+/// @param out Receives local-midnight Unix epoch seconds.
+/// @return One on success, otherwise zero.
 static int dt_parse_date_impl(rt_string s, int64_t *out) {
     size_t len = 0;
     const char *str = dt_cstr_without_embedded_nul(s, &len);
@@ -1275,6 +1385,9 @@ static int dt_parse_date_impl(rt_string s, int64_t *out) {
 
 /// @brief Parse `HH:MM[:SS[.fff]]` into seconds since midnight.
 /// @details Returns 1 with @p out populated on success, 0 on malformed input.
+/// @param s Exact time string.
+/// @param out Receives a value in 0–86399.
+/// @return One on success, otherwise zero.
 static int dt_parse_time_impl(rt_string s, int64_t *out) {
     size_t len = 0;
     const char *str = dt_cstr_without_embedded_nul(s, &len);
@@ -1316,10 +1429,11 @@ static int dt_parse_time_impl(rt_string s, int64_t *out) {
 }
 
 /// @brief Parse an ISO 8601 datetime string to a Unix timestamp.
-/// @details Accepts "YYYY-MM-DDTHH:MM:SS" with optional 'Z' suffix for UTC.
-///          Without 'Z', the time is interpreted as local. The 'T' separator
-///          can also be a space. Returns 0 on parse failure — callers cannot
-///          distinguish a failure from the actual epoch timestamp (rare edge case).
+/// @details Accepts an exact four-digit-year datetime with `T`, `t`, or space
+///          separator, optional fractional seconds (truncated), and optional
+///          `Z`/`z` or numeric `±HH:MM` offset. Without a zone suffix, the time
+///          is interpreted locally. Returns 0 on parse failure, colliding with
+///          the actual epoch timestamp.
 /// @param s Runtime string containing the ISO datetime.
 /// @return Unix timestamp in seconds, or 0 on parse failure.
 int64_t rt_datetime_parse_iso(rt_string s) {
@@ -1338,7 +1452,8 @@ int64_t rt_datetime_parse_date(rt_string s) {
 }
 
 /// @brief Parse a time string (HH:MM or HH:MM:SS) to seconds since midnight.
-/// @details Accepts 24-hour format with optional seconds. Validates ranges
+/// @details Accepts 24-hour format with optional seconds and a fractional
+///          suffix only when seconds are present. Fractions are discarded. Validates ranges
 ///          (hour 0-23, minute 0-59, second 0-59). Returns -1 on any parse
 ///          error, allowing callers to distinguish "midnight" (0) from failure.
 /// @param s Runtime string containing the time text.
@@ -1400,7 +1515,8 @@ static int8_t dt_try_parse_any(rt_string s, int64_t *out) {
 ///          from a valid Unix epoch timestamp. Prefer
 ///          @ref rt_datetime_try_parse_option for new public APIs.
 /// @param s Runtime string to parse.
-/// @return Unix timestamp on success, or 0 on parse failure.
+/// @return Epoch seconds for datetime/date input, seconds since midnight for
+///         time-only input, or 0 on failure.
 int64_t rt_datetime_try_parse(rt_string s) {
     int64_t result = 0;
     return dt_try_parse_any(s, &result) ? result : 0;
@@ -1412,7 +1528,8 @@ int64_t rt_datetime_try_parse(rt_string s) {
 ///          embedded-NUL input. This is the non-ambiguous replacement for the
 ///          legacy sentinel-returning @ref rt_datetime_try_parse helper.
 /// @param s Runtime string to parse.
-/// @return Opaque Zanna.Option containing the parsed timestamp or time value.
+/// @return New Option containing epoch seconds for datetime/date input or
+///         seconds since midnight for time-only input; `None` on failure.
 void *rt_datetime_try_parse_option(rt_string s) {
     int64_t result = 0;
     return dt_try_parse_any(s, &result) ? rt_option_some_i64(result) : rt_option_none();

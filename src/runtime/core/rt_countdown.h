@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_countdown.h
+/// @file
+/// @brief Declares the GC-managed monotonic Countdown timer API.
+///
 // Purpose: Countdown timer providing interval-based expiration detection with start, stop, reset,
 // and query operations, suitable for game loops and timed events.
 //
@@ -37,8 +40,9 @@ extern "C" {
 #define RT_COUNTDOWN_CLASS_ID INT64_C(-0x430801)
 
 /// @brief Create a new countdown timer with specified interval.
-/// @param interval_ms Interval duration in milliseconds.
+/// @param interval_ms Interval duration in milliseconds; nonpositive becomes zero.
 /// @return Pointer to new countdown object (stopped, elapsed = 0).
+/// @note A zero interval is expired immediately, even before it is started.
 void *rt_countdown_new(int64_t interval_ms);
 
 /// @brief Start or resume the countdown timer.
@@ -54,11 +58,13 @@ void rt_countdown_stop(void *obj);
 /// @brief Reset the countdown timer to zero elapsed time.
 /// @param obj Countdown pointer.
 /// @details Stops the timer and resets elapsed to 0.
+/// @note A retained zero interval remains immediately expired after reset.
 void rt_countdown_reset(void *obj);
 
 /// @brief Get elapsed time in milliseconds.
 /// @param obj Countdown pointer.
 /// @return Total elapsed milliseconds since start/last reset.
+/// @note Includes completed start/stop intervals and the current running interval.
 int64_t rt_countdown_elapsed(void *obj);
 
 /// @brief Get remaining time in milliseconds.
@@ -78,7 +84,7 @@ int64_t rt_countdown_interval(void *obj);
 
 /// @brief Set a new interval duration.
 /// @param obj Countdown pointer.
-/// @param interval_ms New interval duration in milliseconds.
+/// @param interval_ms New interval duration; nonpositive becomes zero.
 /// @details Does not reset elapsed time.
 void rt_countdown_set_interval(void *obj, int64_t interval_ms);
 
@@ -91,6 +97,7 @@ int8_t rt_countdown_is_running(void *obj);
 /// @param obj Countdown pointer.
 /// @details If already expired, returns immediately. Starts timer if not running.
 /// Long waits are slept in chunks until the timer actually expires.
+/// @note Blocks the calling thread and leaves a newly started timer running.
 void rt_countdown_wait(void *obj);
 
 #ifdef __cplusplus

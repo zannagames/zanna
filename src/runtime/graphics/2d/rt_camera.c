@@ -5,7 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_camera.c
+// File: src/runtime/graphics/2d/rt_camera.c
+/// @file
+/// @brief Implements the reference-counted 2D camera transform, bounds,
+///        culling, follow behavior, and tiled parallax backgrounds.
 // Purpose: 2D camera transform for Zanna game scenes. Maintains a world-space
 //   viewport defined by a position, an integer zoom percentage, and an optional
 //   rotation angle. Provides coordinate conversion (world↔screen), optional
@@ -23,18 +26,19 @@
 //   - The dirty flag is set to 1 at creation and whenever x, y, zoom, or
 //     rotation change. It is cleared only by rt_camera_clear_dirty(). Renderers
 //     that cache the camera transform should check is_dirty() each frame.
-//   - If camera bounds are set, the camera position is clamped after every
-//     mutation that changes x or y (Follow, Move, SetX, SetY). Bounds are
-//     applied in world-space (no zoom scaling).
-//   - rt_camera_is_visible() uses a simple AABB overlap test in world-space.
-//     A NULL camera pointer is treated conservatively as always-visible.
+//   - Active bounds constrain the world-space viewport rectangle after
+//     position, center, follow, movement, zoom, and bound changes.
+//   - rt_camera_is_visible() projects all four entity corners and compares
+//     their screen-space AABB with the viewport. A NULL camera pointer is
+//     treated conservatively as always-visible.
 //
 // Ownership/Lifetime:
-//   - Camera objects are GC-managed via rt_obj_new_i64. They are freed
-//     automatically when the GC collects them; there is no explicit finalizer
-//     beyond the GC reclaiming the allocation.
+//   - Camera objects are reference-counted via rt_obj_new_i64 and have no
+//     explicit public destroy function.
+//   - Each parallax slot retains its Pixels handle. The camera finalizer
+//     releases those references before the camera allocation is reclaimed.
 //
-// Links: src/runtime/graphics/rt_camera.h (public API),
+// Links: src/runtime/graphics/2d/rt_camera.h (public API),
 //        docs/zannalib/game.md (Camera section)
 //
 //===----------------------------------------------------------------------===//
@@ -55,6 +59,7 @@
 
 /// Maximum number of parallax scrolling layers per camera.
 #define RT_CAMERA_MAX_PARALLAX 8
+/// Maximum tile blits permitted while drawing one parallax layer.
 #define RT_CAMERA_MAX_PARALLAX_TILES 65536
 
 /// @brief A single parallax scrolling layer.
@@ -87,9 +92,11 @@ typedef struct rt_camera_impl {
 } rt_camera_impl;
 
 /// @brief Validate-and-return a Camera pointer; NULL for NULL or wrong class.
-/// @details Soft check (no trap) used by every public Camera entry point so
-///          stale handles fall through to no-ops rather than crashing in the
-///          middle of the per-frame draw loop.
+/// @details Performs only validation; individual public APIs decide whether a
+///          failed check traps, returns a fallback, or becomes a no-op.
+/// @param camera_ptr Borrowed candidate Camera handle.
+/// @return Borrowed implementation pointer, or `NULL` for null/wrong-class
+///         handles.
 static rt_camera_impl *camera_checked_or_null(void *camera_ptr) {
     if (!camera_ptr || !rt_obj_is_instance(camera_ptr, RT_CAMERA_CLASS_ID, sizeof(rt_camera_impl)))
         return NULL;
@@ -97,6 +104,8 @@ static rt_camera_impl *camera_checked_or_null(void *camera_ptr) {
 }
 
 /// @brief Release a GC-managed object held in `*slot` and NULL-out the slot.
+/// @param slot Address of an owned nullable object handle. A valid heap payload
+///        loses one reference and may be freed; the slot is always cleared.
 static void camera_release_ref(void **slot) {
     if (!slot || !*slot)
         return;
@@ -107,6 +116,8 @@ static void camera_release_ref(void **slot) {
 
 /// @brief Round a long double to the nearest int64, saturating at INT64_MIN/MAX instead of
 /// overflowing.
+/// @param value Finite floating-point value to convert.
+/// @return Nearest int64 with ties away from zero, saturated at either limit.
 static int64_t camera_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -116,6 +127,9 @@ static int64_t camera_ld_to_i64_sat(long double value) {
 }
 
 /// @brief Add two int64 values with saturation at INT64_MIN/MAX.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return Saturating sum of @p a and @p b.
 static int64_t camera_add_saturating(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -125,6 +139,10 @@ static int64_t camera_add_saturating(int64_t a, int64_t b) {
 }
 
 /// @brief Clamp @p value to the inclusive [min_value, max_value] range.
+/// @param value Value to constrain.
+/// @param min_value Inclusive lower bound.
+/// @param max_value Inclusive upper bound.
+/// @return @p value or the nearest bound; callers provide ordered bounds.
 static int64_t camera_clamp_i64(int64_t value, int64_t min_value, int64_t max_value) {
     if (value < min_value)
         return min_value;
@@ -138,6 +156,9 @@ static int64_t camera_clamp_i64(int64_t value, int64_t min_value, int64_t max_va
 ///   platform (80-bit x86, 64-bit MSVC, 128-bit AArch64), so a long-double
 ///   subtraction of two large int64 values is not exact everywhere and would make
 ///   camera positions differ across builds — at odds with VM/native determinism.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @return Saturating difference @p a minus @p b.
 static int64_t camera_sub_saturating(int64_t a, int64_t b) {
     if (b < 0 && a > INT64_MAX + b)
         return INT64_MAX;
@@ -153,6 +174,11 @@ static int64_t camera_sub_saturating(int64_t a, int64_t b) {
 ///   platforms. Only a genuinely overflowing product falls back to long double —
 ///   128-bit integer division is avoided because it pulls in a compiler-rt helper
 ///   (__divti3) that the native-link runtime path must not depend on.
+/// @param value Value to scale.
+/// @param mul Integer multiplier.
+/// @param div Nonzero integer divisor for normal operation.
+/// @return Rounded-half-away-from-zero quotient with int64 saturation, or `0`
+///         when @p div is zero.
 static int64_t camera_mul_div_saturating(int64_t value, int64_t mul, int64_t div) {
     if (div == 0)
         return 0;
@@ -178,21 +204,29 @@ static int64_t camera_mul_div_saturating(int64_t value, int64_t mul, int64_t div
 }
 
 /// @brief World-space width covered by the viewport at the current zoom (zoom is in percent).
+/// @param camera Borrowed valid camera implementation.
+/// @return Rounded, saturated `width * 100 / zoom`.
 static int64_t camera_world_width(const rt_camera_impl *camera) {
     return camera_mul_div_saturating(camera->width, 100, camera->zoom);
 }
 
 /// @brief World-space height covered by the viewport at the current zoom.
+/// @param camera Borrowed valid camera implementation.
+/// @return Rounded, saturated `height * 100 / zoom`.
 static int64_t camera_world_height(const rt_camera_impl *camera) {
     return camera_mul_div_saturating(camera->height, 100, camera->zoom);
 }
 
 /// @brief World-space X coordinate at the centre of the viewport.
+/// @param camera Borrowed valid camera implementation.
+/// @return Floating-point center derived from left edge and world-space width.
 static double camera_center_x(const rt_camera_impl *camera) {
     return (double)camera->x + (double)camera_world_width(camera) * 0.5;
 }
 
 /// @brief World-space Y coordinate at the centre of the viewport.
+/// @param camera Borrowed valid camera implementation.
+/// @return Floating-point center derived from top edge and world-space height.
 static double camera_center_y(const rt_camera_impl *camera) {
     return (double)camera->y + (double)camera_world_height(camera) * 0.5;
 }
@@ -203,6 +237,11 @@ static double camera_center_y(const rt_camera_impl *camera) {
 ///          (so positive `rotation` rotates the *world* clockwise = camera
 ///          counter-clockwise), scale by zoom/100, then translate to screen
 ///          centre. Used by the parallax draw loop to place each tile.
+/// @param camera Borrowed valid camera transform.
+/// @param world_x Horizontal world coordinate.
+/// @param world_y Vertical world coordinate.
+/// @param screen_x Optional output for the horizontal screen coordinate.
+/// @param screen_y Optional output for the vertical screen coordinate.
 static void camera_apply_transform(const rt_camera_impl *camera,
                                    double world_x,
                                    double world_y,
@@ -227,6 +266,11 @@ static void camera_apply_transform(const rt_camera_impl *camera,
 ///          rotation, then translate by camera centre. Used to compute
 ///          world-space tile coverage from screen corners during parallax
 ///          rendering.
+/// @param camera Borrowed valid camera transform with nonzero zoom.
+/// @param screen_x Horizontal screen coordinate.
+/// @param screen_y Vertical screen coordinate.
+/// @param world_x Optional output for the horizontal world coordinate.
+/// @param world_y Optional output for the vertical world coordinate.
 static void camera_apply_inverse_transform(const rt_camera_impl *camera,
                                            double screen_x,
                                            double screen_y,
@@ -253,6 +297,9 @@ static void camera_apply_inverse_transform(const rt_camera_impl *camera,
 ///          decrements the quotient by one to recover floor semantics.
 ///          Used by the parallax tile loop to find the first/last tile
 ///          indices straddling the visible world bounds.
+/// @param value Dividend.
+/// @param divisor Positive nonzero tile dimension.
+/// @return Mathematical floor of @p value divided by @p divisor.
 static int64_t camera_floor_div(int64_t value, int64_t divisor) {
     int64_t q = value / divisor;
     int64_t r = value % divisor;
@@ -263,7 +310,10 @@ static int64_t camera_floor_div(int64_t value, int64_t divisor) {
 
 /// @brief Compute the tile span from `first` to `last` (inclusive) and validate it is within
 ///        `RT_CAMERA_MAX_PARALLAX_TILES`. Writes the span count to `out_span` on success.
-/// @return 1 if the span fits the parallax budget, 0 otherwise.
+/// @param first Inclusive first tile index.
+/// @param last Inclusive last tile index.
+/// @param out_span Required output for the validated positive count.
+/// @return `1` if the ordered span fits the parallax budget; otherwise `0`.
 static int8_t camera_tile_span_within_limit(int64_t first, int64_t last, int64_t *out_span) {
     if (!out_span || last < first)
         return 0;
@@ -276,6 +326,9 @@ static int8_t camera_tile_span_within_limit(int64_t first, int64_t last, int64_t
 
 /// @brief Return 1 if `span_x * span_y` is within the `RT_CAMERA_MAX_PARALLAX_TILES` budget.
 /// @details Divides rather than multiplies to avoid overflow on large span values.
+/// @param span_x Positive horizontal tile count.
+/// @param span_y Positive vertical tile count.
+/// @return `1` when the product is positive and within budget; otherwise `0`.
 static int8_t camera_tile_product_within_limit(int64_t span_x, int64_t span_y) {
     if (span_x <= 0 || span_y <= 0)
         return 0;
@@ -283,9 +336,13 @@ static int8_t camera_tile_product_within_limit(int64_t span_x, int64_t span_y) {
 }
 
 /// @brief Compute the number of tiles visible across a viewport dimension plus a one-tile margin.
-/// @details Returns one more than the integer quotient so the visible strip fully covers the
-///          viewport even when the camera offset is not tile-aligned. Clamped to
+/// @details Returns two more than the integer quotient so the visible strip
+///          covers both an unaligned leading tile and the far edge. Clamped to
 ///          `RT_CAMERA_MAX_PARALLAX_TILES + 1` to trigger the "exceeds budget" early-out.
+/// @param viewport Coverage dimension in pixels.
+/// @param tile_size Positive tile dimension in pixels.
+/// @return Required tile count including both margins, zero for invalid
+///         dimensions, or a budget-exceeded sentinel.
 static int64_t camera_view_tile_span(int64_t viewport, int64_t tile_size) {
     if (viewport <= 0 || tile_size <= 0)
         return 0;
@@ -316,6 +373,11 @@ static int64_t camera_view_tile_span(int64_t viewport, int64_t tile_size) {
 ///             repeat the layer's source texture.
 ///          The final blit is centre-anchored, so the tile's centre of
 ///          rotation matches the precomputed rotated buffer's centre.
+/// @param camera Borrowed valid parent camera.
+/// @param layer Borrowed active parallax layer with a valid Pixels handle.
+/// @param canvas Borrowed destination canvas.
+/// @return `1` after tiling the layer; `0` for invalid dimensions, transform
+///         allocation failure, or an excessive tile budget.
 static int64_t camera_draw_parallax_transformed(const rt_camera_impl *camera,
                                                 const rt_parallax_layer *layer,
                                                 void *canvas) {
@@ -442,6 +504,7 @@ static int64_t camera_draw_parallax_transformed(const rt_camera_impl *camera,
 }
 
 /// @brief Release all resources held by a parallax layer and mark it inactive.
+/// @param layer Borrowed layer slot to clear; null/inactive slots are ignored.
 static void camera_release_parallax_layer(rt_parallax_layer *layer) {
     if (!layer || !layer->active)
         return;
@@ -453,6 +516,7 @@ static void camera_release_parallax_layer(rt_parallax_layer *layer) {
 }
 
 /// @brief GC finalizer: release all parallax layers before the camera allocation is freed.
+/// @param obj Camera object being finalized; invalid handles are ignored.
 static void camera_finalize(void *obj) {
     rt_camera_impl *camera = camera_checked_or_null(obj);
     if (!camera)
@@ -463,6 +527,11 @@ static void camera_finalize(void *obj) {
 }
 
 /// @brief Clamp camera position to bounds.
+/// @details Converts the maximum right/bottom extent to the largest legal
+///          viewport origin using the current zoomed world dimensions. Bounds
+///          smaller than the viewport collapse the corresponding origin to
+///          the minimum.
+/// @param camera Borrowed valid camera; unchanged when bounds are disabled.
 static void camera_clamp_bounds(rt_camera_impl *camera) {
     if (!camera->has_bounds)
         return;
@@ -494,6 +563,10 @@ static void camera_clamp_bounds(rt_camera_impl *camera) {
 ///          world origin, zoom is 100 (1×), rotation is 0, no bounds. The
 ///          camera starts marked dirty so the first render computes its
 ///          view transform fresh. Returns NULL on allocation failure.
+/// @param width Viewport width in screen pixels; nonpositive values become one.
+/// @param height Viewport height in screen pixels; nonpositive values become one.
+/// @return Owned reference-counted Camera handle, or `NULL` on allocation
+///         failure.
 void *rt_camera_new(int64_t width, int64_t height) {
     if (width <= 0)
         width = 1;
@@ -529,6 +602,8 @@ void *rt_camera_new(int64_t width, int64_t height) {
 //=============================================================================
 
 /// @brief Read the camera viewport's world-space left edge. Traps on null.
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Left-edge coordinate, or `0` if validation fails and the trap returns.
 int64_t rt_camera_get_x(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -540,6 +615,8 @@ int64_t rt_camera_get_x(void *camera_ptr) {
 
 /// @brief Set the camera viewport's world-space left edge (clamped to active bounds, if any). Marks
 /// the view-transform dirty so the next render recomputes derived state.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param x Requested world-space left edge.
 void rt_camera_set_x(void *camera_ptr, int64_t x) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -552,6 +629,8 @@ void rt_camera_set_x(void *camera_ptr, int64_t x) {
 }
 
 /// @brief Read the camera viewport's world-space top edge. Traps on null.
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Top-edge coordinate, or `0` if validation fails and the trap returns.
 int64_t rt_camera_get_y(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -562,6 +641,9 @@ int64_t rt_camera_get_y(void *camera_ptr) {
 }
 
 /// @brief Set the camera viewport's world-space top edge (clamped to active bounds, if any).
+/// @details Marks the transform dirty even if clamping preserves the old value.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param y Requested world-space top edge.
 void rt_camera_set_y(void *camera_ptr, int64_t y) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -574,6 +656,9 @@ void rt_camera_set_y(void *camera_ptr, int64_t y) {
 }
 
 /// @brief Read the zoom level (100 = 1.0×, 200 = 2.0× zoom-in, 50 = 0.5× zoom-out).
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Stored zoom percentage, or the neutral value `100` after a failed
+///         validation trap.
 int64_t rt_camera_get_zoom(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -584,6 +669,8 @@ int64_t rt_camera_get_zoom(void *camera_ptr) {
 }
 
 /// @brief Set zoom level (clamped to [10, 1000] = 0.1×–10×). Marks dirty and re-clamps to bounds.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param zoom Requested integer percentage.
 void rt_camera_set_zoom(void *camera_ptr, int64_t zoom) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -600,6 +687,9 @@ void rt_camera_set_zoom(void *camera_ptr, int64_t zoom) {
 }
 
 /// @brief Read the camera's rotation in degrees (positive = counter-clockwise).
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Stored, unnormalized degree value, or `0` after a failed validation
+///         trap.
 int64_t rt_camera_get_rotation(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -610,6 +700,8 @@ int64_t rt_camera_get_rotation(void *camera_ptr) {
 }
 
 /// @brief Set rotation in degrees. No clamping (full ±360+ range allowed; renders modulo 360).
+/// @param camera_ptr Borrowed Camera handle.
+/// @param degrees Unnormalized integer camera angle.
 void rt_camera_set_rotation(void *camera_ptr, int64_t degrees) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -621,6 +713,8 @@ void rt_camera_set_rotation(void *camera_ptr, int64_t degrees) {
 }
 
 /// @brief Read the camera viewport width in pixels (set on construction).
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Positive viewport width, or `0` after a failed validation trap.
 int64_t rt_camera_get_width(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -631,6 +725,8 @@ int64_t rt_camera_get_width(void *camera_ptr) {
 }
 
 /// @brief Read the camera viewport height in pixels (set on construction).
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Positive viewport height, or `0` after a failed validation trap.
 int64_t rt_camera_get_height(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -641,6 +737,9 @@ int64_t rt_camera_get_height(void *camera_ptr) {
 }
 
 /// @brief Read the world-space X coordinate at the center of the viewport.
+/// @details Uses the rounded world-space viewport width and saturating addition.
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Integer center coordinate, or `0` after a failed validation trap.
 int64_t rt_camera_get_center_x(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -651,6 +750,9 @@ int64_t rt_camera_get_center_x(void *camera_ptr) {
 }
 
 /// @brief Read the world-space Y coordinate at the center of the viewport.
+/// @details Uses the rounded world-space viewport height and saturating addition.
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Integer center coordinate, or `0` after a failed validation trap.
 int64_t rt_camera_get_center_y(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -661,6 +763,11 @@ int64_t rt_camera_get_center_y(void *camera_ptr) {
 }
 
 /// @brief Place the viewport so the supplied world point is centered on screen.
+/// @details Computes the requested origin with saturating subtraction, applies
+///          active bounds, and marks dirty only if the final origin changes.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param x Requested world-space center X.
+/// @param y Requested world-space center Y.
 void rt_camera_set_center(void *camera_ptr, int64_t x, int64_t y) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -682,6 +789,9 @@ void rt_camera_set_center(void *camera_ptr, int64_t x, int64_t y) {
 
 /// @brief Snap the camera so (x, y) is at the viewport center. Re-clamps to bounds, marks dirty.
 /// Use `_smooth_follow` for non-jarring tracking.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param x Target world-space center X.
+/// @param y Target world-space center Y.
 void rt_camera_follow(void *camera_ptr, int64_t x, int64_t y) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -699,6 +809,14 @@ void rt_camera_follow(void *camera_ptr, int64_t x, int64_t y) {
 /// @brief Lerp the camera toward (target_x, target_y). `lerp_pct` is 0..1000 (0 = no move,
 /// 1000 = instant snap). When a deadzone is set, no movement happens while the target stays
 /// inside it — useful for platformer-style "loose" tracking.
+/// @details Values at least 1000 snap; positive smaller values use rounded
+///          thousandths and snap a nonzero subpixel remainder. Nonpositive
+///          values do not follow, though existing bounds are still applied.
+///          Dirty is set only when the final origin changes.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param target_x Target world-space center X.
+/// @param target_y Target world-space center Y.
+/// @param lerp_pct Follow fraction in thousandths.
 void rt_camera_smooth_follow(void *camera_ptr,
                              int64_t target_x,
                              int64_t target_y,
@@ -755,6 +873,12 @@ void rt_camera_smooth_follow(void *camera_ptr,
 
 /// @brief Set the rectangular deadzone (centered on current position) in which `_smooth_follow`
 /// is a no-op. Negative values are clamped to 0 (deadzone disabled).
+/// @details Each axis is independent; a zero axis imposes no deadzone test.
+///          This setting does not affect the dirty flag. Invalid handles are
+///          silently ignored.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param w Deadzone width in world units; nonpositive disables horizontal slack.
+/// @param h Deadzone height in world units; nonpositive disables vertical slack.
 void rt_camera_set_deadzone(void *camera_ptr, int64_t w, int64_t h) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera)
@@ -766,6 +890,12 @@ void rt_camera_set_deadzone(void *camera_ptr, int64_t w, int64_t h) {
 /// @brief Project a world-space point into screen-space pixels, applying zoom, rotation, and
 /// translation. Outputs are written through `screen_x` / `screen_y` (rounded). Useful for HUD
 /// markers anchored to world entities.
+/// @details Invalid handles or null output pointers leave both outputs unchanged.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param world_x Horizontal world coordinate.
+/// @param world_y Vertical world coordinate.
+/// @param screen_x Required output receiving rounded, saturated screen X.
+/// @param screen_y Required output receiving rounded, saturated screen Y.
 void rt_camera_world_to_screen(
     void *camera_ptr, int64_t world_x, int64_t world_y, int64_t *screen_x, int64_t *screen_y) {
     if (!camera_ptr || !screen_x || !screen_y)
@@ -782,6 +912,9 @@ void rt_camera_world_to_screen(
 
 /// @brief One-axis convenience: project just the X component of a world point. Y is implicitly
 /// the camera's vertical center so rotation contributes correctly.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param world_x Horizontal world coordinate.
+/// @return Rounded, saturated screen X; invalid cameras return @p world_x.
 int64_t rt_camera_to_screen_x(void *camera_ptr, int64_t world_x) {
     if (!camera_ptr)
         return world_x;
@@ -794,6 +927,10 @@ int64_t rt_camera_to_screen_x(void *camera_ptr, int64_t world_x) {
 }
 
 /// @brief One-axis convenience: project just the Y component of a world point.
+/// @details X is implicitly the camera's horizontal center.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param world_y Vertical world coordinate.
+/// @return Rounded, saturated screen Y; invalid cameras return @p world_y.
 int64_t rt_camera_to_screen_y(void *camera_ptr, int64_t world_y) {
     if (!camera_ptr)
         return world_y;
@@ -807,6 +944,12 @@ int64_t rt_camera_to_screen_y(void *camera_ptr, int64_t world_y) {
 
 /// @brief Inverse of `_world_to_screen`: turn a screen pixel into world coordinates. Useful
 /// for hit-testing mouse clicks against world entities.
+/// @details Invalid handles or null output pointers leave both outputs unchanged.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param screen_x Horizontal screen coordinate.
+/// @param screen_y Vertical screen coordinate.
+/// @param world_x Required output receiving rounded, saturated world X.
+/// @param world_y Required output receiving rounded, saturated world Y.
 void rt_camera_screen_to_world(
     void *camera_ptr, int64_t screen_x, int64_t screen_y, int64_t *world_x, int64_t *world_y) {
     if (!camera_ptr || !world_x || !world_y)
@@ -822,6 +965,10 @@ void rt_camera_screen_to_world(
 }
 
 /// @brief One-axis convenience: unproject just the X component of a screen pixel to world.
+/// @details Screen Y is implicitly the viewport's vertical center.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param screen_x Horizontal screen coordinate.
+/// @return Rounded, saturated world X; invalid cameras return @p screen_x.
 int64_t rt_camera_to_world_x(void *camera_ptr, int64_t screen_x) {
     if (!camera_ptr)
         return screen_x;
@@ -835,6 +982,10 @@ int64_t rt_camera_to_world_x(void *camera_ptr, int64_t screen_x) {
 }
 
 /// @brief One-axis convenience: unproject just the Y component of a screen pixel to world.
+/// @details Screen X is implicitly the viewport's horizontal center.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param screen_y Vertical screen coordinate.
+/// @return Rounded, saturated world Y; invalid cameras return @p screen_y.
 int64_t rt_camera_to_world_y(void *camera_ptr, int64_t screen_y) {
     if (!camera_ptr)
         return screen_y;
@@ -848,6 +999,10 @@ int64_t rt_camera_to_world_y(void *camera_ptr, int64_t screen_y) {
 }
 
 /// @brief Translate the camera by (dx, dy) world units. Re-clamps to bounds; marks dirty.
+/// @details Both additions saturate at the int64 limits.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param dx Horizontal world-space displacement.
+/// @param dy Vertical world-space displacement.
 void rt_camera_move(void *camera_ptr, int64_t dx, int64_t dy) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -863,6 +1018,15 @@ void rt_camera_move(void *camera_ptr, int64_t dx, int64_t dy) {
 /// @brief Constrain camera position to stay within the rectangle [(min_x, min_y), (max_x,
 /// max_y)]. The current position is immediately clamped. Use to prevent the camera from showing
 /// "outside the level".
+/// @details The maximum coordinates describe the right/bottom world extent,
+///          not the maximum viewport origin. Reversed or undersized bounds
+///          collapse the corresponding origin to its minimum. Dirty is set
+///          only if immediate clamping changes the current position.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param min_x Minimum viewport left edge.
+/// @param min_y Minimum viewport top edge.
+/// @param max_x Maximum world-space right extent.
+/// @param max_y Maximum world-space bottom extent.
 void rt_camera_set_bounds(
     void *camera_ptr, int64_t min_x, int64_t min_y, int64_t max_x, int64_t max_y) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
@@ -883,6 +1047,8 @@ void rt_camera_set_bounds(
 }
 
 /// @brief Disable bounds clamping. Camera can be moved freely afterwards.
+/// @details Does not move the camera or set its dirty flag.
+/// @param camera_ptr Borrowed Camera handle.
 void rt_camera_clear_bounds(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera) {
@@ -899,6 +1065,15 @@ void rt_camera_clear_bounds(void *camera_ptr) {
 /// @brief Test whether a world-space rectangle has any overlap with the camera viewport.
 /// Useful as a cheap broad-phase cull before drawing each entity. Conservative: rotation is
 /// handled by projecting the four corners and checking the screen-space AABB.
+/// @details Rectangles with nonpositive dimensions are invisible. Touching only
+///          a viewport boundary is not considered overlap. A null pointer is
+///          conservatively visible, while a non-null wrong-class handle is not.
+/// @param camera_ptr Borrowed Camera handle; may be `NULL`.
+/// @param x Rectangle left edge in world coordinates.
+/// @param y Rectangle top edge in world coordinates.
+/// @param w Positive rectangle width.
+/// @param h Positive rectangle height.
+/// @return `1` when the projected AABB overlaps the viewport; otherwise `0`.
 int64_t rt_camera_is_visible(void *camera_ptr, int64_t x, int64_t y, int64_t w, int64_t h) {
     if (!camera_ptr)
         return 1; // Null camera — conservatively treat as visible
@@ -946,6 +1121,8 @@ int64_t rt_camera_is_visible(void *camera_ptr, int64_t x, int64_t y, int64_t w, 
 
 /// @brief Returns 1 if the camera's transform has changed since the last `_clear_dirty`. Lets
 /// callers skip costly re-renders when the view is stationary.
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Current dirty flag, or `0` for invalid handles.
 int64_t rt_camera_is_dirty(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera)
@@ -954,6 +1131,7 @@ int64_t rt_camera_is_dirty(void *camera_ptr) {
 }
 
 /// @brief Reset the dirty flag — call after rendering to acknowledge the latest transform.
+/// @param camera_ptr Borrowed Camera handle; invalid handles are ignored.
 void rt_camera_clear_dirty(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera)
@@ -968,6 +1146,13 @@ void rt_camera_clear_dirty(void *camera_ptr) {
 /// @brief Register a parallax background layer with `pixels` as its texture. `scroll_x_pct` and
 /// `scroll_y_pct` are 0..100 (0 = stationary, 100 = scrolls 1:1 with camera). Higher numbers feel
 /// "closer" to the viewer. Up to RT_CAMERA_MAX_PARALLAX layers; returns the slot index or -1.
+/// @details Valid scroll factors are clamped to 0..100, the Pixels object is
+///          retained, and the first inactive slot is used.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param pixels Borrowed valid Pixels handle retained by the new layer.
+/// @param scroll_x_pct Horizontal parallax percentage.
+/// @param scroll_y_pct Vertical parallax percentage.
+/// @return Slot index in 0..7, or `-1` for invalid arguments or a full camera.
 int64_t rt_camera_add_parallax(void *camera_ptr,
                                void *pixels,
                                int64_t scroll_x_pct,
@@ -999,6 +1184,8 @@ int64_t rt_camera_add_parallax(void *camera_ptr,
 
 /// @brief Remove a parallax layer by slot index (returned from `_add_parallax`). No-op if
 /// the slot is already inactive or the index is out of range.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param index Slot index to release.
 void rt_camera_remove_parallax(void *camera_ptr, int64_t index) {
     if (!camera_ptr)
         return;
@@ -1014,6 +1201,7 @@ void rt_camera_remove_parallax(void *camera_ptr, int64_t index) {
 }
 
 /// @brief Remove all parallax layers and reset the layer count.
+/// @param camera_ptr Borrowed Camera handle; invalid handles are ignored.
 void rt_camera_clear_parallax(void *camera_ptr) {
     if (!camera_ptr)
         return;
@@ -1026,6 +1214,8 @@ void rt_camera_clear_parallax(void *camera_ptr) {
 }
 
 /// @brief Number of currently-active parallax layers.
+/// @param camera_ptr Borrowed Camera handle.
+/// @return Active slot count, or `0` for invalid handles.
 int64_t rt_camera_parallax_count(void *camera_ptr) {
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera)
@@ -1035,6 +1225,15 @@ int64_t rt_camera_parallax_count(void *camera_ptr) {
 
 /// @brief Render every active parallax layer to `canvas` at offsets computed from the camera's
 /// current scroll position and each layer's scroll factor. Returns the number of layers drawn.
+/// @details Layers render in ascending slot order. Neutral transforms tile
+///          directly across the larger of canvas and viewport dimensions;
+///          zoomed/rotated transforms prepare a temporary tile and cover the
+///          inverse-transformed viewport. A per-layer tile budget prevents
+///          excessive iteration. Layers skipped for invalid dimensions,
+///          allocation failure, or budget overflow are not counted.
+/// @param camera_ptr Borrowed Camera handle.
+/// @param canvas Borrowed destination canvas.
+/// @return Number of layers successfully tiled, or `0` for invalid arguments.
 int64_t rt_camera_draw_parallax(void *camera_ptr, void *canvas) {
     if (!camera_ptr || !canvas)
         return 0;

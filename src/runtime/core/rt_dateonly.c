@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_dateonly.c
+/// @file
+/// @brief Implements the GC-managed DateOnly proleptic Gregorian value type.
+///
 // Purpose: Implements the DateOnly type for the Zanna runtime, representing a
 //          calendar date (year, month, day) without a time component. Provides
 //          construction from components or Unix day offsets, arithmetic
@@ -53,6 +56,7 @@
 // Internal Structure
 //=============================================================================
 
+/// @brief Internal DateOnly calendar tuple.
 typedef struct {
     int64_t year;
     int64_t month;
@@ -76,6 +80,9 @@ static int8_t is_leap_year(int64_t year) {
 /// @brief Return the number of days in @p month (1–12) of @p year.
 /// @details February yields 29 in leap years, 28 otherwise; out-of-range months
 ///          produce 0 so callers detect bad input via the zero return.
+/// @param year Proleptic Gregorian year used for February.
+/// @param month One-based month number.
+/// @return 28–31 for a valid month, otherwise zero.
 static int64_t days_in_month_impl(int64_t year, int64_t month) {
     static const int64_t days[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     if (month < 1 || month > 12)
@@ -90,6 +97,10 @@ static int64_t days_in_month_impl(int64_t year, int64_t month) {
 // operands before the operation to avoid signed-overflow UB.
 
 /// @brief Overflow-checked signed 64-bit addition. Returns 1 on overflow.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Receives the sum on success.
+/// @return One on overflow; zero after writing the exact sum.
 static int date_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
         return 1;
@@ -98,6 +109,10 @@ static int date_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
 }
 
 /// @brief Overflow-checked signed 64-bit subtraction. Returns 1 on overflow.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @param out Receives the difference on success.
+/// @return One on overflow; zero after writing the exact difference.
 static int date_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b))
         return 1;
@@ -106,6 +121,10 @@ static int date_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
 }
 
 /// @brief Overflow-checked signed 64-bit multiplication. Returns 1 on overflow.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @param out Receives the product on success.
+/// @return One on overflow; zero after writing the exact product.
 static int date_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_mul_overflow(a, b, out);
@@ -139,6 +158,9 @@ static int date_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 ///          math correctly handles BC dates (negative years). The fix-up subtracts 1
 ///          from the truncated quotient when the remainder has a different sign than
 ///          the divisor.
+/// @param value Dividend.
+/// @param divisor Nonzero divisor.
+/// @return Mathematical floor of `value / divisor`.
 static int64_t date_floor_div(int64_t value, int64_t divisor) {
     int64_t quotient = value / divisor;
     int64_t remainder = value % divisor;
@@ -148,6 +170,8 @@ static int64_t date_floor_div(int64_t value, int64_t divisor) {
 }
 
 /// @brief Locale-independent test for ASCII digits 0-9.
+/// @param c Byte value to classify.
+/// @return Nonzero only for ASCII `0` through `9`.
 static int date_is_digit(char c) {
     return c >= '0' && c <= '9';
 }
@@ -156,6 +180,9 @@ static int date_is_digit(char c) {
 /// @details Used by the ISO-8601 date parser. Returns -1 on any non-digit byte so the
 ///          caller can flag malformed input. No bounds check on @p s — the caller must
 ///          have already verified the buffer has at least @p count bytes.
+/// @param s Pointer to at least @p count readable bytes.
+/// @param count Number of digits to parse.
+/// @return Parsed nonnegative value, or `-1` when any byte is not a digit.
 static int date_parse_digits(const char *s, int count) {
     int value = 0;
     for (int i = 0; i < count; i++) {
@@ -256,6 +283,11 @@ static int dateonly_format_append_char(char **buf, size_t *cap, size_t *len, cha
 /// @details Uses overflow-checked civil calendar arithmetic. The calendar is
 ///          adjusted so March is month 0, then reduced into 400-year Gregorian
 ///          eras before subtracting the Unix epoch day offset.
+/// @param year Proleptic Gregorian year.
+/// @param month One-based month.
+/// @param day One-based day of month.
+/// @param out Receives the signed epoch-day offset.
+/// @return Nonzero on success; zero if intermediate arithmetic overflows.
 static int to_days_since_epoch_checked(int64_t year, int64_t month, int64_t day, int64_t *out) {
     int64_t adjusted_year = year;
     if (month <= 2 && date_checked_sub_i64(adjusted_year, 1, &adjusted_year))
@@ -292,6 +324,10 @@ static int to_days_since_epoch_checked(int64_t year, int64_t month, int64_t day,
 /// @details Returns the day count or traps with `rt_trap_ovf()` on overflow. Used by
 ///          the public Date API entries that prefer a fail-loud contract over a
 ///          two-return-value pattern.
+/// @param year Proleptic Gregorian year.
+/// @param month One-based month.
+/// @param day One-based day of month.
+/// @return Signed day offset from 1970-01-01, or zero after an overflow trap.
 static int64_t to_days_since_epoch(int64_t year, int64_t month, int64_t day) {
     int64_t result;
     if (!to_days_since_epoch_checked(year, month, day, &result)) {
@@ -306,6 +342,11 @@ static int64_t to_days_since_epoch(int64_t year, int64_t month, int64_t day) {
 ///          reverses the Gregorian era/month transform to recover year, month,
 ///          and day. The constants come from Gregorian cycle lengths: 400-year
 ///          cycle = 146097 days, and 5-month group = 153 days.
+/// @param days Signed offset from 1970-01-01.
+/// @param year Receives the proleptic Gregorian year.
+/// @param month Receives the one-based month.
+/// @param day Receives the one-based day of month.
+/// @return Nonzero on success; zero if intermediate arithmetic overflows.
 static int from_days_since_epoch_checked(int64_t days,
                                          int64_t *year,
                                          int64_t *month,
@@ -427,7 +468,9 @@ void *rt_dateonly_parse(rt_string s) {
 ///          checked Gregorian civil-date inverse. Day 0 = January 1, 1970.
 ///          Negative values represent dates before the Unix epoch.
 /// @param days Signed offset from 1970-01-01.
-/// @return New DateOnly for the corresponding calendar date.
+/// @return New DateOnly for the corresponding calendar date, or `NULL` if the
+///         result falls outside the supported year range.
+/// @note Arithmetic overflow raises a trap.
 void *rt_dateonly_from_days(int64_t days) {
     int64_t year, month, day;
     if (!from_days_since_epoch_checked(days, &year, &month, &day)) {
@@ -547,7 +590,8 @@ int64_t rt_dateonly_to_days(void *obj) {
 ///          round-trip. Negative values move backward in time.
 /// @param obj Source DateOnly (not modified).
 /// @param days Signed number of days to add.
-/// @return New DateOnly for the resulting calendar date.
+/// @return New DateOnly for the resulting calendar date, or `NULL` if it leaves
+///         the supported year range.
 void *rt_dateonly_add_days(void *obj, int64_t days) {
     if (!obj)
         return NULL;
@@ -568,7 +612,8 @@ void *rt_dateonly_add_days(void *obj, int64_t days) {
 ///          target year is not a leap year.
 /// @param obj Source DateOnly (not modified).
 /// @param months Signed number of months to add (negative = subtract).
-/// @return New DateOnly with clamped day-of-month.
+/// @return New DateOnly with clamped day-of-month, or `NULL` outside the
+///         supported year range.
 void *rt_dateonly_add_months(void *obj, int64_t months) {
     if (!obj)
         return NULL;
@@ -609,7 +654,7 @@ void *rt_dateonly_add_months(void *obj, int64_t months) {
 ///          in a non-leap year.
 /// @param obj Source DateOnly (not modified).
 /// @param years Signed number of years to add.
-/// @return New DateOnly.
+/// @return New DateOnly, or `NULL` outside the supported year range.
 void *rt_dateonly_add_years(void *obj, int64_t years) {
     if (!obj)
         return NULL;
@@ -676,6 +721,8 @@ int64_t rt_dateonly_days_in_month(void *obj) {
 }
 
 /// @brief Return a new DateOnly for the first day of the same month.
+/// @param obj Source DateOnly; null returns `NULL`.
+/// @return New DateOnly with day one.
 void *rt_dateonly_start_of_month(void *obj) {
     if (!obj)
         return NULL;
@@ -684,6 +731,8 @@ void *rt_dateonly_start_of_month(void *obj) {
 }
 
 /// @brief Return a new DateOnly for the last day of the same month.
+/// @param obj Source DateOnly; null returns `NULL`.
+/// @return New DateOnly at the month's Gregorian final day.
 void *rt_dateonly_end_of_month(void *obj) {
     if (!obj)
         return NULL;
@@ -692,6 +741,8 @@ void *rt_dateonly_end_of_month(void *obj) {
 }
 
 /// @brief Return a new DateOnly for January 1 of the same year.
+/// @param obj Source DateOnly; null returns `NULL`.
+/// @return New DateOnly for January 1.
 void *rt_dateonly_start_of_year(void *obj) {
     if (!obj)
         return NULL;
@@ -700,6 +751,8 @@ void *rt_dateonly_start_of_year(void *obj) {
 }
 
 /// @brief Return a new DateOnly for December 31 of the same year.
+/// @param obj Source DateOnly; null returns `NULL`.
+/// @return New DateOnly for December 31.
 void *rt_dateonly_end_of_year(void *obj) {
     if (!obj)
         return NULL;
@@ -738,7 +791,7 @@ int64_t rt_dateonly_cmp(void *a, void *b) {
 /// @brief Check if two dates represent the same calendar day.
 /// @param a First DateOnly.
 /// @param b Second DateOnly.
-/// @return 1 if both represent the same date, 0 otherwise.
+/// @return 1 if both represent the same date or both are null, 0 otherwise.
 int8_t rt_dateonly_equals(void *a, void *b) {
     return rt_dateonly_cmp(a, b) == 0 ? 1 : 0;
 }
@@ -754,7 +807,7 @@ int8_t rt_dateonly_equals(void *a, void *b) {
 ///          `Parse` reads back — construction, formatting, and parsing share one
 ///          year domain (VDOC-231).
 /// @param obj DateOnly object pointer; returns "" if NULL.
-/// @return Newly allocated runtime string in ISO 8601 format.
+/// @return Newly allocated ISO string, or the shared empty-string constant for null.
 rt_string rt_dateonly_to_string(void *obj) {
     if (!obj)
         return rt_const_cstr("");
@@ -775,14 +828,15 @@ rt_string rt_dateonly_to_string(void *obj) {
 }
 
 /// @brief Format the date using a custom format string.
-/// @details Supports strftime-style specifiers: %Y (4-digit year), %m (2-digit
-///          month), %d (2-digit day), %B (full month name), %b (abbreviated
-///          month name), %A (full weekday name), %a (abbreviated weekday name).
-///          Literal percent signs are written with %%. Characters that don't
-///          follow a % are copied verbatim.
+/// @details Supports strftime-style specifiers: %Y/%y (4-/2-digit year), %m
+///          (2-digit month), %d (2-digit day), %B/%b (full/abbreviated month),
+///          %A/%a (full/abbreviated weekday), and %j (3-digit day of year).
+///          `%%` writes a literal percent; unknown specifiers and a trailing
+///          percent are preserved literally.
 /// @param obj DateOnly object pointer; returns "" if NULL.
 /// @param fmt Format string containing specifiers.
-/// @return Newly allocated runtime string with the formatted result.
+/// @return Newly allocated formatted string, the shared empty-string constant
+///         for a null receiver/format, or `NULL` after allocation failure.
 rt_string rt_dateonly_format(void *obj, rt_string fmt) {
     if (!obj)
         return rt_const_cstr("");

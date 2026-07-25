@@ -6,35 +6,36 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_term.c
-// Purpose: Implements the BASIC runtime's terminal helpers for portable console
-//          control. Provides screen clearing (CLS), colour setting (COLOR),
-//          cursor positioning (LOCATE), blocking and non-blocking key input
-//          (GETKEY$, INKEY$), terminal size queries, and an alternate screen
-//          buffer for full-screen applications.
+// Purpose: Implements portable terminal control, byte-oriented keyboard input,
+//          POSIX raw-mode caching, alternate-screen lifecycle, and output-batch
+//          adapters for BASIC and 64-bit frontend ABIs.
 //
 // Key invariants:
-//   - ANSI escape sequences are only emitted when stdout is attached to a
-//     terminal (isatty check); non-terminal output is silently skipped.
-//   - Raw mode is cached: once enabled, tcgetattr/tcsetattr are called only
-//     once per mode transition, not on every INKEY$ poll.
-//   - On Windows, ENABLE_VIRTUAL_TERMINAL_PROCESSING is set at init time so
-//     ANSI sequences work in cmd.exe and PowerShell consoles.
+//   - Public display controls emit ANSI only when stdout is a terminal; BEL and
+//     direct buffered output helpers have their own documented behavior.
+//   - POSIX raw mode caches original/current termios state; Windows keyboard
+//     polling needs no equivalent transition.
+//   - Windows terminal output lazily requests virtual-terminal processing and
+//     UTF-8 console code pages.
 //   - INKEY$ uses select() with a zero timeout for non-blocking key reads on
 //     POSIX; on Windows it uses _kbhit().
-//   - Normal-exit cleanup restores cached POSIX raw mode AND, if the program
-//     left the terminal on the alternate screen, ends the batch it started and
-//     emits the alternate-screen exit sequence (balanced cleanup, VDOC-220).
+//   - Alternate-screen transitions are idempotent and balance exactly one
+//     output-batch level. Registered POSIX exit cleanup restores that state.
 //
 // Ownership/Lifetime:
-//   - Returned rt_string values from GETKEY$/INKEY$ are newly allocated;
-//     the caller owns the reference and must call rt_string_unref when done.
+//   - Key-reading functions return one owned string reference: a fresh
+//     one-byte string or the shared empty singleton.
 //   - The saved termios state is a process-global stack variable; no heap
 //     allocation is needed for terminal state management.
+//   - Terminal state and alternate-screen flags are process-global and are not
+//     independently synchronized for concurrent callers.
 //
 // Links: src/runtime/core/rt_output.c (buffered stdout wrapper),
 //        src/runtime/core/rt_io.c (higher-level I/O primitives)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Cross-platform runtime terminal display, keyboard, and batching API.
 
 #include "rt.hpp"
 #include "rt_output.h"
@@ -102,7 +103,8 @@ static int g_stdin_fd = -1;
 /// @brief Whether atexit handler has been registered.
 static int g_atexit_registered = 0;
 
-// Forward declaration: defined below, but the exit handler needs it (VDOC-220).
+/// @brief Emit a NUL-terminated byte string through buffered terminal output.
+/// @param s Borrowed C string; may be NULL.
 static void out_str(const char *s);
 
 /// @brief Cleanup handler called on program exit.
@@ -121,10 +123,16 @@ static void term_atexit_handler(void) {
 }
 
 #if defined(__linux__)
+/// @brief Register a Linux ABI process-exit callback.
+/// @param func Callback receiving @p arg.
+/// @param arg Opaque callback argument.
+/// @param dso_handle Optional owning DSO handle.
+/// @return Zero on success or a nonzero libc error code.
 extern int __cxa_atexit(void (*func)(void *), void *arg, void *dso_handle);
 
 /// @brief __cxa_atexit trampoline wrapping term_atexit_handler to the
 ///        void(*)(void*) callback signature (Linux only).
+/// @param arg Unused callback context.
 static void term_atexit_handler_adapter(void *arg) {
     (void)arg;
     term_atexit_handler();
@@ -132,19 +140,25 @@ static void term_atexit_handler_adapter(void *arg) {
 
 /// @brief Register the terminal-restore handler to run at process exit.
 /// @details Linux uses libc's __cxa_atexit() (no late-bindable atexit()
-///          symbol); other platforms use atexit(). @return 0 on success.
+///          symbol).
+/// @return Zero on success or the platform registration error code.
 static int register_term_atexit_handler(void) {
     // glibc exports __cxa_atexit() but not a late-bindable atexit() symbol.
     return __cxa_atexit(term_atexit_handler_adapter, NULL, NULL);
 }
 #else
+/// @brief Register the POSIX terminal-restore callback with `atexit`.
+/// @return Zero on success or a nonzero registration error code.
 static int register_term_atexit_handler(void) {
     return atexit(term_atexit_handler);
 }
 #endif
 
 /// @brief Initialize terminal state caching.
-/// @details Called lazily on first use. Saves original terminal settings.
+/// @details Caches the stdin descriptor and, for an interactive descriptor,
+///          captures original attributes and derives noncanonical/no-echo
+///          polling attributes. Failed descriptor/termios operations leave
+///          caching unavailable for a later call to retry.
 static void init_term_cache(void) {
     if (g_stdin_fd < 0)
         g_stdin_fd = fileno(stdin);
@@ -163,7 +177,9 @@ static void init_term_cache(void) {
 
 /// @brief Enable cached raw mode for efficient key polling.
 /// @details Switches terminal to raw mode once. Subsequent INKEY$ calls
-///          will use select() without needing to change terminal settings.
+///          use select without repeated attribute changes. Noninteractive or
+///          uncapturable stdin is a no-op. Exit cleanup registration is
+///          best-effort and a failed `tcsetattr` leaves mode inactive.
 void rt_term_enable_raw_mode(void) {
     init_term_cache();
     if (g_raw_mode_active || !g_termios_saved)
@@ -180,7 +196,8 @@ void rt_term_enable_raw_mode(void) {
 }
 
 /// @brief Disable raw mode and restore original terminal settings.
-/// @details Should be called before program exit or when leaving game mode.
+/// @details No-ops unless cached raw mode is active. The restore return code is
+///          not surfaced; internal state is marked inactive afterward.
 void rt_term_disable_raw_mode(void) {
     if (!g_raw_mode_active || !g_termios_saved)
         return;
@@ -190,16 +207,21 @@ void rt_term_disable_raw_mode(void) {
 }
 
 /// @brief Check if raw mode caching is currently active.
+/// @return One after a successful cached POSIX transition; otherwise zero.
 int8_t rt_term_is_raw_mode(void) {
     return g_raw_mode_active;
 }
 
 #else // Windows doesn't need raw mode caching - _kbhit is already efficient
 
+/// @brief Windows no-op counterpart to POSIX raw-mode enablement.
 void rt_term_enable_raw_mode(void) {}
 
+/// @brief Windows no-op counterpart to POSIX raw-mode restoration.
 void rt_term_disable_raw_mode(void) {}
 
+/// @brief Report cached raw mode on Windows.
+/// @return Always zero because `_kbhit` requires no termios state.
 int8_t rt_term_is_raw_mode(void) {
     return 0;
 }
@@ -209,6 +231,7 @@ int8_t rt_term_is_raw_mode(void) {
 /// @brief Determine whether stdout is attached to a terminal.
 /// @details Guards terminal escape emission so batch output (e.g. redirected to
 ///          a file) remains free of ANSI sequences.
+/// @return One for a valid interactive stdout descriptor; otherwise zero.
 static int stdout_isatty(void) {
     int fd = fileno(stdout);
     return (fd >= 0) && isatty(fd);
@@ -220,6 +243,8 @@ static int stdout_isatty(void) {
 ///          sets the console codepage to UTF-8 (65001) the first time terminal
 ///          output is requested so subsequent writes honour colour, cursor
 ///          positioning sequences, and UTF-8 box-drawing characters.
+/// @note Platform API failures are intentionally ignored and initialization is
+///       attempted only once.
 static void enable_vt(void) {
     static int once = 0;
     if (once)
@@ -249,6 +274,7 @@ static void enable_vt(void) {
 /// immediate fflush(), resulting in thousands of system calls per frame.
 /// With output buffering, a typical 60x20 game screen update goes from
 /// ~6000 syscalls to ~1 syscall (at batch end).
+/// @param s Borrowed NUL-terminated bytes; NULL is a no-op.
 static void out_str(const char *s) {
     if (!s)
         return;
@@ -263,6 +289,9 @@ static void out_str(const char *s) {
 /// @details Converts BASIC colour codes into ANSI escape sequences, supporting
 ///          normal, bright, and 256-colour modes.  Negative parameters leave the
 ///          corresponding channel unchanged.
+/// @param fg Foreground code: negative unchanged, 0–7 normal, 8–15 bright,
+///        and larger values emitted as an extended palette index.
+/// @param bg Background code with the analogous mapping.
 static void sgr_color(int fg, int bg) {
     if (fg < 0 && bg < 0) {
         return;
@@ -311,7 +340,10 @@ void rt_term_cls(void) {
 /// @brief Adjust terminal foreground/background colours using BASIC codes.
 /// @details Validates the colour range and forwards to @ref sgr_color when
 ///          stdout is a terminal.  Negative parameters leave the colour
-///          unchanged to mirror BASIC's semantics.
+///          unchanged to mirror BASIC's semantics; values below -1 cause the
+///          entire operation to be ignored.
+/// @param fg Foreground color code, or -1 to preserve it.
+/// @param bg Background color code, or -1 to preserve it.
 void rt_term_color_i32(int32_t fg, int32_t bg) {
     if (!stdout_isatty())
         return;
@@ -323,6 +355,8 @@ void rt_term_color_i32(int32_t fg, int32_t bg) {
 /// @brief Move the cursor to a 1-based row/column pair.
 /// @details Clamps coordinates to the minimum BASIC expects and emits an ANSI
 ///          cursor-position sequence when stdout is interactive.
+/// @param row One-based row, clamped upward to one.
+/// @param col One-based column, clamped upward to one.
 void rt_term_locate_i32(int32_t row, int32_t col) {
     if (!stdout_isatty())
         return;
@@ -339,6 +373,7 @@ void rt_term_locate_i32(int32_t row, int32_t col) {
 /// @details Emits CSI ?25h to show the cursor or CSI ?25l to hide it.  The
 ///          helper only outputs escape codes when stdout is a terminal so
 ///          redirected output remains free of ANSI sequences.
+/// @param show Zero to hide the cursor; nonzero to show it.
 void rt_term_cursor_visible_i32(int32_t show) {
     if (!stdout_isatty())
         return;
@@ -354,6 +389,7 @@ void rt_term_cursor_visible_i32(int32_t show) {
 /// PERFORMANCE: Automatically enables/disables raw mode caching when entering/
 ///              exiting alt screen. Games typically use alt screen, so this
 ///              provides automatic optimization for game loops.
+/// @param enable Nonzero to enter; zero to leave.
 void rt_term_alt_screen_i32(int32_t enable) {
     if (!stdout_isatty())
         return;
@@ -406,6 +442,7 @@ void rt_bell(void) {
 #if defined(_WIN32)
 /// @brief Read a single key from the console, blocking until one is available.
 /// @details Uses `_getch` to obtain a byte without echoing it to the console.
+/// @return Unsigned byte value from zero through 255.
 static int readkey_blocking(void) {
     return _getch() & 0xFF;
 }
@@ -414,6 +451,8 @@ static int readkey_blocking(void) {
 /// @details Peeks using `_kbhit` and captures the byte with `_getch` when
 ///          available.  Returns 1 when a key was read and stores the byte in
 ///          @p out.
+/// @param out Required output receiving the unsigned byte on success.
+/// @return One when a byte was consumed; otherwise zero.
 static int readkey_nonblocking(int *out) {
     if (_kbhit()) {
         *out = _getch() & 0xFF;
@@ -425,6 +464,8 @@ static int readkey_nonblocking(int *out) {
 /// @brief Read a single key from the POSIX terminal, blocking until available.
 /// @details Temporarily disables canonical mode and echo, reads one byte, and
 ///          restores the previous terminal attributes regardless of success.
+/// @return Unsigned byte value on success, or zero after descriptor/termios/read
+///         failure (indistinguishable from an actual NUL byte).
 static int readkey_blocking(void) {
     struct termios orig, raw;
     int fd = fileno(stdin);
@@ -456,6 +497,8 @@ static int readkey_blocking(void) {
 ///   - 1 select() or read() syscall
 ///   - 1 tcsetattr() syscall (restore)
 /// That's 3x fewer syscalls in the hot path!
+/// @param out Required output receiving the unsigned byte on success.
+/// @return One when a byte was consumed; otherwise zero.
 static int readkey_nonblocking(int *out) {
     int fd = g_stdin_fd >= 0 ? g_stdin_fd : fileno(stdin);
 
@@ -532,6 +575,8 @@ static int readkey_nonblocking(int *out) {
 ///          @ref rt_str_chr so the runtime's string interning and ownership
 ///          conventions are respected. Flushes output first to ensure any
 ///          pending screen updates are visible before blocking.
+/// @return Owned one-byte string; read failure is represented as byte zero, and
+///         allocation failure may return NULL.
 rt_string rt_getkey_str(void) {
     // Flush output before blocking for input so user sees current state
     rt_output_flush();
@@ -545,6 +590,9 @@ rt_string rt_getkey_str(void) {
 ///          specified timeout. When a key arrives within the timeout window it is
 ///          read via _getch and converted to a runtime string. Flushes output
 ///          first to ensure any pending screen updates are visible.
+/// @param timeout_ms Wait duration in milliseconds; negative blocks indefinitely.
+/// @return Owned one-byte string on input, or shared empty string on timeout or
+///         console error.
 rt_string rt_getkey_timeout_i32(int32_t timeout_ms) {
     // Flush output before waiting for input so user sees current state
     rt_output_flush();
@@ -576,6 +624,9 @@ rt_string rt_getkey_timeout_i32(int32_t timeout_ms) {
 ///          with the specified timeout. When a key arrives before the deadline it
 ///          is read and converted to a runtime string; otherwise the empty string
 ///          is returned. Flushes output first to ensure pending updates are visible.
+/// @param timeout_ms Wait duration in milliseconds; negative blocks indefinitely.
+/// @return Owned one-byte string on input, or shared empty string on timeout,
+///         descriptor, termios, select, or read failure.
 rt_string rt_getkey_timeout_i32(int32_t timeout_ms) {
     // Flush output before waiting for input so user sees current state
     rt_output_flush();
@@ -631,6 +682,8 @@ rt_string rt_getkey_timeout_i32(int32_t timeout_ms) {
 ///          available it is converted using @ref rt_str_chr; otherwise the canonical
 ///          empty string from @ref rt_const_cstr is returned. Flushes output
 ///          first to ensure the screen is up-to-date when polling.
+/// @return Owned one-byte string when input was consumed, or the shared empty
+///         singleton when no byte is available.
 rt_string rt_inkey_str(void) {
     // Flush output so user sees current state when we check for input
     rt_output_flush();
@@ -644,6 +697,7 @@ rt_string rt_inkey_str(void) {
 #if defined(_WIN32)
 /// @brief Check if a key is available in the input buffer without reading it.
 /// @details Returns non-zero if a key is pending, zero otherwise.
+/// @return One when `_kbhit` reports pending console input; otherwise zero.
 int32_t rt_keypressed(void) {
     return _kbhit() ? 1 : 0;
 }
@@ -655,6 +709,7 @@ int32_t rt_keypressed(void) {
 ///
 /// PERFORMANCE: When raw mode caching is active, this only does a single
 ///              select() syscall instead of tcgetattr + tcsetattr + select + tcsetattr.
+/// @return One when stdin is readable without blocking; otherwise zero.
 int32_t rt_keypressed(void) {
     int fd = g_stdin_fd >= 0 ? g_stdin_fd : fileno(stdin);
 
@@ -755,6 +810,8 @@ void rt_term_flush(void) {
 ///          so a large positive value cannot wrap to a negative one (which made a
 ///          big timeout block forever and large cursor/color values change sign
 ///          and take unrelated branches) (VDOC-221).
+/// @param v Signed 64-bit value to narrow.
+/// @return Exactly @p v when representable, otherwise the nearest int32 bound.
 static int32_t term_clamp_i32(int64_t v) {
     if (v > INT32_MAX)
         return INT32_MAX;
@@ -764,21 +821,27 @@ static int32_t term_clamp_i32(int64_t v) {
 }
 
 /// @brief Move cursor to position (i64 wrapper; clamps, does not wrap).
+/// @param row One-based row saturated to int32 before minimum-one clamping.
+/// @param col One-based column saturated to int32 before minimum-one clamping.
 void rt_term_locate(int64_t row, int64_t col) {
     rt_term_locate_i32(term_clamp_i32(row), term_clamp_i32(col));
 }
 
 /// @brief Set terminal colors (i64 wrapper; clamps, does not wrap).
+/// @param fg Foreground code saturated to int32.
+/// @param bg Background code saturated to int32.
 void rt_term_color(int64_t fg, int64_t bg) {
     rt_term_color_i32(term_clamp_i32(fg), term_clamp_i32(bg));
 }
 
 /// @brief Set foreground text color only.
+/// @param fg Foreground code saturated to int32; background remains unchanged.
 void rt_term_textcolor(int64_t fg) {
     rt_term_color_i32(term_clamp_i32(fg), -1);
 }
 
 /// @brief Set background color only.
+/// @param bg Background code saturated to int32; foreground remains unchanged.
 void rt_term_textbg(int64_t bg) {
     rt_term_color_i32(-1, term_clamp_i32(bg));
 }
@@ -794,21 +857,28 @@ void rt_term_show_cursor(void) {
 }
 
 /// @brief Set cursor visibility (i64 wrapper for ZannaLang).
+/// @details Narrows by direct C cast to int32; zero hides and nonzero shows.
+/// @param show Visibility value.
 void rt_term_cursor_visible(int64_t show) {
     rt_term_cursor_visible_i32((int32_t)show);
 }
 
 /// @brief Set alt screen mode (i64 wrapper for ZannaLang).
+/// @details Narrows by direct C cast to int32 before boolean interpretation.
+/// @param enable Alternate-screen value.
 void rt_term_alt_screen(int64_t enable) {
     rt_term_alt_screen_i32((int32_t)enable);
 }
 
 /// @brief Sleep for specified milliseconds (i64 wrapper).
+/// @details Narrows by direct C cast to int32 before delegating.
+/// @param ms Millisecond count.
 void rt_sleep_ms_i64(int64_t ms) {
     rt_sleep_ms((int32_t)ms);
 }
 
 /// @brief Check if a key is available (i64 wrapper).
+/// @return Zero or one widened from @ref rt_keypressed.
 int64_t rt_keypressed_i64(void) {
     return (int64_t)rt_keypressed();
 }
@@ -816,6 +886,8 @@ int64_t rt_keypressed_i64(void) {
 /// @brief Get key with timeout (i64 wrapper; clamps a large timeout to
 ///        INT32_MAX instead of wrapping to a negative value that would block
 ///        indefinitely) (VDOC-221).
+/// @param timeout_ms Timeout saturated to int32 milliseconds.
+/// @return Owned key or empty result from @ref rt_getkey_timeout_i32.
 rt_string rt_getkey_timeout(int64_t timeout_ms) {
     return rt_getkey_timeout_i32(term_clamp_i32(timeout_ms));
 }

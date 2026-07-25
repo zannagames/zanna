@@ -5,6 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
+///
+/// @file rt_graphics2d_tilemap.c
+/// @brief Implements tileset, dense tile-layer, object-layer, and autotile
+///        runtime objects.
+///
+/// @details This translation unit owns the tilemap-family containers that are
+/// independent of the higher-level Tilemap2D compatibility APIs. TileSet2D
+/// retains a source Pixels image, TileLayer2D and ObjectLayer2D own native
+/// backing arrays, and AutoTile2D stores a fixed sixteen-entry lookup table.
+/// Public APIs validate opaque class handles and use explicit fallback values
+/// for invalid queries.
+///
 // File: src/runtime/graphics/2d/rt_graphics2d_tilemap.c
 // Purpose: Tilemap-family 2D graphics classes — TileSet2D, TileLayer2D,
 //          ObjectLayer2D, and AutoTile2D. Split out of rt_graphics2d.c; shares
@@ -16,8 +28,9 @@
 //     hostile width*height can never overflow an allocation.
 //
 // Ownership/Lifetime:
-//   - Class impls are GC objects; retained Pixels / tile storage is released on
-//     finalize. Helpers borrow caller handles.
+//   - Class impls are GC objects. TileSet2D releases its retained Pixels
+//     reference, while TileLayer2D and ObjectLayer2D free owned arrays.
+//   - Query and mutation helpers borrow caller handles.
 //
 // Links: src/runtime/graphics/2d/rt_graphics2d.c (other 2D classes + helpers),
 //        src/runtime/graphics/2d/rt_graphics2d_internal.h (shared helpers)
@@ -43,6 +56,11 @@
 
 /// @brief Clamp a value to [min, max] (file-local copy; the name is shared by
 ///        several runtime modules as a static helper).
+/// @param value Signed value to constrain.
+/// @param min Inclusive lower bound.
+/// @param max Inclusive upper bound; callers provide @p min no greater than
+///            this value.
+/// @return @p value constrained to [@p min, @p max].
 static int64_t clamp_i64(int64_t value, int64_t min, int64_t max) {
     if (value < min)
         return min;
@@ -51,45 +69,72 @@ static int64_t clamp_i64(int64_t value, int64_t min, int64_t max) {
     return value;
 }
 
-// Tilemap class IDs
+/// @name Tilemap-family runtime class identifiers
+/// @{
 #define RT2D_TILESET_CLASS_ID INT64_C(-0x620106)
 #define RT2D_TILELAYER_CLASS_ID INT64_C(-0x620107)
 #define RT2D_OBJECTLAYER_CLASS_ID INT64_C(-0x620108)
 #define RT2D_AUTOTILE_CLASS_ID INT64_C(-0x620109)
+/// @}
 
-// Tilemap impl structs
+/// @brief Retained image and fixed cell dimensions owned by a TileSet2D.
 typedef struct {
+    /// Retained Pixels image containing the tile atlas.
     void *pixels;
+    /// Positive tile width in source pixels.
     int64_t tile_width;
+    /// Positive tile height in source pixels.
     int64_t tile_height;
 } rt_tileset2d_impl;
 
+/// @brief Dense row-major tile grid and layer presentation state.
 typedef struct {
+    /// Positive number of tile columns.
     int64_t width;
+    /// Positive number of tile rows.
     int64_t height;
+    /// Boolean render-visibility flag.
     int64_t visible;
+    /// Layer opacity percentage in `[0, 100]`.
     int64_t opacity;
+    /// Owned array of `width * height` signed tile identifiers.
     int64_t *tiles;
 } rt_tilelayer2d_impl;
 
+/// @brief Axis-aligned application-defined object-layer rectangle.
 typedef struct {
+    /// Rectangle X coordinate.
     int64_t x;
+    /// Rectangle Y coordinate.
     int64_t y;
+    /// Strictly positive normalized width.
     int64_t width;
+    /// Strictly positive normalized height.
     int64_t height;
+    /// Opaque application-defined category value.
     int64_t type;
 } rt_objectlayer2d_entry;
 
+/// @brief Growable object-layer rectangle collection.
 typedef struct {
+    /// Owned heap allocation containing initialized and spare entries.
     rt_objectlayer2d_entry *items;
+    /// Number of initialized entries.
     int64_t count;
+    /// Number of allocated entry slots.
     int64_t capacity;
 } rt_objectlayer2d_impl;
 
+/// @brief Fixed lookup from four-bit neighbor masks to tile identifiers.
 typedef struct {
+    /// Tile identifier for each mask in the inclusive range `[0, 15]`.
     int64_t variants[16];
 } rt_autotile2d_impl;
 
+/// @brief Validate and cast an opaque TileSet2D handle.
+/// @param tileset Opaque TileSet2D candidate.
+/// @return The implementation pointer when class and payload size match, or
+///         `NULL` otherwise.
 static rt_tileset2d_impl *tileset2d_checked(void *tileset) {
     return rt2d_has_class_min(tileset, RT2D_TILESET_CLASS_ID, sizeof(rt_tileset2d_impl))
                ? (rt_tileset2d_impl *)tileset
@@ -97,13 +142,14 @@ static rt_tileset2d_impl *tileset2d_checked(void *tileset) {
 }
 
 /// @brief Safe-cast an opaque handle to rt_tilelayer2d_impl, or NULL.
+/// @param layer Opaque TileLayer2D candidate.
+/// @return The implementation pointer when class and payload size match, or
+///         `NULL` otherwise.
 static rt_tilelayer2d_impl *tilelayer2d_checked(void *layer) {
     return rt2d_has_class_min(layer, RT2D_TILELAYER_CLASS_ID, sizeof(rt_tilelayer2d_impl))
                ? (rt_tilelayer2d_impl *)layer
                : NULL;
 }
-
-/// @brief Test whether @p value falls in the half-open interval `[start, start+length)`.
 
 // TileSet2D
 //=============================================================================
@@ -112,6 +158,8 @@ static rt_tilelayer2d_impl *tilelayer2d_checked(void *layer) {
 // their own Pixels for rendering or inspection.
 
 /// @brief GC finalizer — releases the retained backing Pixels.
+/// @param obj Opaque finalizing object expected to be a TileSet2D instance;
+///            invalid handles are ignored.
 static void tileset2d_finalize(void *obj) {
     rt_tileset2d_impl *tileset = tileset2d_checked(obj);
     if (!tileset)
@@ -125,7 +173,13 @@ static void tileset2d_finalize(void *obj) {
 ///          non-positive, or the image is smaller than one tile — callers can
 ///          probe for "is this a usable tileset" without catching a trap. The
 ///          grid doesn't have to divide evenly; any partial column/row on the
-///          right or bottom is inaccessible.
+///          right or bottom is inaccessible. The tileset takes its own retained
+///          reference to the source image.
+/// @param pixels Valid Pixels image containing a row-major tile atlas.
+/// @param tile_width Positive width of each tile cell in pixels.
+/// @param tile_height Positive height of each tile cell in pixels.
+/// @return A new TileSet2D handle, or `NULL` for invalid geometry, an invalid
+///         source handle, or allocation failure.
 void *rt_tileset2d_new(void *pixels, int64_t tile_width, int64_t tile_height) {
     if (!pixels || tile_width <= 0 || tile_height <= 0)
         return NULL;
@@ -151,6 +205,9 @@ void *rt_tileset2d_new(void *pixels, int64_t tile_width, int64_t tile_height) {
 }
 
 /// @brief Return the number of whole tile columns in the tileset image.
+/// @param tileset Opaque TileSet2D handle to query.
+/// @return The atlas width divided by tile width, or `0` when @p tileset is
+///         invalid.
 int64_t rt_tileset2d_columns(void *tileset) {
     rt_tileset2d_impl *impl = tileset2d_checked(tileset);
     if (!impl || impl->tile_width <= 0)
@@ -159,6 +216,9 @@ int64_t rt_tileset2d_columns(void *tileset) {
 }
 
 /// @brief Return the number of whole tile rows in the tileset image.
+/// @param tileset Opaque TileSet2D handle to query.
+/// @return The atlas height divided by tile height, or `0` when @p tileset is
+///         invalid.
 int64_t rt_tileset2d_rows(void *tileset) {
     rt_tileset2d_impl *impl = tileset2d_checked(tileset);
     if (!impl || impl->tile_height <= 0)
@@ -167,6 +227,9 @@ int64_t rt_tileset2d_rows(void *tileset) {
 }
 
 /// @brief Return the total number of tiles (`columns * rows`) in the tileset.
+/// @param tileset Opaque TileSet2D handle to query.
+/// @return The number of accessible whole tile cells, or `0` when @p tileset
+///         is invalid.
 int64_t rt_tileset2d_tile_count(void *tileset) {
     return rt_tileset2d_columns(tileset) * rt_tileset2d_rows(tileset);
 }
@@ -174,6 +237,10 @@ int64_t rt_tileset2d_tile_count(void *tileset) {
 /// @brief Extract one tile by index and return it as a new Pixels buffer.
 /// @details Tiles are indexed left-to-right, top-to-bottom starting at 0. Returns NULL for
 ///   out-of-range indices; caller owns the returned Pixels.
+/// @param tileset Opaque TileSet2D handle containing the atlas.
+/// @param tile_index Zero-based row-major tile index.
+/// @return A newly allocated Pixels image containing exactly one tile, or
+///         `NULL` for invalid input or allocation failure.
 void *rt_tileset2d_get_tile_pixels(void *tileset, int64_t tile_index) {
     if (!tileset || tile_index < 0 || tile_index >= rt_tileset2d_tile_count(tileset))
         return NULL;
@@ -197,6 +264,8 @@ void *rt_tileset2d_get_tile_pixels(void *tileset, int64_t tile_index) {
 // draw time to resolve an ID to a renderable tile.
 
 /// @brief GC finalizer — frees the `tiles` buffer.
+/// @param obj Opaque finalizing object expected to be a TileLayer2D instance;
+///            invalid handles are ignored.
 static void tilelayer2d_finalize(void *obj) {
     rt_tilelayer2d_impl *layer = tilelayer2d_checked(obj);
     if (!layer)
@@ -211,6 +280,10 @@ static void tilelayer2d_finalize(void *obj) {
 ///          overflow the total byte count. Traps on invalid dimensions — the
 ///          caller gets a clear error rather than a silent NULL. On malloc
 ///          failure the partially-constructed impl is torn down cleanly.
+/// @param width Requested positive number of tile columns.
+/// @param height Requested positive number of tile rows.
+/// @return A new empty TileLayer2D handle, or `NULL` after invalid dimensions
+///         or allocation failure.
 void *rt_tilelayer2d_new(int64_t width, int64_t height) {
     int64_t count = 0;
     if (!rt2d_checked_count(width, height, (int64_t)sizeof(int64_t), &count)) {
@@ -236,18 +309,27 @@ void *rt_tilelayer2d_new(int64_t width, int64_t height) {
 }
 
 /// @brief Return the width (in tiles) of the layer.
+/// @param layer Opaque TileLayer2D handle to query.
+/// @return The positive grid width, or `0` when @p layer is invalid.
 int64_t rt_tilelayer2d_width(void *layer) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     return impl ? impl->width : 0;
 }
 
 /// @brief Return the height (in tiles) of the layer.
+/// @param layer Opaque TileLayer2D handle to query.
+/// @return The positive grid height, or `0` when @p layer is invalid.
 int64_t rt_tilelayer2d_height(void *layer) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     return impl ? impl->height : 0;
 }
 
 /// @brief Return non-zero if tile cell (x, y) is within the layer's bounds.
+/// @param layer Borrowed TileLayer2D implementation, possibly `NULL`.
+/// @param x Candidate zero-based column.
+/// @param y Candidate zero-based row.
+/// @return Nonzero only when @p layer is non-null and both coordinates lie in
+///         its half-open grid bounds.
 static int32_t tilelayer2d_in_bounds(rt_tilelayer2d_impl *layer, int64_t x, int64_t y) {
     return layer && x >= 0 && y >= 0 && x < layer->width && y < layer->height;
 }
@@ -255,6 +337,10 @@ static int32_t tilelayer2d_in_bounds(rt_tilelayer2d_impl *layer, int64_t x, int6
 /// @brief Write a tile ID into a cell, using row-major flat indexing.
 /// @details Bounds are checked via `tilelayer2d_in_bounds`; out-of-range writes
 ///          are silently dropped. Tile ID 0 conventionally means "empty".
+/// @param layer Opaque TileLayer2D handle to modify.
+/// @param x Zero-based destination column.
+/// @param y Zero-based destination row.
+/// @param tile Signed application-defined tile identifier to store.
 void rt_tilelayer2d_set(void *layer, int64_t x, int64_t y, int64_t tile) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     if (!tilelayer2d_in_bounds(impl, x, y))
@@ -263,6 +349,11 @@ void rt_tilelayer2d_set(void *layer, int64_t x, int64_t y, int64_t tile) {
 }
 
 /// @brief Read the tile ID at `(x, y)`, returning -1 for out-of-range coords.
+/// @param layer Opaque TileLayer2D handle to query.
+/// @param x Zero-based source column.
+/// @param y Zero-based source row.
+/// @return The stored tile identifier, or `-1` for an invalid handle or
+///         out-of-bounds coordinate.
 int64_t rt_tilelayer2d_get(void *layer, int64_t x, int64_t y) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     if (!tilelayer2d_in_bounds(impl, x, y))
@@ -271,6 +362,10 @@ int64_t rt_tilelayer2d_get(void *layer, int64_t x, int64_t y) {
 }
 
 /// @brief Fill every cell in the layer with the same tile ID.
+/// @param layer Opaque TileLayer2D handle to modify; invalid handles are
+///              ignored.
+/// @param tile Signed application-defined tile identifier copied to every
+///             cell.
 void rt_tilelayer2d_fill(void *layer, int64_t tile) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     if (!impl)
@@ -281,11 +376,16 @@ void rt_tilelayer2d_fill(void *layer, int64_t tile) {
 }
 
 /// @brief Fill every cell with tile ID 0 (empty).
+/// @param layer Opaque TileLayer2D handle to clear; invalid handles are
+///              ignored.
 void rt_tilelayer2d_clear(void *layer) {
     rt_tilelayer2d_fill(layer, 0);
 }
 
 /// @brief Set whether the layer is included in tilemap renders.
+/// @param layer Opaque TileLayer2D handle to update; invalid handles are
+///              ignored.
+/// @param visible Nonzero to store visible state, or zero to hide the layer.
 void rt_tilelayer2d_set_visible(void *layer, int64_t visible) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     if (impl)
@@ -293,12 +393,17 @@ void rt_tilelayer2d_set_visible(void *layer, int64_t visible) {
 }
 
 /// @brief Return non-zero if the layer is currently marked visible.
+/// @param layer Opaque TileLayer2D handle to query.
+/// @return `1` when visible and `0` when hidden or invalid.
 int64_t rt_tilelayer2d_is_visible(void *layer) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     return impl ? impl->visible : 0;
 }
 
 /// @brief Set the layer opacity in percent [0, 100]; values are clamped.
+/// @param layer Opaque TileLayer2D handle to update; invalid handles are
+///              ignored.
+/// @param opacity Requested percentage.
 void rt_tilelayer2d_set_opacity(void *layer, int64_t opacity) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     if (impl)
@@ -306,6 +411,8 @@ void rt_tilelayer2d_set_opacity(void *layer, int64_t opacity) {
 }
 
 /// @brief Return the current layer opacity in percent [0, 100].
+/// @param layer Opaque TileLayer2D handle to query.
+/// @return The stored opacity percentage, or `0` when @p layer is invalid.
 int64_t rt_tilelayer2d_get_opacity(void *layer) {
     rt_tilelayer2d_impl *impl = tilelayer2d_checked(layer);
     return impl ? impl->opacity : 0;
@@ -319,6 +426,8 @@ int64_t rt_tilelayer2d_get_opacity(void *layer) {
 // interpretation of `type` is app-specific.
 
 /// @brief GC finalizer — frees the dynamic `items` array.
+/// @param obj Opaque finalizing object expected to be an ObjectLayer2D
+///            instance; invalid handles are ignored.
 static void objectlayer2d_finalize(void *obj) {
     if (!rt2d_has_class(obj, RT2D_OBJECTLAYER_CLASS_ID))
         return;
@@ -327,9 +436,13 @@ static void objectlayer2d_finalize(void *obj) {
 }
 
 /// @brief Allocate an object layer with the given initial capacity.
-/// @details Capacity is clamped by `rt2d_initial_capacity` (floor 16, ceiling 1Mi).
-///          Returns NULL on allocation failure without trapping — the caller
-///          can fall back to a smaller capacity or handle the error.
+/// @details A nonpositive request selects the default capacity of 16, positive
+///          requests up to 1,048,576 are preserved, and larger initial
+///          requests are capped at that value. Allocation failure returns
+///          `NULL` without trapping.
+/// @param capacity Requested number of rectangle slots to allocate initially.
+/// @return A new empty ObjectLayer2D handle, or `NULL` if object or entry-array
+///         allocation fails.
 void *rt_objectlayer2d_new(int64_t capacity) {
     rt_objectlayer2d_impl *layer = (rt_objectlayer2d_impl *)rt_obj_new_i64(
         RT2D_OBJECTLAYER_CLASS_ID, (int64_t)sizeof(rt_objectlayer2d_impl));
@@ -350,7 +463,14 @@ void *rt_objectlayer2d_new(int64_t capacity) {
 /// @details Same doubling pattern as `renderer2d_reserve` with both element-count
 ///          and byte-count overflow guards. Returns 0 on failure so the caller
 ///          can decide whether to trap or drop-the-add — used by `Add` to
-///          trap-on-overflow with a clear message.
+///          trap-on-overflow with a clear message. Newly allocated slots are
+///          zero-initialized. A null layer is treated as already satisfied
+///          because append callers reject it before reserving.
+/// @param layer Mutable ObjectLayer2D implementation whose entry buffer may be
+///              reallocated.
+/// @param needed Minimum number of entry slots required.
+/// @return Nonzero for a null layer, sufficient existing capacity, or
+///         successful growth; zero on overflow or allocation failure.
 static int32_t objectlayer2d_reserve(rt_objectlayer2d_impl *layer, int64_t needed) {
     if (!layer || needed <= layer->capacity)
         return 1;
@@ -376,7 +496,18 @@ static int32_t objectlayer2d_reserve(rt_objectlayer2d_impl *layer, int64_t neede
 /// @details Grows the backing array if needed (doubling, checked). Traps via
 ///          `rt_trap` on capacity overflow. Returns -1 if `layer` is NULL.
 ///          The `type` field is opaque — callers use it as a category tag
-///          (e.g. collision=1, trigger=2, spawn=3).
+///          (e.g. collision=1, trigger=2, spawn=3). Negative widths or heights
+///          are normalized by moving the corresponding origin toward the
+///          negative axis with saturating addition and negating the extent.
+///          Zero extents and `INT64_MIN` extents are rejected.
+/// @param layer Opaque ObjectLayer2D handle to append to.
+/// @param x Rectangle X coordinate; adjusted when @p width is negative.
+/// @param y Rectangle Y coordinate; adjusted when @p height is negative.
+/// @param width Nonzero rectangle width, with negative values normalized.
+/// @param height Nonzero rectangle height, with negative values normalized.
+/// @param type Opaque application-defined category value.
+/// @return The zero-based index of the appended entry, or `-1` for invalid
+///         input, overflow, or allocation failure.
 int64_t rt_objectlayer2d_add_rect(
     void *layer, int64_t x, int64_t y, int64_t width, int64_t height, int64_t type) {
     rt_objectlayer2d_impl *impl =
@@ -409,6 +540,8 @@ int64_t rt_objectlayer2d_add_rect(
 }
 
 /// @brief Return the number of rect entries currently in the layer.
+/// @param layer Opaque ObjectLayer2D handle to query.
+/// @return The logical entry count, or `0` when @p layer is invalid.
 int64_t rt_objectlayer2d_count(void *layer) {
     return rt2d_has_class(layer, RT2D_OBJECTLAYER_CLASS_ID)
                ? ((rt_objectlayer2d_impl *)layer)->count
@@ -416,12 +549,21 @@ int64_t rt_objectlayer2d_count(void *layer) {
 }
 
 /// @brief Reset the entry count to zero without freeing the backing array.
+/// @details Existing entry bytes remain allocated and may be overwritten by
+///          subsequent additions.
+/// @param layer Opaque ObjectLayer2D handle to clear; invalid handles are
+///              ignored.
 void rt_objectlayer2d_clear(void *layer) {
     if (rt2d_has_class(layer, RT2D_OBJECTLAYER_CLASS_ID))
         ((rt_objectlayer2d_impl *)layer)->count = 0;
 }
 
 /// @brief Return a pointer to the entry at @p index in the object layer, or NULL if out of range.
+/// @param layer Opaque ObjectLayer2D handle to query.
+/// @param index Zero-based entry index.
+/// @return A borrowed pointer into the layer-owned array, or `NULL` for an
+///         invalid handle or index. The pointer is invalidated by array growth
+///         or object finalization.
 static rt_objectlayer2d_entry *objectlayer2d_get_entry(void *layer, int64_t index) {
     rt_objectlayer2d_impl *impl =
         rt2d_has_class(layer, RT2D_OBJECTLAYER_CLASS_ID) ? (rt_objectlayer2d_impl *)layer : NULL;
@@ -431,24 +573,36 @@ static rt_objectlayer2d_entry *objectlayer2d_get_entry(void *layer, int64_t inde
 }
 
 /// @brief Return the X position of the entry at `index`, or 0 if out of range.
+/// @param layer Opaque ObjectLayer2D handle to query.
+/// @param index Zero-based entry index.
+/// @return The stored X coordinate, or `0` for an invalid handle or index.
 int64_t rt_objectlayer2d_get_x(void *layer, int64_t index) {
     rt_objectlayer2d_entry *entry = objectlayer2d_get_entry(layer, index);
     return entry ? entry->x : 0;
 }
 
 /// @brief Return the Y position of the entry at `index`, or 0 if out of range.
+/// @param layer Opaque ObjectLayer2D handle to query.
+/// @param index Zero-based entry index.
+/// @return The stored Y coordinate, or `0` for an invalid handle or index.
 int64_t rt_objectlayer2d_get_y(void *layer, int64_t index) {
     rt_objectlayer2d_entry *entry = objectlayer2d_get_entry(layer, index);
     return entry ? entry->y : 0;
 }
 
 /// @brief Return the width of the entry at `index`, or 0 if out of range.
+/// @param layer Opaque ObjectLayer2D handle to query.
+/// @param index Zero-based entry index.
+/// @return The stored positive width, or `0` for an invalid handle or index.
 int64_t rt_objectlayer2d_get_width(void *layer, int64_t index) {
     rt_objectlayer2d_entry *entry = objectlayer2d_get_entry(layer, index);
     return entry ? entry->width : 0;
 }
 
 /// @brief Return the height of the entry at `index`, or 0 if out of range.
+/// @param layer Opaque ObjectLayer2D handle to query.
+/// @param index Zero-based entry index.
+/// @return The stored positive height, or `0` for an invalid handle or index.
 int64_t rt_objectlayer2d_get_height(void *layer, int64_t index) {
     rt_objectlayer2d_entry *entry = objectlayer2d_get_entry(layer, index);
     return entry ? entry->height : 0;
@@ -456,6 +610,9 @@ int64_t rt_objectlayer2d_get_height(void *layer, int64_t index) {
 
 /// @brief Return the application-defined type tag of the entry at `index`,
 ///        or 0 if out of range.
+/// @param layer Opaque ObjectLayer2D handle to query.
+/// @param index Zero-based entry index.
+/// @return The stored type value, or `0` for an invalid handle or index.
 int64_t rt_objectlayer2d_get_type(void *layer, int64_t index) {
     rt_objectlayer2d_entry *entry = objectlayer2d_get_entry(layer, index);
     return entry ? entry->type : 0;
@@ -471,12 +628,18 @@ int64_t rt_objectlayer2d_get_type(void *layer, int64_t index) {
 // into a TileLayer2D cell.
 
 /// @brief Allocate a zeroed autotile variant table (16 entries, all 0).
+/// @return A new AutoTile2D handle, or `NULL` if runtime object allocation
+///         fails.
 void *rt_autotile2d_new(void) {
     return rt_obj_new_i64(RT2D_AUTOTILE_CLASS_ID, (int64_t)sizeof(rt_autotile2d_impl));
 }
 
 /// @brief Register the tile ID to use when the neighbour mask equals `mask`.
 /// @details Only the low 4 bits of `mask` are used (16 possible combinations).
+/// @param autotile Opaque AutoTile2D handle to update; invalid handles are
+///                 ignored.
+/// @param mask Neighbor mask whose low four bits select the variant slot.
+/// @param tile Signed application-defined tile identifier to store.
 void rt_autotile2d_set_variant(void *autotile, int64_t mask, int64_t tile) {
     if (!rt2d_has_class(autotile, RT2D_AUTOTILE_CLASS_ID))
         return;
@@ -486,6 +649,10 @@ void rt_autotile2d_set_variant(void *autotile, int64_t mask, int64_t tile) {
 /// @brief Look up the tile ID for a given 4-bit neighbour `mask`.
 /// @details Returns 0 if the autotile pointer is NULL or the variant was never
 ///          set (variants default to 0 on allocation).
+/// @param autotile Opaque AutoTile2D handle to query.
+/// @param mask Neighbor mask whose low four bits select the variant slot.
+/// @return The configured tile identifier, or `0` for an invalid handle or an
+///         untouched slot.
 int64_t rt_autotile2d_resolve(void *autotile, int64_t mask) {
     return rt2d_has_class(autotile, RT2D_AUTOTILE_CLASS_ID)
                ? ((rt_autotile2d_impl *)autotile)->variants[mask & 15]
@@ -495,6 +662,13 @@ int64_t rt_autotile2d_resolve(void *autotile, int64_t mask) {
 /// @brief Resolve `mask` to a tile ID and write it into the TileLayer2D cell at `(x, y)`.
 /// @details Combines `rt_autotile2d_resolve` + `rt_tilelayer2d_set` so game
 ///          code can update a cell in one call without a temporary variable.
+///          Invalid autotile/layer handles and out-of-bounds coordinates leave
+///          the layer unchanged.
+/// @param autotile Opaque AutoTile2D handle providing the variant table.
+/// @param layer Opaque TileLayer2D handle to modify.
+/// @param x Zero-based destination column.
+/// @param y Zero-based destination row.
+/// @param mask Neighbor mask whose low four bits select the tile identifier.
 void rt_autotile2d_apply(void *autotile, void *layer, int64_t x, int64_t y, int64_t mask) {
     if (!rt2d_has_class(autotile, RT2D_AUTOTILE_CLASS_ID) || !layer)
         return;

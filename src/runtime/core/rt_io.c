@@ -6,11 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_io.c
-// Purpose: Provides the native implementations of BASIC's PRINT/INPUT/file I/O
-//          intrinsics, mirroring the VM's behaviour exactly. Covers console
-//          output, line-oriented input, file channel management (open/close/
-//          seek/read/write), CSV field splitting, and trap recovery for I/O
-//          errors.
+// Purpose: Provides shared trap recovery/dispatch, BASIC and Zanna.Terminal
+//          console I/O, line input, CSV-style field splitting, and file-channel
+//          EOF/length/position/seek queries used by native runtime entry points.
 //
 // Key invariants:
 //   - All traps route through rt_trap or vm_trap; callers can install a
@@ -18,8 +16,8 @@
 //   - Trap dispatch unwinds shared GC mutator scopes before non-local transfer.
 //   - Newline handling follows historical BASIC: CRLF is accepted on input,
 //     LF is emitted on output; raw binary reads are unmodified.
-//   - File channel EOF flags are preserved across seeks; explicit reset is
-//     required before rereading past EOF.
+//   - Successful explicit seeks clear the cached EOF flag; non-seekable
+//     channels report their previously cached read state.
 //   - Helpers never take ownership of caller-supplied buffers; all writes into
 //     caller storage are bounded by explicit capacity parameters.
 //   - OS errors are converted to runtime error codes; errno is not exposed
@@ -37,6 +35,9 @@
 //        docs/runtime/io.md
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements trap dispatch, terminal I/O, field parsing, and file queries.
 
 #include "rt_ascii.h"
 #include "rt_context_internal.h"
@@ -75,34 +76,40 @@
 // Thread-local trap recovery for safe threads
 // =============================================================================
 
+/// @brief Discriminator for legacy jump-buffer and native codegen recovery nodes.
 typedef enum { RT_TRAP_RECOVERY_LEGACY = 0, RT_TRAP_RECOVERY_NATIVE = 1 } rt_trap_recovery_kind_t;
 
+/// @brief Common intrusive node embedded in every thread-local recovery frame.
 typedef struct rt_trap_recovery_base {
     struct rt_trap_recovery_base *prev;
     rt_trap_recovery_kind_t kind;
 } rt_trap_recovery_base_t;
 
+/// @brief Heap-allocated wrapper around a caller-owned legacy jump buffer.
 typedef struct {
     rt_trap_recovery_base_t base;
     jmp_buf *buf;
 } rt_trap_legacy_recovery_t;
 
+/// @brief Native codegen recovery frame with inline jump state and site metadata.
 typedef struct {
     jmp_buf env;
     rt_trap_recovery_base_t base;
     int64_t site_id;
 } rt_native_eh_frame_t;
 
-// _Thread_local requires C11; supported by GCC, Clang, and MSVC 19.0+
+/// @brief Top of the current thread's intrusive recovery-frame stack.
 static _Thread_local rt_trap_recovery_base_t *rt_trap_recovery_top_ = NULL;
+/// @brief Bounded diagnostic captured for the current thread's latest trap.
 static _Thread_local char rt_trap_error_[512] = "";
+/// @brief Legacy network error code retained separately for `Net.LastError`.
 static _Thread_local int rt_trap_net_code_ = 0;
 
-/// @brief Remove every stacked legacy longjmp recovery point on this thread.
+/// @brief Remove consecutive legacy recovery points from the top of this thread's stack.
 /// @details Native exception-style frames are left untouched because they are
-///          owned by lexical helper macros. This helper is used by the legacy
-///          `rt_trap_set_recovery(NULL)` API, whose documented behavior is to
-///          disable longjmp recovery rather than pop only one frame.
+///          owned by lexical helper macros; encountering one stops the walk,
+///          leaving it and any older nodes intact. This helper is used by the
+///          legacy `rt_trap_set_recovery(NULL)` API.
 static void rt_trap_clear_all_legacy_recoveries(void) {
     while (rt_trap_recovery_top_ && rt_trap_recovery_top_->kind == RT_TRAP_RECOVERY_LEGACY) {
         rt_trap_legacy_recovery_t *node = (rt_trap_legacy_recovery_t *)rt_trap_recovery_top_;
@@ -113,7 +120,11 @@ static void rt_trap_clear_all_legacy_recoveries(void) {
 }
 
 /// @brief Install a longjmp recovery point for recoverable traps on this thread.
-/// @param buf jmp_buf to longjmp to when rt_trap is called; NULL disables all legacy recovery.
+/// @details A non-NULL buffer is wrapped in a heap-allocated legacy node and
+///   pushed above the current legacy or native frame. Allocation failure aborts
+///   immediately. NULL removes consecutive legacy frames from the top and
+///   clears the saved diagnostic, but never removes a native frame.
+/// @param buf Borrowed live jump buffer, or NULL to clear top-level legacy recovery.
 void rt_trap_set_recovery(jmp_buf *buf) {
     if (!buf) {
         rt_trap_clear_all_legacy_recoveries();
@@ -129,7 +140,9 @@ void rt_trap_set_recovery(jmp_buf *buf) {
     rt_trap_recovery_top_ = &node->base;
 }
 
-/// @brief Remove the thread-local trap recovery point and clear the saved error.
+/// @brief Pop the top legacy recovery node and clear the saved error.
+/// @details If the stack is empty or a native frame is on top, no frame is
+///   removed. The diagnostic buffer is cleared in every case.
 void rt_trap_clear_recovery(void) {
     if (rt_trap_recovery_top_ && rt_trap_recovery_top_->kind == RT_TRAP_RECOVERY_LEGACY) {
         rt_trap_legacy_recovery_t *node = (rt_trap_legacy_recovery_t *)rt_trap_recovery_top_;
@@ -140,6 +153,8 @@ void rt_trap_clear_recovery(void) {
 }
 
 /// @brief Return the error message captured by the most recent recovered trap.
+/// @return Runtime-owned thread-local C string. It remains valid until another
+///   trap or recovery-clear operation on the same thread overwrites it.
 const char *rt_trap_get_error(void) {
     return rt_trap_error_;
 }
@@ -172,17 +187,24 @@ void rt_abort(const char *msg) {
 // Tests can define their own vm_trap to override this.
 // The alternatename directive provides the fallback when vm_trap is not
 // explicitly defined by the application.
+/// @brief Default Windows trap fallback that terminates through @ref rt_abort.
+/// @param msg Optional borrowed diagnostic string.
+/// @return This implementation does not return.
 void vm_trap_default(const char *msg) {
     rt_abort(msg);
 }
 
-// Forward declare vm_trap - resolved via alternatename or by test/app definition
+/// @brief Windows trap hook resolved to an application override or the default fallback.
+/// @param msg Optional borrowed diagnostic string.
 extern void vm_trap(const char *msg);
 #if defined(_MSC_VER) || defined(__clang__)
 #pragma comment(linker, "/alternatename:vm_trap=vm_trap_default")
 #endif
 #else
 // On Unix, use weak linkage attribute for override capability
+/// @brief Weak Unix trap hook whose default terminates through @ref rt_abort.
+/// @param msg Optional borrowed diagnostic string.
+/// @return The default does not return; a strong embedder override may return.
 RT_WEAK void vm_trap(const char *msg) {
     rt_abort(msg);
 }
@@ -206,6 +228,7 @@ RT_WEAK void vm_trap(const char *msg) {
 ///          originated. MSVC has `_ReturnAddress`, GCC/Clang have
 ///          `__builtin_return_address(0)`, anything else falls back
 ///          to `0` (no IP capture, but the trap still propagates).
+/// @return Best-effort caller instruction address, or zero when unsupported.
 static uintptr_t rt_capture_return_address(void) {
 #if defined(_MSC_VER)
     return (uintptr_t)_ReturnAddress();
@@ -234,6 +257,14 @@ static uintptr_t rt_capture_return_address(void) {
 ///             aborts by default). A hook that returns leaves lexical mutator
 ///             scopes intact so the calling function can execute its normal
 ///             cleanup and return path.
+/// @param msg Optional borrowed diagnostic; active recovery substitutes
+///   `Unknown trap` for NULL.
+/// @param kind Canonical trap kind, normalized to runtime error when out of range.
+/// @param code Secondary runtime error code.
+/// @param line Source line, or -1 when unavailable.
+/// @param return_address Captured native call-site address.
+/// @note Active recovery performs a non-local transfer and does not return.
+///   Without recovery, this returns only if the installed VM hook returns.
 static void rt_trap_dispatch(
     const char *msg, int32_t kind, int32_t code, int32_t line, uintptr_t return_address) {
     const char *stable_msg = msg;
@@ -271,19 +302,28 @@ static void rt_trap_dispatch(
 }
 
 /// @brief Raise a trap with explicit kind/code/line classification.
-/// Captures the return address for IP reporting and routes through the unified
-/// dispatcher so recovery handlers and native EH frames see consistent fields.
+/// @details Captures the return address for IP reporting and routes through the unified
+///   dispatcher so recovery handlers and native EH frames see consistent fields.
+/// @param kind Canonical trap classification; out-of-range values normalize.
+/// @param code Secondary runtime error code.
+/// @param line Source line, or -1 when unavailable.
+/// @param msg Optional borrowed null-terminated diagnostic.
 void rt_trap_raise_kind(int32_t kind, int32_t code, int32_t line, const char *msg) {
     rt_trap_dispatch(msg, kind, code, line, rt_capture_return_address());
 }
 
 /// @brief Raise a trap with explicit kind/code/line classification and no message.
+/// @param kind Canonical trap classification; out-of-range values normalize.
+/// @param code Secondary runtime error code.
+/// @param line Source line, or -1 when unavailable.
 void rt_trap_raise_kind_nomsg(int32_t kind, int32_t code, int32_t line) {
     rt_trap_raise_kind(kind, code, line, NULL);
 }
 
 /// @brief Raise a generic domain-error trap with the supplied message.
-/// Convenience wrapper that defaults kind=RT_TRAP_KIND_DOMAIN_ERROR, code=0, line=-1.
+/// @details Convenience wrapper that defaults kind=RT_TRAP_KIND_DOMAIN_ERROR,
+///   code=0, and line=-1.
+/// @param msg Optional borrowed null-terminated diagnostic.
 void rt_trap(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_DOMAIN_ERROR, 0, -1, msg);
 }
@@ -300,19 +340,25 @@ void rt_trap_net(const char *msg, int err_code) {
 }
 
 /// @brief Retrieve the error code from the most recent network trap.
-/// @return The Err_* code set by the last rt_trap_net() call on this thread.
+/// @return Thread-local `Err_*` code set by the last network trap; a later
+///   non-network trap resets it to zero.
 int rt_trap_get_net_code(void) {
     return rt_trap_net_code_;
 }
 
 /// @brief Allocate a native exception-handling frame for use by codegen.
-/// The returned pointer is opaque to callers; pass it to push/pop/set_site/free.
+/// @details The zero-initialized frame is not pushed automatically.
+/// @return Caller-owned opaque frame, or NULL on allocation failure; pass it to
+///   push/pop/set-site helpers and eventually @ref rt_native_eh_frame_free.
 void *rt_native_eh_frame_alloc(void) {
     rt_native_eh_frame_t *frame = (rt_native_eh_frame_t *)calloc(1, sizeof(rt_native_eh_frame_t));
     return frame;
 }
 
 /// @brief Release a native EH frame allocated by `rt_native_eh_frame_alloc`.
+/// @details Searches the current thread's recovery chain and unlinks the frame
+///   even when it is not the top entry, then releases its storage. NULL is safe.
+/// @param frame_ptr Owned opaque native frame pointer, or NULL.
 void rt_native_eh_frame_free(void *frame_ptr) {
     rt_native_eh_frame_t *frame = (rt_native_eh_frame_t *)frame_ptr;
     if (frame) {
@@ -330,8 +376,10 @@ void rt_native_eh_frame_free(void *frame_ptr) {
 }
 
 /// @brief Push a native EH frame onto the thread-local recovery stack.
-/// Subsequent traps will longjmp to this frame's saved env; callers must call
-/// `rt_native_eh_pop` before the frame's stack lifetime ends.
+/// @details Subsequent traps longjmp to this frame's saved environment. The
+///   site identifier is reset to zero. Callers must pop or free the frame
+///   before its storage lifetime ends.
+/// @param frame_ptr Borrowed opaque frame; NULL is a no-op.
 void rt_native_eh_push(void *frame_ptr) {
     rt_native_eh_frame_t *frame = (rt_native_eh_frame_t *)frame_ptr;
     if (!frame)
@@ -343,7 +391,9 @@ void rt_native_eh_push(void *frame_ptr) {
 }
 
 /// @brief Pop a native EH frame off the recovery stack (no-op if it is not on top).
-/// Tolerates double-pop and mismatched ordering by checking identity before unlinking.
+/// @details Tolerates NULL, double-pop, and mismatched ordering by checking
+///   identity before unlinking. The frame is not freed.
+/// @param frame_ptr Borrowed opaque frame to compare with the stack top.
 void rt_native_eh_pop(void *frame_ptr) {
     rt_native_eh_frame_t *frame = (rt_native_eh_frame_t *)frame_ptr;
     if (!frame)
@@ -353,7 +403,9 @@ void rt_native_eh_pop(void *frame_ptr) {
 }
 
 /// @brief Tag a native EH frame with a codegen-supplied call-site identifier.
-/// Used by the EH lowering to disambiguate which `try` block was active at the trap.
+/// @details Used by EH lowering to disambiguate which `try` block was active.
+/// @param frame_ptr Borrowed opaque frame; NULL is a no-op.
+/// @param site_id Codegen-defined identifier stored without interpretation.
 void rt_native_eh_set_site(void *frame_ptr, int64_t site_id) {
     rt_native_eh_frame_t *frame = (rt_native_eh_frame_t *)frame_ptr;
     if (!frame)
@@ -362,6 +414,8 @@ void rt_native_eh_set_site(void *frame_ptr, int64_t site_id) {
 }
 
 /// @brief Read the call-site identifier last stored on the given native EH frame.
+/// @param frame_ptr Borrowed opaque frame, or NULL.
+/// @return Stored site identifier, or zero for NULL and newly pushed frames.
 int64_t rt_native_eh_get_site(void *frame_ptr) {
     rt_native_eh_frame_t *frame = (rt_native_eh_frame_t *)frame_ptr;
     return frame ? frame->site_id : 0;
@@ -388,8 +442,10 @@ static inline size_t rt_string_safe_len(rt_string s) {
 }
 
 /// @brief Handle string builder errors with consistent trap messages.
+/// @details Success leaves the builder untouched. Any failure selects an
+///   operation-specific diagnostic, frees the builder, and raises a trap.
 /// @param sb String builder to free on error.
-/// @param op_name Name of the operation for error message.
+/// @param op_name Non-NULL name used as the diagnostic prefix.
 /// @param status Error status from string builder operation.
 static void rt_sb_check_status(rt_string_builder *sb, const char *op_name, rt_sb_status_t status) {
     if (status == RT_SB_OK)
@@ -491,8 +547,10 @@ rt_input_grow_result_t rt_input_try_grow(char **buf, size_t *cap) {
 ///          allocated @ref rt_string that owns the resulting characters.  On
 ///          EOF before any bytes are read the function returns @c NULL to signal
 ///          end-of-input. Flushes output first to ensure prompts are visible.
-/// @return Newly allocated runtime string without the trailing newline, or
-///         @c NULL on EOF before reading data.
+///          Buffer-growth overflow or reallocation failure raises a runtime
+///          trap; the initial scratch allocation is expected to succeed.
+/// @return Caller-owned runtime string without the trailing newline, or NULL
+///   on EOF before reading data or after a returning growth-error trap.
 rt_string rt_input_line(void) {
     // Flush output before reading input so prompts are visible
     rt_output_flush();
@@ -540,10 +598,16 @@ rt_string rt_input_line(void) {
 ///          materialised as runtime strings stored in @p out_fields until
 ///          @p max_fields entries have been populated.  When fewer fields are
 ///          present than expected the function traps with a descriptive error.
-/// @param line Runtime string containing the raw input line.
-/// @param out_fields Destination array receiving up to @p max_fields entries.
+///          Parsing is intentionally lenient: quotes toggle quoted mode wherever
+///          encountered, and an unmatched final quote consumes the remainder.
+/// @param line Borrowed valid runtime string containing the raw input line;
+///   NULL is treated as an empty record.
+/// @param out_fields Destination array receiving caller-owned strings. It may
+///   be NULL only when @p max_fields is non-positive.
 /// @param max_fields Maximum number of fields to populate; negative values are treated as zero.
-/// @return Total number of fields present in @p line.
+/// @return Total number of fields present, which may exceed the number stored.
+///   Allocation failures trap and may return the count reached so far if the
+///   active trap hook returns.
 int64_t rt_str_split_fields(rt_string line, rt_string *out_fields, int64_t max_fields) {
     if (max_fields <= 0) {
         max_fields = 0;
@@ -666,6 +730,12 @@ int64_t rt_str_split_fields(rt_string line, rt_string *out_fields, int64_t max_f
 }
 
 /// @brief Split an input line into an owned Seq[str] instead of caller-owned out buffers.
+/// @details Counts fields with the lenient splitter, allocates temporary string
+///   slots, parses every field, and transfers each owned string into a new
+///   sequence. Size and allocation failures trap; a returning hook may receive
+///   the sequence constructed up to that point.
+/// @param line Borrowed valid runtime string, or NULL for an empty record.
+/// @return Caller-owned opaque `Zanna.Seq[str]` object.
 void *rt_str_split_fields_seq(rt_string line) {
     int64_t total = rt_str_split_fields(line, NULL, 0);
     void *seq = rt_seq_with_capacity_owned(total > 0 ? total : 1);
@@ -697,7 +767,8 @@ void *rt_str_split_fields_seq(rt_string line) {
 ///          appear inside unquoted text; the record may not end inside a
 ///          quote — and reports violations as `Result.ErrStr` instead of
 ///          silently merging columns.
-/// @return `Result.Ok(Seq[str])` or `Result.ErrStr(message)`.
+/// @param line Borrowed valid runtime string, or NULL for an empty record.
+/// @return Caller-owned `Result.Ok(Seq[str])` or `Result.ErrStr(message)`.
 void *rt_str_split_fields_result(rt_string line) {
     const char *data = "";
     size_t len = 0;
@@ -753,12 +824,13 @@ void *rt_str_split_fields_result(rt_string line) {
 }
 
 /// @brief Determine whether a file channel has reached EOF.
-/// @details Consults cached EOF information and falls back to probing the file
-///          descriptor via @ref lseek when necessary.  Updates the cached state
-///          to reflect the probed result and returns runtime error codes on
-///          failure.
+/// @details Seekable regular and block files compare their current offset with
+///   `fstat` size. Other seekable descriptors temporarily seek to the end and
+///   restore the original position. Pipes and other non-seekable descriptors
+///   use the channel's cached EOF state. Successful probes update that cache.
 /// @param ch Channel identifier registered with the runtime file subsystem.
-/// @return Negative @ref Err value on failure, -1 when at EOF, or 0 when more data is available.
+/// @return Positive `Err_*` code on failure, -1 at EOF, or 0 when more data is
+///   available according to the probe or cache.
 int rt_eof_ch(int ch) {
     int fd = -1;
     int32_t status = rt_file_channel_fd(ch, &fd);
@@ -967,8 +1039,8 @@ void rt_term_print_bool(int8_t v) {
 }
 
 /// @brief Print a prompt and read a line of input.
-/// @param prompt Runtime string to display before reading input.
-/// @return Newly allocated runtime string containing the user's input.
+/// @param prompt Borrowed runtime string to display before reading; NULL prints nothing.
+/// @return Caller-owned input string, or NULL on EOF before any bytes.
 rt_string rt_term_ask(rt_string prompt) {
     rt_print_str(prompt);
     rt_output_flush();
@@ -976,7 +1048,7 @@ rt_string rt_term_ask(rt_string prompt) {
 }
 
 /// @brief Read a line of input from stdin.
-/// @return Newly allocated runtime string containing the input line.
+/// @return Caller-owned input string, or NULL on EOF before any bytes.
 rt_string rt_term_read_line(void) {
     return rt_input_line();
 }

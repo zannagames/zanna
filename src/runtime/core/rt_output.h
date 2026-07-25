@@ -4,22 +4,27 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_output.h
-// Purpose: Centralized output buffering layer for improved terminal rendering performance,
-// accumulating stdout writes and flushing at strategic points to minimize system calls.
+// Purpose: Declares process-global runtime output routing, scoped capture,
+// platform stdout delivery, and reference-counted conditional flushing.
 //
 // Key invariants:
-//   - rt_output_init is idempotent; safe to call multiple times.
-//   - Batch mode accumulates output; rt_output_flush_batch sends all buffered data.
-//   - Auto-flush on newline is configurable; default matches BASIC's PRINT semantics.
-//   - Thread safety for batch mode control is provided by internal locking.
+//   - Initialization and batch-depth updates are safe for concurrent callers.
+//   - Capture replaces stdout delivery for rt_output_str and rt_output_strn;
+//     it does not capture unrelated writes made directly to stdout.
+//   - Batch mode suppresses conditional POSIX flushes but does not own a
+//     separate accumulation buffer or delay capture callbacks.
+//   - Native Windows writes bypass CRT buffering, making flush operations no-ops.
 //
 // Ownership/Lifetime:
-//   - No ownership transfer; functions accept null-terminated C string pointers.
-//   - The internal buffer is owned by the module; callers must not free it.
+//   - Input byte ranges and capture contexts remain caller-owned.
+//   - Capture callbacks must copy any bytes they need after returning.
+//   - The POSIX stdout buffer is static module storage and must not be freed.
 //
 // Links: src/runtime/core/rt_output.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Runtime stdout routing, capture-hook, and batching API.
 #pragma once
 
 #include <stddef.h>
@@ -30,9 +35,11 @@ extern "C" {
 #endif
 
 /// @brief Initialize output buffering for stdout.
-/// @details Configures stdout with full buffering using an internal buffer.
-///          Should be called once at program startup. Safe to call multiple
-///          times; subsequent calls are no-ops.
+/// @details On non-Windows platforms, one caller configures stdout with a
+///          static 16 KiB full-buffering area and registers a normal-exit
+///          flush when possible. Native Windows requires no CRT setup because
+///          runtime writes target the OS handle. Calls are idempotent and
+///          concurrent callers wait for the first initialization to finish.
 void rt_output_init(void);
 
 /// @brief Callback used to intercept runtime stdout writes.
@@ -40,9 +47,11 @@ void rt_output_init(void);
 ///          @ref rt_output_str or @ref rt_output_strn is delivered to the
 ///          callback instead of the process stdout stream. The callback receives
 ///          exactly the bytes requested by the runtime print operation; the
-///          buffer is not null-terminated unless the caller's original payload
-///          was. Implementations must copy bytes they need after returning.
-/// @param data Pointer to the byte range being written.
+///          buffer is not necessarily NUL-terminated. Implementations must copy
+///          bytes they need after returning and must tolerate concurrent calls.
+///          Callback execution occurs without the internal hook lock, permitting
+///          nested output and hook replacement.
+/// @param data Borrowed pointer to the byte range being written.
 /// @param len Number of bytes available at @p data.
 /// @param ctx Opaque context pointer supplied when the hook was installed.
 typedef void (*rt_output_capture_fn)(const char *data, size_t len, void *ctx);
@@ -63,47 +72,55 @@ typedef struct rt_output_capture_hook {
 ///          returns the previous hook so callers can restore it after execution.
 ///          Capture is process-global because runtime output is process-global;
 ///          callers should install it only around short, controlled VM
-///          executions.
+///          executions. Hook replacement is synchronized with snapshot reads,
+///          but an invocation using an earlier snapshot may finish after this
+///          function returns.
 /// @param fn New capture callback, or NULL to disable capture.
-/// @param ctx Opaque context passed to @p fn.
+/// @param ctx Caller-owned opaque context passed to @p fn.
 /// @return The hook that was active before this call.
 rt_output_capture_hook rt_output_set_capture_hook(rt_output_capture_fn fn, void *ctx);
 
-/// @brief Write a string to the output buffer.
-/// @param s Null-terminated string to write.
-/// @details Writes to stdout without flushing unless auto-flush is enabled
-///          and a newline is encountered.
+/// @brief Route a NUL-terminated string to capture or stdout.
+/// @details An installed hook receives the bytes instead of stdout. Otherwise
+///          output is initialized and written without an implicit flush. A
+///          null pointer is a no-op, and write failures are not reported.
+/// @param s NUL-terminated string to write; may be `NULL`.
 void rt_output_str(const char *s);
 
-/// @brief Write a string with explicit length to the output buffer.
-/// @param s String data (not necessarily null-terminated).
+/// @brief Route an explicit byte range to capture or stdout.
+/// @details Embedded NUL bytes are preserved. An installed hook replaces
+///          stdout delivery; otherwise output is initialized and written
+///          without an implicit flush. Null or empty ranges are no-ops, and
+///          write failures are not reported.
+/// @param s Byte range, not necessarily NUL-terminated.
 /// @param len Number of bytes to write.
 void rt_output_strn(const char *s, size_t len);
 
 /// @brief Flush any buffered output to the terminal.
-/// @details Forces all pending output to be written. Call this before
-///          operations that need immediate visibility (e.g., before INPUT).
+/// @details Calls `fflush(stdout)` on non-Windows platforms and ignores errors.
+///          Native Windows output and capture callbacks have no module-owned
+///          buffer to flush, so the function does nothing for those paths.
 void rt_output_flush(void);
 
 /// @brief Begin batch mode for output operations.
-/// @details While in batch mode, terminal control sequences (COLOR, LOCATE,
-///          etc.) do not trigger individual flushes. Call rt_output_end_batch()
-///          or rt_output_flush() to flush accumulated output.
-///          Batch mode is reference-counted, so nested begin/end pairs work correctly.
+/// @details Atomically increments a process-global depth used by
+///          @ref rt_output_flush_if_not_batch. Nested calls are supported.
+///          Overflow at `INT_MAX` traps and leaves the depth unchanged.
 void rt_output_begin_batch(void);
 
-/// @brief End batch mode and optionally flush.
+/// @brief End one level of batch mode and conditionally flush.
 /// @details Decrements the batch mode reference count. When the count reaches
-///          zero, flushes all accumulated output.
+///          zero, non-Windows stdout is flushed. An unmatched call is a no-op.
 void rt_output_end_batch(void);
 
 /// @brief Check if batch mode is currently active.
-/// @return Non-zero if batch mode is active, zero otherwise.
+/// @return One when the process-global batch depth is positive; otherwise zero.
 int8_t rt_output_is_batch_mode(void);
 
 /// @brief Flush output only if not in batch mode.
-/// @details Used by terminal control functions to conditionally flush.
-///          In batch mode, this is a no-op; otherwise it flushes.
+/// @details On non-Windows platforms, observes the atomic batch depth and
+///          flushes stdout only when it is zero. The depth check is not coupled
+///          atomically to the flush. Native Windows performs no flush.
 void rt_output_flush_if_not_batch(void);
 
 #ifdef __cplusplus

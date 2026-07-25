@@ -5,11 +5,14 @@
 //
 // File: src/runtime/core/rt_easing.h
 // Purpose: Easing functions for animation and interpolation implementing Robert Penner conventions,
-// providing linear, quadratic, cubic, quartic, quintic, sine, exponential, circular, back, elastic,
-// and bounce variants.
+// providing linear, quadratic, cubic, quartic, sine, exponential, circular, back, elastic, and
+// bounce variants.
 //
 // Key invariants:
-//   - Input t is expected in [0.0, 1.0]; behavior outside this range is unspecified.
+//   - Input t is expected in [0.0, 1.0], but inputs are not uniformly clamped:
+//     polynomial, sine, back, and bounce curves extrapolate; exponential and
+//     elastic curves pin selected endpoints; circular curves may produce NaN
+//     when an out-of-range input makes a square-root radicand negative.
 //   - f(0.0) = 0.0 and f(1.0) = 1.0 for all standard easing functions.
 //   - Back and elastic variants may produce output outside [0, 1] due to overshoot.
 //   - All functions use double precision IEEE-754 arithmetic.
@@ -21,6 +24,13 @@
 // Links: src/runtime/core/rt_easing.c (implementation), src/runtime/collections/rt_tween.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares normalized scalar easing functions for interpolation.
+/// @details Each easing curve maps the conventional animation parameter
+///   @p t from zero (start) to one (end). Unless a function says otherwise,
+///   callers should supply a finite value in [0, 1].
+
 #pragma once
 
 #include <stdint.h>

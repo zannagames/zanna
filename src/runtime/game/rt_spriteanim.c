@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_spriteanim.c
+/// @file
+/// @brief Implements tick-based sprite-frame playback with looping,
+///        ping-pong, one-shot, pausing, and fractional speed.
 // Purpose: Frame-index animation controller for Zanna sprite sheets. Advances
 //   an integer frame index through a configurable sequence at a per-update
 //   speed multiplier and configurable update ticks per displayed frame.
@@ -46,7 +49,7 @@
 #include <math.h>
 #include <stdlib.h>
 
-/// Internal structure for SpriteAnimation.
+/// @brief Mutable playback state owned by a SpriteAnimation runtime object.
 struct rt_spriteanim_impl {
     int64_t start_frame;    ///< First frame index.
     int64_t end_frame;      ///< Last frame index (inclusive).
@@ -67,7 +70,10 @@ struct rt_spriteanim_impl {
 };
 
 /// @brief Safe-cast a handle to the SpriteAnim impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p anim is NULL.
+///        class-id mismatch.
+/// @param anim Borrowed candidate SpriteAnimation handle.
+/// @param api Trap message identifying the calling API.
+/// @return Borrowed implementation pointer, or `NULL` when @p anim is `NULL`.
 static rt_spriteanim checked_spriteanim(rt_spriteanim anim, const char *api) {
     if (!anim)
         return NULL;
@@ -80,6 +86,9 @@ static rt_spriteanim checked_spriteanim(rt_spriteanim anim, const char *api) {
 
 /// @brief Integer percentage value*100/total, clamped to [0, 100]; 0 for
 ///        non-positive inputs.
+/// @param value Non-negative progress numerator.
+/// @param total Positive progress denominator.
+/// @return Truncated percentage in the inclusive range 0..100.
 static int64_t spriteanim_percent_i64(int64_t value, int64_t total) {
     if (value <= 0 || total <= 0)
         return 0;
@@ -90,6 +99,7 @@ static int64_t spriteanim_percent_i64(int64_t value, int64_t total) {
 
 /// @brief Step the animation one frame in its current direction, applying
 ///        loop/ping-pong/one-shot end behavior.
+/// @param anim Borrowed SpriteAnimation implementation.
 /// @return Non-zero if a clip boundary (start or end) was crossed this step.
 static int8_t rt_spriteanim_advance_one_frame(rt_spriteanim anim) {
     int8_t crossed_end = 0;
@@ -147,7 +157,10 @@ static int8_t rt_spriteanim_advance_one_frame(rt_spriteanim anim) {
     return 0;
 }
 
-/// @brief Create a new spriteanim object.
+/// @brief Create a stopped, single-frame looping animation controller.
+/// @details Defaults to frame zero, six update ticks per displayed frame,
+///          forward direction, and speed 1.0.
+/// @return Owned SpriteAnimation handle, or `NULL` if allocation fails.
 rt_spriteanim rt_spriteanim_new(void) {
     struct rt_spriteanim_impl *anim = (struct rt_spriteanim_impl *)rt_obj_new_i64(
         RT_SPRITEANIM_CLASS_ID, (int64_t)sizeof(struct rt_spriteanim_impl));
@@ -174,13 +187,23 @@ rt_spriteanim rt_spriteanim_new(void) {
     return anim;
 }
 
-/// @brief Release resources and destroy the spriteanim.
+/// @brief Release one owned SpriteAnimation reference.
+/// @param anim Owned handle to release; `NULL` is ignored.
 void rt_spriteanim_destroy(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Destroy: expected Zanna.Game.SpriteAnimation");
     if (anim && rt_obj_release_check0(anim))
         rt_obj_free(anim);
 }
 
+/// @brief Configure the inclusive frame range and ticks per displayed frame.
+/// @details Negative starts clamp to zero, ends below the start collapse to a
+///          single-frame range, and durations below one clamp to one. The call
+///          resets position, timing, direction, and completion state without
+///          changing play, pause, loop, ping-pong, or speed settings.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @param start_frame First sprite-sheet frame index.
+/// @param end_frame Last sprite-sheet frame index, inclusive.
+/// @param frame_duration Number of accumulated update ticks per frame step.
 void rt_spriteanim_setup(rt_spriteanim anim,
                          int64_t start_frame,
                          int64_t end_frame,
@@ -206,6 +229,8 @@ void rt_spriteanim_setup(rt_spriteanim anim,
 }
 
 /// @brief Enable or disable looping; when enabled, the animation restarts after the last frame.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @param loop Zero for one-shot behavior, nonzero to loop.
 void rt_spriteanim_set_loop(rt_spriteanim anim, int8_t loop) {
     anim = checked_spriteanim(anim, "SpriteAnimation.SetLoop: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -214,6 +239,9 @@ void rt_spriteanim_set_loop(rt_spriteanim anim, int8_t loop) {
 }
 
 /// @brief Enable or disable ping-pong mode (forward then reverse, then forward again).
+/// @param anim Borrowed SpriteAnimation handle.
+/// @param pingpong Zero for forward-only playback, nonzero for alternating
+///        direction.
 void rt_spriteanim_set_pingpong(rt_spriteanim anim, int8_t pingpong) {
     anim = checked_spriteanim(anim,
                               "SpriteAnimation.SetPingPong: expected Zanna.Game.SpriteAnimation");
@@ -223,12 +251,16 @@ void rt_spriteanim_set_pingpong(rt_spriteanim anim, int8_t pingpong) {
 }
 
 /// @brief Return whether looping is enabled for this animation.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return `1` when looping is enabled; otherwise `0`.
 int8_t rt_spriteanim_loop(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Loop: expected Zanna.Game.SpriteAnimation");
     return anim ? anim->loop : 0;
 }
 
 /// @brief Return whether ping-pong mode is enabled for this animation.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return `1` when ping-pong is enabled; otherwise `0`.
 int8_t rt_spriteanim_pingpong(rt_spriteanim anim) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.PingPong: expected Zanna.Game.SpriteAnimation");
@@ -236,6 +268,9 @@ int8_t rt_spriteanim_pingpong(rt_spriteanim anim) {
 }
 
 /// @brief Start playback from the first frame, resetting all internal counters.
+/// @details Clears pause/completion state, restores forward direction, and
+///          discards any fractional-speed accumulation.
+/// @param anim Borrowed SpriteAnimation handle.
 void rt_spriteanim_play(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Play: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -250,6 +285,9 @@ void rt_spriteanim_play(rt_spriteanim anim) {
 }
 
 /// @brief Stop playback entirely (not paused — position is not preserved for resume).
+/// @details Restores the first frame and initial timing/direction state without
+///          changing clip or mode configuration.
+/// @param anim Borrowed SpriteAnimation handle.
 void rt_spriteanim_stop(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Stop: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -265,6 +303,8 @@ void rt_spriteanim_stop(rt_spriteanim anim) {
 }
 
 /// @brief Pause a playing animation so it can be resumed from the current frame.
+/// @param anim Borrowed SpriteAnimation handle; stopped animations are
+///        unchanged.
 void rt_spriteanim_pause(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Pause: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -274,6 +314,7 @@ void rt_spriteanim_pause(rt_spriteanim anim) {
 }
 
 /// @brief Resume a paused animation from the frame where it was paused.
+/// @param anim Borrowed SpriteAnimation handle.
 void rt_spriteanim_resume(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Resume: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -282,6 +323,9 @@ void rt_spriteanim_resume(rt_spriteanim anim) {
 }
 
 /// @brief Reset the animation to its first frame without changing play/pause state.
+/// @details Clears completion, counters, direction, and fractional-speed
+///          accumulation.
+/// @param anim Borrowed SpriteAnimation handle.
 void rt_spriteanim_reset(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Reset: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -293,7 +337,14 @@ void rt_spriteanim_reset(rt_spriteanim anim) {
     anim->speed_accum = 0.0;
 }
 
-/// @brief Update the spriteanim state (called per frame/tick).
+/// @brief Accumulate one speed-scaled tick and advance any due frame steps.
+/// @details The call clears the frame-changed flag first. Stopped, paused, and
+///          finished animations do not accumulate time. Fractional speed is
+///          retained across calls, and speeds above one may produce multiple
+///          ticks or frame steps in a single call.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return `1` only when a non-looping clip completes during this update;
+///         otherwise `0`.
 int8_t rt_spriteanim_update(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Update: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -328,6 +379,8 @@ int8_t rt_spriteanim_update(rt_spriteanim anim) {
 }
 
 /// @brief Return the current frame index within the sprite sheet.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return Current configured frame index, or `0` for null.
 int64_t rt_spriteanim_frame(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Frame: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -336,6 +389,10 @@ int64_t rt_spriteanim_frame(rt_spriteanim anim) {
 }
 
 /// @brief Jump to a specific frame, clamped to [start_frame, end_frame].
+/// @details Clears the whole-tick frame counter but leaves fractional speed,
+///          play state, direction, and completion state unchanged.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @param frame Requested sprite-sheet frame index.
 void rt_spriteanim_set_frame(rt_spriteanim anim, int64_t frame) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.SetFrame: expected Zanna.Game.SpriteAnimation");
@@ -350,6 +407,8 @@ void rt_spriteanim_set_frame(rt_spriteanim anim, int64_t frame) {
 }
 
 /// @brief Return how many update ticks each frame is displayed before advancing.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return Positive configured duration, or `0` for null.
 int64_t rt_spriteanim_frame_duration(rt_spriteanim anim) {
     anim = checked_spriteanim(anim,
                               "SpriteAnimation.FrameDuration: expected Zanna.Game.SpriteAnimation");
@@ -359,6 +418,8 @@ int64_t rt_spriteanim_frame_duration(rt_spriteanim anim) {
 }
 
 /// @brief Set how many update ticks each frame is displayed (minimum 1).
+/// @param anim Borrowed SpriteAnimation handle.
+/// @param duration Requested tick count, clamped to at least one.
 void rt_spriteanim_set_frame_duration(rt_spriteanim anim, int64_t duration) {
     anim = checked_spriteanim(
         anim, "SpriteAnimation.SetFrameDuration: expected Zanna.Game.SpriteAnimation");
@@ -370,6 +431,9 @@ void rt_spriteanim_set_frame_duration(rt_spriteanim anim, int64_t duration) {
 }
 
 /// @brief Return the count of elements in the spriteanim.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return Inclusive range length, saturated at @ref INT64_MAX, or `0` for
+///         null.
 int64_t rt_spriteanim_frame_count(rt_spriteanim anim) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.FrameCount: expected Zanna.Game.SpriteAnimation");
@@ -382,6 +446,8 @@ int64_t rt_spriteanim_frame_count(rt_spriteanim anim) {
 }
 
 /// @brief Check whether the animation is currently playing (not paused or stopped).
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return `1` when playing and not paused; otherwise `0`.
 int8_t rt_spriteanim_is_playing(rt_spriteanim anim) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.IsPlaying: expected Zanna.Game.SpriteAnimation");
@@ -391,6 +457,8 @@ int8_t rt_spriteanim_is_playing(rt_spriteanim anim) {
 }
 
 /// @brief Check whether the animation is paused (can be resumed).
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return `1` when paused; otherwise `0`.
 int8_t rt_spriteanim_is_paused(rt_spriteanim anim) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.IsPaused: expected Zanna.Game.SpriteAnimation");
@@ -400,6 +468,8 @@ int8_t rt_spriteanim_is_paused(rt_spriteanim anim) {
 }
 
 /// @brief Check whether a non-looping animation has reached its last frame.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return `1` when one-shot playback has completed; otherwise `0`.
 int8_t rt_spriteanim_is_finished(rt_spriteanim anim) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.IsFinished: expected Zanna.Game.SpriteAnimation");
@@ -409,6 +479,10 @@ int8_t rt_spriteanim_is_finished(rt_spriteanim anim) {
 }
 
 /// @brief Return the animation progress as a percentage (0-100).
+/// @details Progress is based only on the current frame's forward position, so
+///          it decreases during the reverse leg of ping-pong playback.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return Truncated percentage in 0..100; a single-frame clip reports 100.
 int64_t rt_spriteanim_progress(rt_spriteanim anim) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.Progress: expected Zanna.Game.SpriteAnimation");
@@ -422,6 +496,9 @@ int64_t rt_spriteanim_progress(rt_spriteanim anim) {
 }
 
 /// @brief Set the playback speed multiplier, clamped to [0.0, 10.0] (1.0 = normal).
+/// @param anim Borrowed SpriteAnimation handle.
+/// @param speed Candidate multiplier; negative and non-finite values become
+///        zero.
 void rt_spriteanim_set_speed(rt_spriteanim anim, double speed) {
     anim =
         checked_spriteanim(anim, "SpriteAnimation.SetSpeed: expected Zanna.Game.SpriteAnimation");
@@ -435,6 +512,8 @@ void rt_spriteanim_set_speed(rt_spriteanim anim, double speed) {
 }
 
 /// @brief Return the current playback speed multiplier.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return Configured multiplier, or `1.0` for null.
 double rt_spriteanim_speed(rt_spriteanim anim) {
     anim = checked_spriteanim(anim, "SpriteAnimation.Speed: expected Zanna.Game.SpriteAnimation");
     if (!anim)
@@ -442,7 +521,12 @@ double rt_spriteanim_speed(rt_spriteanim anim) {
     return anim->speed;
 }
 
-/// @brief Check whether the current frame changed during the last update call.
+/// @brief Check whether the last update attempted at least one frame step.
+/// @details This is normally equivalent to an index change, but the terminal
+///          step that completes a one-shot clip also sets the flag while
+///          retaining its endpoint frame.
+/// @param anim Borrowed SpriteAnimation handle.
+/// @return `1` when a frame step was processed; otherwise `0`.
 int8_t rt_spriteanim_frame_changed(rt_spriteanim anim) {
     anim = checked_spriteanim(anim,
                               "SpriteAnimation.FrameChanged: expected Zanna.Game.SpriteAnimation");

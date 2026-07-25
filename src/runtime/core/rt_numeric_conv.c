@@ -6,32 +6,34 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_numeric_conv.c
-// Purpose: Provides scalar numeric conversion routines that emulate BASIC
-//          semantics for rounding, truncation, and safe floating-point to
-//          integer casts. Covers banker's rounding (round-half-to-even),
-//          range-checked casts to I32/I64, and string-to-number parsing.
+// Purpose: Implements BASIC scalar conversions, nearest-even rounding,
+//          saturating double-to-I64 conversion, and strict error-code-based
+//          integer and floating-point parsers.
 //
 // Key invariants:
-//   - All conversion APIs validate input pointers; null ok-pointer causes a
-//     trap with a descriptive message rather than a null dereference.
-//   - Conversion failures are communicated through explicit bool* flags; the
-//     output value is set to 0 and the flag to false on failure.
+//   - CINT and CLNG round to nearest-even independently of the active
+//     floating-point rounding mode, then validate the target range.
+//   - Null CINT, CLNG, and CSNG status pointers trap rather than dereference.
+//   - Strict parsers initialize available output slots to zero and report
+//     invalid arguments, syntax errors, overflow, and locale failures
+//     separately through runtime error codes.
 //   - Banker's rounding is implemented explicitly so it is independent of the
 //     process floating-point rounding mode.
-//   - Range bounds are checked after NaN/infinity rejection; out-of-range
-//     values set the flag to false without trapping.
-//   - No outputs are left partially initialised; on failure the output is
-//     always set to a defined value (0 or 0.0).
+//   - Decimal parsing uses fixed ASCII token rules and the C numeric locale;
+//     process LC_CTYPE and LC_NUMERIC settings do not change accepted input.
 //
 // Ownership/Lifetime:
-//   - Functions operate purely on caller-supplied values and buffers; no heap
-//     allocation is performed and no state is retained between calls.
+//   - Scalar functions retain no state or references.
+//   - Runtime-string parsers borrow string bytes for the duration of the call.
+//   - Platform locale objects are temporary and released before return.
 //
 // Links: src/runtime/core/rt_numeric.h (public API),
 //        src/runtime/core/rt_numeric.c (complementary numeric utilities),
-//        src/runtime/core/rt_fp.c (floating-point domain checking)
+//        src/runtime/core/rt_error.h (runtime error and trap definitions)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief BASIC numeric conversions and strict text parsers.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
@@ -61,7 +63,12 @@ extern "C" {
 /// @details Implements round-half-to-even directly instead of using
 ///          @c nearbyint, whose result depends on the process floating-point
 ///          rounding mode. Values with magnitude >= 2^52 already have no
-///          fractional part representable in double precision.
+///          fractional part representable in double precision. Non-finite
+///          values pass through unchanged and zero retains its sign.
+/// @param x Value to round.
+/// @return The nearest integral double, choosing an even result at an exact
+///         half, or @p x unchanged when it is non-finite or already integral
+///         at double precision.
 static double rt_round_nearest_even(double x) {
     if (!isfinite(x))
         return x;
@@ -96,6 +103,7 @@ static double rt_round_nearest_even(double x) {
 /// @param max_value Inclusive maximum representable value.
 /// @param null_ok_trap Diagnostic string for null @p ok pointers.
 /// @return The original value when it passes validation, otherwise 0.0.
+/// @note A null @p ok pointer traps and returns zero if the trap hook returns.
 static inline double rt_cast_integer_checked(
     double value, bool *ok, double min_value, double max_value, const char *null_ok_trap) {
     if (!ok) {
@@ -125,8 +133,10 @@ static inline double rt_cast_integer_checked(
 /// @details Delegates to @ref rt_cast_integer_checked using the @c int16_t
 ///          range limits and propagates the @p ok flag.
 /// @param value Floating-point value to convert.
-/// @param ok Output flag recording success or failure.
-/// @return The truncated 16-bit integer when valid; otherwise zero.
+/// @param ok Required output flag recording success or failure.
+/// @return The value converted with C truncation toward zero when valid;
+///         otherwise zero.
+/// @note A null @p ok pointer traps and returns zero if the trap hook returns.
 static int16_t rt_cast_i16(double value, bool *ok) {
     return RT_CAST_INTEGER(value, ok, int16_t, INT16_MIN, INT16_MAX, "rt_cast_i16: null ok");
 }
@@ -136,31 +146,35 @@ static int16_t rt_cast_i16(double value, bool *ok) {
 ///          limits so that overflow and NaN conditions surface through the
 ///          @p ok flag.
 /// @param value Floating-point value to convert.
-/// @param ok Output flag recording success or failure.
-/// @return The truncated 32-bit integer when valid; otherwise zero.
+/// @param ok Required output flag recording success or failure.
+/// @return The value converted with C truncation toward zero when valid;
+///         otherwise zero.
+/// @note A null @p ok pointer traps and returns zero if the trap hook returns.
 static int32_t rt_cast_i32(double value, bool *ok) {
     return RT_CAST_INTEGER(value, ok, int32_t, INT32_MIN, INT32_MAX, "rt_cast_i32: null ok");
 }
 
-/// @brief Convert a double to BASIC's CINT result with banker rounding.
+/// @brief Convert a double to BASIC's CINT result with banker's rounding.
 /// @details Applies nearest-even rounding via @ref rt_round_nearest_even
 ///          before casting to @c int16_t.  The @p ok flag communicates
-///          whether the rounded value fit within the target range.
+///          whether the rounded value is finite and fits the target range.
 /// @param x Input double.
-/// @param ok Output flag updated with the conversion status.
+/// @param ok Required output flag updated with the conversion status.
 /// @return The converted 16-bit integer, or zero if the cast failed.
+/// @note A null @p ok pointer traps and returns zero if the trap hook returns.
 int16_t rt_cint_from_double(double x, bool *ok) {
     const double rounded = rt_round_nearest_even(x);
     return rt_cast_i16(rounded, ok);
 }
 
-/// @brief Convert a double to BASIC's CLNG result with banker rounding.
+/// @brief Convert a double to BASIC's CLNG result with banker's rounding.
 /// @details Mirrors @ref rt_cint_from_double but targets @c int32_t,
 ///          allowing larger integer ranges while still respecting the
 ///          nearest-even rounding rule.
 /// @param x Input double.
-/// @param ok Output flag updated with the conversion status.
+/// @param ok Required output flag updated with the conversion status.
 /// @return The converted 32-bit integer, or zero if the cast failed.
+/// @note A null @p ok pointer traps and returns zero if the trap hook returns.
 int32_t rt_clng_from_double(double x, bool *ok) {
     const double rounded = rt_round_nearest_even(x);
     return rt_cast_i32(rounded, ok);
@@ -171,9 +185,11 @@ int32_t rt_clng_from_double(double x, bool *ok) {
 ///          @c float, and ensures the result remains finite.  The helper
 ///          sets @p ok to `true` only when all checks succeed.
 /// @param x Input double.
-/// @param ok Output flag updated with the conversion status.
-/// @return The converted single-precision value or NaN when validation
-///         fails.
+/// @param ok Required output flag updated with the conversion status.
+/// @return The converted single-precision value on success, NaN for a
+///         non-finite input, or the non-finite float produced when a finite
+///         double overflows the target type.
+/// @note A null @p ok pointer traps and returns NaN if the trap hook returns.
 float rt_csng_from_double(double x, bool *ok) {
     if (!ok) {
         rt_trap("rt_csng_from_double: null ok");
@@ -196,29 +212,31 @@ float rt_csng_from_double(double x, bool *ok) {
 }
 
 /// @brief Return the provided value unchanged for CDbl conversions.
-/// @details BASIC's CDbl accepts any numeric input and returns a double.
-///          The runtime stores doubles internally, so the helper simply
-///          forwards the argument.
+/// @details This ABI entry already receives a double, so it performs no
+///          finiteness check or other transformation.
 /// @param x Input numeric value.
-/// @return The unchanged double precision value.
+/// @return @p x unchanged, including NaN, infinity, and signed zero.
 double rt_cdbl_from_any(double x) {
     return x;
 }
 
 /// @brief Compute BASIC's INT result by flooring the argument.
 /// @details Delegates to @ref floor to obtain the greatest integer less than
-///          or equal to @p x.
+///          or equal to @p x; no explicit domain checks are added.
 /// @param x Input double.
-/// @return Floored value as a double.
+/// @return `floor(x)`, including the platform libm result for NaN, infinity,
+///         and signed zero.
 double rt_int_floor(double x) {
     return floor(x);
 }
 
 /// @brief Compute BASIC's FIX result by truncating towards zero.
 /// @details Uses @ref trunc so positive and negative numbers move towards
-///          zero, matching BASIC semantics.
+///          zero, matching BASIC semantics; no explicit domain checks are
+///          added.
 /// @param x Input double.
-/// @return Truncated value as a double.
+/// @return `trunc(x)`, including the platform libm result for NaN, infinity,
+///         and signed zero.
 double rt_fix_trunc(double x) {
     return trunc(x);
 }
@@ -229,7 +247,8 @@ double rt_fix_trunc(double x) {
 ///          0; infinities and finite out-of-range values clamp to the nearest
 ///          signed 64-bit endpoint.
 /// @param x Input double.
-/// @return Truncated value as 64-bit signed integer.
+/// @return Zero for NaN; `INT64_MAX` for values at least 2^63; `INT64_MIN`
+///         for values below -2^63; otherwise @p x truncated toward zero.
 long long rt_f64_to_i64(double x) {
     if (isnan(x))
         return 0;
@@ -242,11 +261,14 @@ long long rt_f64_to_i64(double x) {
 
 /// @brief Round a double to a specified number of digits using banker's rounding.
 /// @details Applies nearest-even rounding with optional scaling so callers
-///          can request decimal precision.  Extremely large magnitude digit
-///          counts short-circuit to the original value to avoid overflow.
+///          can request decimal precision. Positive @p ndigits selects digits
+///          after the decimal point and negative values select powers of ten
+///          before it. Non-finite inputs, digit magnitudes above 308, unusable
+///          scale factors, and scaling overflow return @p x unchanged.
 /// @param x Input double to round.
-/// @param ndigits Number of digits after the decimal point.
-/// @return Rounded value according to BASIC's ROUND behaviour.
+/// @param ndigits Decimal-place position at which to round.
+/// @return The scaled nearest-even result, or @p x for a documented
+///         short-circuit condition.
 double rt_round_even(double x, int ndigits) {
     if (!isfinite(x))
         return x;
@@ -270,7 +292,10 @@ double rt_round_even(double x, int ndigits) {
     return rounded / factor;
 }
 
-/// @brief Return true for the fixed ASCII whitespace set, independent of locale.
+/// @brief Test for the fixed ASCII whitespace set.
+/// @param ch Byte to classify.
+/// @return Non-zero for space, tab, line feed, carriage return, form feed, or
+///         vertical tab; otherwise zero.
 static inline int rt_is_ascii_space(unsigned char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
 }
@@ -278,6 +303,8 @@ static inline int rt_is_ascii_space(unsigned char ch) {
 /// @brief Locale-independent test for ASCII digits 0-9.
 /// @details Used by the parsers in this file instead of `isdigit` so the result is
 ///          deterministic regardless of the process's `LC_CTYPE` setting.
+/// @param ch Byte to classify.
+/// @return Non-zero for bytes `'0'` through `'9'`; otherwise zero.
 static inline int rt_is_ascii_digit(unsigned char ch) {
     return ch >= '0' && ch <= '9';
 }
@@ -285,7 +312,7 @@ static inline int rt_is_ascii_digit(unsigned char ch) {
 /// @brief Advance a pointer past ASCII whitespace characters.
 /// @details Uses a fixed byte set instead of the process locale so numeric
 ///          parsing remains deterministic.
-/// @param cursor Current position within a byte buffer.
+/// @param cursor Non-null position within a NUL-terminated byte buffer.
 /// @return Pointer to the first non-whitespace byte (or the terminator).
 static inline const unsigned char *rt_skip_ascii_space(const unsigned char *cursor) {
     while (*cursor && rt_is_ascii_space(*cursor))
@@ -297,6 +324,9 @@ static inline const unsigned char *rt_skip_ascii_space(const unsigned char *curs
 /// @details Accepts `[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?`.
 ///          Hexadecimal C float syntax is intentionally rejected so the
 ///          public parser matches the documented decimal grammar.
+/// @param cursor Start of a NUL-terminated byte sequence.
+/// @return The first byte after a complete literal, or `NULL` if @p cursor is
+///         null or does not begin with one.
 static const unsigned char *rt_scan_decimal_float(const unsigned char *cursor) {
     if (!cursor)
         return NULL;
@@ -340,9 +370,15 @@ static const unsigned char *rt_scan_decimal_float(const unsigned char *cursor) {
 }
 
 /// @brief Recognize canonical non-finite floating literals.
-/// @details Accepts `NaN`, `Inf`, `+Inf`, and `-Inf` case-insensitively so
-///          Convert.ToString_Double output can be parsed back through
-///          Convert.ToDouble and Zanna.Core.Parse.TryDouble.
+/// @details Accepts `NaN` and `Inf` case-insensitively after an optional sign.
+///          The sign controls infinity; NaN is written using the `NAN`
+///          constant. Only the three-letter token is consumed, allowing the
+///          caller to enforce trailing-whitespace and end-of-input rules.
+/// @param cursor Candidate NUL-terminated byte sequence.
+/// @param out_value Destination for NaN or signed infinity.
+/// @param out_end Destination for the first byte after the token.
+/// @return Non-zero when a token was recognised; otherwise zero, including
+///         for any null argument.
 static int rt_scan_nonfinite_float(const unsigned char *cursor,
                                    double *out_value,
                                    const unsigned char **out_end) {
@@ -372,11 +408,14 @@ static int rt_scan_nonfinite_float(const unsigned char *cursor,
 /// @brief Parse a signed 64-bit integer from ASCII text.
 /// @details Skips leading whitespace, invokes @ref strtoll using base 10,
 ///          validates that the entire string was consumed, and reports
-///          overflow or invalid input through BASIC error codes.  The result
-///          is stored in @p out_value when successful.
-/// @param text Null-terminated string containing the number.
-/// @param out_value Output pointer receiving the parsed integer.
-/// @return BASIC error code (`Err_None` on success).
+///          overflow or invalid input through BASIC error codes. Trailing
+///          ASCII whitespace is permitted. If supplied, @p out_value is
+///          initialized to zero before any validation.
+/// @param text NUL-terminated string containing the number.
+/// @param out_value Required destination for the parsed integer.
+/// @return `Err_None` on success, `Err_InvalidOperation` for a null argument,
+///         `Err_InvalidCast` for empty, partially consumed, or malformed
+///         input, or `Err_Overflow` when `strtoll` reports `ERANGE`.
 int32_t rt_parse_int64(const char *text, int64_t *out_value) {
     if (out_value)
         *out_value = 0;
@@ -405,11 +444,13 @@ int32_t rt_parse_int64(const char *text, int64_t *out_value) {
     return (int32_t)Err_None;
 }
 
-/// @brief Resolve the underlying byte buffer of @p text, returning NULL when unavailable.
-/// @details Defensive helper used by the public parsers — guards against a NULL handle
-///          and against a string struct with a NULL data pointer (which would otherwise
-///          crash in `strtol`/`strtod`). The returned pointer aliases the string's
-///          storage; callers must not retain it past the lifetime of @p text.
+/// @brief Borrow a runtime string's C-compatible byte buffer.
+/// @details Rejects null or invalid handles, null data, and a NUL byte within
+///          the string's recorded length. The runtime-owned terminator after
+///          that length remains available to the C parsers.
+/// @param text Runtime string handle to inspect.
+/// @return A borrowed NUL-terminated pointer, or `NULL` when the handle cannot
+///         safely be parsed as C text.
 static const char *rt_parse_string_text(rt_string text) {
     if (!text || !rt_string_is_handle((const void *)text) || !text->data)
         return NULL;
@@ -420,6 +461,14 @@ static const char *rt_parse_string_text(rt_string text) {
 }
 
 /// @brief Parse a signed 64-bit integer from a runtime string.
+/// @details Initializes an available output to zero, obtains a C-compatible
+///          view with @ref rt_parse_string_text, and delegates successful
+///          views to @ref rt_parse_int64.
+/// @param text Runtime string handle.
+/// @param out_value Required destination for the parsed integer.
+/// @return `Err_InvalidOperation` for a null output pointer,
+///         `Err_InvalidCast` for an unusable string, or the result of
+///         @ref rt_parse_int64.
 int32_t rt_parse_int64_str(rt_string text, int64_t *out_value) {
     if (out_value)
         *out_value = 0;
@@ -432,14 +481,18 @@ int32_t rt_parse_int64_str(rt_string text, int64_t *out_value) {
 }
 
 /// @brief Implementation helper that parses a double using the C locale.
-/// @details Establishes a temporary C locale so decimal points use '.',
-///          delegates to the appropriate `strtod` flavour depending on the
-///          platform, validates complete consumption, and rejects decimal
-///          overflow/non-finite results. Finite underflow to zero/subnormal
-///          values is accepted. Errors are reported via BASIC error codes.
-/// @param text Null-terminated string containing the number.
-/// @param out_value Output pointer receiving the parsed double.
-/// @return BASIC error code (`Err_None` on success).
+/// @details After leading ASCII whitespace, accepts either a signed
+///          case-insensitive three-letter `nan`/`inf` token or the strict
+///          decimal grammar scanned by @ref rt_scan_decimal_float. Trailing
+///          ASCII whitespace is allowed and all other trailing bytes are
+///          rejected. Explicit non-finite tokens are successful; a decimal
+///          conversion that becomes non-finite is overflow. Finite underflow
+///          to zero or a subnormal is accepted.
+/// @param text Non-null NUL-terminated input text.
+/// @param out_value Non-null destination written only on success.
+/// @return `Err_None` on success, `Err_InvalidCast` for invalid syntax,
+///         `Err_Overflow` for a non-finite decimal result, or
+///         `Err_RuntimeError` when the C locale cannot be installed.
 static int32_t rt_parse_double_impl(const char *text, double *out_value) {
     const unsigned char *cursor = rt_skip_ascii_space((const unsigned char *)text);
     if (*cursor == '\0')
@@ -503,10 +556,13 @@ static int32_t rt_parse_double_impl(const char *text, double *out_value) {
 /// @brief Parse a double from ASCII text respecting BASIC error codes.
 /// @details Validates parameters before delegating to
 ///          @ref rt_parse_double_impl so the public API consistently rejects
-///          null pointers with @ref Err_InvalidOperation.
-/// @param text Null-terminated string containing the number.
-/// @param out_value Output pointer receiving the parsed double.
-/// @return BASIC error code (`Err_None` on success).
+///          null pointers with @ref Err_InvalidOperation. If supplied,
+///          @p out_value is initialized to zero before validation.
+/// @param text NUL-terminated string containing the number.
+/// @param out_value Required destination for the parsed double.
+/// @return `Err_None` on success, `Err_InvalidOperation` for a null argument,
+///         or the syntax, overflow, or locale error from
+///         @ref rt_parse_double_impl.
 int32_t rt_parse_double(const char *text, double *out_value) {
     if (out_value)
         *out_value = 0.0;
@@ -516,6 +572,14 @@ int32_t rt_parse_double(const char *text, double *out_value) {
 }
 
 /// @brief Parse a double from a runtime string.
+/// @details Initializes an available output to zero, obtains a C-compatible
+///          view with @ref rt_parse_string_text, and delegates successful
+///          views to @ref rt_parse_double.
+/// @param text Runtime string handle.
+/// @param out_value Required destination for the parsed double.
+/// @return `Err_InvalidOperation` for a null output pointer,
+///         `Err_InvalidCast` for an unusable string, or the result of
+///         @ref rt_parse_double.
 int32_t rt_parse_double_str(rt_string text, double *out_value) {
     if (out_value)
         *out_value = 0.0;

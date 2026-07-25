@@ -132,15 +132,16 @@ func main() {
     editor.viewTargetY = 0.0;
     editor.viewTargetZ = 0.0;
 
-    var width = editor.renderedViewportWidth;
-    var height = editor.renderedViewportHeight;
-    var centerX = width / 2;
-
     // ------------------------------------------------------------------
     // Orthographic reference: depth never changes screen X.
     // ------------------------------------------------------------------
     editor.SetViewProjection(false);
     pump(editor, sceneDoc, shell);
+    // Read the viewport dimensions only after the pane layout settled so
+    // projection expectations use the same width the render used.
+    var width = editor.renderedViewportWidth;
+    var height = editor.renderedViewportHeight;
+    var centerX = width / 2;
     if editor.viewPerspective {
         fail(shell, "projection toggle to orthographic did not latch");
         return;

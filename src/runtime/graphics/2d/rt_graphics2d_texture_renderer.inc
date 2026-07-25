@@ -7,12 +7,12 @@
 //
 ///
 /// @file rt_graphics2d_texture_renderer.inc
-/// @brief Texture2D, Sprite2D, Renderer2D, and BitmapFont2D runtime entry
-/// points.
+/// @brief Texture2D, GpuTexture2D, and Renderer2D runtime entry points.
 ///
 /// @details This include fragment is consumed only by rt_graphics2d.c and
-/// keeps texture ownership, sprite drawing, renderer state, and bitmap font
-/// behavior in one contiguous section of the split 2D graphics implementation.
+/// keeps texture ownership, sampling state, retained draw-command creation, and
+/// target-specific command execution in one contiguous section of the split 2D
+/// graphics implementation.
 ///
 // File: src/runtime/graphics/2d/rt_graphics2d_texture_renderer.inc
 // Purpose: Texture2D, GpuTexture2D, and Renderer2D command-stream entry points.
@@ -33,13 +33,18 @@
 //===----------------------------------------------------------------------===//
 
 //=============================================================================
-// Texture2D (aliased as GpuTexture2D)
+// Texture2D / GpuTexture2D
 //=============================================================================
 // Retained `Pixels` handle plus sampling state — filter mode (NEAREST / LINEAR)
-// and wrap mode (CLAMP / REPEAT). CPU-backed in this implementation; the name
-// is forward-compatible with a future GPU-texture handle.
+// and wrap mode (CLAMP / REPEAT). The two classes have distinct runtime type
+// identities but share a CPU-backed implementation in this module.
 
 /// @brief GC finalizer — releases the retained Pixels reference.
+/// @details Invalidates the implementation magic cookie before releasing the
+///          backing image. Runtime object storage is reclaimed separately by
+///          the object system.
+/// @param obj Finalizing Texture2D or GpuTexture2D implementation supplied by
+///            the runtime object system.
 static void texture2d_finalize(void *obj) {
     rt_texture2d_impl *texture = (rt_texture2d_impl *)obj;
     texture->magic = 0;
@@ -52,6 +57,10 @@ static void texture2d_finalize(void *obj) {
 ///          Returns NULL on allocation failure; fires no trap so a caller probing
 ///          "was this pixels buffer loadable" can check for NULL without having
 ///          to catch a trap.
+/// @param pixels Valid Pixels handle to retain as the texture backing image.
+/// @param class_id Runtime class identifier for Texture2D or GpuTexture2D.
+/// @return A new texture-compatible handle, or `NULL` for an invalid Pixels
+///         handle or allocation failure.
 static void *texture2d_new_with_class(void *pixels, int64_t class_id) {
     if (!pixels)
         return NULL;
@@ -73,18 +82,35 @@ static void *texture2d_new_with_class(void *pixels, int64_t class_id) {
     return texture;
 }
 
+/// @brief Wrap an existing Pixels image as a CPU-backed Texture2D.
+/// @details The texture retains its own reference and initializes NEAREST
+///          filtering with CLAMP wrapping.
+/// @param pixels Valid Pixels handle to retain.
+/// @return A new Texture2D handle, or `NULL` for invalid input or allocation
+///         failure.
 void *rt_texture2d_new(void *pixels) {
     return texture2d_new_with_class(pixels, RT2D_TEXTURE_CLASS_ID);
 }
 
+/// @brief Wrap an existing Pixels image as a GpuTexture2D runtime object.
+/// @details The current implementation remains CPU-backed but preserves a
+///          distinct GpuTexture2D class identity. It retains @p pixels and uses
+///          NEAREST filtering with CLAMP wrapping initially.
+/// @param pixels Valid Pixels handle to retain.
+/// @return A new GpuTexture2D handle, or `NULL` for invalid input or allocation
+///         failure.
 void *rt_gputexture2d_new(void *pixels) {
     return texture2d_new_with_class(pixels, RT2D_GPUTEXTURE_CLASS_ID);
 }
 
 /// @brief Load a Pixels buffer from disk and wrap it as a Texture2D.
 /// @details The transient Pixels reference is released after the Texture2D takes its own
-///   retain, so the caller gets a Texture2D with a net-zero effect on the Pixels refcount.
-///   Returns NULL if the file cannot be loaded or the Texture2D allocation fails.
+///   retain, leaving exactly the reference owned by the returned texture. Returns
+///   NULL if the file cannot be loaded or the texture allocation fails.
+/// @param path Runtime string naming the image file to load.
+/// @param class_id Runtime class identifier for the wrapper object.
+/// @return A new texture-compatible handle, or `NULL` if loading, validation,
+///         or allocation fails.
 static void *texture2d_from_file_with_class(rt_string path, int64_t class_id) {
     void *pixels = rt_pixels_load(path);
     if (!pixels)
@@ -94,39 +120,61 @@ static void *texture2d_from_file_with_class(rt_string path, int64_t class_id) {
     return texture;
 }
 
+/// @brief Load an image file into a new Texture2D.
+/// @param path Runtime string naming the image file.
+/// @return A new Texture2D handle, or `NULL` when loading or allocation fails.
 void *rt_texture2d_from_file(rt_string path) {
     return texture2d_from_file_with_class(path, RT2D_TEXTURE_CLASS_ID);
 }
 
+/// @brief Load an image file into a CPU-backed GpuTexture2D object.
+/// @param path Runtime string naming the image file.
+/// @return A new GpuTexture2D handle, or `NULL` when loading or allocation
+///         fails.
 void *rt_gputexture2d_from_file(rt_string path) {
     return texture2d_from_file_with_class(path, RT2D_GPUTEXTURE_CLASS_ID);
 }
 
 /// @brief Return the pixel width of the texture, or 0 for an invalid handle.
+/// @param texture Opaque Texture2D or GpuTexture2D handle to query.
+/// @return The backing Pixels width, or `0` when @p texture is invalid.
 int64_t rt_texture2d_width(void *texture) {
     rt_texture2d_impl *impl = texture2d_checked(texture);
     return impl ? rt_pixels_width(impl->pixels) : 0;
 }
 
 /// @brief Return the pixel height of the texture, or 0 for an invalid handle.
+/// @param texture Opaque Texture2D or GpuTexture2D handle to query.
+/// @return The backing Pixels height, or `0` when @p texture is invalid.
 int64_t rt_texture2d_height(void *texture) {
     rt_texture2d_impl *impl = texture2d_checked(texture);
     return impl ? rt_pixels_height(impl->pixels) : 0;
 }
 
 /// @brief Return the underlying Pixels buffer (borrowed reference — caller must not release).
+/// @param texture Opaque Texture2D or GpuTexture2D handle to query.
+/// @return The borrowed backing Pixels handle, or `NULL` when @p texture is
+///         invalid. Its lifetime remains tied to the texture object.
 void *rt_texture2d_get_pixels(void *texture) {
     rt_texture2d_impl *impl = texture2d_checked(texture);
     return impl ? impl->pixels : NULL;
 }
 
 /// @brief Clone the underlying Pixels buffer (caller owns the returned copy).
+/// @param texture Opaque Texture2D or GpuTexture2D handle to copy.
+/// @return A new independent Pixels handle, or `NULL` for an invalid texture or
+///         allocation failure.
 void *rt_texture2d_clone_pixels(void *texture) {
     void *pixels = rt_texture2d_get_pixels(texture);
     return pixels ? rt_pixels_clone(pixels) : NULL;
 }
 
 /// @brief Set the sampling filter mode (`RT_GRAPHICS2D_FILTER_NEAREST` or `LINEAR`).
+/// @details Only the LINEAR constant selects linear sampling; every other value
+///          normalizes to NEAREST.
+/// @param texture Opaque Texture2D or GpuTexture2D handle to update; invalid
+///                handles are ignored.
+/// @param filter Requested `RT_GRAPHICS2D_FILTER_*` value.
 void rt_texture2d_set_filter(void *texture, int64_t filter) {
     rt_texture2d_impl *impl = texture2d_checked(texture);
     if (!impl)
@@ -136,12 +184,20 @@ void rt_texture2d_set_filter(void *texture, int64_t filter) {
 }
 
 /// @brief Get the current sampling filter mode, defaulting to NEAREST for invalid handles.
+/// @param texture Opaque Texture2D or GpuTexture2D handle to query.
+/// @return The stored `RT_GRAPHICS2D_FILTER_*` value, or NEAREST when
+///         @p texture is invalid.
 int64_t rt_texture2d_get_filter(void *texture) {
     rt_texture2d_impl *impl = texture2d_checked(texture);
     return impl ? impl->filter : RT_GRAPHICS2D_FILTER_NEAREST;
 }
 
 /// @brief Set the texture wrap mode (`RT_GRAPHICS2D_WRAP_CLAMP` or `REPEAT`).
+/// @details Only the REPEAT constant selects repeating coordinates; every
+///          other value normalizes to CLAMP.
+/// @param texture Opaque Texture2D or GpuTexture2D handle to update; invalid
+///                handles are ignored.
+/// @param wrap Requested `RT_GRAPHICS2D_WRAP_*` value.
 void rt_texture2d_set_wrap(void *texture, int64_t wrap) {
     rt_texture2d_impl *impl = texture2d_checked(texture);
     if (!impl)
@@ -151,12 +207,18 @@ void rt_texture2d_set_wrap(void *texture, int64_t wrap) {
 }
 
 /// @brief Get the current wrap mode, defaulting to CLAMP for invalid handles.
+/// @param texture Opaque Texture2D or GpuTexture2D handle to query.
+/// @return The stored `RT_GRAPHICS2D_WRAP_*` value, or CLAMP when @p texture is
+///         invalid.
 int64_t rt_texture2d_get_wrap(void *texture) {
     rt_texture2d_impl *impl = texture2d_checked(texture);
     return impl ? impl->wrap : RT_GRAPHICS2D_WRAP_CLAMP;
 }
 
 /// @brief Release the source reference in a draw command and zero-wipe the slot.
+/// @details Zeroing prevents stale ownership or render state from surviving if
+///          the buffer slot is reused by a later command.
+/// @param cmd Mutable command slot to release; `NULL` is accepted as a no-op.
 static void renderer2d_release_cmd(rt_renderer2d_cmd *cmd) {
     if (!cmd)
         return;
@@ -165,6 +227,11 @@ static void renderer2d_release_cmd(rt_renderer2d_cmd *cmd) {
 }
 
 /// @brief GC finalizer — releases all retained source references and frees the command buffer.
+/// @details Clears the implementation magic cookie first, releases each
+///          initialized command through `renderer2d_release_cmd`, and then
+///          frees the renderer-owned backing allocation.
+/// @param obj Finalizing Renderer2D implementation supplied by the runtime
+///            object system.
 static void renderer2d_finalize(void *obj) {
     rt_renderer2d_impl *renderer = (rt_renderer2d_impl *)obj;
     renderer->magic = 0;
@@ -179,17 +246,22 @@ static void renderer2d_finalize(void *obj) {
 // Renderer2D
 //=============================================================================
 // Retained command stream. `Begin` clears + arms the queue; `Draw*` calls append
-// commands with the current tint / alpha / blend mode snapshot; `End` (via the
-// `Flush` / `Present` API elsewhere in the file) walks the commands and blits
-// each one through `rt2d_blit_pixels`. Works on any Pixels-compatible target.
+// commands with the current tint / alpha / blend mode snapshot. `FlushToTarget`
+// draws without consuming or deactivating the queue, while `End` draws to an
+// optional Canvas, deactivates, and releases every queued source reference.
 
 /// @brief Grow the command buffer to fit at least `needed` entries.
 /// @details Doubling-growth with overflow guards at both the element-count level
 ///          and the byte-count level (so a malicious caller can't wrap the
 ///          multiplication by `sizeof(rt_renderer2d_cmd)` past `INT64_MAX`).
-///          Fresh slots are zero-initialized so the `_release_cmd` loop in
-///          `_clear` can safely touch every slot up to `capacity`.
-/// @return 1 on success (including no-op), 0 on overflow or realloc failure.
+///          Fresh slots are zero-initialized so new commands never inherit stale
+///          pointers or state. A null renderer is treated as already satisfied
+///          because append callers reject it before reserving.
+/// @param renderer Mutable Renderer2D implementation whose command buffer may
+///                 be reallocated.
+/// @param needed Minimum number of command slots required.
+/// @return Nonzero for a null renderer, sufficient existing capacity, or
+///         successful growth; zero on overflow or allocation failure.
 static int32_t renderer2d_reserve(rt_renderer2d_impl *renderer, int64_t needed) {
     if (!renderer || needed <= renderer->capacity)
         return 1;
@@ -214,8 +286,12 @@ static int32_t renderer2d_reserve(rt_renderer2d_impl *renderer, int64_t needed) 
 /// @brief Allocate a new Renderer2D with the given initial command-buffer capacity.
 /// @details Default render state: no tint (`tint = -1`), full alpha (`alpha = 255`),
 ///          ALPHA blend mode. The renderer starts inactive; call `Begin` before
-///          the first `Draw*`. Initial capacity is clamped to a sensible range by
-///          `rt2d_initial_capacity` (floor 16, ceiling 1Mi).
+///          the first `Draw*`. A nonpositive capacity selects the default of 16,
+///          positive requests up to 1,048,576 are preserved, and larger initial
+///          requests are capped at that value.
+/// @param capacity Requested number of command slots to allocate initially.
+/// @return A new inactive Renderer2D handle, or `NULL` if object or command
+///         buffer allocation fails.
 void *rt_renderer2d_new(int64_t capacity) {
     rt_renderer2d_impl *renderer = (rt_renderer2d_impl *)rt_obj_new_i64(
         RT2D_RENDERER_CLASS_ID, (int64_t)sizeof(rt_renderer2d_impl));
@@ -238,6 +314,10 @@ void *rt_renderer2d_new(int64_t capacity) {
 }
 
 /// @brief Release all queued draw commands and reset the command count to zero.
+/// @details Retained sources are released and command slots are wiped, but the
+///          allocated buffer and current active/state settings are preserved.
+/// @param renderer Opaque Renderer2D handle to clear; invalid handles are
+///                 ignored.
 void rt_renderer2d_clear(void *renderer) {
     rt_renderer2d_impl *impl = renderer2d_checked(renderer);
     if (!impl)
@@ -248,6 +328,10 @@ void rt_renderer2d_clear(void *renderer) {
 }
 
 /// @brief Clear the command queue and mark the renderer active for new draw commands.
+/// @details Any previously retained command sources are released before the
+///          active flag is set. Tint, alpha, and blend settings are unchanged.
+/// @param renderer Opaque Renderer2D handle to begin; invalid handles are
+///                 ignored.
 void rt_renderer2d_begin(void *renderer) {
     rt_renderer2d_impl *impl = renderer2d_checked(renderer);
     if (!impl)
@@ -257,12 +341,19 @@ void rt_renderer2d_begin(void *renderer) {
 }
 
 /// @brief Return the number of draw commands currently queued.
+/// @param renderer Opaque Renderer2D handle to query.
+/// @return The logical command count, or `0` when @p renderer is invalid.
 int64_t rt_renderer2d_count(void *renderer) {
     rt_renderer2d_impl *impl = renderer2d_checked(renderer);
     return impl ? impl->count : 0;
 }
 
 /// @brief Set the multiplicative tint color (`0x00RRGGBB`); negative disables tinting.
+/// @details The setting is captured only by commands queued after this call.
+/// @param renderer Opaque Renderer2D handle to update; invalid handles are
+///                 ignored.
+/// @param rgb Tint value; negative disables tinting and nonnegative values are
+///            masked to 24 bits.
 void rt_renderer2d_set_tint(void *renderer, int64_t rgb) {
     rt_renderer2d_impl *impl = renderer2d_checked(renderer);
     if (impl)
@@ -270,6 +361,10 @@ void rt_renderer2d_set_tint(void *renderer, int64_t rgb) {
 }
 
 /// @brief Set the alpha scale clamped to `[0, 255]`; 255 = fully opaque.
+/// @details The setting is captured only by commands queued after this call.
+/// @param renderer Opaque Renderer2D handle to update; invalid handles are
+///                 ignored.
+/// @param alpha Requested additional alpha multiplier.
 void rt_renderer2d_set_alpha(void *renderer, int64_t alpha) {
     rt_renderer2d_impl *impl = renderer2d_checked(renderer);
     if (impl)
@@ -277,6 +372,10 @@ void rt_renderer2d_set_alpha(void *renderer, int64_t alpha) {
 }
 
 /// @brief Set the blend mode (`RT_GRAPHICS2D_BLEND_*`) clamped to the valid range `[0, 2]`.
+/// @details The setting is captured only by commands queued after this call.
+/// @param renderer Opaque Renderer2D handle to update; invalid handles are
+///                 ignored.
+/// @param blend_mode Requested blend-mode value.
 void rt_renderer2d_set_blend_mode(void *renderer, int64_t blend_mode) {
     rt_renderer2d_impl *impl = renderer2d_checked(renderer);
     if (impl)
@@ -291,10 +390,21 @@ void rt_renderer2d_set_blend_mode(void *renderer, int64_t blend_mode) {
 ///          traps rather than silently dropping draws — a silently-dropped draw in
 ///          a retained command stream is almost always a bug the caller would want
 ///          to see.
-/// @param source_kind Tag identifying what `source` points to (Pixels, Texture2D,
-///                    etc.) so the flush loop knows how to extract draw pixels.
-/// @param x,y Destination position in the target's coordinate space.
-/// @param sx,sy,width,height Source sub-rectangle in the source pixels.
+/// @param renderer Mutable validated Renderer2D implementation.
+/// @param source_kind Source tag: `0` for Pixels or `1` for Texture2D-compatible
+///                    objects.
+/// @param source Object retained by the queued command until clear, end, or
+///               finalization.
+/// @param x Destination X coordinate.
+/// @param y Destination Y coordinate.
+/// @param sx Source rectangle X coordinate.
+/// @param sy Source rectangle Y coordinate.
+/// @param width Positive source rectangle width.
+/// @param height Positive source rectangle height.
+/// @param dst_width Positive destination width used for sampled texture draws.
+/// @param dst_height Positive destination height used for sampled texture draws.
+/// @param sampler_filter Snapshotted `RT_GRAPHICS2D_FILTER_*` value.
+/// @param sampler_wrap Snapshotted `RT_GRAPHICS2D_WRAP_*` value.
 static void renderer2d_queue(rt_renderer2d_impl *renderer,
                              int32_t source_kind,
                              void *source,
@@ -342,6 +452,13 @@ static void renderer2d_queue(rt_renderer2d_impl *renderer,
 
 /// @brief Queue a draw command to blit the full @p pixels buffer at `(x, y)` with current render
 /// state.
+/// @details Invalid Pixels handles are silently skipped. The queued command
+///          retains the source and uses NEAREST/CLAMP sampling metadata. An
+///          inactive or invalid renderer also produces no command.
+/// @param renderer Opaque Renderer2D handle receiving the command.
+/// @param pixels Valid source Pixels handle to retain.
+/// @param x Destination X coordinate.
+/// @param y Destination Y coordinate.
 void rt_renderer2d_draw_pixels(void *renderer, void *pixels, int64_t x, int64_t y) {
     /* Soft-skip an invalid handle (no trap) to match rt_renderer2d_draw_texture, so
      * a stale handle mid-frame drops the one draw rather than aborting the program. */
@@ -365,6 +482,13 @@ void rt_renderer2d_draw_pixels(void *renderer, void *pixels, int64_t x, int64_t 
 
 /// @brief Queue a draw command to blit the full Texture2D at `(x, y)`, propagating its sampler
 /// state.
+/// @details Texture2D and GpuTexture2D handles are accepted. The command
+///          snapshots the texture dimensions, filter, renderer tint/alpha/blend
+///          state, and retains the texture until the queue is cleared.
+/// @param renderer Opaque Renderer2D handle receiving the command.
+/// @param texture Valid Texture2D or GpuTexture2D source handle.
+/// @param x Destination X coordinate.
+/// @param y Destination Y coordinate.
 void rt_renderer2d_draw_texture(void *renderer, void *texture, int64_t x, int64_t y) {
     if (!texture || !texture2d_checked(texture))
         return;
@@ -383,6 +507,16 @@ void rt_renderer2d_draw_texture(void *renderer, void *texture, int64_t x, int64_
                      rt_texture2d_get_wrap(texture));
 }
 
+/// @brief Queue a full-texture draw rotated about the texture center.
+/// @details @p x and @p y locate the unrotated texture's top-left corner. The
+///          finite angle is reduced modulo 360 degrees, and the integer pivot
+///          is `(width / 2, height / 2)`. Invalid inputs or an inactive renderer
+///          leave the queue unchanged.
+/// @param renderer Opaque Renderer2D handle receiving the command.
+/// @param texture Valid Texture2D or GpuTexture2D source handle.
+/// @param x Destination X coordinate before rotation.
+/// @param y Destination Y coordinate before rotation.
+/// @param angle_deg Signed rotation angle in degrees.
 void rt_renderer2d_draw_texture_rotated(
     void *renderer, void *texture, int64_t x, int64_t y, double angle_deg) {
     if (!texture || !texture2d_checked(texture) || !rt2d_normalize_angle_degrees(&angle_deg))
@@ -415,6 +549,17 @@ void rt_renderer2d_draw_texture_rotated(
     }
 }
 
+/// @brief Queue a full-texture draw rotated about an explicit local pivot.
+/// @details @p pivot_x and @p pivot_y are measured from the texture's unrotated
+///          top-left corner and are stored without clamping, allowing pivots
+///          outside the image. The finite angle is reduced modulo 360 degrees.
+/// @param renderer Opaque Renderer2D handle receiving the command.
+/// @param texture Valid Texture2D or GpuTexture2D source handle.
+/// @param x Destination X coordinate before rotation.
+/// @param y Destination Y coordinate before rotation.
+/// @param pivot_x Local X coordinate of the rotation pivot.
+/// @param pivot_y Local Y coordinate of the rotation pivot.
+/// @param angle_deg Rotation angle in degrees.
 void rt_renderer2d_draw_texture_rotated_at(void *renderer,
                                            void *texture,
                                            int64_t x,
@@ -453,6 +598,12 @@ void rt_renderer2d_draw_texture_rotated_at(void *renderer,
 }
 
 /// @brief Queue a scaled full-texture draw, using the texture's filter and wrap state.
+/// @param renderer Opaque Renderer2D handle receiving the command.
+/// @param texture Valid Texture2D or GpuTexture2D source handle.
+/// @param x Destination X coordinate.
+/// @param y Destination Y coordinate.
+/// @param width Positive destination width; nonpositive values are ignored.
+/// @param height Positive destination height; nonpositive values are ignored.
 void rt_renderer2d_draw_texture_scaled(
     void *renderer, void *texture, int64_t x, int64_t y, int64_t width, int64_t height) {
     if (!texture || !texture2d_checked(texture) || width <= 0 || height <= 0)
@@ -473,6 +624,16 @@ void rt_renderer2d_draw_texture_scaled(
 }
 
 /// @brief Queue a texture-region draw. Out-of-bounds source texels obey the texture wrap mode.
+/// @details The destination extent equals the requested source extent. Filter,
+///          wrap, tint, alpha, and blend state are captured with the command.
+/// @param renderer Opaque Renderer2D handle receiving the command.
+/// @param texture Valid Texture2D or GpuTexture2D source handle.
+/// @param x Destination X coordinate.
+/// @param y Destination Y coordinate.
+/// @param sx Source rectangle X coordinate, which may lie outside the image.
+/// @param sy Source rectangle Y coordinate, which may lie outside the image.
+/// @param width Positive source and destination width.
+/// @param height Positive source and destination height.
 void rt_renderer2d_draw_texture_region(void *renderer,
                                        void *texture,
                                        int64_t x,
@@ -500,6 +661,17 @@ void rt_renderer2d_draw_texture_region(void *renderer,
 
 /// @brief Queue a draw command to blit the sub-region `(sx, sy, width, height)` of @p pixels at
 /// `(x, y)`.
+/// @details Unlike `rt_renderer2d_draw_pixels`, invalid Pixels input is checked
+///          through the trapping Pixels validator. The raw Pixels path uses
+///          NEAREST/CLAMP metadata and clips the source region when executed.
+/// @param renderer Opaque Renderer2D handle receiving the command.
+/// @param pixels Valid source Pixels handle to retain.
+/// @param x Destination X coordinate.
+/// @param y Destination Y coordinate.
+/// @param sx Source rectangle X coordinate.
+/// @param sy Source rectangle Y coordinate.
+/// @param width Positive requested source and destination width.
+/// @param height Positive requested source and destination height.
 void rt_renderer2d_draw_region(void *renderer,
                                void *pixels,
                                int64_t x,
@@ -527,7 +699,11 @@ void rt_renderer2d_draw_region(void *renderer,
 
 /// @brief Execute one queued draw command against a Pixels render target.
 /// @details Resolves the source (Texture2D → its Pixels, or raw Pixels directly) then calls
-///   `rt2d_blit_pixels` with the command's snapshot of tint, alpha, blend mode, and region.
+///   the rotated blitter, sampled texture blitter, or direct Pixels blitter as
+///   required. Rotation and texture commands honor snapshotted filter and wrap
+///   state; every path uses the command's tint, alpha, and blend mode.
+/// @param cmd Borrowed initialized command to execute.
+/// @param target_pixels Borrowed destination Pixels handle modified in place.
 static void renderer2d_flush_cmd_to_target(rt_renderer2d_cmd *cmd, void *target_pixels) {
     void *pixels = cmd->source_kind == 1 ? rt_texture2d_get_pixels(cmd->source) : cmd->source;
     if (!pixels)
@@ -582,7 +758,14 @@ static void renderer2d_flush_cmd_to_target(rt_renderer2d_cmd *cmd, void *target_
 /// @details Routes through the appropriate Canvas API function based on blend mode:
 ///   OPAQUE → `rt_canvas_blit`, ALPHA → `rt_canvas_blit_alpha`, ADD → read-modify-write
 ///   via `rt_canvas_copy_rect` + `rt2d_blit_pixels(ADD)` + `rt_canvas_blit`. The additive
-///   path is the only one that needs a round-trip through a temporary Pixels buffer.
+///   path is the only one that needs a round-trip through a temporary Pixels
+///   buffer. The additive path clips negative and oversized destinations before
+///   copying the Canvas region. Unsupported blend values follow the alpha path.
+/// @param canvas Borrowed destination Canvas handle modified in place.
+/// @param x Destination X coordinate.
+/// @param y Destination Y coordinate.
+/// @param pixels Borrowed source Pixels handle.
+/// @param blend_mode Snapshotted `RT_GRAPHICS2D_BLEND_*` value.
 static void renderer2d_blit_pixels_to_canvas(
     void *canvas, int64_t x, int64_t y, void *pixels, int64_t blend_mode) {
     if (!canvas || !pixels)
@@ -641,9 +824,12 @@ static void renderer2d_blit_pixels_to_canvas(
     rt2d_release_ref_slot(&dest);
 }
 
-/// @brief Execute all queued draw commands against a RenderTarget2D.
+/// @brief Execute all queued draw commands against an offscreen pixel target.
 /// @details Does NOT deactivate the renderer — use `rt_renderer2d_end` for the
-///   Canvas path or `rt_renderer2d_clear` to reset without flushing.
+///   Canvas path or `rt_renderer2d_clear` to reset without flushing. It also
+///   does not clear the queue, so repeated calls redraw the same commands.
+/// @param renderer Opaque Renderer2D handle whose queued commands are executed.
+/// @param target Opaque RenderTarget2D or Surface2D destination handle.
 void rt_renderer2d_flush_to_target(void *renderer, void *target) {
     if (!renderer || !target)
         return;
@@ -660,15 +846,24 @@ void rt_renderer2d_flush_to_target(void *renderer, void *target) {
 /// @brief Flush the queued command stream to a Canvas, then deactivate the queue.
 /// @details For every command:
 ///          1. Resolve the source Pixels (Texture2D → `.pixels`, Pixels → self).
-///          2. If the command specifies a sub-region, copy just that region out
-///             so the canvas blit doesn't touch surrounding texels.
-///          3. If the command carries tint or alpha, produce a tint+alpha-applied
-///             copy via `processed_pixels_or_null`.
-///          4. Blit the resulting pixels to the canvas at `(x, y)` using the
-///             canvas's standard alpha compositing.
-///          5. Release the intermediate `region` / `processed` buffers.
-///          After flush, `active = 0` so a subsequent `Begin` is required to
-///          queue more draws.
+///          2. Rasterize rotations into a tightly bounded temporary image, or
+///             materialize texture sampling/scaling/wrapping when the direct
+///             Canvas path cannot represent those settings.
+///          3. Clip and copy raw-Pixels subregions when necessary.
+///          4. Apply snapshotted tint and alpha to non-rotated results.
+///          5. Composite with the snapshotted opaque, alpha, or additive blend
+///             mode and release all temporary images.
+///
+///          Whether or not @p canvas is non-null, a successfully validated
+///          active renderer is then deactivated and cleared, releasing every
+///          retained source. A subsequent `Begin` is required before queueing
+///          more draws. Individual commands whose temporary allocation or
+///          geometry validation fails are skipped. If only the optional
+///          tint/alpha clone allocation fails, the current implementation
+///          falls back to the unprocessed image for that command.
+/// @param renderer Opaque active Renderer2D handle to finish.
+/// @param canvas Borrowed destination Canvas handle, or `NULL` to discard the
+///               queue while still ending the active recording pass.
 void rt_renderer2d_end(void *renderer, void *canvas) {
     rt_renderer2d_impl *impl = renderer2d_checked(renderer);
     if (!impl)

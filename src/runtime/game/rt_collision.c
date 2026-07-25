@@ -6,9 +6,12 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_collision.c
-// Purpose: Stateless AABB and circle collision primitive library for Zanna
-//   games. Provides GC-managed CollisionRect and CollisionCircle value objects
-//   alongside stand-alone overlap and containment test functions. Intended as
+/// @file
+/// @brief Implements mutable collision rectangles and stateless 2D hit tests.
+//
+// Purpose: AABB and circle collision primitive library for Zanna games.
+//   Provides reference-counted CollisionRect objects alongside stand-alone
+//   rectangle, circle, containment, and distance functions. Intended as
 //   a lightweight helper layer on top of Physics2D for game logic that needs
 //   simple hit tests without a full simulation world (e.g. trigger zones,
 //   projectile hit detection, UI hover regions).
@@ -16,21 +19,17 @@
 // Key invariants:
 //   - CollisionRect is an axis-aligned bounding box (AABB) with double x, y,
 //     width, height fields. x, y is the top-left corner.
-//   - CollisionCircle has double cx, cy center and double radius.
-//   - All overlap tests return int64: 1 = overlapping, 0 = separated.
-//     Tests are strict (touching edges count as overlapping unless noted).
-//   - rt_collision_rect_vs_rect: SAT test on both axes, returns 1 if any area
-//     overlaps (not just touches). Two rects sharing only an edge return 0.
-//   - rt_collision_circle_vs_circle: distance-squared comparison to avoid
-//     sqrt; returns 1 when distance <= sum_of_radii.
+//   - Rectangle overlap tests are strict: rectangles sharing only an edge do
+//     not overlap. Circle tests are inclusive: tangency counts as overlap.
 //   - rt_collision_point_in_rect is inclusive on left/top and exclusive on
 //     right/bottom; point_in_circle is inclusive of the boundary.
 //   - Standalone functions (not methods on rect/circle objects) are also
 //     provided for callers that store geometry inline rather than in objects.
 //
 // Ownership/Lifetime:
-//   - CollisionRect and CollisionCircle objects are GC-managed (rt_obj_new_i64).
-//     They hold no external resources and require no finalizer.
+//   - CollisionRect objects use the runtime object's reference count. Destroy
+//     releases one reference and frees the object when the count reaches zero.
+//   - Stateless helpers allocate nothing and retain no caller-owned data.
 //
 // Links: src/runtime/game/rt_collision.h (public API),
 //        src/runtime/graphics/rt_physics2d.h (full physics simulation),
@@ -45,7 +44,7 @@
 #include <math.h>
 #include <stdlib.h>
 
-/// Internal structure for CollisionRect.
+/// @brief Mutable geometry stored behind an opaque CollisionRect handle.
 struct rt_collision_rect_impl {
     double x;      ///< Left edge.
     double y;      ///< Top edge.
@@ -53,8 +52,12 @@ struct rt_collision_rect_impl {
     double height; ///< Height.
 };
 
-/// @brief Safe-cast a handle to a CollisionRect, trapping @p api on a class-id
-///        mismatch. @return The rect, or NULL if @p rect is NULL.
+/// @brief Validate and recover a collision-rectangle implementation pointer.
+/// @param rect Opaque handle to validate; `NULL` is accepted.
+/// @param api Trap message used when @p rect has the wrong runtime class ID.
+/// @return @p rect when valid, or `NULL` for a null or mismatched handle.
+/// @details A non-null mismatched handle raises a runtime trap before returning
+///          `NULL`.
 static rt_collision_rect checked_collision_rect(rt_collision_rect rect, const char *api) {
     if (!rect)
         return NULL;
@@ -65,19 +68,27 @@ static rt_collision_rect checked_collision_rect(rt_collision_rect rect, const ch
     return rect;
 }
 
-/// @brief Return @p value if finite, else 0.0 (sanitizes NaN/Inf inputs).
+/// @brief Replace non-finite coordinates with zero.
+/// @param value Candidate coordinate.
+/// @return @p value when finite; otherwise `0.0`.
 static double finite_or_zero(double value) {
     return isfinite(value) ? value : 0.0;
 }
 
-/// @brief Return @p value if finite and positive, else 0.0 (for widths/sizes).
+/// @brief Normalize a dimension to a finite, nonnegative value.
+/// @param value Candidate width or height.
+/// @return @p value when finite and strictly positive; otherwise `0.0`.
 static double finite_nonnegative_or_zero(double value) {
     return (isfinite(value) && value > 0.0) ? value : 0.0;
 }
 
 /// @brief Create a new axis-aligned collision rectangle.
-/// @details Allocates a GC-managed AABB with the given top-left position and dimensions.
-///          Negative width/height are clamped to zero.
+/// @param x Initial left edge; non-finite values become zero.
+/// @param y Initial top edge; non-finite values become zero.
+/// @param width Initial width; non-finite or nonpositive values become zero.
+/// @param height Initial height; non-finite or nonpositive values become zero.
+/// @return A newly allocated rectangle, or `NULL` if allocation fails.
+/// @details The returned handle owns one runtime-object reference.
 rt_collision_rect rt_collision_rect_new(double x, double y, double width, double height) {
     struct rt_collision_rect_impl *rect = (struct rt_collision_rect_impl *)rt_obj_new_i64(
         RT_COLLISION_RECT_CLASS_ID, (int64_t)sizeof(struct rt_collision_rect_impl));
@@ -93,6 +104,9 @@ rt_collision_rect rt_collision_rect_new(double x, double y, double width, double
 }
 
 /// @brief Release a collision rectangle, decrementing its reference count.
+/// @param rect Handle whose reference is released; `NULL` is a no-op.
+/// @details Frees the object when the released reference was the last one.
+///          A non-null handle of another runtime class raises a trap.
 void rt_collision_rect_destroy(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.Destroy: expected Zanna.Game.CollisionRect");
     if (rect && rt_obj_release_check0(rect))
@@ -100,54 +114,82 @@ void rt_collision_rect_destroy(rt_collision_rect rect) {
 }
 
 /// @brief Return the X coordinate (left edge) of the collision rectangle.
+/// @param rect Rectangle to query.
+/// @return The finite left edge, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_x(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.X: expected Zanna.Game.CollisionRect");
     return rect ? rect->x : 0.0;
 }
 
 /// @brief Return the Y coordinate (top edge) of the collision rectangle.
+/// @param rect Rectangle to query.
+/// @return The finite top edge, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_y(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.Y: expected Zanna.Game.CollisionRect");
     return rect ? rect->y : 0.0;
 }
 
 /// @brief Return the width of the collision rectangle.
+/// @param rect Rectangle to query.
+/// @return The nonnegative width, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_width(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.Width: expected Zanna.Game.CollisionRect");
     return rect ? rect->width : 0.0;
 }
 
 /// @brief Return the height of the collision rectangle.
+/// @param rect Rectangle to query.
+/// @return The nonnegative height, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_height(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.Height: expected Zanna.Game.CollisionRect");
     return rect ? rect->height : 0.0;
 }
 
 /// @brief Return the right edge (x + width) of the collision rectangle.
+/// @param rect Rectangle to query.
+/// @return The right edge, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_right(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.Right: expected Zanna.Game.CollisionRect");
     return rect ? rect->x + rect->width : 0.0;
 }
 
 /// @brief Return the bottom edge (y + height) of the collision rectangle.
+/// @param rect Rectangle to query.
+/// @return The bottom edge, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_bottom(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.Bottom: expected Zanna.Game.CollisionRect");
     return rect ? rect->y + rect->height : 0.0;
 }
 
 /// @brief Return the X coordinate of the rectangle's center point.
+/// @param rect Rectangle to query.
+/// @return `x + width / 2`, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_center_x(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.CenterX: expected Zanna.Game.CollisionRect");
     return rect ? rect->x + rect->width * 0.5 : 0.0;
 }
 
 /// @brief Return the Y coordinate of the rectangle's center point.
+/// @param rect Rectangle to query.
+/// @return `y + height / 2`, or `0.0` for a null or invalid handle.
+/// @details An invalid non-null handle raises a runtime trap.
 double rt_collision_rect_center_y(rt_collision_rect rect) {
     rect = checked_collision_rect(rect, "CollisionRect.CenterY: expected Zanna.Game.CollisionRect");
     return rect ? rect->y + rect->height * 0.5 : 0.0;
 }
 
 /// @brief Move the rectangle to a new top-left position.
+/// @param rect Rectangle to mutate; `NULL` is a no-op.
+/// @param x New left edge; non-finite values become zero.
+/// @param y New top edge; non-finite values become zero.
+/// @details A non-null handle of another runtime class raises a trap.
 void rt_collision_rect_set_position(rt_collision_rect rect, double x, double y) {
     rect = checked_collision_rect(rect,
                                   "CollisionRect.SetPosition: expected Zanna.Game.CollisionRect");
@@ -158,7 +200,10 @@ void rt_collision_rect_set_position(rt_collision_rect rect, double x, double y) 
 }
 
 /// @brief Set the width and height of the collision rectangle.
-/// @details Negative dimensions are clamped to zero.
+/// @param rect Rectangle to mutate; `NULL` is a no-op.
+/// @param width New width; non-finite or nonpositive values become zero.
+/// @param height New height; non-finite or nonpositive values become zero.
+/// @details A non-null handle of another runtime class raises a trap.
 void rt_collision_rect_set_size(rt_collision_rect rect, double width, double height) {
     rect = checked_collision_rect(rect, "CollisionRect.SetSize: expected Zanna.Game.CollisionRect");
     if (!rect)
@@ -168,7 +213,12 @@ void rt_collision_rect_set_size(rt_collision_rect rect, double width, double hei
 }
 
 /// @brief Set all four components (x, y, width, height) of the collision rectangle.
-/// @details Negative dimensions are clamped to zero.
+/// @param rect Rectangle to mutate; `NULL` is a no-op.
+/// @param x New left edge; non-finite values become zero.
+/// @param y New top edge; non-finite values become zero.
+/// @param width New width; non-finite or nonpositive values become zero.
+/// @param height New height; non-finite or nonpositive values become zero.
+/// @details A non-null handle of another runtime class raises a trap.
 void rt_collision_rect_set(
     rt_collision_rect rect, double x, double y, double width, double height) {
     rect = checked_collision_rect(rect, "CollisionRect.Set: expected Zanna.Game.CollisionRect");
@@ -181,7 +231,11 @@ void rt_collision_rect_set(
 }
 
 /// @brief Reposition the rectangle so its center is at (cx, cy).
-/// @details Computes new top-left from center minus half-dimensions.
+/// @param rect Rectangle to mutate; `NULL` is a no-op.
+/// @param cx New horizontal center.
+/// @param cy New vertical center.
+/// @details Non-finite center coordinates leave the rectangle unchanged. A
+///          non-null handle of another runtime class raises a trap.
 void rt_collision_rect_set_center(rt_collision_rect rect, double cx, double cy) {
     rect =
         checked_collision_rect(rect, "CollisionRect.SetCenter: expected Zanna.Game.CollisionRect");
@@ -192,6 +246,12 @@ void rt_collision_rect_set_center(rt_collision_rect rect, double cx, double cy) 
 }
 
 /// @brief Translate the rectangle by (dx, dy) relative to its current position.
+/// @param rect Rectangle to mutate; `NULL` is a no-op.
+/// @param dx Horizontal displacement.
+/// @param dy Vertical displacement.
+/// @details The operation is atomic: non-finite displacements or a non-finite
+///          resulting coordinate leave both coordinates unchanged. A non-null
+///          handle of another runtime class raises a trap.
 void rt_collision_rect_move(rt_collision_rect rect, double dx, double dy) {
     rect = checked_collision_rect(rect, "CollisionRect.Move: expected Zanna.Game.CollisionRect");
     if (!rect || !isfinite(dx) || !isfinite(dy))
@@ -205,7 +265,13 @@ void rt_collision_rect_move(rt_collision_rect rect, double dx, double dy) {
 }
 
 /// @brief Test whether a point (px, py) lies inside the collision rectangle.
-/// @details Inclusive on left/top edges, exclusive on right/bottom edges.
+/// @param rect Rectangle to test.
+/// @param px Point X coordinate.
+/// @param py Point Y coordinate.
+/// @return `1` when the point is inside; otherwise `0`.
+/// @details Left and top edges are inclusive, while right and bottom edges are
+///          exclusive. Non-finite point coordinates naturally compare false.
+///          An invalid non-null handle raises a runtime trap.
 int8_t rt_collision_rect_contains_point(rt_collision_rect rect, double px, double py) {
     rect = checked_collision_rect(rect,
                                   "CollisionRect.ContainsPoint: expected Zanna.Game.CollisionRect");
@@ -216,8 +282,11 @@ int8_t rt_collision_rect_contains_point(rt_collision_rect rect, double px, doubl
 }
 
 /// @brief Test whether two axis-aligned rectangles overlap.
-/// @details Uses the separating-axis theorem on both X and Y axes. Returns 1
-///          if the rectangles share any interior area, 0 if separated.
+/// @param rect First rectangle.
+/// @param other Second rectangle.
+/// @return `1` when their interiors overlap on both axes; otherwise `0`.
+/// @details Edge-only contact does not count. Invalid non-null handles raise a
+///          runtime trap.
 int8_t rt_collision_rect_overlaps(rt_collision_rect rect, rt_collision_rect other) {
     rect =
         checked_collision_rect(rect, "CollisionRect.Overlaps: expected Zanna.Game.CollisionRect");
@@ -228,6 +297,16 @@ int8_t rt_collision_rect_overlaps(rt_collision_rect rect, rt_collision_rect othe
     return rt_collision_rect_overlaps_rect(rect, other->x, other->y, other->width, other->height);
 }
 
+/// @brief Test a collision rectangle against raw AABB coordinates.
+/// @param rect Rectangle handle to test.
+/// @param ox Other rectangle's left edge.
+/// @param oy Other rectangle's top edge.
+/// @param ow Other rectangle's width.
+/// @param oh Other rectangle's height.
+/// @return `1` for positive-area overlap; otherwise `0`.
+/// @details The raw rectangle must have finite coordinates and strictly
+///          positive dimensions. Edge-only contact does not count. An invalid
+///          non-null @p rect raises a runtime trap.
 int8_t rt_collision_rect_overlaps_rect(
     rt_collision_rect rect, double ox, double oy, double ow, double oh) {
     rect = checked_collision_rect(rect,
@@ -257,7 +336,13 @@ int8_t rt_collision_rect_overlaps_rect(
 }
 
 /// @brief Compute the overlap distance along the X axis between two rectangles.
-/// @details Returns 0.0 if the rectangles do not overlap on the X axis.
+/// @param rect First rectangle.
+/// @param other Second rectangle.
+/// @return The signed minimum X-axis translation for @p rect, or `0.0` if the
+///         rectangles do not overlap on X or either handle is null/invalid.
+/// @details Positive values move @p rect left; negative values move it right.
+///          Equal candidate penetrations select the negative value. Invalid
+///          non-null handles raise a runtime trap.
 double rt_collision_rect_overlap_x(rt_collision_rect rect, rt_collision_rect other) {
     rect =
         checked_collision_rect(rect, "CollisionRect.OverlapX: expected Zanna.Game.CollisionRect");
@@ -283,7 +368,13 @@ double rt_collision_rect_overlap_x(rt_collision_rect rect, rt_collision_rect oth
 }
 
 /// @brief Compute the overlap distance along the Y axis between two rectangles.
-/// @details Returns 0.0 if the rectangles do not overlap on the Y axis.
+/// @param rect First rectangle.
+/// @param other Second rectangle.
+/// @return The signed minimum Y-axis translation for @p rect, or `0.0` if the
+///         rectangles do not overlap on Y or either handle is null/invalid.
+/// @details Positive values move @p rect upward; negative values move it
+///          downward. Equal candidate penetrations select the negative value.
+///          Invalid non-null handles raise a runtime trap.
 double rt_collision_rect_overlap_y(rt_collision_rect rect, rt_collision_rect other) {
     rect =
         checked_collision_rect(rect, "CollisionRect.OverlapY: expected Zanna.Game.CollisionRect");
@@ -308,9 +399,14 @@ double rt_collision_rect_overlap_y(rt_collision_rect rect, rt_collision_rect oth
     return (overlap_top < overlap_bottom) ? overlap_top : -overlap_bottom;
 }
 
-/// @brief Create a new rectangle expanded by the given amounts on each side.
-/// @details The result is larger by 2*dx horizontally and 2*dy vertically,
-///          centered on the same point as the original.
+/// @brief Expand or shrink a rectangle in place on all sides.
+/// @param rect Rectangle to mutate; `NULL` is a no-op.
+/// @param margin Amount applied to each side; positive values expand and
+///        negative values shrink.
+/// @details A finite margin subtracts from the top-left coordinates and adds
+///          twice the margin to each dimension. Negative resulting dimensions
+///          clamp independently to zero without readjusting the coordinates.
+///          A non-null handle of another runtime class raises a trap.
 void rt_collision_rect_expand(rt_collision_rect rect, double margin) {
     rect = checked_collision_rect(rect, "CollisionRect.Expand: expected Zanna.Game.CollisionRect");
     if (!rect || !isfinite(margin))
@@ -328,8 +424,12 @@ void rt_collision_rect_expand(rt_collision_rect rect, double margin) {
 }
 
 /// @brief Test whether this rectangle fully contains another rectangle.
-/// @details Returns 1 if the other rectangle is entirely within the bounds
-///          of this one (inclusive on all edges).
+/// @param rect Candidate outer rectangle.
+/// @param other Candidate inner rectangle.
+/// @return `1` when all four edges of @p other are within @p rect; otherwise
+///         `0`.
+/// @details All boundary comparisons are inclusive. Invalid non-null handles
+///          raise a runtime trap.
 int8_t rt_collision_rect_contains_rect(rt_collision_rect rect, rt_collision_rect other) {
     rect = checked_collision_rect(rect,
                                   "CollisionRect.ContainsRect: expected Zanna.Game.CollisionRect");
@@ -347,6 +447,18 @@ int8_t rt_collision_rect_contains_rect(rt_collision_rect rect, rt_collision_rect
 // Static collision helpers
 //=============================================================================
 
+/// @brief Test two raw axis-aligned rectangles for positive-area overlap.
+/// @param x1 First rectangle's left edge.
+/// @param y1 First rectangle's top edge.
+/// @param w1 First rectangle's width.
+/// @param h1 First rectangle's height.
+/// @param x2 Second rectangle's left edge.
+/// @param y2 Second rectangle's top edge.
+/// @param w2 Second rectangle's width.
+/// @param h2 Second rectangle's height.
+/// @return `1` when the rectangles overlap on both axes; otherwise `0`.
+/// @details All arguments must be finite and both rectangles must have
+///          strictly positive dimensions. Edge-only contact does not count.
 int8_t rt_collision_rects_overlap(
     double x1, double y1, double w1, double h1, double x2, double y2, double w2, double h2) {
     if (!isfinite(x1) || !isfinite(y1) || !isfinite(w1) || !isfinite(h1) || !isfinite(x2) ||
@@ -360,7 +472,16 @@ int8_t rt_collision_rects_overlap(
 }
 
 /// @brief Standalone function: test if point (px, py) is inside rect (rx, ry, rw, rh).
-/// @details Inclusive on left/top, exclusive on right/bottom.
+/// @param px Point X coordinate.
+/// @param py Point Y coordinate.
+/// @param rx Rectangle left edge.
+/// @param ry Rectangle top edge.
+/// @param rw Rectangle width.
+/// @param rh Rectangle height.
+/// @return `1` when the point is inside; otherwise `0`.
+/// @details All arguments must be finite, the dimensions must be strictly
+///          positive, and the rectangle is left/top inclusive and
+///          right/bottom exclusive.
 int8_t rt_collision_point_in_rect(
     double px, double py, double rx, double ry, double rw, double rh) {
     if (!isfinite(px) || !isfinite(py) || !isfinite(rx) || !isfinite(ry) || !isfinite(rw) ||
@@ -369,6 +490,17 @@ int8_t rt_collision_point_in_rect(
     return px >= rx && px < rx + rw && py >= ry && py < ry + rh;
 }
 
+/// @brief Test two raw circles for overlap or tangency.
+/// @param x1 First circle's center X coordinate.
+/// @param y1 First circle's center Y coordinate.
+/// @param r1 First circle's radius.
+/// @param x2 Second circle's center X coordinate.
+/// @param y2 Second circle's center Y coordinate.
+/// @param r2 Second circle's radius.
+/// @return `1` when the center distance is at most the radius sum; otherwise
+///         `0`.
+/// @details All arguments must be finite and both radii must be strictly
+///          positive. The squared-distance comparison avoids a square root.
 int8_t rt_collision_circles_overlap(
     double x1, double y1, double r1, double x2, double y2, double r2) {
     if (!isfinite(x1) || !isfinite(y1) || !isfinite(r1) || !isfinite(x2) || !isfinite(y2) ||
@@ -382,7 +514,14 @@ int8_t rt_collision_circles_overlap(
 }
 
 /// @brief Standalone function: test if point (px, py) is inside a circle.
-/// @details Uses distance-squared comparison to avoid sqrt.
+/// @param px Point X coordinate.
+/// @param py Point Y coordinate.
+/// @param cx Circle center X coordinate.
+/// @param cy Circle center Y coordinate.
+/// @param r Circle radius.
+/// @return `1` when the point lies inside or on the circle; otherwise `0`.
+/// @details All arguments must be finite and @p r must be strictly positive.
+///          The squared-distance comparison avoids a square root.
 int8_t rt_collision_point_in_circle(double px, double py, double cx, double cy, double r) {
     if (!isfinite(px) || !isfinite(py) || !isfinite(cx) || !isfinite(cy) || !isfinite(r) ||
         r <= 0.0)
@@ -392,6 +531,19 @@ int8_t rt_collision_point_in_circle(double px, double py, double cx, double cy, 
     return dx * dx + dy * dy <= r * r;
 }
 
+/// @brief Test a raw circle against a raw axis-aligned rectangle.
+/// @param cx Circle center X coordinate.
+/// @param cy Circle center Y coordinate.
+/// @param r Circle radius.
+/// @param rx Rectangle left edge.
+/// @param ry Rectangle top edge.
+/// @param rw Rectangle width.
+/// @param rh Rectangle height.
+/// @return `1` when the circle overlaps or touches the rectangle; otherwise
+///         `0`.
+/// @details All arguments must be finite, the radius and dimensions must be
+///          strictly positive, and contact at a rectangle edge or corner
+///          counts as overlap.
 int8_t rt_collision_circle_rect(
     double cx, double cy, double r, double rx, double ry, double rw, double rh) {
     if (!isfinite(cx) || !isfinite(cy) || !isfinite(r) || !isfinite(rx) || !isfinite(ry) ||
@@ -418,6 +570,11 @@ int8_t rt_collision_circle_rect(
 }
 
 /// @brief Compute the Euclidean distance between two points.
+/// @param x1 First point's X coordinate.
+/// @param y1 First point's Y coordinate.
+/// @param x2 Second point's X coordinate.
+/// @param y2 Second point's Y coordinate.
+/// @return The finite-input distance, or `0.0` if any input is non-finite.
 double rt_collision_distance(double x1, double y1, double x2, double y2) {
     if (!isfinite(x1) || !isfinite(y1) || !isfinite(x2) || !isfinite(y2))
         return 0.0;
@@ -427,7 +584,12 @@ double rt_collision_distance(double x1, double y1, double x2, double y2) {
 }
 
 /// @brief Compute the squared Euclidean distance between two points.
-/// @details Avoids the sqrt call, useful for comparison-only scenarios.
+/// @param x1 First point's X coordinate.
+/// @param y1 First point's Y coordinate.
+/// @param x2 Second point's X coordinate.
+/// @param y2 Second point's Y coordinate.
+/// @return The squared distance, or `0.0` if any input is non-finite.
+/// @details Avoids the square root used by rt_collision_distance().
 double rt_collision_distance_squared(double x1, double y1, double x2, double y2) {
     if (!isfinite(x1) || !isfinite(y1) || !isfinite(x2) || !isfinite(y2))
         return 0.0;

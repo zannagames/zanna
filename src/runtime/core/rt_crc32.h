@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_crc32.h
+/// @file
+/// @brief Declares thread-safe table-driven IEEE CRC-32 checksum helpers.
+///
 // Purpose: CRC32 checksum computation using the IEEE 802.3 polynomial (0xEDB88320), compatible with
 // Ethernet, ZIP, and PNG checksums.
 //
@@ -40,6 +43,8 @@ void rt_crc32_init(void);
 /// @param data Pointer to data buffer.
 /// @param len Length of data in bytes.
 /// @return 32-bit CRC checksum.
+/// @pre @p data is nonnull when @p len is nonzero; null is valid for an empty span.
+/// @note Returns zero for an empty span and does not retain @p data.
 uint32_t rt_crc32_compute(const uint8_t *data, size_t len);
 
 #ifdef __cplusplus

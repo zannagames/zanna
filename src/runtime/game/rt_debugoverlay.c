@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_debugoverlay.c
+/// @file
+/// @brief Implements the FPS, frame-time, and integer-watch debug panel.
+//
 // Purpose: Debug overlay rendering FPS, delta time, and custom watched
 //   variables as a semi-transparent panel in the top-right canvas corner.
 //   Designed for use during game development; can be toggled with a single
@@ -15,11 +18,13 @@
 //   - FPS is a rolling average over RT_DEBUG_FPS_HISTORY (16) frame deltas.
 //   - Watch entries are stored in a flat array with linear scan (max 16).
 //   - Drawing uses public rt_canvas_* APIs — no internal struct access.
-//   - Disabled by default; no rendering cost when off.
+//   - Disabled by default; Draw returns before issuing canvas calls when off.
 //
 // Ownership/Lifetime:
-//   - GC-managed via rt_obj_new_i64; watch name strings are not retained
-//     (they are copied into fixed-length buffers).
+//   - The DebugOverlay uses the runtime object's reference count. Destroy
+//     releases one reference and frees the object when it reaches zero.
+//   - Watch name strings are not retained; accepted name bytes are copied into
+//     fixed-length, NUL-terminated buffers.
 //
 // Links: src/runtime/game/rt_debugoverlay.h (public API)
 //
@@ -35,34 +40,46 @@
 #include <limits.h>
 #include <string.h>
 
-// Helper: create a runtime string from a C string
+/// @brief Copy a NUL-terminated C string into a runtime string.
+/// @param s Non-null, NUL-terminated source string.
+/// @return A new runtime-string reference, or `NULL` if allocation fails.
 static rt_string make_string(const char *s) {
     return rt_string_from_bytes(s, (int64_t)strlen(s));
 }
 
-/// Maximum watch name length (including null terminator).
+/// @brief Maximum stored watch-name size, including the NUL terminator.
 #define WATCH_NAME_MAX 32
 
-/// A single watch entry: name + integer value.
+/// @brief One fixed-capacity integer watch slot.
 typedef struct {
+    /// Copied, NUL-terminated display label.
     char name[WATCH_NAME_MAX];
+    /// Most recently registered integer value.
     int64_t value;
+    /// Nonzero while the slot participates.
     int8_t active;
 } watch_entry_t;
 
-/// Internal DebugOverlay state.
+/// @brief Private state stored behind an opaque DebugOverlay handle.
 struct rt_debugoverlay_impl {
+    /// Whether Draw emits the panel.
     int8_t enabled;
     int64_t frame_times[RT_DEBUG_FPS_HISTORY]; ///< Ring buffer of dt values (ms).
     int64_t frame_index;                       ///< Current ring buffer write position.
     int64_t frame_count;                       ///< Number of frames recorded (up to HISTORY).
     int64_t total_frames;                      ///< Total frames since creation.
+    /// Fixed watch-slot table.
     watch_entry_t watches[RT_DEBUG_MAX_WATCHES];
+    /// Number of active slots.
     int64_t watch_count;
 };
 
-/// @brief Safe-cast a handle to the DebugOverlay impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p dbg is NULL.
+/// @brief Validate an opaque DebugOverlay handle.
+/// @param dbg Candidate handle; `NULL` is accepted.
+/// @param api Trap message used when @p dbg has the wrong runtime class ID.
+/// @return @p dbg when valid; otherwise `NULL`.
+/// @details A non-null mismatched handle raises a runtime trap before this
+///          function returns `NULL`.
 static rt_debugoverlay checked_debugoverlay(rt_debugoverlay dbg, const char *api) {
     if (!dbg)
         return NULL;
@@ -73,7 +90,10 @@ static rt_debugoverlay checked_debugoverlay(rt_debugoverlay dbg, const char *api
     return dbg;
 }
 
-/// @brief Create a new debugoverlay object.
+/// @brief Create an empty, disabled DebugOverlay.
+/// @return A newly allocated DebugOverlay reference, or `NULL` if allocation
+///         fails.
+/// @details Frame history and all watch slots are initialized to zero.
 rt_debugoverlay rt_debugoverlay_new(void) {
     struct rt_debugoverlay_impl *dbg =
         rt_obj_new_i64(RT_DEBUGOVERLAY_CLASS_ID, sizeof(struct rt_debugoverlay_impl));
@@ -91,14 +111,19 @@ rt_debugoverlay rt_debugoverlay_new(void) {
     return dbg;
 }
 
-/// @brief Release resources and destroy the debugoverlay.
+/// @brief Release one DebugOverlay reference.
+/// @param dbg Handle to release; `NULL` is a no-op.
+/// @details Frees the object when the reference count reaches zero. A non-null
+///          handle of another runtime class raises a trap.
 void rt_debugoverlay_destroy(rt_debugoverlay dbg) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Destroy: expected Zanna.Game.DebugOverlay");
     if (dbg && rt_obj_release_check0(dbg))
         rt_obj_free(dbg);
 }
 
-/// @brief Enable the debugoverlay.
+/// @brief Enable panel rendering.
+/// @param dbg Overlay to enable; `NULL` is a no-op.
+/// @details A non-null handle of another runtime class raises a trap.
 void rt_debugoverlay_enable(rt_debugoverlay dbg) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Enable: expected Zanna.Game.DebugOverlay");
     if (!dbg)
@@ -106,7 +131,10 @@ void rt_debugoverlay_enable(rt_debugoverlay dbg) {
     dbg->enabled = 1;
 }
 
-/// @brief Disable the debugoverlay.
+/// @brief Disable panel rendering.
+/// @param dbg Overlay to disable; `NULL` is a no-op.
+/// @details Updating frame history and watches remains possible while disabled.
+///          A non-null handle of another runtime class raises a trap.
 void rt_debugoverlay_disable(rt_debugoverlay dbg) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Disable: expected Zanna.Game.DebugOverlay");
     if (!dbg)
@@ -114,7 +142,9 @@ void rt_debugoverlay_disable(rt_debugoverlay dbg) {
     dbg->enabled = 0;
 }
 
-/// @brief Toggle the debugoverlay.
+/// @brief Toggle panel rendering between enabled and disabled.
+/// @param dbg Overlay to toggle; `NULL` is a no-op.
+/// @details A non-null handle of another runtime class raises a trap.
 void rt_debugoverlay_toggle(rt_debugoverlay dbg) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Toggle: expected Zanna.Game.DebugOverlay");
     if (!dbg)
@@ -123,12 +153,22 @@ void rt_debugoverlay_toggle(rt_debugoverlay dbg) {
 }
 
 /// @brief Check whether the debug overlay is currently visible.
+/// @param dbg Overlay to query.
+/// @return `1` when enabled; otherwise `0`.
+/// @details A non-null handle of another runtime class raises a trap.
 int8_t rt_debugoverlay_is_enabled(rt_debugoverlay dbg) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.IsEnabled: expected Zanna.Game.DebugOverlay");
     return dbg ? dbg->enabled : 0;
 }
 
-/// @brief Update the debugoverlay state (called per frame/tick).
+/// @brief Add one frame delta to the rolling FPS history.
+/// @param dbg Overlay whose history is updated; `NULL` is a no-op.
+/// @param dt_ms Frame duration in milliseconds; negative values are recorded
+///        as zero.
+/// @details Writes the next ring-buffer slot, grows the sample count to
+///          RT_DEBUG_FPS_HISTORY, and saturates the lifetime frame counter at
+///          `INT64_MAX`. A non-null handle of another runtime class raises a
+///          trap.
 void rt_debugoverlay_update(rt_debugoverlay dbg, int64_t dt_ms) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Update: expected Zanna.Game.DebugOverlay");
     if (!dbg)
@@ -145,12 +185,13 @@ void rt_debugoverlay_update(rt_debugoverlay dbg, int64_t dt_ms) {
 }
 
 /// @brief Return a watch name's C string only when it fits and has no NUL.
+/// @param name Runtime string to validate; no reference is retained.
 /// @details Names that do not fit the fixed buffer are rejected rather than
 ///          truncated, so `Watch` and `Unwatch` address entries by the same full
-///          name — a repeated long name updates the existing entry instead of
-///          consuming a new slot, and it can be removed with its source text
+///          name and cannot collide through a shared truncated prefix
 ///          (VDOC-259). An embedded NUL is also rejected.
-/// @return The C string when valid, or NULL for an empty/over-long/NUL name.
+/// @return A borrowed C-string view when valid, or `NULL` for a null, empty,
+///         overlong, inaccessible, or embedded-NUL name.
 static const char *watch_name_cstr(rt_string name) {
     if (!name)
         return NULL;
@@ -163,8 +204,10 @@ static const char *watch_name_cstr(rt_string name) {
     return cname;
 }
 
-/// Find a watch entry by name.
-/// Returns index, or -1 if not found.
+/// @brief Find an active watch slot by its complete stored name.
+/// @param dbg Valid DebugOverlay to search.
+/// @param name Non-null, NUL-terminated name to compare.
+/// @return The slot index, or `-1` when no active slot matches.
 static int64_t find_watch(rt_debugoverlay dbg, const char *name) {
     for (int64_t i = 0; i < RT_DEBUG_MAX_WATCHES; i++) {
         if (dbg->watches[i].active && strcmp(dbg->watches[i].name, name) == 0)
@@ -173,7 +216,16 @@ static int64_t find_watch(rt_debugoverlay dbg, const char *name) {
     return -1;
 }
 
-/// @brief Watch the debugoverlay.
+/// @brief Register or update a named integer watch.
+/// @param dbg Overlay to mutate; `NULL` is a no-op.
+/// @param name Nonempty runtime string label shorter than WATCH_NAME_MAX bytes
+///        and containing no embedded NUL.
+/// @param value Integer to display beside the label.
+/// @details An existing exact-name match is updated in place. Otherwise the
+///          first inactive slot receives a byte copy of the name. Invalid
+///          names and registrations beyond RT_DEBUG_MAX_WATCHES are silently
+///          ignored. The input string is never retained. A non-null overlay
+///          handle of another runtime class raises a trap.
 void rt_debugoverlay_watch(rt_debugoverlay dbg, rt_string name, int64_t value) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Watch: expected Zanna.Game.DebugOverlay");
     if (!dbg || !name)
@@ -208,14 +260,21 @@ void rt_debugoverlay_watch(rt_debugoverlay dbg, rt_string name, int64_t value) {
     // Silently ignore if all slots are full.
 }
 
-/// @brief Unwatch the debugoverlay.
+/// @brief Remove an integer watch by exact name.
+/// @param dbg Overlay to mutate.
+/// @param name Runtime string containing the complete registered label.
+/// @return `1` when an active slot was removed; otherwise `0`.
+/// @details Invalid names and null arguments return zero. Removal clears the
+///          slot's active flag and first name byte, decrements the active
+///          count, and does not retain or release @p name. A non-null overlay
+///          handle of another runtime class raises a trap.
 int8_t rt_debugoverlay_unwatch(rt_debugoverlay dbg, rt_string name) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Unwatch: expected Zanna.Game.DebugOverlay");
     if (!dbg || !name)
         return 0;
 
-    // Use the same canonical representation as Watch so a long name removes the
-    // entry it created (VDOC-259).
+    // Use the same validation as Watch so registration and removal address
+    // exactly the same complete-name domain (VDOC-259).
     const char *cname = watch_name_cstr(name);
     if (!cname)
         return 0;
@@ -230,7 +289,11 @@ int8_t rt_debugoverlay_unwatch(rt_debugoverlay dbg, rt_string name) {
     return 1;
 }
 
-/// @brief Remove all entries from the debugoverlay.
+/// @brief Remove all registered watches.
+/// @param dbg Overlay to clear; `NULL` is a no-op.
+/// @details Marks every slot inactive, clears each stored name, and resets the
+///          active count without changing frame history or enabled state. A
+///          non-null handle of another runtime class raises a trap.
 void rt_debugoverlay_clear(rt_debugoverlay dbg) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Clear: expected Zanna.Game.DebugOverlay");
     if (!dbg)
@@ -243,6 +306,12 @@ void rt_debugoverlay_clear(rt_debugoverlay dbg) {
 }
 
 /// @brief Return the most recently computed frames-per-second value.
+/// @param dbg Overlay whose rolling history is queried.
+/// @return Integer FPS computed as `1000 * sample_count / sum(dt_ms)`, or zero
+///         when no samples exist, their saturated sum is nonpositive, or the
+///         handle is null/invalid.
+/// @details The delta sum saturates at `INT64_MAX`. Integer division truncates
+///          fractional FPS. A non-null invalid handle raises a runtime trap.
 int64_t rt_debugoverlay_get_fps(rt_debugoverlay dbg) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.FPS: expected Zanna.Game.DebugOverlay");
     if (!dbg || dbg->frame_count == 0)
@@ -261,8 +330,14 @@ int64_t rt_debugoverlay_get_fps(rt_debugoverlay dbg) {
 
 // --- Drawing ---
 
-/// Int-to-string helper for rendering. Writes into a caller-provided buffer.
-/// Returns pointer to the start of the number string.
+/// @brief Format a signed integer at the end of a caller-provided buffer.
+/// @param val Integer to format, including full support for `INT64_MIN`.
+/// @param buf Writable output buffer.
+/// @param bufsize Size of @p buf in bytes.
+/// @return A pointer within @p buf to the formatted suffix, or @p buf when
+///         @p bufsize is zero.
+/// @details For a nonzero size, the last byte is always NUL. If the buffer is
+///          too small, leading digits and possibly the minus sign are omitted.
 static char *i64_to_str(int64_t val, char *buf, size_t bufsize) {
     if (bufsize == 0)
         return buf;
@@ -295,7 +370,16 @@ static char *i64_to_str(int64_t val, char *buf, size_t bufsize) {
     return &buf[pos];
 }
 
-/// @brief Draw the debugoverlay.
+/// @brief Draw the enabled overlay in the canvas's top-right corner.
+/// @param dbg Overlay containing frame history and watch values.
+/// @param canvas_ptr Opaque canvas handle passed to the public canvas API.
+/// @details Returns without drawing for a null overlay, null canvas, or
+///          disabled overlay. The panel includes color-coded integer FPS, the
+///          newest delta in milliseconds, and active watches in slot order.
+///          Display labels longer than 28 bytes are shortened at a UTF-8
+///          continuation-byte boundary. Temporary runtime strings created for
+///          text calls are released immediately. A non-null overlay handle of
+///          another runtime class raises a trap.
 void rt_debugoverlay_draw(rt_debugoverlay dbg, void *canvas_ptr) {
     dbg = checked_debugoverlay(dbg, "DebugOverlay.Draw: expected Zanna.Game.DebugOverlay");
     if (!dbg || !canvas_ptr || !dbg->enabled)

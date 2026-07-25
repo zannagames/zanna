@@ -5,22 +5,30 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_canvas.c
+// File: src/runtime/graphics/2d/rt_canvas.c
+/// @file
+/// @brief Implements the 2D Canvas window lifecycle, presentation timing,
+///        event dispatch, clipping, and native-window controls.
 // Purpose: Canvas lifecycle and window management functions. Handles creation,
 //   destruction, event polling, resize, fullscreen, window position/focus,
 //   and screenshot/save operations.
 //
 // Key invariants:
-//   - All rt_canvas_* functions guard against NULL canvas_ptr and NULL gfx_win.
+//   - Public operations validate the Canvas handle; most closed/null operations
+//     return documented fallbacks or become no-ops.
 //   - rt_canvas_flip() presents the back-buffer and must be called each frame.
 //   - rt_canvas_poll() drives the event loop and returns the last event type processed.
-//   - The rt_canvas struct is GC-managed with a finalizer that destroys gfx_win.
+//   - Logical dimensions and input coordinates are kept separate from the
+//     backend's physical HiDPI framebuffer coordinates.
 //
 // Ownership/Lifetime:
-//   - rt_canvas objects are allocated via rt_obj_new_i64 (GC heap); gfx_win is
-//     released in rt_canvas_finalize when the GC collects the canvas.
+//   - rt_canvas objects are reference-counted via rt_obj_new_i64.
+//     rt_canvas_destroy() releases one owned reference.
+//   - The finalizer owns and destroys gfx_win, frees the copied title, and
+//     detaches global input-module window references.
 //
-// Links: rt_graphics_internal.h, rt_graphics.h (public API),
+// Links: src/runtime/graphics/common/rt_graphics_internal.h,
+//        src/runtime/graphics/common/rt_graphics.h (public API),
 //        vgfx.h (ZannaGFX C API)
 //
 //===----------------------------------------------------------------------===//
@@ -31,6 +39,9 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 /// @brief Validate that an int64 canvas dimension is positive and fits in int32; traps otherwise.
+/// @param value Requested logical dimension.
+/// @param op Trap diagnostic used for invalid input.
+/// @return Valid positive int32 dimension, or `0` if the trap hook returns.
 static int32_t rt_canvas_dimension_to_i32(int64_t value, const char *op) {
     if (value <= 0 || value > INT32_MAX) {
         rt_trap(op);
@@ -46,6 +57,7 @@ static int32_t rt_canvas_dimension_to_i32(int64_t value, const char *op) {
 ///          input polls would read freed memory. The "if matches" guards
 ///          ensure we don't clobber input state belonging to another canvas
 ///          when multiple windows are open.
+/// @param gfx_win Borrowed backend window; `NULL` is ignored.
 static void rt_canvas_detach_input(vgfx_window_t gfx_win) {
     if (!gfx_win)
         return;
@@ -59,6 +71,7 @@ static void rt_canvas_detach_input(vgfx_window_t gfx_win) {
 ///          ordering: detach input first (so no late event delivery into
 ///          the doomed window), then destroy, then null the pointer so
 ///          subsequent ops see a closed canvas.
+/// @param canvas Borrowed Canvas implementation; null/closed objects are ignored.
 static void rt_canvas_destroy_window(rt_canvas *canvas) {
     if (!canvas || !canvas->gfx_win)
         return;
@@ -80,6 +93,7 @@ static void rt_canvas_destroy_window(rt_canvas *canvas) {
 ///          Wiping `magic` lets `rt_canvas_checked` reject use-after-free
 ///          (caller dereferences a stale handle) by detecting the zeroed
 ///          sentinel rather than producing undefined behavior.
+/// @param obj Canvas object being finalized; `NULL` is ignored.
 static void rt_canvas_finalize(void *obj) {
     if (!obj)
         return;
@@ -101,6 +115,9 @@ static void rt_canvas_finalize(void *obj) {
 ///          Dividing by the per-window scale factor keeps `Mouse.X/Y`
 ///          consistent with the coordinate space the user draws in. The
 ///          `< 0.001f` guard avoids division by an uninitialized scale.
+/// @param canvas Borrowed live Canvas.
+/// @param x Physical framebuffer X from the backend event.
+/// @param y Physical framebuffer Y from the backend event.
 static void rt_canvas_update_mouse_from_physical(rt_canvas *canvas, int32_t x, int32_t y) {
     if (!canvas || !canvas->gfx_win)
         return;
@@ -111,6 +128,7 @@ static void rt_canvas_update_mouse_from_physical(rt_canvas *canvas, int32_t x, i
 }
 
 /// @brief Report that Canvas support is compiled into this runtime.
+/// @return Always `1` in a `ZANNA_ENABLE_GRAPHICS` build.
 int8_t rt_canvas_is_available(void) {
     return 1;
 }
@@ -120,11 +138,12 @@ int8_t rt_canvas_is_available(void) {
 ///   window backend, sets up HiDPI coordinate scaling, and initializes keyboard,
 ///   mouse, and gamepad input subsystems. The canvas is ready for drawing after
 ///   this call returns.
-/// @param title Window title string (displayed in the title bar). NULL for untitled.
+/// @param title Borrowed window title copied into Canvas-owned storage; `NULL`
+///        requests the backend default.
 /// @param width Canvas width in logical pixels (scaled by HiDPI factor internally).
 /// @param height Canvas height in logical pixels.
-/// @return Opaque canvas handle, or NULL if window creation fails (e.g., no
-///   display server available). On failure, traps with a diagnostic message.
+/// @return Owned Canvas handle, or `NULL` after invalid input, allocation, or
+///         backend creation failure. Relevant failures trap first.
 void *rt_canvas_new(rt_string title, int64_t width, int64_t height) {
     int32_t win_width = rt_canvas_dimension_to_i32(width, "Canvas.New: invalid width");
     int32_t win_height = rt_canvas_dimension_to_i32(height, "Canvas.New: invalid height");
@@ -208,6 +227,8 @@ void *rt_canvas_new(rt_string title, int64_t width, int64_t height) {
 }
 
 /// @brief Return 1 if `canvas_ptr` is a live canvas handle (magic sentinel check), 0 otherwise.
+/// @param canvas_ptr Borrowed candidate handle.
+/// @return `1` when class/layout/magic validation succeeds; otherwise `0`.
 int8_t rt_canvas_is_handle(void *canvas_ptr) {
     return rt_canvas_checked(canvas_ptr) != NULL ? 1 : 0;
 }
@@ -215,7 +236,8 @@ int8_t rt_canvas_is_handle(void *canvas_ptr) {
 /// @brief Destroy a Canvas, releasing the window and associated resources.
 /// @details Decrements the GC refcount. If the count reaches zero, the
 ///   finalizer frees the title string and destroys the ZannaGFX window.
-/// @param canvas_ptr Opaque canvas handle from rt_canvas_new(). NULL-safe.
+/// @param canvas_ptr Owned Canvas reference to release; null/invalid handles
+///        are ignored.
 void rt_canvas_destroy(void *canvas_ptr) {
     if (!canvas_ptr)
         return;
@@ -255,6 +277,8 @@ int64_t rt_canvas_width(void *canvas_ptr) {
 }
 
 /// @brief Get the canvas height in logical pixels.
+/// @details Resynchronizes cached native state before returning the cached
+///          logical height, falling back to the backend size if needed.
 /// @param canvas_ptr Canvas handle. Returns 0 if NULL or window not created.
 /// @return Height in logical pixels, or 0 on error.
 int64_t rt_canvas_height(void *canvas_ptr) {
@@ -364,7 +388,7 @@ double rt_canvas_get_delta_time_sec(void *canvas_ptr) {
 /// @brief Fill the entire canvas with a solid color, erasing all previous drawing.
 /// @details Typically called at the start of each frame before drawing game objects.
 ///   Accepts Canvas RGB or tagged Color.RGBA values; clear is opaque, so alpha is ignored.
-/// @param canvas_ptr Canvas handle. NULL-safe (no-op).
+/// @param canvas_ptr Borrowed Canvas handle; invalid/closed handles are ignored.
 /// @param color Fill color.
 void rt_canvas_clear(void *canvas_ptr, int64_t color) {
     if (!canvas_ptr)
@@ -387,8 +411,11 @@ void rt_canvas_clear(void *canvas_ptr, int64_t color) {
 ///
 ///   Returns the type of the last event processed (0 if none). The return value
 ///   is rarely used directly — most games check Action.Pressed()/Held() instead.
-/// @param canvas_ptr Canvas handle. Returns 0 if NULL.
-/// @return Last event type processed, or 0 if no events.
+///   A close event or event-pump failure destroys the native window, sets
+///   ShouldClose, and still updates the action cache before returning.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @return Last event type processed, `VGFX_EVENT_CLOSE` for a queued close,
+///         or `VGFX_EVENT_NONE` for no events, invalid input, or pump failure.
 int64_t rt_canvas_poll(void *canvas_ptr) {
     if (!canvas_ptr)
         return 0;
@@ -549,7 +576,7 @@ int64_t rt_canvas_key_held(void *canvas_ptr, int64_t key) {
 /// @brief Set the clipping rectangle for all subsequent drawing operations.
 /// @details Only pixels within the clip rect will be drawn. Useful for HUD panels,
 ///   minimap viewports, or any region-restricted rendering. Call ClearClipRect()
-///   to restore full-canvas drawing.
+///   to restore full-canvas drawing. Nonpositive dimensions are stored as zero.
 /// @param canvas_ptr Canvas handle. NULL-safe.
 /// @param x Left edge of clip region (logical pixels).
 /// @param y Top edge of clip region.
@@ -583,9 +610,10 @@ void rt_canvas_clear_clip_rect(void *canvas_ptr) {
 
 /// @brief Change the window title bar text.
 /// @details Updates both the OS window title and the internal cached copy
-///   (used by GetTitle). The old cached title is freed.
-/// @param canvas_ptr Canvas handle. NULL-safe.
-/// @param title New title string. NULL is ignored.
+///   (used by GetTitle). The old cached title is freed only after the new copy
+///   is allocated; invalid input or allocation failure preserves it.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param title Borrowed new title string; `NULL` is ignored.
 void rt_canvas_set_title(void *canvas_ptr, rt_string title) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
     if (canvas && canvas->gfx_win && title) {
@@ -607,8 +635,9 @@ void rt_canvas_set_title(void *canvas_ptr, rt_string title) {
 }
 
 /// @brief Get the current window title.
-/// @param canvas_ptr Canvas handle. Returns empty string if NULL.
-/// @return The cached title as an rt_string.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @return Newly owned copy of the cached title, an owned empty string for
+///         invalid/untitled canvases, or `NULL` on string allocation failure.
 rt_string rt_canvas_get_title(void *canvas_ptr) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
     if (canvas && canvas->title)
@@ -617,7 +646,9 @@ rt_string rt_canvas_get_title(void *canvas_ptr) {
 }
 
 /// @brief Resize the canvas window to new dimensions.
-/// @param canvas_ptr Canvas handle. NULL-safe.
+/// @details Dimensions must be positive and fit int32; invalid dimensions trap
+///          and leave the live window unchanged.
+/// @param canvas_ptr Borrowed Canvas handle.
 /// @param width New width in logical pixels.
 /// @param height New height in logical pixels.
 void rt_canvas_resize(void *canvas_ptr, int64_t width, int64_t height) {
@@ -649,8 +680,8 @@ void rt_canvas_close(void *canvas_ptr) {
 /// @brief Capture the current canvas contents as a Pixels object.
 /// @details Creates a new Pixels object containing a copy of the framebuffer.
 ///   The returned object is GC-managed and can be saved to BMP/PNG or composited.
-/// @param canvas_ptr Canvas handle. Returns NULL if NULL or no window.
-/// @return New Pixels object with the canvas contents, or NULL on failure.
+/// @param canvas_ptr Borrowed live Canvas handle.
+/// @return Owned Pixels object with the canvas contents, or `NULL` on failure.
 void *rt_canvas_screenshot(void *canvas_ptr) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
     if (!canvas)
@@ -687,7 +718,8 @@ void rt_canvas_windowed(void *canvas_ptr) {
 
 /// @brief Set the target frame rate for the canvas.
 /// @details The ZannaGFX backend rate-limits Flip() to this target. Pass -1 to
-///   disable rate limiting (unlimited FPS). Default is unlimited.
+///   disable rate limiting (unlimited FPS). Values below -1 become -1, and
+///   larger values saturate to the backend int32 range. Default is unlimited.
 /// @param canvas_ptr Canvas handle. NULL-safe.
 /// @param fps Target frames per second (-1 for unlimited).
 void rt_canvas_set_fps(void *canvas_ptr, int64_t fps) {
@@ -745,11 +777,10 @@ int64_t rt_canvas_begin_frame(void *canvas_ptr) {
 }
 
 /// @brief Get the HiDPI scale factor for the canvas display.
-/// @details Returns 2.0 on Retina/HiDPI displays, 1.0 on standard displays.
-///   The canvas draws in logical pixels; the framebuffer is scale_factor × larger.
-///   Multiply pixel dimensions by this factor for sharp high-DPI rendering.
+/// @details The canvas draws in logical pixels while the framebuffer may be
+///   scale-factor times larger.
 /// @param canvas_ptr Canvas handle. Returns 1.0 if NULL.
-/// @return Scale factor (typically 1.0 or 2.0).
+/// @return Positive backend scale factor, or `1.0` for invalid/closed canvases.
 double rt_canvas_get_scale(void *canvas_ptr) {
     if (!canvas_ptr)
         return 1.0;
@@ -760,6 +791,8 @@ double rt_canvas_get_scale(void *canvas_ptr) {
 }
 
 /// @brief Get the window X position as a runtime-callable scalar.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @return Desktop X coordinate, or `0` for invalid/closed canvases.
 int64_t rt_canvas_get_window_x(void *canvas_ptr) {
     int64_t x = 0;
     rt_canvas_get_position(canvas_ptr, &x, NULL);
@@ -767,6 +800,8 @@ int64_t rt_canvas_get_window_x(void *canvas_ptr) {
 }
 
 /// @brief Get the window Y position as a runtime-callable scalar.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @return Desktop Y coordinate, or `0` for invalid/closed canvases.
 int64_t rt_canvas_get_window_y(void *canvas_ptr) {
     int64_t y = 0;
     rt_canvas_get_position(canvas_ptr, NULL, &y);
@@ -774,9 +809,10 @@ int64_t rt_canvas_get_window_y(void *canvas_ptr) {
 }
 
 /// @brief Get the window position on screen in desktop coordinates.
-/// @param canvas_ptr Canvas handle. NULL-safe.
-/// @param out_x Pointer to receive X position. NULL-safe (ignored if NULL).
-/// @param out_y Pointer to receive Y position. NULL-safe (ignored if NULL).
+/// @details Invalid/closed canvases leave provided outputs unchanged.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param out_x Optional output receiving X position.
+/// @param out_y Optional output receiving Y position.
 void rt_canvas_get_position(void *canvas_ptr, int64_t *out_x, int64_t *out_y) {
     if (!canvas_ptr)
         return;
@@ -792,7 +828,8 @@ void rt_canvas_get_position(void *canvas_ptr, int64_t *out_x, int64_t *out_y) {
 }
 
 /// @brief Move the window to a specific position on the desktop.
-/// @param canvas_ptr Canvas handle. NULL-safe.
+/// @details Coordinates outside the backend int32 range are saturated.
+/// @param canvas_ptr Borrowed Canvas handle.
 /// @param x Desktop X coordinate for the window's top-left corner.
 /// @param y Desktop Y coordinate.
 void rt_canvas_set_position(void *canvas_ptr, int64_t x, int64_t y) {
@@ -894,9 +931,10 @@ void rt_canvas_prevent_close(void *canvas_ptr, int64_t prevent) {
 }
 
 /// @brief Get the resolution of the monitor containing this window.
-/// @param canvas_ptr Canvas handle. NULL-safe.
-/// @param out_w Pointer to receive monitor width. NULL-safe.
-/// @param out_h Pointer to receive monitor height. NULL-safe.
+/// @details Invalid/closed canvases leave provided outputs unchanged.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param out_w Optional output receiving monitor width.
+/// @param out_h Optional output receiving monitor height.
 void rt_canvas_get_monitor_size(void *canvas_ptr, int64_t *out_w, int64_t *out_h) {
     if (!canvas_ptr)
         return;
@@ -912,6 +950,8 @@ void rt_canvas_get_monitor_size(void *canvas_ptr, int64_t *out_w, int64_t *out_h
 }
 
 /// @brief Get the current monitor width as a runtime-callable scalar.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @return Monitor width in pixels, or `0` for invalid/closed canvases.
 int64_t rt_canvas_get_monitor_width(void *canvas_ptr) {
     int64_t w = 0;
     rt_canvas_get_monitor_size(canvas_ptr, &w, NULL);
@@ -919,6 +959,8 @@ int64_t rt_canvas_get_monitor_width(void *canvas_ptr) {
 }
 
 /// @brief Get the current monitor height as a runtime-callable scalar.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @return Monitor height in pixels, or `0` for invalid/closed canvases.
 int64_t rt_canvas_get_monitor_height(void *canvas_ptr) {
     int64_t h = 0;
     rt_canvas_get_monitor_size(canvas_ptr, NULL, &h);

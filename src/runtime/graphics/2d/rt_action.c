@@ -6,9 +6,28 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/2d/rt_action.c
+/// @file
+/// @brief Implements the global named-action registry, input polling, binding
+///        mutation, and binding introspection.
 // Purpose: Input action mapping core: named logical actions bound to keyboard, mouse,
 //   gamepad, axis, and chord sources; per-frame polling and pressed/released/
 //   held/axis queries. Owns the global action list and its lifecycle.
+//
+// Key invariants:
+//   - Action names are unique and each action is permanently either button-
+//     style or axis-style until removed.
+//   - New actions and bindings are inserted at list heads, so enumeration and
+//     first-match conflict queries use newest-first order.
+//   - rt_action_update() rebuilds cached state from the current device snapshot;
+//     registry and query entry points are restricted to the runtime's main thread.
+//   - Axis sources accumulate without clamping internally. Axis() clamps the
+//     cached sum while AxisRaw() exposes it unchanged.
+//
+// Ownership/Lifetime:
+//   - Action names and all Action/Binding nodes are private malloc-owned data.
+//     Public rt_string names and sequence arguments are borrowed.
+//   - List and string introspection APIs return owned runtime containers or
+//     strings except for the immortal empty-string singleton on misses.
 //
 // Links: rt_action.h (public API), rt_action_internal.h (shared model),
 //        rt_action_presets.c (built-in presets), rt_action_io.c (JSON save/load)
@@ -29,16 +48,21 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Extract an int64 value from a borrowed runtime box.
 extern int64_t rt_unbox_i64(void *box);
 
 // Global action registry (declared extern in rt_action_internal.h).
+/// @brief Head of the malloc-owned, newest-first global action list.
 Action *g_actions = NULL;
+/// @brief Nonzero after rt_action_init() and before rt_action_shutdown().
 int8_t g_initialized = 0;
 
 /// @brief Linear-scan the global action list by `rt_string` name.
 ///
 /// Specialized to compare lengths first then bytes — avoids a
 /// `strdup` round-trip versus calling `find_action(rt_string_cstr(...))`.
+/// @param name Borrowed runtime string to match exactly.
+/// @return Borrowed action node, or `NULL` when the name is null or absent.
 static Action *find_action_str(rt_string name) {
     if (!name)
         return NULL;
@@ -59,6 +83,9 @@ static Action *find_action_str(rt_string name) {
 ///
 /// Returns NULL on empty input or allocation failure. Used to capture
 /// the action's name in our own buffer (the `rt_string` may go away).
+/// @param s Borrowed runtime string to copy.
+/// @return Owned null-terminated copy, or `NULL` for null/empty input or
+///         allocation failure.
 static char *strdup_rt_string(rt_string s) {
     if (!s)
         return NULL;
@@ -74,6 +101,7 @@ static char *strdup_rt_string(rt_string s) {
 }
 
 /// @brief Walk and free a singly-linked binding list.
+/// @param b Owned head of the list to destroy; may be `NULL`.
 static void free_bindings(Binding *b) {
     while (b) {
         Binding *next = b->next;
@@ -83,6 +111,7 @@ static void free_bindings(Binding *b) {
 }
 
 /// @brief Free an action's name + bindings + the action node itself.
+/// @param a Owned action node to destroy; may be `NULL`.
 static void free_action(Action *a) {
     if (a) {
         free(a->name);
@@ -96,6 +125,11 @@ static void free_action(Action *a) {
 /// Returns 1 if a binding was removed, 0 if none matched. Doesn't
 /// remove duplicates beyond the first match — callers wanting to
 /// strip all matching bindings need to loop.
+/// @param action Borrowed action whose binding list is searched.
+/// @param type Required physical-source type.
+/// @param code Required key, button, or axis code.
+/// @param pad_index Required controller index.
+/// @return `1` after unlinking and freeing the first match; otherwise `0`.
 static int8_t remove_binding(Action *action, BindingType type, int64_t code, int64_t pad_index) {
     Binding **pp = &action->bindings;
     while (*pp) {
@@ -111,31 +145,43 @@ static int8_t remove_binding(Action *action, BindingType type, int64_t code, int
 }
 
 /// @brief True if `key` is held down this frame.
+/// @param key Runtime keyboard code to query.
+/// @return Nonzero while the key is down.
 static int8_t key_held(int64_t key) {
     return rt_keyboard_is_down(key);
 }
 
 /// @brief True if `key` was pressed (down-edge) this frame.
+/// @param key Runtime keyboard code to query.
+/// @return Nonzero on the key's current-frame down edge.
 static int8_t key_pressed(int64_t key) {
     return rt_keyboard_was_pressed(key);
 }
 
 /// @brief True if `key` was released (up-edge) this frame.
+/// @param key Runtime keyboard code to query.
+/// @return Nonzero on the key's current-frame up edge.
 static int8_t key_released(int64_t key) {
     return rt_keyboard_was_released(key);
 }
 
 /// @brief True if mouse `button` is held down this frame.
+/// @param button Runtime mouse-button code to query.
+/// @return Nonzero while the button is down.
 static int8_t mouse_held(int64_t button) {
     return rt_mouse_is_down(button);
 }
 
 /// @brief True if mouse `button` was pressed (down-edge) this frame.
+/// @param button Runtime mouse-button code to query.
+/// @return Nonzero on the button's current-frame down edge.
 static int8_t mouse_pressed(int64_t button) {
     return rt_mouse_was_pressed(button);
 }
 
 /// @brief True if mouse `button` was released (up-edge) this frame.
+/// @param button Runtime mouse-button code to query.
+/// @return Nonzero on the button's current-frame up edge.
 static int8_t mouse_released(int64_t button) {
     return rt_mouse_was_released(button);
 }
@@ -144,6 +190,10 @@ static int8_t mouse_released(int64_t button) {
 ///
 /// Loops over pads 0..3 when `pad_index` is negative, returning true on
 /// the first connected pad with the button held.
+/// @param pad_index Controller index, or any negative value for any connected
+///        controller among indices 0..3.
+/// @param button Runtime gamepad-button code to query.
+/// @return Nonzero when a matching controller has the button down.
 static int8_t pad_held(int64_t pad_index, int64_t button) {
     if (pad_index < 0) {
         // Any controller
@@ -157,6 +207,9 @@ static int8_t pad_held(int64_t pad_index, int64_t button) {
 }
 
 /// @brief Pad button down-edge query (any-pad fallback for `pad_index < 0`).
+/// @param pad_index Controller index, or a negative value for indices 0..3.
+/// @param button Runtime gamepad-button code to query.
+/// @return Nonzero on a matching button's current-frame down edge.
 static int8_t pad_pressed(int64_t pad_index, int64_t button) {
     if (pad_index < 0) {
         for (int64_t i = 0; i < 4; i++) {
@@ -169,6 +222,9 @@ static int8_t pad_pressed(int64_t pad_index, int64_t button) {
 }
 
 /// @brief Pad button up-edge query (any-pad fallback for `pad_index < 0`).
+/// @param pad_index Controller index, or a negative value for indices 0..3.
+/// @param button Runtime gamepad-button code to query.
+/// @return Nonzero on a matching button's current-frame up edge.
 static int8_t pad_released(int64_t pad_index, int64_t button) {
     if (pad_index < 0) {
         for (int64_t i = 0; i < 4; i++) {
@@ -185,6 +241,11 @@ static int8_t pad_released(int64_t pad_index, int64_t button) {
 /// `axis` is one of `ZANNA_AXIS_*`. With `pad_index < 0`, returns the
 /// first non-zero value across pads 0..3 — useful when you want
 /// "any controller's left stick" without binding to a specific index.
+/// @param pad_index Controller index, or a negative value for any connected
+///        controller among indices 0..3.
+/// @param axis One of the supported `ZANNA_AXIS_*` codes.
+/// @return Raw device-axis value, or `0.0` for disconnected pads, unknown
+///         axes, or no nonzero any-pad value.
 static double pad_axis_value(int64_t pad_index, int64_t axis) {
     if (pad_index < 0) {
         // Return value from first connected controller with non-zero input
@@ -240,6 +301,8 @@ static double pad_axis_value(int64_t pad_index, int64_t axis) {
 }
 
 /// @brief Clamp `value` into `[-1, 1]` for axis output normalization.
+/// @param value Accumulated axis value.
+/// @return @p value constrained to -1..1; NaN passes through unchanged.
 static double clamp_axis(double value) {
     if (value < -1.0)
         return -1.0;
@@ -249,8 +312,9 @@ static double clamp_axis(double value) {
 }
 
 /// @brief Initialize the global action mapping system.
-/// @details Must be called once before any action operations. Clears all state.
-///   Called automatically by the Zanna runtime startup.
+/// @details The first call establishes an empty registry. Later calls are
+///          idempotent and preserve existing actions. Public definition APIs
+///          also initialize lazily.
 void rt_action_init(void) {
     RT_ASSERT_MAIN_THREAD();
     if (g_initialized)
@@ -275,7 +339,9 @@ void rt_action_shutdown(void) {
 ///   state (keyboard, mouse, gamepad). Computes pressed/released/held flags
 ///   and axis values. Must be called exactly once per frame, AFTER rt_canvas_poll()
 ///   has processed input events. Action.Pressed(), Action.Held(), and Action.Axis()
-///   return values computed by this function.
+///   return values computed by this function. An uninitialized registry is
+///   unchanged. Button release is also synthesized when an action was held in
+///   the preceding update but no binding remains held in this update.
 void rt_action_update(void) {
     RT_ASSERT_MAIN_THREAD();
     if (!g_initialized)
@@ -401,7 +467,8 @@ void rt_action_update(void) {
 ///
 /// Walks the global action list freeing each action (which in turn
 /// frees its bindings). After clear the system is still initialized;
-/// new actions can be defined immediately.
+/// new actions can be defined immediately. Calling it before initialization
+/// is also safe.
 void rt_action_clear(void) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = g_actions;
@@ -416,7 +483,8 @@ void rt_action_clear(void) {
 /// @brief Register a new named action for input mapping.
 /// @details Creates a button-style action (pressed/released/held). The name must
 ///   be unique. After defining, bind physical inputs with BindKey(), BindMouse(), etc.
-/// @param name Action name string (e.g., "jump", "fire"). Max 63 characters.
+///   The borrowed runtime string is copied into private storage.
+/// @param name Nonempty action name string (for example, `"jump"` or `"fire"`).
 /// @return 1 on success, 0 if name is empty, already exists, or allocation fails.
 int8_t rt_action_define(rt_string name) {
     RT_ASSERT_MAIN_THREAD();
@@ -454,7 +522,10 @@ int8_t rt_action_define(rt_string name) {
 /// Axis actions accumulate continuous values (-1..1) from analog
 /// sources (sticks, mouse delta) or button bindings (each button
 /// contributes its `value` field). Use `Axis()` to read the latest
-/// frame's accumulated value.
+/// frame's accumulated value. The borrowed name is copied.
+/// @param name Nonempty unique action name.
+/// @return `1` on success; `0` for null/empty/duplicate names or allocation
+///         failure.
 int8_t rt_action_define_axis(rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     if (!g_initialized)
@@ -487,12 +558,16 @@ int8_t rt_action_define_axis(rt_string name) {
 }
 
 /// @brief `Action.Exists(name)` — true if an action with that name is defined.
+/// @param name Borrowed action name to search for.
+/// @return `1` when an exact name match exists; otherwise `0`.
 int8_t rt_action_exists(rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     return find_action_str(name) != NULL;
 }
 
 /// @brief `Action.IsAxis(name)` — true if the named action is an axis (vs. button).
+/// @param name Borrowed action name to query.
+/// @return `1` for an axis action; `0` for a button action or missing name.
 int8_t rt_action_is_axis(rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(name);
@@ -503,6 +578,8 @@ int8_t rt_action_is_axis(rt_string name) {
 ///
 /// Walks the linked list with a back-pointer, unlinks on match, frees
 /// the action + bindings. Returns 1 on success, 0 if not found.
+/// @param name Borrowed action name to remove.
+/// @return `1` when the action was removed; `0` for null or absent names.
 int8_t rt_action_remove(rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     if (!name)
@@ -528,7 +605,11 @@ int8_t rt_action_remove(rt_string name) {
 /// @brief `Action.BindKey(action, key)` — add a button-style key binding.
 ///
 /// `key` is a `ZANNA_KEY_*` constant. Fails if action doesn't exist,
-/// is an axis action, or allocation fails.
+/// is an axis action, or allocation fails. Duplicate bindings are permitted
+/// and are evaluated independently.
+/// @param action Borrowed button-action name.
+/// @param key Runtime keyboard code to bind.
+/// @return `1` when the binding is added; otherwise `0`.
 int8_t rt_action_bind_key(rt_string action, int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -546,6 +627,11 @@ int8_t rt_action_bind_key(rt_string action, int64_t key) {
 /// When `key` is held, `value` is added to the axis. Use opposite-
 /// signed values for opposite directions (e.g., `Left` → -1.0,
 /// `Right` → +1.0 for a horizontal-axis "MoveX" action).
+/// @param action Borrowed axis-action name.
+/// @param key Runtime keyboard code to bind.
+/// @param value Unvalidated contribution added on each update while held.
+/// @return `1` when the binding is added; `0` if the action is missing,
+///         button-style, or allocation fails.
 int8_t rt_action_bind_key_axis(rt_string action, int64_t key, double value) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -559,6 +645,10 @@ int8_t rt_action_bind_key_axis(rt_string action, int64_t key, double value) {
 }
 
 /// @brief `Action.UnbindKey(action, key)` — remove a key binding.
+/// @details Removes only the newest matching binding when duplicates exist.
+/// @param action Borrowed action name; button and axis actions are accepted.
+/// @param key Runtime keyboard code to unbind.
+/// @return `1` when a binding was removed; otherwise `0`.
 int8_t rt_action_unbind_key(rt_string action, int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -573,6 +663,10 @@ int8_t rt_action_unbind_key(rt_string action, int64_t key) {
 /// "pressed" the frame all keys in the chord are simultaneously held
 /// AND at least one was newly pressed. Caps at `MAX_CHORD_KEYS` (8).
 /// Useful for hotkey-style actions like Ctrl+Shift+S.
+/// @param action Borrowed button-action name.
+/// @param keys Borrowed runtime sequence containing two through eight boxed
+///        integer key codes in chord order.
+/// @return `1` when the chord is copied into a new binding; otherwise `0`.
 int8_t rt_action_bind_chord(rt_string action, void *keys) {
     RT_ASSERT_MAIN_THREAD();
     int64_t len, i;
@@ -603,6 +697,9 @@ int8_t rt_action_bind_chord(rt_string action, void *keys) {
 ///
 /// Match is exact: same length, same keys in the same order. Returns
 /// 1 on success, 0 if no chord matches.
+/// @param action Borrowed action name.
+/// @param keys Borrowed sequence of two through eight boxed key codes.
+/// @return `1` after removing the newest exact match; otherwise `0`.
 int8_t rt_action_unbind_chord(rt_string action, void *keys) {
     RT_ASSERT_MAIN_THREAD();
     int64_t len, i;
@@ -638,6 +735,8 @@ int8_t rt_action_unbind_chord(rt_string action, void *keys) {
 }
 
 /// @brief `Action.ChordCount(action)` — number of chord bindings on this action.
+/// @param action Borrowed action name.
+/// @return Number of chord bindings, or `0` when the action is absent.
 int64_t rt_action_chord_count(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     int64_t count = 0;
@@ -656,6 +755,9 @@ int64_t rt_action_chord_count(rt_string action) {
 }
 
 /// @brief `Action.BindMouse(action, button)` — bind a mouse button to a button action.
+/// @param action Borrowed button-action name.
+/// @param button Runtime mouse-button code to bind.
+/// @return `1` when added; `0` for a missing/axis action or allocation failure.
 int8_t rt_action_bind_mouse(rt_string action, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -669,6 +771,10 @@ int8_t rt_action_bind_mouse(rt_string action, int64_t button) {
 }
 
 /// @brief `Action.UnbindMouse(action, button)` — remove a mouse-button binding.
+/// @details Removes only the newest matching binding when duplicates exist.
+/// @param action Borrowed action name.
+/// @param button Runtime mouse-button code to unbind.
+/// @return `1` when a binding was removed; otherwise `0`.
 int8_t rt_action_unbind_mouse(rt_string action, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -681,6 +787,9 @@ int8_t rt_action_unbind_mouse(rt_string action, int64_t button) {
 ///
 /// Per-frame mouse delta (in pixels) is multiplied by `sensitivity`
 /// and added to the axis. Typical mouselook setup uses ~0.001-0.01.
+/// @param action Borrowed axis-action name.
+/// @param sensitivity Unvalidated multiplier applied to horizontal pixel delta.
+/// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_mouse_x(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -694,6 +803,9 @@ int8_t rt_action_bind_mouse_x(rt_string action, double sensitivity) {
 }
 
 /// @brief `Action.BindMouseY(action, sensitivity)` — bind mouse Y-delta to an axis.
+/// @param action Borrowed axis-action name.
+/// @param sensitivity Unvalidated multiplier applied to vertical pixel delta.
+/// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_mouse_y(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -707,6 +819,9 @@ int8_t rt_action_bind_mouse_y(rt_string action, double sensitivity) {
 }
 
 /// @brief `Action.BindScrollX(action, sensitivity)` — bind horizontal scroll wheel to an axis.
+/// @param action Borrowed axis-action name.
+/// @param sensitivity Unvalidated multiplier applied to horizontal wheel delta.
+/// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_scroll_x(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -720,6 +835,9 @@ int8_t rt_action_bind_scroll_x(rt_string action, double sensitivity) {
 }
 
 /// @brief `Action.BindScrollY(action, sensitivity)` — bind vertical scroll wheel to an axis.
+/// @param action Borrowed axis-action name.
+/// @param sensitivity Unvalidated multiplier applied to vertical wheel delta.
+/// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_scroll_y(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -734,6 +852,10 @@ int8_t rt_action_bind_scroll_y(rt_string action, double sensitivity) {
 
 /// @brief `Action.BindPadButton(action, padIndex, button)` — bind a gamepad button to a button
 /// action.
+/// @param action Borrowed button-action name.
+/// @param pad_index Controller index, conventionally 0..3, or `-1` for any.
+/// @param button Runtime gamepad-button code to bind.
+/// @return `1` when added; `0` for a missing/axis action or allocation failure.
 int8_t rt_action_bind_pad_button(rt_string action, int64_t pad_index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -747,6 +869,11 @@ int8_t rt_action_bind_pad_button(rt_string action, int64_t pad_index, int64_t bu
 }
 
 /// @brief `Action.UnbindPadButton(action, padIndex, button)` — remove a pad-button binding.
+/// @details The controller index must exactly match the stored binding.
+/// @param action Borrowed action name.
+/// @param pad_index Stored controller index to match.
+/// @param button Runtime gamepad-button code to match.
+/// @return `1` when the newest exact binding is removed; otherwise `0`.
 int8_t rt_action_unbind_pad_button(rt_string action, int64_t pad_index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -759,6 +886,11 @@ int8_t rt_action_unbind_pad_button(rt_string action, int64_t pad_index, int64_t 
 ///
 /// `axis` is `ZANNA_AXIS_*`. `scale` multiplies the raw axis value
 /// (typically 1.0 or -1.0 to invert).
+/// @param action Borrowed axis-action name.
+/// @param pad_index Controller index, conventionally 0..3, or `-1` for any.
+/// @param axis One of the `ZANNA_AXIS_*` source codes.
+/// @param scale Unvalidated multiplier applied to the raw device value.
+/// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_pad_axis(rt_string action, int64_t pad_index, int64_t axis, double scale) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -772,6 +904,10 @@ int8_t rt_action_bind_pad_axis(rt_string action, int64_t pad_index, int64_t axis
 }
 
 /// @brief `Action.UnbindPadAxis(action, padIndex, axis)` — remove a pad-axis binding.
+/// @param action Borrowed action name.
+/// @param pad_index Stored controller index to match.
+/// @param axis Stored `ZANNA_AXIS_*` code to match.
+/// @return `1` when the newest exact binding is removed; otherwise `0`.
 int8_t rt_action_unbind_pad_axis(rt_string action, int64_t pad_index, int64_t axis) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -785,6 +921,11 @@ int8_t rt_action_unbind_pad_axis(rt_string action, int64_t pad_index, int64_t ax
 ///
 /// Like `BindKeyAxis` but for gamepad buttons — useful for D-pad
 /// directions on an axis (D-pad-Left → -1.0, D-pad-Right → +1.0).
+/// @param action Borrowed axis-action name.
+/// @param pad_index Controller index, conventionally 0..3, or `-1` for any.
+/// @param button Runtime gamepad-button code to bind.
+/// @param value Unvalidated contribution added while the button is held.
+/// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_pad_button_axis(rt_string action,
                                       int64_t pad_index,
                                       int64_t button,
@@ -801,11 +942,12 @@ int8_t rt_action_bind_pad_button_axis(rt_string action,
 }
 
 /// @brief Check if an action was just pressed this frame (edge-triggered).
-/// @details Returns 1 only on the single frame where the action transitions
-///   from not-held to held. Use this for jump, shoot, menu confirm — actions
-///   that should trigger once per press, not continuously.
-/// @param action Name of the action (e.g., "jump"). Must be defined first.
-/// @return 1 if pressed this frame, 0 otherwise.
+/// @details Set when any ordinary bound input reports a down edge, or when all
+///          chord keys are held and at least one reports a down edge. Multiple
+///          bindings mean a new edge can be reported while another binding
+///          already holds the action.
+/// @param action Borrowed action name.
+/// @return `1` when the cached update observed a qualifying press; otherwise `0`.
 int8_t rt_action_pressed(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -813,10 +955,12 @@ int8_t rt_action_pressed(rt_string action) {
 }
 
 /// @brief Check if an action was just released this frame (edge-triggered).
-/// @details Returns 1 only on the single frame where the action transitions
-///   from held to not-held. Use for "on key up" behaviors.
-/// @param action Action name.
-/// @return 1 if released this frame, 0 otherwise.
+/// @details Set when any ordinary bound input reports an up edge, or when the
+///          overall action changes from held to unheld. It may therefore be
+///          true while another binding continues to hold the action.
+/// @param action Borrowed action name.
+/// @return `1` when the cached update observed or synthesized a release;
+///         otherwise `0`.
 int8_t rt_action_released(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -825,9 +969,10 @@ int8_t rt_action_released(rt_string action) {
 
 /// @brief Check if an action is currently held down (level-triggered).
 /// @details Returns 1 every frame the action is active. Use for movement,
-///   charging, or any continuous action.
-/// @param action Action name.
-/// @return 1 if held, 0 if not.
+///   charging, or any continuous action. Axis actions do not populate the
+///   held flag.
+/// @param action Borrowed action name.
+/// @return `1` if any button binding or complete chord is held; otherwise `0`.
 int8_t rt_action_held(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -838,8 +983,8 @@ int8_t rt_action_held(rt_string action) {
 /// @details Returns 1.0 while any bound input is held and 0.0 otherwise. Button
 ///   actions have no trigger-axis binding, so no analog value is ever produced;
 ///   use axis actions for analog input.
-/// @param action Action name.
-/// @return 1.0 if held, 0.0 otherwise.
+/// @param action Borrowed action name.
+/// @return `1.0` if held; `0.0` for unheld, axis, or missing actions.
 double rt_action_strength(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -850,8 +995,9 @@ double rt_action_strength(rt_string action) {
 /// @details Returns a value in [-1.0, 1.0] for axis inputs (gamepad sticks,
 ///   mouse movement). Button bindings contribute their configured `value` field
 ///   (typically ±1.0). The result is clamped to [-1.0, 1.0].
-/// @param action Action name (must be defined as axis with DefineAxis).
-/// @return Axis value clamped to [-1.0, 1.0], or 0.0 if action not found.
+/// @param action Borrowed action name, normally defined with DefineAxis.
+/// @return Axis value clamped to [-1.0, 1.0], `0.0` for missing actions, or
+///         NaN if a binding caused the cached sum to become NaN.
 double rt_action_axis(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -861,8 +1007,8 @@ double rt_action_axis(rt_string action) {
 /// @brief Get the raw (unclamped) axis value for an axis-type action.
 /// @details Like rt_action_axis() but without clamping. Raw values can exceed
 ///   [-1.0, 1.0] when multiple bindings contribute simultaneously.
-/// @param action Action name.
-/// @return Raw accumulated axis value, or 0.0 if not found.
+/// @param action Borrowed action name.
+/// @return Raw accumulated axis value, or `0.0` if not found.
 double rt_action_axis_raw(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -872,7 +1018,9 @@ double rt_action_axis_raw(rt_string action) {
 /// @brief `Action.List` — return a `seq<str>` of every defined action's name.
 ///
 /// Useful for binding-config UIs and serialization. Order matches
-/// the internal linked-list order (newest-first).
+/// the internal linked-list order (newest-first). The sequence owns newly
+/// copied runtime-string elements.
+/// @return Owned runtime sequence of owned action-name strings.
 void *rt_action_list(void) {
     RT_ASSERT_MAIN_THREAD();
     void *seq = rt_seq_new();
@@ -894,9 +1042,9 @@ void *rt_action_list(void) {
 /// @details Wraps `rt_sb_append_cstr` with a boolean return so callers can share one error path.
 ///          A NULL literal is treated as an empty string, which keeps fallback names safe when
 ///          called from defensive branches.
-/// @param sb   Builder receiving the text.
-/// @param text NUL-terminated text to append.
-/// @return 1 on success, 0 if the builder reports allocation/overflow/invalid input failure.
+/// @param sb Borrowed builder receiving the text.
+/// @param text Borrowed NUL-terminated text to append; may be `NULL`.
+/// @return `1` on success; `0` if the builder reports a failure.
 static int action_bindings_append_cstr(rt_string_builder *sb, const char *text) {
     return rt_sb_append_cstr(sb, text ? text : "") == RT_SB_OK;
 }
@@ -904,10 +1052,10 @@ static int action_bindings_append_cstr(rt_string_builder *sb, const char *text) 
 /// @brief Append the display name for a keyboard key to an action-binding description.
 /// @details Uses `rt_keyboard_key_name` when it returns non-empty text. If the key code has no
 ///          known display name, appends @p fallback so callers never lose the binding entirely.
-/// @param sb       Builder receiving the key name.
-/// @param key      Runtime key code.
-/// @param fallback Text used when no key name is available.
-/// @return 1 on success, 0 if appending to the builder failed.
+/// @param sb Borrowed builder receiving the key name.
+/// @param key Runtime key code.
+/// @param fallback Borrowed text used when no key name is available.
+/// @return `1` on success; `0` if appending to the builder failed.
 static int action_bindings_append_key_name(rt_string_builder *sb, int64_t key, const char *fallback) {
     rt_string key_name = rt_keyboard_key_name(key);
     int64_t key_len = key_name ? rt_str_len(key_name) : 0;
@@ -920,9 +1068,9 @@ static int action_bindings_append_key_name(rt_string_builder *sb, int64_t key, c
 /// @details Covers keyboard, mouse, gamepad, axis, and chord bindings. Chord descriptions are
 ///          assembled directly into the dynamic builder, so long key names or many bindings no
 ///          longer truncate at a fixed stack-buffer boundary.
-/// @param sb Builder receiving the binding text.
-/// @param b  Binding to describe.
-/// @return 1 on success, 0 if appending to the builder failed.
+/// @param sb Borrowed builder receiving the binding text.
+/// @param b Borrowed binding to describe; `NULL` emits `"Unknown"`.
+/// @return `1` on success; `0` if appending to the builder failed.
 static int action_bindings_append_desc(rt_string_builder *sb, const Binding *b) {
     if (!b)
         return action_bindings_append_cstr(sb, "Unknown");
@@ -1019,7 +1167,11 @@ static int action_bindings_append_desc(rt_string_builder *sb, const Binding *b) 
 ///
 /// Comma-separated list like "Space, Mouse Left, Pad A, Ctrl+S".
 /// Useful for "press X to jump"-style on-screen prompts. The result is built
-/// dynamically so long binding lists are returned in full unless allocation fails.
+/// dynamically so long binding lists are returned in full unless allocation
+/// fails. Binding order is newest-first.
+/// @param action Borrowed action name.
+/// @return Owned description string. Missing actions return the immortal empty
+///         string; allocation failure traps and returns that same fallback.
 rt_string rt_action_bindings_str(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -1051,6 +1203,8 @@ failed:
 }
 
 /// @brief `Action.BindingCount(action)` — total number of bindings on this action.
+/// @param action Borrowed action name.
+/// @return Total number of all binding types, or `0` if the action is absent.
 int64_t rt_action_binding_count(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -1067,6 +1221,10 @@ int64_t rt_action_binding_count(rt_string action) {
 }
 
 /// @brief `Action.KeyBoundTo(key)` — name of the first action bound to `key`, or "".
+/// @details Searches actions newest-first and includes both button and
+///          key-to-axis bindings because they share `BIND_KEY`.
+/// @param key Runtime keyboard code to search for.
+/// @return Newly owned matching action name, or the immortal empty string.
 rt_string rt_action_key_bound_to(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = g_actions;
@@ -1083,6 +1241,8 @@ rt_string rt_action_key_bound_to(int64_t key) {
 }
 
 /// @brief `Action.MouseBoundTo(button)` — name of action bound to mouse button, or "".
+/// @param button Runtime mouse-button code to search for.
+/// @return Newly owned newest matching action name, or the immortal empty string.
 rt_string rt_action_mouse_bound_to(int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = g_actions;
@@ -1101,7 +1261,11 @@ rt_string rt_action_mouse_bound_to(int64_t button) {
 /// @brief `Action.PadButtonBoundTo(padIndex, button)` — name of action bound to a pad button.
 ///
 /// Matches both regular pad-button bindings and pad-button-axis
-/// bindings. `pad_index = -1` ("any pad") always matches.
+/// bindings. A stored `pad_index = -1` wildcard matches every concrete query;
+/// other stored indices must equal @p pad_index.
+/// @param pad_index Controller index to search for.
+/// @param button Runtime gamepad-button code to search for.
+/// @return Newly owned newest matching action name, or the immortal empty string.
 rt_string rt_action_pad_button_bound_to(int64_t pad_index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = g_actions;
@@ -1119,31 +1283,37 @@ rt_string rt_action_pad_button_bound_to(int64_t pad_index, int64_t button) {
 }
 
 /// @brief `Axis.LeftX` — gamepad left stick X-axis constant.
+/// @return `ZANNA_AXIS_LEFT_X`.
 int64_t rt_action_axis_left_x(void) {
     return ZANNA_AXIS_LEFT_X;
 }
 
 /// @brief `Axis.LeftY` — gamepad left stick Y-axis constant.
+/// @return `ZANNA_AXIS_LEFT_Y`.
 int64_t rt_action_axis_left_y(void) {
     return ZANNA_AXIS_LEFT_Y;
 }
 
 /// @brief `Axis.RightX` — gamepad right stick X-axis constant.
+/// @return `ZANNA_AXIS_RIGHT_X`.
 int64_t rt_action_axis_right_x(void) {
     return ZANNA_AXIS_RIGHT_X;
 }
 
 /// @brief `Axis.RightY` — gamepad right stick Y-axis constant.
+/// @return `ZANNA_AXIS_RIGHT_Y`.
 int64_t rt_action_axis_right_y(void) {
     return ZANNA_AXIS_RIGHT_Y;
 }
 
 /// @brief `Axis.LeftTrigger` — gamepad left analog trigger constant.
+/// @return `ZANNA_AXIS_LEFT_TRIGGER`.
 int64_t rt_action_axis_left_trigger(void) {
     return ZANNA_AXIS_LEFT_TRIGGER;
 }
 
 /// @brief `Axis.RightTrigger` — gamepad right analog trigger constant.
+/// @return `ZANNA_AXIS_RIGHT_TRIGGER`.
 int64_t rt_action_axis_right_trigger(void) {
     return ZANNA_AXIS_RIGHT_TRIGGER;
 }

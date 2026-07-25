@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_tween.c
+/// @file
+/// @brief Implements frame-counted scalar tweening, exact integer endpoints,
+///        lifecycle controls, and nineteen easing curves.
 // Purpose: Frame-counted value interpolation ("tweening") for Zanna games and
 //   UIs. A Tween smoothly animates a scalar value from a start to an end over
 //   a specified number of frames, optionally applying one of 19 easing curves
@@ -56,7 +59,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-/// Internal structure for Tween.
+/// @brief Mutable interpolation state owned by a Tween runtime object.
 struct rt_tween_impl {
     double from;       ///< Starting value.
     double to;         ///< Ending value.
@@ -73,7 +76,10 @@ struct rt_tween_impl {
 };
 
 /// @brief Safe-cast a handle to the Tween impl, trapping @p api on a class-id
-///        mismatch. @return The tween, or NULL if @p tween is NULL.
+///        mismatch.
+/// @param tween Borrowed candidate Tween handle.
+/// @param api Trap message identifying the calling API.
+/// @return Borrowed implementation pointer, or `NULL` when @p tween is `NULL`.
 static rt_tween checked_tween(rt_tween tween, const char *api) {
     if (!tween)
         return NULL;
@@ -85,12 +91,19 @@ static rt_tween checked_tween(rt_tween tween, const char *api) {
 }
 
 /// @brief Return @p value if finite, else @p fallback (NaN/Inf sanitizer).
+/// @param value Candidate floating-point value.
+/// @param fallback Replacement for NaN or infinity.
+/// @return @p value when finite; otherwise @p fallback.
 static double tween_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
 /// @brief Linear interpolation that avoids overflowing the endpoint delta for
 ///        large opposite-signed values.
+/// @param from Start endpoint.
+/// @param to End endpoint.
+/// @param t Interpolation parameter; non-finite input becomes zero.
+/// @return Finite weighted value when possible, otherwise the nearer endpoint.
 static double tween_lerp_double(double from, double to, double t) {
     if (!isfinite(t))
         t = 0.0;
@@ -111,6 +124,8 @@ static double tween_lerp_double(double from, double to, double t) {
 }
 
 /// @brief Round-half-away-from-zero to int64, saturating; 0 for non-finite.
+/// @param value Floating-point value to convert.
+/// @return Nearest integer with ties away from zero, saturated to int64.
 static int64_t tween_round_to_i64(double value) {
     if (!isfinite(value))
         return 0;
@@ -127,6 +142,10 @@ static int64_t tween_round_to_i64(double value) {
 ///        constant (from == to) never drifts — unlike casting the endpoints to
 ///        double first, which loses bits above 2^53 (VDOC-273). Intermediate
 ///        fractions use long double to minimize precision loss on wide ranges.
+/// @param from Exact integer start endpoint.
+/// @param to Exact integer end endpoint.
+/// @param frac Interpolation fraction, normally produced by an easing curve.
+/// @return Rounded, saturated interpolated value with exact endpoint anchors.
 static int64_t tween_lerp_endpoints_i64(int64_t from, int64_t to, double frac) {
     if (from == to || frac == 0.0)
         return from;
@@ -146,6 +165,9 @@ static int64_t tween_lerp_endpoints_i64(int64_t from, int64_t to, double frac) {
 
 /// @brief Integer percentage value*100/total, clamped to [0, 100]; 0 for
 ///        non-positive inputs.
+/// @param value Non-negative elapsed frame count.
+/// @param total Positive duration.
+/// @return Truncated percentage in the inclusive range 0..100.
 static int64_t tween_percent_i64(int64_t value, int64_t total) {
     if (value <= 0 || total <= 0)
         return 0;
@@ -156,6 +178,9 @@ static int64_t tween_percent_i64(int64_t value, int64_t total) {
 
 // Forward declaration of public easing function
 /// @brief Apply an easing curve to a linear progress value t in [0,1].
+/// @param t Linear progress.
+/// @param ease_type One of the `RT_EASE_*` identifiers.
+/// @return Eased progress with exact clamped endpoints.
 double rt_tween_ease(double t, int64_t ease_type);
 
 // Forward declaration of internal easing functions
@@ -182,6 +207,7 @@ static double ease_out_bounce(double t);
 static double ease_in_out_bounce(double t);
 
 /// @brief Create a new tween interpolator (starts inactive until start() is called).
+/// @return Owned Tween handle, or `NULL` if allocation fails.
 rt_tween rt_tween_new(void) {
     struct rt_tween_impl *tween = (struct rt_tween_impl *)rt_obj_new_i64(
         RT_TWEEN_CLASS_ID, (int64_t)sizeof(struct rt_tween_impl));
@@ -204,7 +230,8 @@ rt_tween rt_tween_new(void) {
     return tween;
 }
 
-/// @brief Destroy a tween and release its GC allocation.
+/// @brief Release one owned Tween reference.
+/// @param tween Owned handle to release; `NULL` is ignored.
 void rt_tween_destroy(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Destroy: expected Zanna.Game.Tween");
     if (tween && rt_obj_release_check0(tween))
@@ -212,6 +239,14 @@ void rt_tween_destroy(rt_tween tween) {
 }
 
 /// @brief Start interpolating from one value to another over the given duration with easing.
+/// @details Non-finite start becomes zero, non-finite end becomes the start,
+///          durations below one clamp to one, and unknown easing IDs become
+///          linear. Existing playback state is replaced.
+/// @param tween Borrowed Tween handle.
+/// @param from Start value.
+/// @param to End value.
+/// @param duration Duration in update frames.
+/// @param ease_type One of the `RT_EASE_*` identifiers.
 void rt_tween_start(rt_tween tween, double from, double to, int64_t duration, int64_t ease_type) {
     tween = checked_tween(tween, "Tween.Start: expected Zanna.Game.Tween");
     if (!tween)
@@ -239,6 +274,11 @@ void rt_tween_start(rt_tween tween, double from, double to, int64_t duration, in
 /// intermediate frames, but the exact int64 endpoints are retained so ValueI64
 /// preserves them (and a constant tween) without the 2^53 precision loss that a
 /// bare double cast would introduce (VDOC-273).
+/// @param tween Borrowed Tween handle.
+/// @param from Exact integer start endpoint.
+/// @param to Exact integer end endpoint.
+/// @param duration Duration in update frames, clamped to at least one.
+/// @param ease_type Easing identifier, defaulting to linear when invalid.
 void rt_tween_start_i64(
     rt_tween tween, int64_t from, int64_t to, int64_t duration, int64_t ease_type) {
     rt_tween_start(tween, (double)from, (double)to, duration, ease_type);
@@ -252,6 +292,11 @@ void rt_tween_start_i64(
 }
 
 /// @brief Advance the tween by one tick. Returns 1 if the tween just completed.
+/// @details Paused, stopped, and completed tweens are unchanged. Active
+///          playback advances one saturating frame, applies normalized easing,
+///          interpolates, and pins the exact double end value on completion.
+/// @param tween Borrowed Tween handle.
+/// @return `1` only on the update that reaches the duration; otherwise `0`.
 int8_t rt_tween_update(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Update: expected Zanna.Game.Tween");
     if (!tween)
@@ -285,6 +330,8 @@ int8_t rt_tween_update(rt_tween tween) {
 }
 
 /// @brief Get the current interpolated value as a double.
+/// @param tween Borrowed Tween handle.
+/// @return Current value, or `0.0` for null.
 double rt_tween_value(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Value: expected Zanna.Game.Tween");
     if (!tween)
@@ -297,6 +344,9 @@ double rt_tween_value(rt_tween tween) {
 /// int64 endpoints: a not-yet-advanced tween returns `from`, a completed tween
 /// returns `to`, and a constant tween never drifts — none of which survive the
 /// double round-trip that the double-domain fallback uses (VDOC-273).
+/// @param tween Borrowed Tween handle.
+/// @return Exact/eased integer-domain result for StartI64, otherwise the
+///         rounded and saturated current double; `0` for null.
 int64_t rt_tween_value_i64(rt_tween tween) {
     tween = checked_tween(tween, "Tween.ValueI64: expected Zanna.Game.Tween");
     if (!tween)
@@ -319,6 +369,8 @@ int64_t rt_tween_value_i64(rt_tween tween) {
 }
 
 /// @brief Check whether the tween is actively interpolating (running and not paused).
+/// @param tween Borrowed Tween handle.
+/// @return `1` when running and unpaused; otherwise `0`.
 int8_t rt_tween_is_running(rt_tween tween) {
     tween = checked_tween(tween, "Tween.IsRunning: expected Zanna.Game.Tween");
     if (!tween)
@@ -327,6 +379,8 @@ int8_t rt_tween_is_running(rt_tween tween) {
 }
 
 /// @brief Check whether the tween has reached its end value.
+/// @param tween Borrowed Tween handle.
+/// @return `1` after natural completion until restart/reset; otherwise `0`.
 int8_t rt_tween_is_complete(rt_tween tween) {
     tween = checked_tween(tween, "Tween.IsComplete: expected Zanna.Game.Tween");
     if (!tween)
@@ -335,6 +389,8 @@ int8_t rt_tween_is_complete(rt_tween tween) {
 }
 
 /// @brief Get the tween progress as a percentage (0–100).
+/// @param tween Borrowed Tween handle.
+/// @return Truncated elapsed/duration percentage, or `0` without a duration.
 int64_t rt_tween_progress(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Progress: expected Zanna.Game.Tween");
     if (!tween || tween->duration == 0)
@@ -343,6 +399,8 @@ int64_t rt_tween_progress(rt_tween tween) {
 }
 
 /// @brief Get the number of ticks elapsed since the tween was started.
+/// @param tween Borrowed Tween handle.
+/// @return Elapsed update frames, or `0` for null.
 int64_t rt_tween_elapsed(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Elapsed: expected Zanna.Game.Tween");
     if (!tween)
@@ -351,6 +409,8 @@ int64_t rt_tween_elapsed(rt_tween tween) {
 }
 
 /// @brief Get the total duration of the tween in ticks.
+/// @param tween Borrowed Tween handle.
+/// @return Configured update-frame duration, or `0` for null/unstarted.
 int64_t rt_tween_duration(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Duration: expected Zanna.Game.Tween");
     if (!tween)
@@ -359,6 +419,9 @@ int64_t rt_tween_duration(rt_tween tween) {
 }
 
 /// @brief Stop the tween and clear the paused state.
+/// @details Preserves current value, elapsed frames, endpoints, and completion
+///          latch.
+/// @param tween Borrowed Tween handle.
 void rt_tween_stop(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Stop: expected Zanna.Game.Tween");
     if (!tween)
@@ -368,6 +431,9 @@ void rt_tween_stop(rt_tween tween) {
 }
 
 /// @brief Reset the tween to its start value and restart playback.
+/// @details Clears completion/pause, resets elapsed, and resumes only when a
+///          positive duration has been configured.
+/// @param tween Borrowed Tween handle.
 void rt_tween_reset(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Reset: expected Zanna.Game.Tween");
     if (!tween)
@@ -381,6 +447,7 @@ void rt_tween_reset(rt_tween tween) {
 }
 
 /// @brief Pause the tween at the current position (can be resumed).
+/// @param tween Borrowed Tween handle; inactive/completed tweens are unchanged.
 void rt_tween_pause(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Pause: expected Zanna.Game.Tween");
     if (!tween)
@@ -390,6 +457,8 @@ void rt_tween_pause(rt_tween tween) {
 }
 
 /// @brief Resume a paused tween from where it left off.
+/// @details Clears the pause flag without changing stopped/running state.
+/// @param tween Borrowed Tween handle.
 void rt_tween_resume(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Resume: expected Zanna.Game.Tween");
     if (!tween)
@@ -398,6 +467,8 @@ void rt_tween_resume(rt_tween tween) {
 }
 
 /// @brief Check whether the tween is currently paused.
+/// @param tween Borrowed Tween handle.
+/// @return `1` when paused; otherwise `0`.
 int8_t rt_tween_is_paused(rt_tween tween) {
     tween = checked_tween(tween, "Tween.IsPaused: expected Zanna.Game.Tween");
     if (!tween)
@@ -415,6 +486,11 @@ int8_t rt_tween_is_paused(rt_tween tween) {
 /// nearest. Anchored on the integer endpoints so t<=0 returns `from`, t>=1 returns
 /// `to`, and a constant is exact — the endpoints no longer round-trip through a
 /// double that would drop bits above 2^53 (VDOC-273).
+/// @param from Exact integer start endpoint.
+/// @param to Exact integer end endpoint.
+/// @param t Interpolation parameter; non-finite and nonpositive values select
+///        @p from, values at least one select @p to.
+/// @return Rounded and saturated interpolated integer.
 int64_t rt_tween_lerp_i64(int64_t from, int64_t to, double t) {
     if (!isfinite(t) || t <= 0.0)
         return from;
@@ -427,6 +503,10 @@ int64_t rt_tween_lerp_i64(int64_t from, int64_t to, double t) {
 /// @details Dispatches to one of 19 easing functions (linear, quad, cubic, sine,
 ///          expo, back, bounce — each in in/out/in-out variants). Returns 0 for
 ///          t<=0 and 1 for t>=1 to guarantee exact endpoints.
+/// @param t Linear progress; non-finite input becomes zero.
+/// @param ease_type One of the `RT_EASE_*` identifiers; unknown IDs use
+///        linear progress.
+/// @return Eased progress, potentially outside 0..1 for back curves.
 double rt_tween_ease(double t, int64_t ease_type) {
     if (!isfinite(t))
         return 0.0;
@@ -489,21 +569,29 @@ double rt_tween_ease(double t, int64_t ease_type) {
 //=============================================================================
 
 /// @brief Linear (identity) easing: returns @p t unchanged.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return @p t unchanged.
 static double ease_linear(double t) {
     return t;
 }
 
 /// @brief Quadratic ease-in (t^2).
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Progress that accelerates quadratically from rest.
 static double ease_in_quad(double t) {
     return t * t;
 }
 
 /// @brief Quadratic ease-out.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Progress that decelerates quadratically toward the endpoint.
 static double ease_out_quad(double t) {
     return t * (2.0 - t);
 }
 
 /// @brief Quadratic ease-in-out.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Symmetric quadratic acceleration followed by deceleration.
 static double ease_in_out_quad(double t) {
     if (t < 0.5)
         return 2.0 * t * t;
@@ -511,17 +599,23 @@ static double ease_in_out_quad(double t) {
 }
 
 /// @brief Cubic ease-in (t^3).
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Progress that accelerates cubically from rest.
 static double ease_in_cubic(double t) {
     return t * t * t;
 }
 
 /// @brief Cubic ease-out.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Progress that decelerates cubically toward the endpoint.
 static double ease_out_cubic(double t) {
     double t1 = t - 1.0;
     return t1 * t1 * t1 + 1.0;
 }
 
 /// @brief Cubic ease-in-out.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Symmetric cubic acceleration followed by deceleration.
 static double ease_in_out_cubic(double t) {
     if (t < 0.5)
         return 4.0 * t * t * t;
@@ -530,21 +624,29 @@ static double ease_in_out_cubic(double t) {
 }
 
 /// @brief Sinusoidal ease-in (1 - cos).
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Quarter-cosine progress that starts with zero slope.
 static double ease_in_sine(double t) {
     return 1.0 - cos(t * M_PI / 2.0);
 }
 
 /// @brief Sinusoidal ease-out (sin).
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Quarter-sine progress that ends with zero slope.
 static double ease_out_sine(double t) {
     return sin(t * M_PI / 2.0);
 }
 
 /// @brief Sinusoidal ease-in-out.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Half-cosine progress with zero slope at both endpoints.
 static double ease_in_out_sine(double t) {
     return 0.5 * (1.0 - cos(M_PI * t));
 }
 
 /// @brief Exponential ease-in (2^(10(t-1))).
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Exponentially accelerating progress with an exact zero endpoint.
 static double ease_in_expo(double t) {
     if (t == 0.0)
         return 0.0;
@@ -552,6 +654,8 @@ static double ease_in_expo(double t) {
 }
 
 /// @brief Exponential ease-out.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Exponentially decelerating progress with an exact one endpoint.
 static double ease_out_expo(double t) {
     if (t == 1.0)
         return 1.0;
@@ -559,6 +663,8 @@ static double ease_out_expo(double t) {
 }
 
 /// @brief Exponential ease-in-out.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Symmetric exponential progress with exact zero and one endpoints.
 static double ease_in_out_expo(double t) {
     if (t == 0.0)
         return 0.0;
@@ -570,6 +676,8 @@ static double ease_in_out_expo(double t) {
 }
 
 /// @brief "Back" ease-in: slight anticipation (undershoot) before advancing.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Progress that initially falls below zero before reaching one.
 static double ease_in_back(double t) {
     const double c1 = 1.70158;
     const double c3 = c1 + 1.0;
@@ -577,6 +685,8 @@ static double ease_in_back(double t) {
 }
 
 /// @brief "Back" ease-out: overshoots the target then settles back.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Progress that exceeds one before settling at the endpoint.
 static double ease_out_back(double t) {
     const double c1 = 1.70158;
     const double c3 = c1 + 1.0;
@@ -585,6 +695,8 @@ static double ease_out_back(double t) {
 }
 
 /// @brief "Back" ease-in-out: anticipation at the start, overshoot at the end.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Symmetric back progress that may fall below zero and exceed one.
 static double ease_in_out_back(double t) {
     const double c1 = 1.70158;
     const double c2 = c1 * 1.525;
@@ -597,6 +709,8 @@ static double ease_in_out_back(double t) {
 }
 
 /// @brief "Bounce" ease-out: decaying piecewise-parabolic bounces to the end.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Piecewise parabolic progress that approaches one through rebounds.
 static double ease_out_bounce(double t) {
     const double n1 = 7.5625;
     const double d1 = 2.75;
@@ -616,11 +730,15 @@ static double ease_out_bounce(double t) {
 }
 
 /// @brief "Bounce" ease-in: time-reversed ease_out_bounce.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Reversed bounce progress that rebounds before accelerating forward.
 static double ease_in_bounce(double t) {
     return 1.0 - ease_out_bounce(1.0 - t);
 }
 
 /// @brief "Bounce" ease-in-out: bounce-in for the first half, bounce-out the second.
+/// @param t Normalized linear progress in the inclusive range 0..1.
+/// @return Symmetric bounce-in/bounce-out progress.
 static double ease_in_out_bounce(double t) {
     if (t < 0.5)
         return 0.5 * (1.0 - ease_out_bounce(1.0 - 2.0 * t));

@@ -6,33 +6,36 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_string_builder.c
-// Purpose: Implements the growable string buffer (rt_string_builder) used by
-//          the BASIC runtime's formatting helpers. Starts with a fixed inline
-//          buffer (RT_SB_INLINE_CAP bytes) to avoid heap allocation for short
-//          strings, then promotes to heap when growth is needed.
+// Purpose: Implements the growable byte buffer used by runtime formatting and
+//          the Zanna.Text.StringBuilder bridge. Builders begin in fixed inline
+//          storage and promote to a geometrically grown heap buffer as needed.
 //
 // Key invariants:
 //   - Builders always keep their buffers null-terminated at data[len].
+//   - len excludes the terminator and remains strictly less than cap.
 //   - The inline buffer (embedded in the struct) is used until capacity is
 //     exceeded; data pointer is redirected to heap storage on promotion.
 //   - Allocation and overflow failures are reported via explicit rt_sb_status_t
 //     return codes rather than trapping; callers decide how to handle errors.
-//   - rt_sb_restore_on_overflow reverts a builder to a prior state, freeing
-//     any heap allocation made during a failed append.
+//   - Append operations preserve arbitrary bytes except C-string/printf entry
+//     points, whose input necessarily terminates at NUL.
 //   - rt_sb_free releases heap storage if the builder promoted beyond inline;
-//     calling it on an inline builder is safe (no-op for the pointer).
+//     it then restores a reusable initialized empty state.
 //
 // Ownership/Lifetime:
 //   - Callers own the rt_string_builder struct (typically stack-allocated) and
 //     are responsible for calling rt_sb_free when done to release heap storage.
-//   - rt_sb_finish transfers the accumulated bytes into a new rt_string; the
-//     returned value is owned by the caller (must be unref'd when done).
+//   - Append inputs are borrowed and copied into builder-owned storage.
+//   - Bridge ToString snapshots the bytes into a separate owned rt_string; it
+//     does not consume or reset the builder.
 //
 // Links: src/runtime/core/rt_string_builder.h (public API),
 //        src/runtime/core/rt_string.h (rt_string allocation),
 //        docs/runtime/strings.md#string-builder
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Growable runtime byte builder and Zanna.Text.StringBuilder bridge.
 
 #include "rt_string_builder.h"
 
@@ -54,27 +57,26 @@
 
 /// @brief Determine whether the builder currently points at its inline buffer.
 /// @details Builders start life with @ref rt_string_builder::data referencing
-///          @ref rt_string_builder::inline_buffer.  When the buffer grows beyond
+///          @ref rt_string_builder::inline_buffer. When the buffer grows beyond
 ///          the inline capacity the data pointer is redirected to heap storage.
 ///          This helper allows other routines to branch on that condition
 ///          without duplicating pointer comparisons.
-/// @param sb Builder to inspect; may be @c NULL.
-/// @return Non-zero when the builder uses its inline buffer; zero otherwise.
+/// @param sb Borrowed builder to inspect; may be NULL.
+/// @return True only when @p sb is non-null and its active buffer is inline.
 static bool rt_sb_is_inline(const rt_string_builder *sb) {
     return sb && sb->data == sb->inline_buffer;
 }
 
 /// @brief Restore a builder to a prior state after formatting overflow.
-/// @details When formatting functions attempt to append into a buffer that was
-///          subsequently found to be too small, callers use this helper to
-///          release any temporary heap allocation, restore the caller-provided
-///          length/capacity snapshot, and ensure the buffer remains
-///          null-terminated.  No work is performed when @p sb is @c NULL.
-/// @param sb Builder being restored.
-/// @param original_len Length of the string before the attempted append.
-/// @param original_cap Capacity (in bytes) before the attempted append.
-/// @param was_inline Whether the builder resided in its inline buffer prior to
-///        the append attempt.
+/// @details Restores the saved logical length/capacity and terminator. If the
+///          operation began inline but promoted to heap, releases that new heap
+///          allocation and reselects the embedded buffer. If it began on the
+///          heap, the current allocation remains owned even if a reserve call
+///          resized it. A null builder is ignored.
+/// @param sb Builder whose append attempt is being rolled back; may be NULL.
+/// @param original_len Saved byte length before the append.
+/// @param original_cap Saved active-buffer capacity before the append.
+/// @param was_inline True when the saved active buffer was embedded storage.
 static void rt_sb_restore_on_overflow(rt_string_builder *sb,
                                       size_t original_len,
                                       size_t original_cap,
@@ -93,12 +95,13 @@ static void rt_sb_restore_on_overflow(rt_string_builder *sb,
     sb->data[sb->len] = '\0';
 }
 
-/// @brief Initialise a builder so it starts with the inline small buffer.
-/// @details Resets length and capacity bookkeeping, points @c data at the inline
-///          storage, and seeds the buffer with a null terminator.  Passing a
-///          null pointer is tolerated as a no-op so callers can unconditionally
-///          initialise arrays of builders.
-/// @param sb Builder instance to prepare.
+/// @brief Initialize @p sb to an empty inline-backed builder.
+/// @details Selects embedded storage, records its complete capacity including
+///          terminator space, and writes the initial NUL. This routine does not
+///          release any heap pointer already stored in @p sb; use
+///          @ref rt_sb_free for an initialized builder. A null pointer is a
+///          no-op.
+/// @param sb Builder storage to initialize; may be NULL.
 void rt_sb_init(rt_string_builder *sb) {
     if (!sb)
         return;
@@ -111,9 +114,9 @@ void rt_sb_init(rt_string_builder *sb) {
 /// @brief Release any heap storage owned by the builder and reset it to empty.
 /// @details Frees the heap buffer when the builder outgrew the inline storage,
 ///          resets bookkeeping fields, and reinstates the inline buffer as the
-///          active storage.  After the call the builder is indistinguishable from
+///          active storage. After the call the builder is indistinguishable from
 ///          a freshly initialised instance.
-/// @param sb Builder instance to tear down; null pointers are ignored.
+/// @param sb Initialized builder to reset; NULL is ignored.
 void rt_sb_free(rt_string_builder *sb) {
     if (!sb)
         return;
@@ -126,14 +129,14 @@ void rt_sb_free(rt_string_builder *sb) {
 }
 
 /// @brief Grow the builder capacity to at least @p new_cap bytes.
-/// @details Allocates or reallocates storage when the requested capacity exceeds
-///          the current capacity.  Inline buffers transition to heap storage via
-///          @c malloc, while existing heap buffers are resized with
-///          @c realloc.  The method preserves the string contents and trailing
-///          null terminator on success.
-/// @param sb Builder to grow.
-/// @param new_cap Desired capacity including space for the terminator.
-/// @return Status code describing the outcome of the operation.
+/// @details Returns immediately if current capacity suffices. Otherwise inline
+///          content is copied into a new allocation, while existing heap
+///          storage is passed to `realloc`. The existing pointer, bytes,
+///          length, and capacity remain usable when allocation fails.
+/// @param sb Initialized builder to grow; may be NULL.
+/// @param new_cap Desired total buffer capacity, including terminator space.
+/// @return @ref RT_SB_OK on success, @ref RT_SB_ERROR_INVALID for null
+///         @p sb, or @ref RT_SB_ERROR_ALLOC when allocation fails.
 static rt_sb_status_t rt_sb_grow(rt_string_builder *sb, size_t new_cap) {
     if (!sb)
         return RT_SB_ERROR_INVALID;
@@ -158,14 +161,14 @@ static rt_sb_status_t rt_sb_grow(rt_string_builder *sb, size_t new_cap) {
 }
 
 /// @brief Ensure the builder can store @p required bytes including the terminator.
-/// @details Rounds the requested capacity up to the next power-of-two style
-///          growth factor, respecting the inline capacity first, before
-///          delegating to @ref rt_sb_grow.  The helper avoids integer overflow by
-///          clamping the capacity increase once @c SIZE_MAX would be exceeded.
-/// @param sb Builder whose storage should be grown on demand.
-/// @param required Minimum number of bytes required (excluding the implicit
-///        null terminator).
-/// @return Status describing success, allocation failure, or overflow.
+/// @details Normalizes requests below the current `len + 1`, then doubles
+///          capacity until the requested total fits. Near `SIZE_MAX`, it uses
+///          the exact request rather than overflowing the growth factor.
+/// @param sb Initialized builder whose storage may grow; may be NULL.
+/// @param required Minimum total capacity in bytes, including room for the
+///        current or future NUL terminator.
+/// @return @ref RT_SB_OK, @ref RT_SB_ERROR_INVALID for a null builder, or the
+///         allocation status from the grow operation.
 rt_sb_status_t rt_sb_reserve(rt_string_builder *sb, size_t required) {
     if (!sb)
         return RT_SB_ERROR_INVALID;
@@ -195,12 +198,14 @@ rt_sb_status_t rt_sb_reserve(rt_string_builder *sb, size_t required) {
 /// @brief Append raw bytes to the builder without performing formatting.
 /// @details Validates arguments, expands the buffer to fit @p len additional
 ///          bytes plus the null terminator, copies the data, and updates the
-///          length bookkeeping.  Overflow checks ensure callers never observe
-///          wrap-around behaviour even when appending enormous strings.
-/// @param sb Builder receiving the bytes.
-/// @param text Pointer to the bytes to append; may be null when @p len is zero.
+///          length bookkeeping. Embedded NULs are preserved. Because copying
+///          uses `memcpy` and reserve may relocate storage, @p text must not
+///          overlap the builder's active buffer.
+/// @param sb Initialized destination builder; may be NULL.
+/// @param text Borrowed bytes to append; may be NULL only when @p len is zero.
 /// @param len Number of bytes to copy from @p text.
-/// @return Status code describing success, allocation failure, or invalid input.
+/// @return @ref RT_SB_OK, or an invalid, overflow, or allocation status. A
+///         zero-length append succeeds without inspecting @p text.
 rt_sb_status_t rt_sb_append_bytes(rt_string_builder *sb, const char *text, size_t len) {
     if (!sb || (!text && len > 0))
         return RT_SB_ERROR_INVALID;
@@ -221,13 +226,13 @@ rt_sb_status_t rt_sb_append_bytes(rt_string_builder *sb, const char *text, size_
 }
 
 /// @brief Append a null-terminated C string to the builder.
-/// @details Rejects null pointers and otherwise forwards to
-///          @ref rt_sb_append_bytes after computing the string length with
-///          @ref strlen.  The helper exists so callers do not need to manually
-///          compute lengths for common cases.
-/// @param sb Destination builder.
-/// @param text Null-terminated UTF-8 string to append.
-/// @return Status code indicating success or the error that occurred.
+/// @details Rejects a null source and otherwise measures through the first NUL
+///          before forwarding to @ref rt_sb_append_bytes. The bytes need not be
+///          valid UTF-8. The source must obey that function's non-aliasing rule.
+/// @param sb Initialized destination builder; may be NULL.
+/// @param text Borrowed NUL-terminated byte string; may be NULL.
+/// @return @ref RT_SB_ERROR_INVALID for null input, otherwise the raw-byte
+///         append status.
 rt_sb_status_t rt_sb_append_cstr(rt_string_builder *sb, const char *text) {
     if (!text)
         return RT_SB_ERROR_INVALID;
@@ -235,14 +240,13 @@ rt_sb_status_t rt_sb_append_cstr(rt_string_builder *sb, const char *text) {
 }
 
 /// @brief Append the decimal representation of a signed 64-bit integer.
-/// @details Ensures enough capacity for a typical 64-bit integer string, grows
-///          the buffer if necessary, formats the integer via
-///          @ref rt_i64_to_cstr, and updates the builder length.  Overflow and
-///          formatting failures are reported via explicit status codes so the
-///          caller can trap or recover.
-/// @param sb Destination builder.
-/// @param value Integer to append in base 10.
-/// @return Status describing whether the append succeeded.
+/// @details Reserves a fixed 32-byte allowance, writes locale-independent
+///          base-10 text directly into the unused buffer, and advances the
+///          logical length by the formatter's reported byte count.
+/// @param sb Initialized destination builder; may be NULL.
+/// @param value Signed value to format.
+/// @return @ref RT_SB_OK or an invalid, overflow, allocation, or formatting
+///         status.
 rt_sb_status_t rt_sb_append_int(rt_string_builder *sb, int64_t value) {
     if (!sb)
         return RT_SB_ERROR_INVALID;
@@ -268,14 +272,13 @@ rt_sb_status_t rt_sb_append_int(rt_string_builder *sb, int64_t value) {
 }
 
 /// @brief Append a floating-point value formatted with BASIC semantics.
-/// @details Reserves additional space, captures the builder's previous state in
-///          case the formatted output exceeds the buffer, invokes
-///          @ref rt_format_f64, and rolls back to the original state on overflow.
-///          Successful calls leave the buffer null-terminated with the appended
-///          text at the end.
-/// @param sb Destination builder.
-/// @param value Floating-point value to append.
-/// @return Status describing whether the append succeeded.
+/// @details Reserves a 64-byte allowance and invokes @ref rt_format_f64 in the
+///          unused tail. The original logical state is restored if the
+///          resulting length would exceed available capacity. Formatting
+///          follows the runtime's locale-independent finite/non-finite rules.
+/// @param sb Initialized destination builder; may be NULL.
+/// @param value Double-precision value to format.
+/// @return @ref RT_SB_OK or an invalid, overflow, or allocation status.
 rt_sb_status_t rt_sb_append_double(rt_string_builder *sb, double value) {
     if (!sb)
         return RT_SB_ERROR_INVALID;
@@ -312,14 +315,15 @@ rt_sb_status_t rt_sb_append_double(rt_string_builder *sb, double value) {
 }
 
 /// @brief Append formatted text using @c vsnprintf semantics.
-/// @details Repeatedly attempts to render the formatted text into the available
-///          space, expanding the builder whenever @c vsnprintf reports that the
-///          buffer was insufficient.  Formatting failures or allocation issues
-///          result in descriptive status codes so callers can handle the error.
-/// @param sb Destination builder.
-/// @param fmt printf-style format string.
-/// @param args Variadic argument list to render.
-/// @return Status describing whether the formatted append succeeded.
+/// @details Repeats `vsnprintf` with a fresh copy of @p args, reserving either
+///          doubled capacity or the exact reported requirement after
+///          truncation. Formatting follows the active C locale and appends
+///          through the first generated NUL.
+/// @param sb Initialized destination builder; may be NULL.
+/// @param fmt Borrowed printf format string; may be NULL.
+/// @param args Variadic values matching @p fmt; copied but not ended here.
+/// @return @ref RT_SB_OK or an invalid, formatting, overflow, or allocation
+///         status.
 static rt_sb_status_t rt_sb_vprintf_internal(rt_string_builder *sb, const char *fmt, va_list args) {
     if (!sb || !fmt)
         return RT_SB_ERROR_INVALID;
@@ -367,14 +371,14 @@ static rt_sb_status_t rt_sb_vprintf_internal(rt_string_builder *sb, const char *
     }
 }
 
-/// @brief Variadic convenience wrapper around @ref rt_sb_vprintf_internal.
-/// @details Initializes a @c va_list, forwards it to the internal formatting
-///          helper, and then tears down the variadic state before returning the
-///          resulting status code.
-/// @param sb Destination builder to append to.
-/// @param fmt printf-style format string.
+/// @brief Append printf-formatted bytes to @p sb.
+/// @details Initializes and closes a `va_list` around
+///          @ref rt_sb_vprintf_internal. The active C locale and platform
+///          `vsnprintf` implementation determine conversion details.
+/// @param sb Initialized destination builder; may be NULL.
+/// @param fmt Borrowed printf format string; may be NULL.
 /// @param ... Variadic arguments consumed by @p fmt.
-/// @return Status from the underlying formatting routine.
+/// @return Status from @ref rt_sb_vprintf_internal.
 rt_sb_status_t rt_sb_printf(rt_string_builder *sb, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -391,16 +395,21 @@ rt_sb_status_t rt_sb_printf(rt_string_builder *sb, const char *fmt, ...) {
 
 #include <assert.h>
 
-// StringBuilder object layout (must match rt_sb_bridge.c)
+/// @brief Native storage layout embedded in a Zanna.Text.StringBuilder object.
+/// @details The vtable pointer precedes builder state; normal C layout and
+///          alignment rules determine the exact platform-specific offset.
 typedef struct {
     void *vptr;                // vtable pointer (8 bytes)
     rt_string_builder builder; // embedded builder state
 } StringBuilder;
 
-/// @brief Extract the embedded rt_string_builder from an opaque StringBuilder object.
-/// @details The StringBuilder object stores a vptr at offset 0 followed by an
-///          inlined rt_string_builder struct. This helper validates non-null and
-///          returns a pointer to the embedded builder for use by bridge functions.
+/// @brief Extract mutable builder state from an opaque StringBuilder receiver.
+/// @details A null receiver raises an invalid-operation trap. If its handler
+///          returns, this helper returns NULL so bridge methods can use their
+///          documented fallback.
+/// @param sb Borrowed opaque pointer to a @ref StringBuilder object.
+/// @return Borrowed pointer to embedded builder state, or `NULL` after a
+///         returning null-receiver trap.
 static rt_string_builder *get_builder(void *sb) {
     if (!sb) {
         rt_trap_raise_kind(RT_TRAP_KIND_INVALID_OPERATION,
@@ -416,12 +425,11 @@ static rt_string_builder *get_builder(void *sb) {
 }
 
 /// @brief Translate an `rt_sb_status_t` into the matching runtime trap kind.
-/// @details Centralises the status→trap mapping so every public StringBuilder method that
-///          accepts a fallible operation can route through one helper. `RT_SB_OK` is a
-///          no-op; allocation failure traps with `RUNTIME_ERROR`/`Err_RuntimeError`;
-///          arithmetic/bounds overflow traps with `OVERFLOW`/`Err_Overflow`; invalid
-///          arguments and the catch-all path land on `INVALID_ARG` so call sites read
-///          like a single `rt_text_sb_trap_status(op, fn(...));` line.
+/// @details Success is a no-op. Allocation maps to runtime error, overflow to
+///          overflow, and invalid/format/unknown statuses to invalid operation.
+///          This function returns only if the selected trap hook returns.
+/// @param op Borrowed diagnostic message passed to the trap subsystem.
+/// @param status Builder status to translate.
 static void rt_text_sb_trap_status(const char *op, rt_sb_status_t status) {
     switch (status) {
         case RT_SB_OK:
@@ -441,8 +449,12 @@ static void rt_text_sb_trap_status(const char *op, rt_sb_status_t status) {
 }
 
 /// @brief Return the current content length of the embedded builder in bytes.
-/// @details Exposes StringBuilder.Length to the runtime dispatch layer. A null
-///          receiver traps through get_builder, matching other instance methods.
+/// @details A null receiver traps and falls back to zero. Values beyond
+///          `INT64_MAX` raise overflow and return the saturated maximum if the
+///          trap handler returns.
+/// @param sb Borrowed opaque StringBuilder receiver.
+/// @return Stored byte length, zero after a null-receiver trap, or
+///         `INT64_MAX` after a returning overflow trap.
 int64_t rt_text_sb_get_length(void *sb) {
     rt_string_builder *builder = get_builder(sb);
     if (!builder)
@@ -458,8 +470,12 @@ int64_t rt_text_sb_get_length(void *sb) {
 }
 
 /// @brief Return the current allocated capacity of the embedded builder in bytes.
-/// @details Exposes StringBuilder.Capacity for diagnostics and tests. Capacity
-///          includes space for the null terminator. A null receiver traps.
+/// @details Capacity includes terminator space. A null receiver traps and
+///          falls back to zero. Values beyond `INT64_MAX` raise overflow and
+///          return the saturated maximum if the hook returns.
+/// @param sb Borrowed opaque StringBuilder receiver.
+/// @return Total active-buffer capacity, zero after a null-receiver trap, or
+///         `INT64_MAX` after a returning overflow trap.
 int64_t rt_text_sb_get_capacity(void *sb) {
     rt_string_builder *builder = get_builder(sb);
     if (!builder)
@@ -475,9 +491,13 @@ int64_t rt_text_sb_get_capacity(void *sb) {
 }
 
 /// @brief Append the bytes of a runtime string to the embedded builder.
-/// @details Reserves space for the incoming bytes, copies them directly into
-///          the buffer, and returns the receiver for fluent method chaining.
-///          Null strings are treated as empty (no bytes appended).
+/// @details Borrows @p s, preserves its stored bytes including embedded NULs,
+///          and treats NULL as an empty append. A null receiver or failed append
+///          traps; if its hook returns, the original receiver is still returned
+///          for fluent chaining.
+/// @param sb Borrowed opaque StringBuilder receiver.
+/// @param s Borrowed runtime string; may be NULL.
+/// @return The original @p sb pointer.
 void *rt_text_sb_append(void *sb, rt_string s) {
     rt_string_builder *builder = get_builder(sb);
     if (!builder)
@@ -505,9 +525,13 @@ void *rt_text_sb_append(void *sb, rt_string s) {
 }
 
 /// @brief Append @p s and then a single '\n' newline character.
-/// @details Treats a NULL @p s as empty, but still appends the newline. Uses a single LF byte
-///          regardless of platform (no CRLF translation). Returns the receiver for fluent
-///          chaining.
+/// @details Treats NULL @p s as empty but still appends one LF byte without
+///          platform newline translation. Size arithmetic and reserve failures
+///          trap before content is copied. A returning trap preserves fluent
+///          receiver return semantics.
+/// @param sb Borrowed opaque StringBuilder receiver.
+/// @param s Borrowed runtime string; may be NULL.
+/// @return The original @p sb pointer.
 void *rt_text_sb_append_line(void *sb, rt_string s) {
     rt_string_builder *builder = get_builder(sb);
     if (!builder)
@@ -559,9 +583,12 @@ void *rt_text_sb_append_line(void *sb, rt_string s) {
 }
 
 /// @brief Materialise the builder contents as a new immutable runtime string.
-/// @details Allocates an rt_string and copies the builder's current bytes into
-///          it. Zero-length content yields the canonical empty string, not NULL.
-///          The builder's state is unchanged (callers can continue appending).
+/// @details Copies all stored bytes, including embedded NULs, without changing
+///          builder state. Empty content returns the shared empty singleton. A
+///          null receiver traps and uses the same empty fallback.
+/// @param sb Borrowed opaque StringBuilder receiver.
+/// @return Owned immutable snapshot or empty singleton, or `NULL` if string
+///         allocation or empty-singleton initialization fails.
 rt_string rt_text_sb_to_string(void *sb) {
     rt_string_builder *builder = get_builder(sb);
     if (!builder)
@@ -577,8 +604,10 @@ rt_string rt_text_sb_to_string(void *sb) {
 }
 
 /// @brief Reset the builder contents to empty while preserving capacity.
-/// @details Sets the length to zero and null-terminates the buffer so the
-///          builder can be reused without freeing and re-allocating storage.
+/// @details Writes a terminator at byte zero and retains the current inline or
+///          heap allocation for reuse. A null receiver traps and performs no
+///          mutation if the handler returns.
+/// @param sb Borrowed opaque StringBuilder receiver.
 void rt_text_sb_clear(void *sb) {
     rt_string_builder *builder = get_builder(sb);
     if (!builder)

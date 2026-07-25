@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_countdown.c
+/// @file
+/// @brief Implements the GC-managed monotonic Countdown timer.
+///
 // Purpose: Implements the Countdown timer class for the Zanna runtime.
 //          A countdown tracks elapsed time against a fixed target interval and
 //          exposes HasExpired/Remaining/Reset semantics for timeouts, cooldowns,
@@ -87,6 +90,10 @@ typedef struct {
 /// @details Used by the countdown deadline math so a malformed timer setup can be reported
 ///          via `rt_trap_ovf()` instead of silently wrapping. The check is performed
 ///          *before* the add to avoid signed-overflow UB.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Receives the sum when representable.
+/// @return One on overflow; zero after writing the exact sum.
 static int countdown_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
         return 1;
@@ -95,6 +102,10 @@ static int countdown_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
 }
 
 /// @brief Overflow-checked signed 64-bit subtraction. Returns 1 on overflow, 0 on success.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @param out Receives the difference when representable.
+/// @return One on overflow; zero after writing the exact difference.
 static int countdown_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b))
         return 1;
@@ -106,6 +117,10 @@ static int countdown_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
 /// @details Uses `__builtin_mul_overflow` on GCC/Clang and a manual divide-bound check on
 ///          MSVC. Returns 1 on overflow without writing @p out, 0 on success after writing
 ///          the product to @p out.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @param out Receives the product when representable.
+/// @return One on overflow; zero after writing the exact product.
 static int countdown_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_mul_overflow(a, b, out);
@@ -138,7 +153,10 @@ static int countdown_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 /// @details `GetTickCount64` returns a `ULONGLONG`; clamp at `INT64_MAX` since the rest
 ///          of the countdown machinery uses signed 64-bit math and would interpret
 ///          high values as negative.
+/// @return Milliseconds since Windows boot, or zero after an overflow trap.
 #if defined(_WIN32)
+/// @brief Reads the Windows monotonic tick count as a signed millisecond value.
+/// @return Milliseconds since boot, or zero after raising an overflow trap.
 static int64_t countdown_tick_count_ms(void) {
     ULONGLONG ticks = GetTickCount64();
     if (ticks > (ULONGLONG)INT64_MAX) {
@@ -156,6 +174,8 @@ static int64_t countdown_tick_count_ms(void) {
 ///          rt_obj_is_instance so a null receiver *or* an unrelated object (e.g. a
 ///          Seq passed to the static compatibility form) traps instead of being
 ///          reinterpreted as a Countdown payload (VDOC-229).
+/// @param obj Opaque runtime receiver to validate.
+/// @return Validated Countdown payload, or `NULL` after raising a trap.
 static ZannaCountdown *require_countdown(void *obj) {
     if (!rt_obj_is_instance(obj, RT_COUNTDOWN_CLASS_ID, sizeof(ZannaCountdown))) {
         rt_trap("Countdown: invalid receiver");
@@ -168,7 +188,12 @@ static ZannaCountdown *require_countdown(void *obj) {
 /// @details Multiplies `tv_sec * 1000` through `countdown_checked_mul_i64` and adds
 ///          `tv_nsec / 1000000` through `countdown_checked_add_i64` so an absurdly large
 ///          timespec can't silently wrap.
+/// @param ts Seconds/nanoseconds timestamp to convert, truncating sub-milliseconds.
+/// @return Millisecond timestamp, or zero after an overflow trap.
 #if !defined(_WIN32)
+/// @brief Converts a POSIX timestamp to signed milliseconds with overflow checks.
+/// @param ts Seconds/nanoseconds timestamp to convert.
+/// @return Truncated millisecond value, or zero after raising an overflow trap.
 static int64_t countdown_timespec_to_ms(struct timespec ts) {
     int64_t seconds_ms;
     int64_t result;
@@ -181,8 +206,11 @@ static int64_t countdown_timespec_to_ms(struct timespec ts) {
 }
 #endif
 
-/// @brief Get current timestamp in milliseconds from monotonic clock.
-/// @return Milliseconds since unspecified epoch.
+/// @brief Gets a nondecreasing platform timestamp in milliseconds.
+/// @return Milliseconds since an unspecified platform epoch.
+/// @details Uses QPC with `GetTickCount64` fallback on Windows, `CLOCK_MONOTONIC`
+///          on POSIX, or an atomically ratcheted `CLOCK_REALTIME` fallback.
+///          Clock unavailability and arithmetic overflow raise traps.
 static int64_t get_timestamp_ms(void) {
 #if defined(_WIN32)
     // QPC frequency is constant; cache it through an atomic slot so concurrent
@@ -231,6 +259,8 @@ static int64_t get_timestamp_ms(void) {
 /// @brief Internal helper to get total elapsed milliseconds.
 /// @param cd Countdown pointer.
 /// @return Total elapsed milliseconds including current interval if running.
+/// @note Raises an overflow trap if timestamp subtraction or accumulation
+///       cannot be represented by `int64_t`.
 static int64_t countdown_get_elapsed_ms(ZannaCountdown *cd) {
     int64_t total = cd->accumulated_ms;
 
@@ -248,6 +278,8 @@ static int64_t countdown_get_elapsed_ms(ZannaCountdown *cd) {
 
 /// @brief Sleep for the specified number of milliseconds.
 /// @param ms Duration to sleep.
+/// @note Nonpositive durations return immediately; positive durations delegate
+///       to the platform clock sleep adapter.
 static void sleep_ms(int64_t ms) {
     if (ms <= 0)
         return;
@@ -280,8 +312,8 @@ static void sleep_ms(int64_t ms) {
 /// Print "Time's up!"
 /// ```
 ///
-/// @param interval_ms The countdown interval in milliseconds. If <= 0, the
-///                    countdown will be expired immediately upon starting.
+/// @param interval_ms The countdown interval in milliseconds. Values <= 0 are
+///                    normalized to zero and are expired immediately, even stopped.
 ///
 /// @return A new Countdown object in stopped state. Traps on allocation failure.
 ///
@@ -406,7 +438,8 @@ void rt_countdown_stop(void *obj) {
 /// @param obj Pointer to a Countdown object.
 ///
 /// @note O(1) time complexity.
-/// @note After reset: Elapsed = 0, Remaining = Interval, Expired = false
+/// @note After reset: Elapsed = 0 and Remaining = Interval. Expired is false
+///       only when the retained interval is positive.
 ///
 /// @see rt_countdown_start For starting after reset
 /// @see rt_countdown_set_interval For changing the interval
@@ -641,6 +674,8 @@ int8_t rt_countdown_is_running(void *obj) {
 /// @note Blocks the calling thread.
 /// @note Automatically starts the countdown if not running.
 /// @note Returns immediately if already expired.
+/// @note Spurious/short platform sleeps are tolerated because Remaining is
+///       recomputed until the monotonic deadline has actually been reached.
 ///
 /// @see rt_countdown_remaining For non-blocking time checks
 /// @see rt_countdown_expired For non-blocking expiration checks

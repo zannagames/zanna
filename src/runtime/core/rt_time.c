@@ -6,10 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_time.c
-// Purpose: Provides portable cross-platform timing utilities for the Zanna
-//          runtime. Implements millisecond-precision sleep (rt_sleep_ms) and
-//          a high-resolution monotonic tick counter (rt_get_tick_count_ms)
-//          that powers BASIC SLEEP statements, TIMER functions, and game loops.
+// Purpose: Implements cross-platform sleeping, millisecond/microsecond elapsed
+// clocks, overflow-safe clock scaling, fallback monotonic ratcheting, and the
+// Zanna.Time.Clock 64-bit wrappers.
 //
 // Key invariants:
 //   - Sleep uses nanosleep() on POSIX and Sleep() on Windows; nanosleep is
@@ -20,19 +19,21 @@
 //     so the exposed sequence stays non-decreasing even if wall-clock time is
 //     adjusted backward (VDOC-223). The monotonic fast path holds no shared state.
 //   - Negative sleep durations are treated as 0 (no-op).
-//   - All functions are thread-safe; each call is independent with no shared
-//     mutable state.
+//   - Public operations are thread-safe. POSIX realtime fallbacks share
+//     per-resolution atomic floor values; monotonic fast paths are stateless.
 //
 // Ownership/Lifetime:
 //   - All functions operate on scalar integer values; no heap allocation is
 //     performed.
-//   - No state is retained between calls.
+//   - Only atomic fallback floors and platform clock state persist across calls.
 //
 // Links: src/runtime/core/rt_stopwatch.c (high-level Stopwatch class),
 //        src/runtime/core/rt_countdown.c (Countdown timer class),
 //        src/runtime/core/rt_datetime.c (wall-clock date/time operations)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Portable sleeping, elapsed clocks, and monotonic fallback helpers.
 
 #include "zanna/runtime/rt.h"
 
@@ -41,7 +42,11 @@
 #include <limits.h>
 #include <stdint.h>
 
-/// @brief Overflow-checked signed 64-bit addition. Returns 1 on overflow.
+/// @brief Add two signed 64-bit values with explicit overflow detection.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Required output receiving the sum only on success.
+/// @return One on overflow; zero after storing the exact sum.
 static int rt_time_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
         return 1;
@@ -52,6 +57,10 @@ static int rt_time_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
 /// @brief Overflow-checked signed 64-bit multiplication. Returns 1 on overflow.
 /// @details Uses `__builtin_mul_overflow` on GCC/Clang and a manual divide-bound
 ///          check on MSVC.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @param out Required output receiving the product only on success.
+/// @return One on overflow; zero after storing the exact product.
 static int rt_time_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_mul_overflow(a, b, out);
@@ -85,6 +94,10 @@ static int rt_time_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 ///          value at a given resolution (e.g. `(s, ns/1e6) → ms` uses `scale = 1000`).
 ///          Either the multiply or the add overflowing surfaces the trap rather than
 ///          silently wrapping.
+/// @param seconds Whole-second component.
+/// @param scale Output units per second.
+/// @param fraction Already-scaled subsecond component.
+/// @return Combined signed value, or zero after a returning overflow trap.
 static int64_t rt_time_scale_seconds(int64_t seconds, int64_t scale, int64_t fraction) {
     int64_t whole;
     int64_t result;
@@ -109,6 +122,8 @@ static int64_t rt_time_scale_seconds(int64_t seconds, int64_t scale, int64_t fra
 /// @param floor Process-local monotonic floor for this scale/call site.
 /// @param candidate Freshly sampled fallback value.
 /// @return The greater of the candidate and the retained floor.
+/// @pre @p floor is non-null, suitably aligned, and remains live for concurrent
+///      atomic access.
 int64_t rt_time_monotonic_ratchet(int64_t *floor, int64_t candidate) {
     int64_t prev = __atomic_load_n(floor, __ATOMIC_RELAXED);
     while (candidate > prev) {
@@ -127,6 +142,8 @@ int64_t rt_time_monotonic_ratchet(int64_t *floor, int64_t candidate) {
 /// @details Used to clip Win32 `GetTickCount64`/`QueryPerformanceCounter` returns into
 ///          the signed 64-bit range that the rest of the time machinery uses. Long-uptime
 ///          systems can produce values beyond `INT64_MAX` after many years of uptime.
+/// @param value Unsigned platform counter value.
+/// @return Exact signed representation, or zero after a returning overflow trap.
 static int64_t rt_time_u64_to_i64(uint64_t value) {
     if (value > (uint64_t)INT64_MAX) {
         rt_trap_ovf();

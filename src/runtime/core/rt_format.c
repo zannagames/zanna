@@ -43,6 +43,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements C-locale floating-point and CSV string formatting.
+
 #include "rt_format.h"
 #include "rt_internal.h"
 
@@ -64,6 +67,12 @@
 ///          deterministic decimal points regardless of the process's `LC_NUMERIC` setting.
 ///          Returns the number of bytes that would have been written (per `vsnprintf`
 ///          semantics), or -1 on locale-acquisition failure.
+/// @param buffer Destination storage accepted by the platform formatter.
+/// @param capacity Size of @p buffer in bytes.
+/// @param fmt Non-NULL `printf`-style format string.
+/// @param args Initialized argument list matching @p fmt.
+/// @return Result reported by the platform locale-aware formatter, or -1 when
+///   a C numeric locale cannot be installed.
 static int rt_format_vsnprintf_c_locale(char *buffer,
                                         size_t capacity,
                                         const char *fmt,
@@ -102,6 +111,12 @@ static int rt_format_vsnprintf_c_locale(char *buffer,
 }
 
 /// @brief Variadic wrapper around `rt_format_vsnprintf_c_locale`.
+/// @details Creates and finalizes the argument list while preserving the
+///   underlying formatter's return convention.
+/// @param buffer Destination storage accepted by the platform formatter.
+/// @param capacity Size of @p buffer in bytes.
+/// @param fmt Non-NULL `printf`-style format string followed by matching arguments.
+/// @return Result reported by @ref rt_format_vsnprintf_c_locale.
 int rt_format_snprintf_c_locale(char *buffer, size_t capacity, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -111,6 +126,13 @@ int rt_format_snprintf_c_locale(char *buffer, size_t capacity, const char *fmt, 
 }
 
 /// @brief Parse a formatter candidate under the C numeric locale.
+/// @details Requires the complete NUL-terminated input to be consumed. Locale
+///   creation or switching failure, invalid trailing text, and invalid
+///   arguments are reported uniformly as failure.
+/// @param text Non-NULL NUL-terminated candidate representation.
+/// @param out Non-NULL destination receiving the parsed value on success.
+/// @return 1 when the entire candidate parses, otherwise 0; @p out is changed
+///   only on success.
 static int rt_format_strtod_c_locale(const char *text, double *out) {
     if (!text || !out)
         return 0;
@@ -141,6 +163,12 @@ static int rt_format_strtod_c_locale(const char *text, double *out) {
 }
 
 /// @brief Compare two doubles by exact IEEE-754 representation.
+/// @details Copies both values into unsigned integers so the comparison
+///   distinguishes signed zero and preserves NaN payload distinctions without
+///   violating strict aliasing.
+/// @param a First double to compare.
+/// @param b Second double to compare.
+/// @return 1 when all 64 representation bits match, otherwise 0.
 static int rt_format_f64_bits_equal(double a, double b) {
     uint64_t aa = 0;
     uint64_t bb = 0;
@@ -156,6 +184,8 @@ static int rt_format_f64_bits_equal(double a, double b) {
 /// @param text Null-terminated string to write.
 /// @param buffer Destination buffer supplied by the caller.
 /// @param capacity Size of the destination buffer in bytes.
+/// @note Invalid or undersized destinations raise a trap. If trap dispatch
+///   returns after truncation, the destination is set to an empty C string.
 static void rt_format_write(const char *text, char *buffer, size_t capacity) {
     if (!buffer || capacity == 0) {
         rt_trap("rt_format_f64: invalid buffer");
@@ -203,6 +233,8 @@ static int rt_format_f64_write_special(double value, char *buffer, size_t capaci
 /// @param value Floating-point value to format.
 /// @param buffer Destination buffer supplied by the caller.
 /// @param capacity Size of the destination buffer in bytes.
+/// @note Invalid buffers and formatting failures raise a trap. When dispatch
+///   returns and a writable destination exists, the buffer is cleared.
 void rt_format_f64(double value, char *buffer, size_t capacity) {
     if (!buffer || capacity == 0) {
         rt_trap("rt_format_f64: invalid buffer");
@@ -254,6 +286,8 @@ static int rt_format_should_replace_roundtrip(const char *candidate, const char 
 /// @param value Floating-point value to format.
 /// @param buffer Destination buffer supplied by the caller.
 /// @param capacity Size of the destination buffer in bytes.
+/// @note Invalid buffers and formatting failures raise a trap. When dispatch
+///   returns and a writable destination exists, the buffer is cleared.
 void rt_format_f64_roundtrip(double value, char *buffer, size_t capacity) {
     if (!buffer || capacity == 0) {
         rt_trap("rt_format_f64_roundtrip: invalid buffer");
@@ -298,7 +332,8 @@ void rt_format_f64_roundtrip(double value, char *buffer, size_t capacity) {
 ///          @ref rt_string that owns the allocated buffer.  The function traps
 ///          on allocation failure to match runtime expectations.
 /// @param value Runtime string handle to quote. May be null for an empty string.
-/// @return A newly allocated runtime string containing the CSV-safe text.
+/// @return Caller-owned runtime string containing the CSV-safe text. If an
+///   error trap returns locally, an owned empty string is returned.
 rt_string rt_csv_quote_alloc(rt_string value) {
     const char *data = "";
     size_t len = 0;

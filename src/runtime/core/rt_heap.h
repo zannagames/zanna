@@ -26,14 +26,25 @@
 // src/runtime/arrays/rt_array.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares the registered reference-counted heap and metadata layout.
+/// @details Every live payload is preceded by @ref rt_heap_hdr_t and recorded
+///   in a synchronized registry used to reject stale or foreign pointers.
+
 #pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 
 /// @brief Optional callback invoked before freeing a heap payload.
-/// @details Finalizers run only for RT_HEAP_OBJECT payloads when their reference count reaches
-///          zero and the owning code calls the corresponding free routine (e.g., rt_obj_free).
+/// @details Finalizers are attached only to `RT_HEAP_OBJECT` payloads. Object
+///   release and cycle collection invoke them before reclamation, while the
+///   global shutdown sweep may invoke a still-live object's finalizer early to
+///   release native resources. Each lifecycle path detaches the callback to
+///   preserve at-most-once execution.
+/// @param payload Borrowed object payload whose header remains available for
+///   the duration of the callback.
 typedef void (*rt_heap_finalizer_t)(void *payload);
 
 /// @brief Heap object kind tag.
@@ -116,15 +127,19 @@ extern "C" {
 ///          semantics. Allocates a contiguous block consisting of an rt_heap_hdr_t
 ///          followed by a payload region sized for @p init_cap elements of
 ///          @p elem_size. Initializes header fields (magic/kind/elem_kind/refcnt/
-///          len/cap) and returns a pointer to the payload.
+///          len/cap), registers the payload, and automatically registers
+///          object- and box-reference arrays for cycle collection. When
+///          @p init_cap is smaller than @p init_len, capacity is raised to the
+///          requested length. Small strings may use the slab pool.
 /// @param kind       Logical heap object kind (string/array/object).
 /// @param elem_kind  Element type tag for arrays (RT_ELEM_*); RT_ELEM_NONE for others.
 /// @param elem_size  Size in bytes of one logical element in the payload.
 /// @param init_len   Initial logical length; must be <= init_cap.
 /// @param init_cap   Initial capacity in elements; 0 permitted (no payload).
-/// @return Payload pointer on success; NULL on allocation failure or invalid params.
-/// @pre init_len <= init_cap.
-/// @post refcnt == 1; len == init_len; cap == init_cap.
+/// @return Caller-owned payload pointer on success; NULL on invalid sizing,
+///   allocation, registry, or reference-array tracking failure. Shutdown-handler
+///   registration failure traps and returns NULL if dispatch continues.
+/// @post refcnt == 1; len == init_len; cap == max(init_cap, init_len).
 void *rt_heap_alloc(rt_heap_kind_t kind,
                     rt_elem_kind_t elem_kind,
                     size_t elem_size,
@@ -133,9 +148,10 @@ void *rt_heap_alloc(rt_heap_kind_t kind,
 
 /// @brief Increment the reference count of a heap payload.
 /// @details Shares ownership of a heap object safely across callers.
-///          No-op when @p payload is NULL.
+///          NULL and immortal payloads are no-ops. Invalid, already-zero, or
+///          overflowing mortal payloads raise a runtime trap.
 /// @param payload Payload pointer previously returned by rt_heap_alloc (may be NULL).
-/// @post refcnt is increased by 1 when payload != NULL.
+/// @post A live mortal refcount below the maximum is increased by one.
 void rt_heap_retain(void *payload);
 
 /// @brief Try to retain a live heap payload without trapping.
@@ -143,29 +159,35 @@ void rt_heap_retain(void *payload);
 ///          immortal and therefore was not retained, 0 when the pointer is
 ///          invalid/freed or its refcount is already zero, and -1 when
 ///          retaining would overflow the mortal refcount range.
+/// @param payload Exact borrowed payload address, or NULL.
+/// @return Status code 1, 2, 0, or -1 as described; this helper never traps for
+///   pointer validity or refcount state.
 int32_t rt_heap_try_retain_live(void *payload);
 
 /// @brief Decrement the reference count, freeing the object when it reaches zero.
 /// @details Releases ownership of a heap object. When the reference count drops
 ///          to zero, registered weak observers are cleared before the header and
-///          payload memory are freed.
+///          payload memory are freed. Invalid pointers, double release, and
+///          attempts to release an immortal count raise a runtime trap.
 /// @param payload Payload pointer or NULL (NULL is ignored).
 /// @return New reference count after decrement (0 when freed).
 size_t rt_heap_release(void *payload);
 
 /// @brief Decrement the reference count without immediate free.
 /// @details Allows batched cleanup in contexts where immediate free is unsafe
-///          (e.g., re-entrant callbacks) or to avoid deep recursive frees. The
-///          payload is recorded for deferred reclamation by a later sweep.
+///          (e.g., re-entrant callbacks) or to avoid deep recursive frees. This
+///          function does not queue the allocation: when it returns zero, the
+///          caller must complete element/finalizer cleanup and explicitly call
+///          @ref rt_heap_free_zero_ref.
 /// @param payload Payload pointer or NULL (NULL is ignored).
 /// @return New reference count after decrement.
-/// @remarks Call rt_heap_free_zero_ref() later to reclaim memory.
 size_t rt_heap_release_deferred(void *payload);
 
 /// @brief Free a payload whose reference count is already zero.
 /// @details Provides an explicit free entry point after deferred release or
 ///          external handoff. Clears registered weak observers before reclaiming
-///          storage and validates zero refcnt in debug builds.
+///          storage. A live nonzero count leaves the payload unchanged; an
+///          invalid non-NULL pointer raises a runtime trap.
 /// @param payload Payload pointer with refcnt == 0; NULL is ignored.
 /// @pre refcnt == 0 (prior rt_heap_release_deferred or external setting).
 void rt_heap_free_zero_ref(void *payload);
@@ -183,7 +205,8 @@ int8_t rt_heap_is_payload(void *payload);
 ///          ownership interval. Borrowed/untrusted readers should use
 ///          @ref rt_heap_get_info instead.
 /// @param payload Candidate payload pointer.
-/// @param out_hdr Receives the header on success; set to NULL on failure.
+/// @param out_hdr Optional destination receiving the header on success and
+///   cleared on failure.
 /// @return 1 when @p payload is valid, 0 otherwise.
 int8_t rt_heap_try_get_header(void *payload, rt_heap_hdr_t **out_hdr);
 
@@ -214,11 +237,12 @@ int8_t rt_heap_get_info(const void *payload, rt_heap_info_t *out_info);
 int8_t rt_heap_contains_range(const void *ptr, size_t bytes);
 
 /// @brief Retrieve the header from a payload pointer.
-/// @details Computes the header address by subtracting sizeof(rt_heap_hdr_t)
-///          from the payload pointer. Used to access metadata (len, cap,
-///          refcnt, kind) associated with the payload.
+/// @details Validates exact registry membership before exposing the borrowed
+///   header. The caller must already pin the payload against concurrent final
+///   release while using the returned pointer.
 /// @param payload Payload pointer as returned by allocation APIs.
-/// @return Pointer to the associated rt_heap_hdr_t.
+/// @return Pointer to the associated header, or NULL for a NULL payload.
+/// @warning Invalid non-NULL payloads raise a runtime trap.
 rt_heap_hdr_t *rt_heap_hdr(void *payload);
 
 /// @brief Resize a heap payload while preserving runtime metadata.
@@ -227,7 +251,9 @@ rt_heap_hdr_t *rt_heap_hdr(void *payload);
 ///          allocation registry in sync when the payload moves. The primitive
 ///          validates that the payload has exactly one live owner; shared or
 ///          immortal allocations trap and remain unchanged so a missed
-///          copy-on-write check cannot invalidate aliases.
+///          copy-on-write check cannot invalidate aliases. @p new_cap is raised
+///          to @p new_len when necessary. The old pointer is invalid after a
+///          successful move, and cycle/weak bookkeeping follows the replacement.
 /// @param payload Existing heap payload pointer.
 /// @param elem_size Element size in bytes for the payload.
 /// @param new_len New logical length.
@@ -238,26 +264,30 @@ void *rt_heap_realloc(void *payload, size_t elem_size, size_t new_len, size_t ne
 
 /// @brief Retrieve the payload address from a header pointer.
 /// @details Returns a pointer immediately after the header structure.
-///          Converts between header and payload views when manipulating metadata.
+///          Converts between header and payload views when manipulating
+///          metadata. Invalid non-NULL headers raise a runtime trap.
 /// @param h Header pointer from rt_heap_hdr().
 /// @return Payload pointer.
 void *rt_heap_data(rt_heap_hdr_t *h);
 
 /// @brief Read the current logical length from the header.
-/// @details Returns header->len for the given payload.
+/// @details Returns header->len for the given payload. NULL returns zero;
+///   invalid non-NULL payloads trap.
 /// @param payload Payload pointer.
 /// @return Logical element count.
 size_t rt_heap_len(void *payload);
 
 /// @brief Read the current capacity from the header.
-/// @details Returns header->cap for the given payload.
+/// @details Returns header->cap for the given payload. NULL returns zero;
+///   invalid non-NULL payloads trap.
 /// @param payload Payload pointer.
 /// @return Capacity in elements.
 size_t rt_heap_cap(void *payload);
 
 /// @brief Update the logical length stored in the header.
 /// @details Writes header->len to @p new_len. Used to record changes after
-///          append or resize operations.
+///          append or resize operations. NULL is a no-op; invalid payloads or
+///          lengths greater than capacity raise a runtime trap.
 /// @param payload Payload pointer.
 /// @param new_len New logical length; must be <= current capacity.
 /// @pre 0 <= new_len <= cap.

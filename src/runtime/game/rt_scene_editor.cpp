@@ -4,6 +4,10 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/game/rt_scene_editor.cpp
+/// @file
+/// @brief Implements editable scene documents, canonical JSON persistence,
+///        diagnostics, typed rich sections, and Tilemap reconstruction.
+//
 // Purpose: Scene-owned editable level documents, preserved rich sections,
 //   imported-layout Tilemap reconstruction, diagnostics, and durable file I/O.
 //
@@ -67,21 +71,39 @@
 
 namespace {
 
+/// @brief Canonical scene schema version emitted by this implementation.
 constexpr int64_t kSceneVersion = 1;
+/// @brief Maximum accepted scene JSON payload size.
 constexpr int64_t kMaxJsonBytes = 16 * 1024 * 1024;
+/// @brief Maximum width-times-height cells in one layer.
 constexpr int64_t kMaxCellsPerLayer = 1024 * 1024;
+/// @brief Maximum cells across every layer.
 constexpr int64_t kMaxTotalCells = 4 * 1024 * 1024;
+/// @brief Maximum editable layer count.
 constexpr int64_t kMaxLayers = 16;
+/// @brief Maximum editable object count.
 constexpr int64_t kMaxObjects = 65536;
+/// @brief Maximum scene-level scalar properties.
 constexpr int64_t kMaxSceneProperties = 16384;
+/// @brief Maximum public and reserved properties associated with one object.
 constexpr int64_t kMaxObjectProperties = 256;
+/// @brief Maximum UTF-8 byte length of a property key.
 constexpr size_t kMaxPropertyKeyBytes = 128;
+/// @brief Maximum UTF-8 byte length of a scalar string value.
 constexpr size_t kMaxStringValueBytes = 64 * 1024;
+/// @brief Aggregate canonical-JSON budget for preserved unknown content.
 constexpr size_t kMaxPreservedBytes = 4 * 1024 * 1024;
+/// @brief Maximum retained diagnostic records.
 constexpr size_t kMaxDiagnostics = 256;
+/// @brief Tilemap-compatible maximum layer-name byte length.
 constexpr size_t kMaxTilemapLayerNameBytes = 31;
+/// @brief Reserved serialized property encoding organizational parent index.
 constexpr const char *kObjectParentProperty = "zanna.hierarchy.parentIndex";
 
+/// @brief Copy a runtime string's explicit bytes into a C++ string.
+/// @param s Borrowed runtime string; may be `NULL`.
+/// @return Byte-preserving copy, or an empty string for null/empty/invalid
+///         storage.
 std::string toStd(rt_string s) {
     if (!s)
         return {};
@@ -92,15 +114,24 @@ std::string toStd(rt_string s) {
     return std::string(data, static_cast<size_t>(len));
 }
 
+/// @brief Allocate a runtime string from C++ string bytes.
+/// @param value Bytes to copy.
+/// @return New runtime string reference.
 rt_string makeString(const std::string &value) {
     return rt_string_from_bytes(value.data(), value.size());
 }
 
+/// @brief Release one runtime object reference and free it at zero.
+/// @param obj Object handle; `NULL` is a no-op.
 void releaseObject(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Release a parsed JSON value according to its runtime representation.
+/// @param obj Parsed value; `NULL` is a no-op.
+/// @details Bare runtime strings use string unref; boxed/container values use
+///          the generic object reference path.
 void releaseJsonValue(void *obj) {
     if (!obj)
         return;
@@ -111,6 +142,11 @@ void releaseJsonValue(void *obj) {
     releaseObject(obj);
 }
 
+/// @brief Set a string-valued map field using temporary runtime strings.
+/// @param map Destination runtime Map.
+/// @param key NUL-terminated field name.
+/// @param value Bytes copied into a temporary runtime string.
+/// @details Both temporary references are released after the Map retains them.
 void mapSetStrField(void *map, const char *key, const std::string &value) {
     rt_string k = rt_const_cstr(key);
     rt_string v = makeString(value);
@@ -119,26 +155,42 @@ void mapSetStrField(void *map, const char *key, const std::string &value) {
     rt_string_unref(v);
 }
 
+/// @brief Set an integer-valued map field using a temporary key string.
+/// @param map Destination runtime Map.
+/// @param key NUL-terminated field name.
+/// @param value Integer value.
 void mapSetIntField(void *map, const char *key, int64_t value) {
     rt_string k = rt_const_cstr(key);
     rt_map_set_int(map, k, value);
     rt_string_unref(k);
 }
 
+/// @brief Test whether a runtime object is a Seq.
+/// @param obj Candidate handle.
+/// @return `true` only for a non-null RT_SEQ_CLASS_ID object.
 bool isSeq(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_SEQ_CLASS_ID;
 }
 
+/// @brief Test whether a runtime object is a Map.
+/// @param obj Candidate handle.
+/// @return `true` only for a non-null RT_MAP_CLASS_ID object.
 bool isMap(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_MAP_CLASS_ID;
 }
 
+/// @brief Lowercase ASCII bytes without locale-dependent signed-char behavior.
+/// @param value String copied and transformed in place.
+/// @return Lowercased copy.
 std::string lowerAscii(std::string value) {
     for (char &ch : value)
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return value;
 }
 
+/// @brief Encode arbitrary bytes as one JSON string literal.
+/// @param s Bytes to escape.
+/// @return Quoted JSON with control characters and metacharacters escaped.
 std::string jsonEscape(const std::string &s) {
     std::ostringstream out;
     out << '"';
@@ -178,6 +230,9 @@ std::string jsonEscape(const std::string &s) {
     return out.str();
 }
 
+/// @brief Format a finite double for canonical scene JSON.
+/// @param value Number to format.
+/// @return 17-digit decimal representation, or `"null"` for NaN/infinity.
 std::string jsonNumber(double value) {
     if (!std::isfinite(value))
         return "null";
@@ -186,6 +241,7 @@ std::string jsonNumber(double value) {
     return out.str();
 }
 
+/// @brief Scalar kinds supported by scene and object property APIs.
 enum class ScalarKind {
     Null,
     Bool,
@@ -194,6 +250,9 @@ enum class ScalarKind {
     String,
 };
 
+/// @brief Convert a scalar-kind enum to its public token.
+/// @param kind Kind to name.
+/// @return Static token `null`, `bool`, `int`, `float`, or `string`.
 const char *scalarKindName(ScalarKind kind) {
     switch (kind) {
         case ScalarKind::Null:
@@ -210,6 +269,7 @@ const char *scalarKindName(ScalarKind kind) {
     return "";
 }
 
+/// @brief Typed scalar value stored directly in editable scene state.
 struct SceneScalar {
     ScalarKind kind{ScalarKind::Null};
     bool boolValue{false};
@@ -218,10 +278,15 @@ struct SceneScalar {
     std::string stringValue;
 };
 
+/// @brief Construct a null scalar.
+/// @return Default Null value.
 SceneScalar makeNullScalar() {
     return {};
 }
 
+/// @brief Construct a boolean scalar.
+/// @param value Boolean payload.
+/// @return Typed Bool value.
 SceneScalar makeBoolScalar(bool value) {
     SceneScalar out;
     out.kind = ScalarKind::Bool;
@@ -229,6 +294,9 @@ SceneScalar makeBoolScalar(bool value) {
     return out;
 }
 
+/// @brief Construct an integer scalar.
+/// @param value Integer payload.
+/// @return Typed Int value.
 SceneScalar makeIntScalar(int64_t value) {
     SceneScalar out;
     out.kind = ScalarKind::Int;
@@ -236,6 +304,9 @@ SceneScalar makeIntScalar(int64_t value) {
     return out;
 }
 
+/// @brief Construct a floating-point scalar.
+/// @param value Floating payload.
+/// @return Typed Float value.
 SceneScalar makeFloatScalar(double value) {
     SceneScalar out;
     out.kind = ScalarKind::Float;
@@ -243,6 +314,9 @@ SceneScalar makeFloatScalar(double value) {
     return out;
 }
 
+/// @brief Construct a string scalar.
+/// @param value Bytes copied into the payload.
+/// @return Typed String value.
 SceneScalar makeStringScalar(const std::string &value) {
     SceneScalar out;
     out.kind = ScalarKind::String;
@@ -250,6 +324,9 @@ SceneScalar makeStringScalar(const std::string &value) {
     return out;
 }
 
+/// @brief Serialize one typed scalar as canonical JSON.
+/// @param value Scalar to encode.
+/// @return JSON token or literal.
 std::string scalarToJson(const SceneScalar &value) {
     switch (value.kind) {
         case ScalarKind::Null:
@@ -266,6 +343,9 @@ std::string scalarToJson(const SceneScalar &value) {
     return "null";
 }
 
+/// @brief Convert one typed scalar to legacy string-property text.
+/// @param value Scalar to convert.
+/// @return Empty for Null, lowercase Boolean, decimal number, or stored string.
 std::string scalarToString(const SceneScalar &value) {
     switch (value.kind) {
         case ScalarKind::Null:
@@ -282,6 +362,7 @@ std::string scalarToString(const SceneScalar &value) {
     return "";
 }
 
+/// @brief Editable tile layer with optional asset binding.
 struct Layer {
     std::string name;
     std::string asset;
@@ -289,6 +370,7 @@ struct Layer {
     std::vector<int64_t> tiles;
 };
 
+/// @brief Editable scene object with absolute position and typed properties.
 struct Object {
     std::string type;
     std::string id;
@@ -298,6 +380,7 @@ struct Object {
     std::map<std::string, SceneScalar> properties;
 };
 
+/// @brief Structured load/edit diagnostic retained by a scene.
 struct Diagnostic {
     std::string code;
     std::string severity;
@@ -308,43 +391,55 @@ struct Diagnostic {
     std::string source;
 };
 
+/// @brief Unknown rich top-level section retained as canonical JSON.
 struct PreservedSection {
     std::string key;
     std::string canonicalJson;
 };
 
-// Typed tile-behavior and camera/lighting section state (ADR 0176, ADR 0177).
-// Loaders accept any int64 tile id so legacy files round-trip losslessly;
-// setters enforce Tilemap's 1..4095 behavior-table addressability. Unknown
-// members are retained as canonical JSON and re-emitted verbatim.
+/// @brief Minimum tile ID addressable by editable behavior tables.
 constexpr int64_t kMinBehaviorTileId = 1;
+/// @brief Maximum tile ID addressable by editable behavior tables.
 constexpr int64_t kMaxBehaviorTileId = 4095;
+/// @brief Maximum typed tile-property entries across a scene.
 constexpr int64_t kMaxTilePropertyEntries = 4096;
+/// @brief Maximum typed properties authored on one tile.
 constexpr int64_t kMaxTilePropertiesPerTile = 64;
+/// @brief Maximum frames in one animation rule.
 constexpr int64_t kMaxAnimFramesPerRule = 4096;
+/// @brief Maximum animation frames across all rules.
 constexpr int64_t kMaxTotalAnimFrames = 65536;
+/// @brief Required number of variants in one autotile rule.
 constexpr size_t kAutotileVariantCount = 16;
 
+/// @brief One typed tile-animation rule plus preserved unknown members.
 struct TileAnimation {
     std::vector<int64_t> frames;
     std::vector<int64_t> durations;
     std::map<std::string, std::string> unknown;
 };
 
+/// @brief One 16-variant autotile rule plus preserved unknown members.
 struct AutotileRule {
     std::array<int64_t, kAutotileVariantCount> variants{};
     std::map<std::string, std::string> unknown;
 };
 
+/// @brief Typed Int/Bool properties and unknown members for one tile.
 struct TilePropertySet {
     std::map<std::string, SceneScalar> values; // Int/Bool kinds only
     std::map<std::string, std::string> unknown;
 
+    /// @brief Test whether neither typed nor unknown properties remain.
+    /// @return `true` when the set serializes no content.
     bool empty() const {
         return values.empty() && unknown.empty();
     }
 };
 
+/// @brief Typed collision/property/animation/autotile document state.
+/// @details Loaders accept arbitrary int64 tile IDs for lossless round-trips;
+///          editing APIs enforce Tilemap's 1–4095 addressability.
 struct TileBehaviorState {
     std::map<int64_t, int64_t> collision; // tile -> kind (1 solid, 2 one-way-up)
     int64_t collisionLayer{0};
@@ -355,10 +450,14 @@ struct TileBehaviorState {
     std::map<int64_t, TileAnimation> animations;
     std::map<int64_t, AutotileRule> autotiles;
 
+    /// @brief Test whether the collision section has any serializable content.
+    /// @return `true` when collision mappings, layer, and unknowns are absent.
     bool collisionEmpty() const {
         return collision.empty() && !hasCollisionLayer && collisionUnknown.empty();
     }
 
+    /// @brief Test whether the tile-properties section has serializable content.
+    /// @return `true` when typed and unknown property maps are absent.
     bool tilePropertiesEmpty() const {
         return tileProperties.empty() && tilePropertiesUnknown.empty();
     }
@@ -369,11 +468,14 @@ struct SectionScalarState {
     std::map<std::string, SceneScalar> fields;
     std::map<std::string, std::string> unknown;
 
+    /// @brief Test whether the section has typed or unknown fields.
+    /// @return `true` when nothing would be serialized.
     bool empty() const {
         return fields.empty() && unknown.empty();
     }
 };
 
+/// @brief Complete C++ state owned by one runtime SceneDocument handle.
 struct SceneState {
     int64_t version{kSceneVersion};
     std::string name;
@@ -396,10 +498,14 @@ struct SceneState {
     bool valid{true};
 };
 
+/// @brief Runtime object payload holding the separately allocated C++ state.
 struct SceneHandle {
     SceneState *state{nullptr};
 };
 
+/// @brief Validate a SceneDocument handle and its C++ state pointer.
+/// @param scene Candidate runtime handle.
+/// @return Valid SceneHandle, or `nullptr` after raising a runtime trap.
 SceneHandle *requireScene(void *scene) {
     if (!scene || rt_obj_class_id(scene) != RT_GAME_SCENE_CLASS_ID) {
         rt_trap("Game.Scene: invalid handle");
@@ -413,12 +519,17 @@ SceneHandle *requireScene(void *scene) {
     return h;
 }
 
+/// @brief Delete the C++ state owned by a runtime SceneDocument.
+/// @param obj SceneHandle supplied by the runtime finalizer system.
 void sceneFinalizer(void *obj) {
     auto *h = static_cast<SceneHandle *>(obj);
     delete h->state;
     h->state = nullptr;
 }
 
+/// @brief Test whether a state is invalid or retains an error diagnostic.
+/// @param s Scene state to inspect.
+/// @return `true` for invalid/error-bearing state.
 bool hasErrors(const SceneState &s) {
     if (!s.valid)
         return true;
@@ -429,6 +540,17 @@ bool hasErrors(const SceneState &s) {
     return false;
 }
 
+/// @brief Append a bounded structured diagnostic and update error state.
+/// @param s Scene receiving the diagnostic.
+/// @param code Stable diagnostic code.
+/// @param severity Severity token; `"error"` marks the scene invalid.
+/// @param message Human-readable message and new last-error text.
+/// @param path Optional document path.
+/// @param line Optional one-based source line.
+/// @param column Optional one-based source column.
+/// @details At the 256-record cap, the final retained record becomes one
+///          truncation warning and later records are dropped. Source path is
+///          copied from the SceneState.
 void addDiagnostic(SceneState &s,
                    std::string code,
                    std::string severity,
@@ -462,6 +584,12 @@ void addDiagnostic(SceneState &s,
     s.diagnostics.push_back(std::move(diag));
 }
 
+/// @brief Validate layer dimensions and compute their cell count safely.
+/// @param width Requested cell width.
+/// @param height Requested cell height.
+/// @param cells Receives `width * height`, or zero on failure.
+/// @return `true` for positive, nonoverflowing dimensions within the
+///         one-million-cell layer budget.
 bool checkedCellCount(int64_t width, int64_t height, size_t &cells) {
     cells = 0;
     if (width <= 0 || height <= 0)
@@ -475,34 +603,65 @@ bool checkedCellCount(int64_t width, int64_t height, size_t &cells) {
     return true;
 }
 
+/// @brief Test a layer index against current scene storage.
+/// @param s Scene to inspect.
+/// @param layer Candidate index.
+/// @return `true` when in range.
 bool validLayer(const SceneState &s, int64_t layer) {
     return layer >= 0 && layer < static_cast<int64_t>(s.layers.size());
 }
 
+/// @brief Test tile coordinates against scene dimensions.
+/// @param s Scene to inspect.
+/// @param x Candidate X.
+/// @param y Candidate Y.
+/// @return `true` when inside the tile grid.
 bool validTile(const SceneState &s, int64_t x, int64_t y) {
     return x >= 0 && y >= 0 && x < s.width && y < s.height;
 }
 
+/// @brief Test an object index against current scene storage.
+/// @param s Scene to inspect.
+/// @param index Candidate index.
+/// @return `true` when in range.
 bool validObjectIndex(const SceneState &s, int64_t index) {
     return index >= 0 && index < static_cast<int64_t>(s.objects.size());
 }
 
+/// @brief Test a C++ property key for internal object-hierarchy reservation.
+/// @param key Property key.
+/// @return `true` only for the parent-index encoding key.
 bool isReservedObjectProperty(const std::string &key) {
     return key == kObjectParentProperty;
 }
 
+/// @brief Test a runtime property key for internal hierarchy reservation.
+/// @param key Borrowed runtime string.
+/// @return Result of the C++ string overload.
 bool isReservedObjectProperty(rt_string key) {
     return isReservedObjectProperty(toStd(key));
 }
 
+/// @brief Enforce the property-key byte budget.
+/// @param key Candidate key bytes.
+/// @return `true` when at most 128 bytes.
 bool validKey(const std::string &key) {
     return key.size() <= kMaxPropertyKeyBytes;
 }
 
+/// @brief Enforce the scalar-string byte budget.
+/// @param value Candidate value bytes.
+/// @return `true` when at most 64 KiB.
 bool validStringValue(const std::string &value) {
     return value.size() <= kMaxStringValueBytes;
 }
 
+/// @brief Validate key/string scalar limits and emit schema diagnostics.
+/// @param s Scene receiving errors.
+/// @param key Candidate property key.
+/// @param scalar Candidate typed value.
+/// @param path Parent diagnostic path.
+/// @return `true` when both applicable limits pass.
 bool validateScalarLimit(SceneState &s,
                          const std::string &key,
                          const SceneScalar &scalar,
@@ -526,6 +685,10 @@ bool validateScalarLimit(SceneState &s,
     return true;
 }
 
+/// @brief Construct a zero-filled tile layer matching scene dimensions.
+/// @param s Scene supplying dimensions and default-name index.
+/// @param name Requested name; empty generates `LayerN`.
+/// @return New visible layer with no asset and all tile IDs zero.
 Layer makeLayer(SceneState &s, const std::string &name) {
     size_t cells = 1;
     checkedCellCount(s.width, s.height, cells);
@@ -535,6 +698,11 @@ Layer makeLayer(SceneState &s, const std::string &name) {
     return layer;
 }
 
+/// @brief Move C++ scene state into a finalized runtime handle.
+/// @param state State value to heap-allocate.
+/// @return New SceneDocument handle, or `nullptr` if runtime allocation fails.
+/// @details C++ state allocation occurs before runtime allocation so exception
+///          barriers cannot strand an unfinalized handle.
 void *handleFromState(SceneState state) {
     // Allocate the C++ state first: if this throws (e.g. bad_alloc) no GC handle
     // has been created yet, so the exception barrier cannot strand an unfinalized
@@ -553,6 +721,13 @@ void *handleFromState(SceneState state) {
     return h;
 }
 
+/// @brief Create baseline scene state with one `base` layer.
+/// @param width Requested width.
+/// @param height Requested height.
+/// @param tileWidth Requested positive tile width; invalid values become 16.
+/// @param tileHeight Requested positive tile height; invalid values become 16.
+/// @return Initialized state. Invalid scene dimensions produce a diagnostic
+///         and fall back to an invalid 1×1 state.
 SceneState makeBaseState(int64_t width, int64_t height, int64_t tileWidth, int64_t tileHeight) {
     SceneState s;
     size_t cells = 0;
@@ -573,10 +748,20 @@ SceneState makeBaseState(int64_t width, int64_t height, int64_t tileWidth, int64
     return s;
 }
 
+/// @brief Construct a runtime SceneDocument from requested dimensions.
+/// @param width Scene width in cells.
+/// @param height Scene height in cells.
+/// @param tileWidth Tile pixel width.
+/// @param tileHeight Tile pixel height.
+/// @return Result of makeBaseState() wrapped by handleFromState().
 void *newSceneHandle(int64_t width, int64_t height, int64_t tileWidth, int64_t tileHeight) {
     return handleFromState(makeBaseState(width, height, tileWidth, tileHeight));
 }
 
+/// @brief Test whether a runtime Map contains a C-string key.
+/// @param map Candidate Map.
+/// @param key NUL-terminated field name.
+/// @return `false` for non-Map input; otherwise Map membership.
 bool mapHas(void *map, const char *key) {
     if (!isMap(map))
         return false;
@@ -586,6 +771,10 @@ bool mapHas(void *map, const char *key) {
     return result;
 }
 
+/// @brief Borrow one value from a runtime Map by C-string key.
+/// @param map Candidate Map.
+/// @param key NUL-terminated field name.
+/// @return Borrowed mapped value, or `nullptr` for non-Map/missing input.
 void *mapGet(void *map, const char *key) {
     if (!isMap(map))
         return nullptr;
@@ -595,6 +784,10 @@ void *mapGet(void *map, const char *key) {
     return value;
 }
 
+/// @brief Convert a runtime or boxed string value to C++ bytes.
+/// @param value Candidate JSON scalar.
+/// @return Copied string, or empty for unsupported input.
+/// @details Temporary unboxed string references are released.
 std::string valueToString(void *value) {
     if (rt_string_is_handle(value))
         return toStd(static_cast<rt_string>(value));
@@ -607,6 +800,11 @@ std::string valueToString(void *value) {
     return {};
 }
 
+/// @brief Read a string-valued JSON map field.
+/// @param map Runtime Map.
+/// @param key Field name.
+/// @param out Receives copied bytes on success.
+/// @return `true` only when the field exists and is a string representation.
 bool jsonString(void *map, const char *key, std::string &out) {
     if (!mapHas(map, key))
         return false;
@@ -617,6 +815,10 @@ bool jsonString(void *map, const char *key, std::string &out) {
     return true;
 }
 
+/// @brief Convert a boxed JSON number to exact int64.
+/// @param value Candidate boxed I64 or F64.
+/// @param out Receives the integer on success.
+/// @return `true` for I64 or finite integral in-range F64.
 bool jsonNumberToInt(void *value, int64_t &out) {
     if (!value)
         return false;
@@ -637,12 +839,22 @@ bool jsonNumberToInt(void *value, int64_t &out) {
     return false;
 }
 
+/// @brief Read an exact integer JSON map field.
+/// @param map Runtime Map.
+/// @param key Field name.
+/// @param out Receives value on success.
+/// @return `true` when present and accepted by jsonNumberToInt().
 bool jsonInt(void *map, const char *key, int64_t &out) {
     if (!mapHas(map, key))
         return false;
     return jsonNumberToInt(mapGet(map, key), out);
 }
 
+/// @brief Read a finite numeric JSON map field as double.
+/// @param map Runtime Map.
+/// @param key Field name.
+/// @param out Receives converted I64/F64 value.
+/// @return `true` when present, numeric, and finite.
 bool jsonDouble(void *map, const char *key, double &out) {
     if (!mapHas(map, key))
         return false;
@@ -659,6 +871,12 @@ bool jsonDouble(void *map, const char *key, double &out) {
     return std::isfinite(out);
 }
 
+/// @brief Read a Boolean JSON map field with optional numeric compatibility.
+/// @param map Runtime Map.
+/// @param key Field name.
+/// @param out Receives Boolean value.
+/// @param allowNumeric Whether exact integer zero/one are accepted.
+/// @return `true` when a supported representation is present.
 bool jsonBool(void *map, const char *key, bool &out, bool allowNumeric) {
     if (!mapHas(map, key))
         return false;
@@ -678,6 +896,12 @@ bool jsonBool(void *map, const char *key, bool &out, bool allowNumeric) {
     return false;
 }
 
+/// @brief Convert one parsed JSON scalar to SceneScalar.
+/// @param value Runtime JSON value; null pointer represents JSON null.
+/// @param out Receives typed scalar.
+/// @return `true` for null, string, Bool, integer, or finite float; false for
+///         containers and unsupported boxes.
+/// @details Integral F64 values in int64 range normalize to Int.
 bool parseScalarValue(void *value, SceneScalar &out) {
     if (!value) {
         out = makeNullScalar();
@@ -716,6 +940,16 @@ bool parseScalarValue(void *value, SceneScalar &out) {
     return false;
 }
 
+/// @brief Parse a runtime Map of bounded scalar properties.
+/// @param s Scene receiving schema diagnostics.
+/// @param map Candidate runtime Map.
+/// @param out Destination ordered property map.
+/// @param maxEntries Maximum accepted source entries.
+/// @param path Parent diagnostic path.
+/// @return `false` for non-Map input or source count overflow; otherwise
+///         `true` after processing every key.
+/// @details Invalid values/limits emit diagnostics and are skipped while valid
+///          entries continue loading.
 bool parseScalarMap(SceneState &s,
                     void *map,
                     std::map<std::string, SceneScalar> &out,
@@ -753,6 +987,9 @@ bool parseScalarMap(SceneState &s,
     return true;
 }
 
+/// @brief Canonically format an arbitrary supported runtime JSON value.
+/// @param value Parsed value; null pointer encodes JSON null.
+/// @return Compact JSON. Map keys are sorted; unsupported boxes become null.
 std::string formatRuntimeJsonValue(void *value) {
     if (!value)
         return "null";
@@ -813,21 +1050,34 @@ std::string formatRuntimeJsonValue(void *value) {
     return "null";
 }
 
+/// @brief Public wrapper for recursive runtime-value JSON formatting.
+/// @param value Runtime JSON value.
+/// @return Canonical compact JSON string.
 std::string formatRuntimeJson(void *value) {
     return formatRuntimeJsonValue(value);
 }
 
+/// @brief Test whether a top-level key has typed rich-section support.
+/// @param key Candidate key.
+/// @return `true` for camera, lighting, collision, tileProperties, animations,
+///         or autotiles.
 bool isKnownRichSection(const std::string &key) {
     return key == "camera" || key == "lighting" || key == "collision" || key == "tileProperties" ||
            key == "animations" || key == "autotiles";
 }
 
+/// @brief Test whether a top-level key belongs to the core scene schema.
+/// @param key Candidate key.
+/// @return `true` when handled outside preserved-section logic.
 bool isReservedTopLevelKey(const std::string &key) {
     return key == "version" || key == "name" || key == "width" || key == "height" ||
            key == "tileWidth" || key == "tileHeight" || key == "tilesetAsset" ||
            key == "properties" || key == "layers" || key == "objects" || key == "tilemap";
 }
 
+/// @brief Compute aggregate bytes retained for unknown scene content.
+/// @param s Scene to inspect.
+/// @return Typed-unknown bytes plus canonical preserved-section JSON bytes.
 size_t preservedSectionBytes(const SceneState &s) {
     size_t total = s.typedUnknownBytes;
     for (const auto &[_, section] : s.preservedSections)
@@ -836,6 +1086,10 @@ size_t preservedSectionBytes(const SceneState &s) {
 }
 
 /// @brief Reserve budget for one retained unknown section member (ADR 0176).
+/// @param s Scene whose aggregate budget is updated.
+/// @param path Diagnostic path.
+/// @param json Canonical JSON to be retained.
+/// @return `true` when the 4 MiB aggregate budget permits the value.
 bool reserveTypedUnknown(SceneState &s, const std::string &path, const std::string &json) {
     if (preservedSectionBytes(s) + json.size() > kMaxPreservedBytes) {
         addDiagnostic(s,
@@ -849,6 +1103,12 @@ bool reserveTypedUnknown(SceneState &s, const std::string &path, const std::stri
     return true;
 }
 
+/// @brief Preserve an unknown rich top-level section as canonical JSON.
+/// @param s Scene to modify.
+/// @param key Top-level section key.
+/// @param value Parsed runtime value.
+/// @details Values exceeding the aggregate 4 MiB budget emit an error and are
+///          dropped; repeated keys replace prior preserved content.
 void preserveSection(SceneState &s, const std::string &key, void *value) {
     std::string json = formatRuntimeJson(value);
     size_t total = json.size() + s.typedUnknownBytes;
@@ -865,6 +1125,10 @@ void preserveSection(SceneState &s, const std::string &key, void *value) {
     s.preservedSections[key] = PreservedSection{key, std::move(json)};
 }
 
+/// @brief Parse a whole decimal string as int64 using exception-safe stoll.
+/// @param key Candidate decimal bytes.
+/// @param out Receives parsed value on success.
+/// @return `true` only when every byte belongs to one in-range integer.
 bool strictIntegerKey(const std::string &key, int64_t &out) {
     if (key.empty())
         return false;
@@ -877,6 +1141,13 @@ bool strictIntegerKey(const std::string &key, int64_t &out) {
     }
 }
 
+/// @brief Retain an unrecognized typed-section member as canonical JSON.
+/// @param s Scene supplying the aggregate unknown-content budget.
+/// @param unknown Destination ordered unknown-member map.
+/// @param path Parent diagnostic path.
+/// @param key Member key.
+/// @param value Parsed runtime value.
+/// @details The member is stored only when reserveTypedUnknown() succeeds.
 void retainUnknownMember(SceneState &s,
                          std::map<std::string, std::string> &unknown,
                          const std::string &path,
@@ -887,6 +1158,12 @@ void retainUnknownMember(SceneState &s,
         unknown[key] = std::move(json);
 }
 
+/// @brief Parse typed collision mappings and preserve unknown members.
+/// @param s Scene receiving behavior state and warnings.
+/// @param root Collision-section runtime Map.
+/// @details Integer tile IDs from `solid`/`oneWayUp` arrays are retained
+///          losslessly; `layer` must be integer. Later mappings overwrite
+///          earlier values for the same tile.
 void parseCollisionSection(SceneState &s, void *root) {
     void *keys = rt_map_keys(root);
     int64_t count = rt_seq_len(keys);
@@ -938,6 +1215,12 @@ void parseCollisionSection(SceneState &s, void *root) {
     releaseObject(keys);
 }
 
+/// @brief Parse per-tile Int/Bool property maps.
+/// @param s Scene receiving typed properties, unknown JSON, and diagnostics.
+/// @param root Tile-ID-keyed runtime Map.
+/// @details Noninteger tile keys and non-Map values are preserved as unknown.
+///          Typed entry and per-tile budgets are enforced while unsupported
+///          property values remain preserved when budget permits.
 void parseTilePropertiesSection(SceneState &s, void *root) {
     void *tileKeys = rt_map_keys(root);
     int64_t count = rt_seq_len(tileKeys);
@@ -999,6 +1282,12 @@ void parseTilePropertiesSection(SceneState &s, void *root) {
     releaseObject(tileKeys);
 }
 
+/// @brief Parse animation-rule array into typed behavior state.
+/// @param s Scene receiving animation rules and diagnostics.
+/// @param root Runtime Seq of rule Maps.
+/// @details Rules require integer baseTile, equal frame/duration arrays,
+///          positive durations, and configured per-rule/aggregate frame
+///          budgets. Unknown rule members are preserved canonically.
 void parseAnimationsSection(SceneState &s, void *root) {
     int64_t count = rt_seq_len(root);
     int64_t totalFrames = 0;
@@ -1110,6 +1399,11 @@ void parseAnimationsSection(SceneState &s, void *root) {
     }
 }
 
+/// @brief Parse 16-variant autotile rules into typed behavior state.
+/// @param s Scene receiving rules and diagnostics.
+/// @param root Runtime Seq of rule Maps.
+/// @details Invalid shapes are warned and skipped. Unknown rule members are
+///          preserved; a later duplicate base tile replaces the earlier rule.
 void parseAutotilesSection(SceneState &s, void *root) {
     int64_t count = rt_seq_len(root);
     for (int64_t i = 0; i < count; ++i) {
@@ -1183,6 +1477,12 @@ void parseAutotilesSection(SceneState &s, void *root) {
     }
 }
 
+/// @brief Parse a camera/lighting field map into Int/String typed state.
+/// @param s Scene receiving diagnostics and unknown-byte accounting.
+/// @param section Destination typed section.
+/// @param name Section name used in paths/messages.
+/// @param root Runtime Map.
+/// @details Unsupported types are preserved as canonical unknown members.
 void parseScalarSection(SceneState &s,
                         SectionScalarState &section,
                         const std::string &name,
@@ -1227,7 +1527,11 @@ void parseScalarSection(SceneState &s,
 }
 
 /// @brief Route one known rich section into typed state (ADR 0176, ADR 0177).
-/// @return True when the section was consumed; false to preserve it verbatim.
+/// @param s Scene receiving parsed state.
+/// @param key Known top-level key.
+/// @param value Parsed runtime value.
+/// @return `true` when key and container shape were consumed; `false` when the
+///         caller should preserve the value verbatim.
 bool parseTypedSection(SceneState &s, const std::string &key, void *value) {
     if (key == "collision" && isMap(value)) {
         parseCollisionSection(s, value);
@@ -1256,6 +1560,12 @@ bool parseTypedSection(SceneState &s, const std::string &key, void *value) {
     return false;
 }
 
+/// @brief Parse or preserve all non-core top-level scene sections.
+/// @param s Scene receiving typed/preserved state and diagnostics.
+/// @param root Root runtime Map.
+/// @details Correctly shaped known sections enter typed state. Wrong-shaped
+///          Map/Seq rich sections remain preserved; unknown Maps are preserved;
+///          unknown scalars/arrays are warned and dropped.
 void parsePreservedSections(SceneState &s, void *root) {
     if (!isMap(root))
         return;
@@ -1296,6 +1606,15 @@ void parsePreservedSections(SceneState &s, void *root) {
     releaseObject(keys);
 }
 
+/// @brief Load one layer's tile array with canonical/legacy normalization.
+/// @param s Scene supplying dimensions and receiving diagnostics.
+/// @param layer Destination zero-initialized layer.
+/// @param layerMap Source layer Map.
+/// @param layerIndex Index used in diagnostic paths.
+/// @param legacy Whether legacy omissions/count mismatches are tolerated.
+/// @param nestedDraft Whether missing tiles are tolerated for nested drafts.
+/// @return `false` for required-field, dimension, or canonical count failure;
+///         otherwise `true`.
 bool loadTiles(SceneState &s,
                Layer &layer,
                void *layerMap,
@@ -1352,6 +1671,14 @@ bool loadTiles(SceneState &s,
     return true;
 }
 
+/// @brief Parse bounded layer definitions into scene state.
+/// @param s Scene receiving layers and diagnostics.
+/// @param sourceMap Root or nested tilemap Map containing `layers`.
+/// @param legacy Whether legacy compatibility rules apply.
+/// @param nestedDraft Whether nested-draft omissions are tolerated.
+/// @details Enforces 16 layers, one million cells per layer, four million
+///          aggregate cells, and 31-byte Tilemap layer names. At least one
+///          fallback base layer is retained.
 void parseLayers(SceneState &s, void *sourceMap, bool legacy, bool nestedDraft) {
     void *layers = mapGet(sourceMap, "layers");
     if (!isSeq(layers)) {
@@ -1424,6 +1751,10 @@ void parseLayers(SceneState &s, void *sourceMap, bool legacy, bool nestedDraft) 
         s.layers.push_back(makeLayer(s, "base"));
 }
 
+/// @brief Validate organizational parent indices and break invalid cycles.
+/// @param s Scene whose loaded object hierarchy is normalized.
+/// @details Out-of-range/self parents become roots with errors. Cycle members
+///          are all rooted so subsequent hierarchy operations remain bounded.
 void validateObjectParents(SceneState &s) {
     const int64_t count = static_cast<int64_t>(s.objects.size());
     for (int64_t index = 0; index < count; ++index) {
@@ -1485,6 +1816,12 @@ void validateObjectParents(SceneState &s) {
     }
 }
 
+/// @brief Parse bounded scene objects and scalar properties.
+/// @param s Scene receiving objects and diagnostics.
+/// @param root Root runtime Map.
+/// @details Supports canonical `properties` plus legacy scalar object members.
+///          The reserved parent key is extracted into organizational state and
+///          removed from the public property map before hierarchy validation.
 void parseObjects(SceneState &s, void *root) {
     void *objects = mapGet(root, "objects");
     if (!isSeq(objects))
@@ -1571,6 +1908,14 @@ void parseObjects(SceneState &s, void *root) {
     validateObjectParents(s);
 }
 
+/// @brief Parse SceneDocument JSON into complete diagnostic-bearing state.
+/// @param text Borrowed runtime JSON string.
+/// @param sourcePath Optional source filename copied into diagnostics.
+/// @return Loaded state, always containing at least one layer.
+/// @details Empty, oversized, malformed, wrong-root, unsupported-version, and
+///          schema-invalid inputs return an invalid diagnostic document rather
+///          than publishing partial runtime state. Legacy and nested tilemap
+///          layouts are normalized into version one.
 SceneState loadStateFromJson(rt_string text, const std::string &sourcePath) {
     SceneState s;
     s.sourcePath = sourcePath;
@@ -1695,11 +2040,18 @@ SceneState loadStateFromJson(rt_string text, const std::string &sourcePath) {
     return s;
 }
 
+/// @brief Emit two-space indentation.
+/// @param out Destination stream.
+/// @param level Number of indentation levels.
 void writeIndent(std::ostringstream &out, int level) {
     for (int i = 0; i < level; ++i)
         out << "  ";
 }
 
+/// @brief Emit an ordered scalar map as pretty canonical JSON.
+/// @param out Destination stream.
+/// @param map Lexicographically ordered properties.
+/// @param level Current indentation level.
 void writeScalarMap(std::ostringstream &out,
                     const std::map<std::string, SceneScalar> &map,
                     int level) {
@@ -1719,6 +2071,9 @@ void writeScalarMap(std::ostringstream &out,
     out << "}";
 }
 
+/// @brief Emit a tile vector as a compact JSON integer array.
+/// @param out Destination stream.
+/// @param tiles Tile IDs in row-major order.
 void writeTiles(std::ostringstream &out, const std::vector<int64_t> &tiles) {
     out << "[";
     for (size_t i = 0; i < tiles.size(); ++i) {
@@ -1730,6 +2085,8 @@ void writeTiles(std::ostringstream &out, const std::vector<int64_t> &tiles) {
 }
 
 /// @brief Emit one compact JSON object from pre-rendered members, sorted by key.
+/// @param out Destination stream.
+/// @param members Key and already-rendered JSON value pairs.
 void writeMergedObject(std::ostringstream &out,
                        std::vector<std::pair<std::string, std::string>> members) {
     std::sort(members.begin(), members.end(), [](const auto &a, const auto &b) {
@@ -1744,6 +2101,9 @@ void writeMergedObject(std::ostringstream &out,
     out << "}";
 }
 
+/// @brief Render an integer vector as compact JSON.
+/// @param values Ordered integer values.
+/// @return JSON array text.
 std::string intListJson(const std::vector<int64_t> &values) {
     std::ostringstream out;
     out << "[";
@@ -1756,6 +2116,11 @@ std::string intListJson(const std::vector<int64_t> &values) {
     return out.str();
 }
 
+/// @brief Emit collision state merged with preserved unknown fields.
+/// @param out Destination stream.
+/// @param b Tile behavior state.
+/// @details Collision tile maps are emitted as ascending `solid` and
+///          `oneWayUp` arrays.
 void writeCollisionSection(std::ostringstream &out, const TileBehaviorState &b) {
     std::vector<std::pair<std::string, std::string>> members;
     if (b.hasCollisionLayer)
@@ -1777,6 +2142,9 @@ void writeCollisionSection(std::ostringstream &out, const TileBehaviorState &b) 
     writeMergedObject(out, std::move(members));
 }
 
+/// @brief Emit per-tile typed and unknown property content.
+/// @param out Destination stream.
+/// @param b Tile behavior state.
 void writeTilePropertiesSection(std::ostringstream &out, const TileBehaviorState &b) {
     out << "{";
     bool first = true;
@@ -1801,6 +2169,9 @@ void writeTilePropertiesSection(std::ostringstream &out, const TileBehaviorState
     out << "}";
 }
 
+/// @brief Emit animation rules in ascending base-tile order.
+/// @param out Destination stream.
+/// @param b Tile behavior state.
 void writeAnimationsSection(std::ostringstream &out, const TileBehaviorState &b) {
     out << "[";
     bool first = true;
@@ -1819,6 +2190,9 @@ void writeAnimationsSection(std::ostringstream &out, const TileBehaviorState &b)
     out << "]";
 }
 
+/// @brief Emit autotile rules in ascending base-tile order.
+/// @param out Destination stream.
+/// @param b Tile behavior state.
 void writeAutotilesSection(std::ostringstream &out, const TileBehaviorState &b) {
     out << "[";
     bool first = true;
@@ -1836,6 +2210,9 @@ void writeAutotilesSection(std::ostringstream &out, const TileBehaviorState &b) 
     out << "]";
 }
 
+/// @brief Emit typed camera/lighting fields merged with preserved unknowns.
+/// @param out Destination stream.
+/// @param section Section state.
 void writeScalarSection(std::ostringstream &out, const SectionScalarState &section) {
     std::vector<std::pair<std::string, std::string>> members;
     for (const auto &[key, value] : section.fields)
@@ -1846,6 +2223,10 @@ void writeScalarSection(std::ostringstream &out, const SectionScalarState &secti
 }
 
 /// @brief Emit one typed rich section when non-empty; return true when emitted.
+/// @param out Destination scene stream.
+/// @param s Scene providing section state.
+/// @param key Known rich-section key.
+/// @return `true` when nonempty typed content was emitted.
 bool writeTypedSection(std::ostringstream &out, const SceneState &s, const std::string &key) {
     if (key == "collision" && !s.behavior.collisionEmpty()) {
         out << ",\n  \"collision\": ";
@@ -1880,6 +2261,13 @@ bool writeTypedSection(std::ostringstream &out, const SceneState &s, const std::
     return false;
 }
 
+/// @brief Emit a complete version-one SceneDocument in canonical order.
+/// @param out Destination stream.
+/// @param s Scene state to serialize.
+/// @details Core fields/layers/objects use stable formatting, object parents
+///          re-enter the reserved property slot, typed rich sections take
+///          precedence over preserved legacy versions, and all remaining
+///          preserved sections follow in lexicographic order.
 void writeCanonicalJson(std::ostringstream &out, const SceneState &s) {
     out << "{\n";
     out << "  \"version\": " << kSceneVersion << ",\n";
@@ -1951,6 +2339,11 @@ void writeCanonicalJson(std::ostringstream &out, const SceneState &s) {
     out << "\n}\n";
 }
 
+/// @brief Infer an asset descriptor kind from a property/member key.
+/// @param key Context key inspected case-insensitively.
+/// @param fallback Kind used for generic `asset` keys.
+/// @return `tileset`, `sprite`, `audio`, `image`, fallback/`unknown`, or empty
+///         when the key is not asset-like.
 std::string assetKindForKey(const std::string &key, const std::string &fallback) {
     std::string lower = lowerAscii(key);
     if (lower.find("tileset") != std::string::npos)
@@ -1969,6 +2362,7 @@ std::string assetKindForKey(const std::string &key, const std::string &fallback)
     return "";
 }
 
+/// @brief One discovered asset reference with authoring provenance.
 struct AssetDescriptor {
     std::string path;
     std::string kind;
@@ -1980,6 +2374,16 @@ struct AssetDescriptor {
     std::string source;
 };
 
+/// @brief Append a nonempty asset reference descriptor.
+/// @param out Destination descriptor vector.
+/// @param s Scene supplying source path.
+/// @param path Referenced asset path; empty values are ignored.
+/// @param kind Inferred asset kind.
+/// @param owner Owner token (`scene`, `layer`, `object`, or `section`).
+/// @param layer Owning layer index or `-1`.
+/// @param object Owning object index or `-1`.
+/// @param key Field/property key.
+/// @param section Optional rich-section name.
 void addAsset(std::vector<AssetDescriptor> &out,
               const SceneState &s,
               std::string path,
@@ -2001,6 +2405,14 @@ void addAsset(std::vector<AssetDescriptor> &out,
                                   s.sourcePath});
 }
 
+/// @brief Recursively discover asset-like strings in preserved runtime JSON.
+/// @param out Destination descriptors.
+/// @param s Scene supplying source provenance.
+/// @param value Current parsed runtime value.
+/// @param section Top-level preserved section.
+/// @param keyHint Nearest Map key used for kind inference.
+/// @details Sequences inherit their parent's key hint; Maps replace it per
+///          child. Strings whose context is not asset-like are ignored.
 void collectAssetsFromJsonValue(std::vector<AssetDescriptor> &out,
                                 const SceneState &s,
                                 void *value,
@@ -2042,6 +2454,12 @@ void collectAssetsFromJsonValue(std::vector<AssetDescriptor> &out,
     releaseObject(keys);
 }
 
+/// @brief Discover asset references across typed and preserved scene content.
+/// @param s Scene to scan.
+/// @return Descriptor vector in deterministic scene/layer/object/section scan
+///         order.
+/// @details Preserved canonical JSON is reparsed temporarily. Invalid preserved
+///          content is skipped.
 std::vector<AssetDescriptor> collectAssetDescriptors(const SceneState &s) {
     std::vector<AssetDescriptor> out;
     addAsset(out, s, s.tilesetAsset, "tileset", "scene", -1, -1, "tilesetAsset");
@@ -2088,6 +2506,9 @@ std::vector<AssetDescriptor> collectAssetDescriptors(const SceneState &s) {
     return out;
 }
 
+/// @brief Convert one C++ asset descriptor to a runtime Map.
+/// @param d Descriptor to copy.
+/// @return New Map containing path, kind, owner, indices, key, section, source.
 void *descriptorMap(const AssetDescriptor &d) {
     void *map = rt_map_new();
     mapSetStrField(map, "path", d.path);
@@ -2101,11 +2522,23 @@ void *descriptorMap(const AssetDescriptor &d) {
     return map;
 }
 
+/// @brief Find a typed scalar by runtime string key.
+/// @param map Ordered scalar map.
+/// @param key Borrowed runtime key.
+/// @return Pointer into @p map, or `nullptr`.
 const SceneScalar *findScalar(const std::map<std::string, SceneScalar> &map, rt_string key) {
     auto it = map.find(toStd(key));
     return it == map.end() ? nullptr : &it->second;
 }
 
+/// @brief Insert or replace a bounded scalar property.
+/// @param map Destination property map.
+/// @param s Scene receiving edit-rejection warnings.
+/// @param key Borrowed runtime key.
+/// @param value Typed value to move on success.
+/// @param maxEntries Maximum distinct keys.
+/// @details Oversized keys/strings and new entries beyond capacity are warning
+///          no-ops; replacing an existing entry remains allowed at capacity.
 void setScalar(std::map<std::string, SceneScalar> &map,
                SceneState &s,
                rt_string key,
@@ -2127,10 +2560,16 @@ void setScalar(std::map<std::string, SceneScalar> &map,
     map[k] = std::move(value);
 }
 
+/// @brief Compute remaining public property capacity for one object.
+/// @param object Object to inspect.
+/// @return 256 when root, or 255 when parent serialization consumes the
+///         reserved slot.
 int64_t maxPublicObjectProperties(const Object &object) {
     return kMaxObjectProperties - (object.parent >= 0 ? 1 : 0);
 }
 
+/// @brief Read the current OS process identifier.
+/// @return Platform process ID as uint64.
 uint64_t currentProcessId() {
 #ifdef _WIN32
     return static_cast<uint64_t>(GetCurrentProcessId());
@@ -2139,6 +2578,11 @@ uint64_t currentProcessId() {
 #endif
 }
 
+/// @brief Choose a process/counter-qualified temporary filename.
+/// @param dir Destination directory.
+/// @param target Final target filename used in the hidden stem.
+/// @return Candidate path not observed to exist during up to 1024 probes;
+///         after that, a fresh counter path without an existence guarantee.
 std::filesystem::path makeSceneTempPath(const std::filesystem::path &dir,
                                         const std::filesystem::path &target) {
     static std::atomic<uint64_t> counter{0};
@@ -2217,6 +2661,13 @@ bool writeSceneJsonTempExclusive(const std::filesystem::path &temp, rt_string js
 #endif
 }
 
+/// @brief Atomically replace a target path with a completed temporary file.
+/// @param temp Existing temporary path in the target directory.
+/// @param target Final scene path.
+/// @param ec Receives platform/filesystem failure.
+/// @return `true` after rename/replacement succeeds.
+/// @details Uses filesystem rename first and Windows write-through replacement
+///          as a platform fallback.
 bool replaceFileWithTemp(const std::filesystem::path &temp,
                          const std::filesystem::path &target,
                          std::error_code &ec) {
@@ -2236,6 +2687,11 @@ bool replaceFileWithTemp(const std::filesystem::path &temp,
     return false;
 }
 
+/// @brief Apply a preserved collision JSON object to a Tilemap.
+/// @param tilemap Destination Tilemap.
+/// @param root Parsed collision Map.
+/// @details Recognized integer layer and integer tile IDs are forwarded;
+///          malformed/unknown values are skipped.
 void applyCollisionSection(void *tilemap, void *root) {
     if (!isMap(root))
         return;
@@ -2257,6 +2713,11 @@ void applyCollisionSection(void *tilemap, void *root) {
     applyList("oneWayUp", RT_TILE_COLLISION_ONE_WAY_UP);
 }
 
+/// @brief Apply preserved per-tile numeric/Boolean properties to a Tilemap.
+/// @param tilemap Destination Tilemap.
+/// @param root Parsed tileProperties Map.
+/// @details Noninteger tile keys, non-Map values, and unsupported property
+///          types are skipped.
 void applyTilePropertiesSection(void *tilemap, void *root) {
     if (!isMap(root))
         return;
@@ -2295,6 +2756,11 @@ void applyTilePropertiesSection(void *tilemap, void *root) {
     releaseObject(tileKeys);
 }
 
+/// @brief Apply preserved animation rules to a Tilemap.
+/// @param tilemap Destination Tilemap.
+/// @param root Parsed animation Seq.
+/// @details Supports typed per-frame durations and legacy
+///          frameCount/msPerFrame encoding. Invalid rules are skipped.
 void applyAnimationsSection(void *tilemap, void *root) {
     if (!isSeq(root))
         return;
@@ -2346,6 +2812,11 @@ void applyAnimationsSection(void *tilemap, void *root) {
     }
 }
 
+/// @brief Apply preserved Tiled import-layout metadata to a Tilemap.
+/// @param tilemap Destination Tilemap.
+/// @param root Parsed tiledRuntime Map.
+/// @details Orientation/render/stagger/skew/parallax fields use safe defaults;
+///          per-layer metadata is applied only to existing Tilemap layers.
 void applyTiledRuntimeSection(void *tilemap, void *root) {
     if (!isMap(root))
         return;
@@ -2439,6 +2910,11 @@ void applyTiledRuntimeSection(void *tilemap, void *root) {
     }
 }
 
+/// @brief Apply preserved 16-variant autotile rules to a Tilemap.
+/// @param tilemap Destination Tilemap.
+/// @param root Parsed autotile Seq.
+/// @details Rules with missing/noninteger base or fewer than 16 integer
+///          variants are skipped.
 void applyAutotilesSection(void *tilemap, void *root) {
     if (!isSeq(root))
         return;
@@ -2466,6 +2942,8 @@ void applyAutotilesSection(void *tilemap, void *root) {
 }
 
 /// @brief Apply typed tile-behavior state to a Tilemap copy (ADR 0176).
+/// @param s Scene supplying typed behavior.
+/// @param tilemap Destination Tilemap.
 /// @details Values pass through unchanged; Tilemap validates addressability
 ///          exactly as it did for the preserved-JSON path.
 void applyTypedBehavior(const SceneState &s, void *tilemap) {
@@ -2499,6 +2977,11 @@ void applyTypedBehavior(const SceneState &s, void *tilemap) {
     }
 }
 
+/// @brief Reparse and apply legacy preserved Tilemap-relevant sections.
+/// @param s Scene supplying canonical preserved JSON.
+/// @param tilemap Destination Tilemap.
+/// @details Only collision, tileProperties, animations, autotiles, and
+///          tiledRuntime are considered. Parse failures are silent no-ops.
 void applyPreservedTilemapSections(const SceneState &s, void *tilemap) {
     for (const auto &[key, section] : s.preservedSections) {
         if (key != "collision" && key != "tileProperties" && key != "animations" &&
@@ -2523,6 +3006,11 @@ void applyPreservedTilemapSections(const SceneState &s, void *tilemap) {
     }
 }
 
+/// @brief Remap an object index after moving one vector element.
+/// @param index Existing index or negative root sentinel.
+/// @param from Original moved-object index.
+/// @param to Destination index.
+/// @return Index referring to the same logical object after the move.
 int64_t remapMovedObjectIndex(int64_t index, int64_t from, int64_t to) {
     if (index < 0)
         return index;
@@ -2535,6 +3023,10 @@ int64_t remapMovedObjectIndex(int64_t index, int64_t from, int64_t to) {
     return index;
 }
 
+/// @brief Remap an object index after inserting before one vector position.
+/// @param index Existing index.
+/// @param insertion New element index.
+/// @return Index incremented when at or after insertion.
 int64_t remapInsertedObjectIndex(int64_t index, int64_t insertion) {
     return index >= insertion ? index + 1 : index;
 }
@@ -2550,15 +3042,26 @@ extern "C" {
 // is wrapped to return a safe default instead. rt_trap() terminates the process
 // (or returns via the test hook) and never throws a C++ exception, so these
 // guards never mask an intentional runtime trap.
+/// @brief Begin the C ABI exception barrier.
 #define SCENE_TRY try
+/// @brief Convert any C++ exception to a value-returning ABI fallback.
 #define SCENE_CATCH(default_ret)                                                                   \
     catch (...) {                                                                                  \
         return default_ret;                                                                        \
     }
+/// @brief Convert any C++ exception to a void ABI return.
 #define SCENE_CATCH_VOID                                                                           \
     catch (...) {                                                                                  \
     }
 
+/// @brief Create a diagnostic-bearing scene with one base layer.
+/// @param width Width in tile cells.
+/// @param height Height in tile cells.
+/// @param tile_width Tile width in pixels; nonpositive input becomes 16.
+/// @param tile_height Tile height in pixels; nonpositive input becomes 16.
+/// @return New SceneDocument, or `NULL` on an escaped C++ allocation failure.
+/// @details Invalid scene dimensions produce a 1×1 document retaining an error
+///          diagnostic rather than returning a partial state.
 void *rt_game_scene_new(int64_t width, int64_t height, int64_t tile_width, int64_t tile_height) {
     SCENE_TRY {
         return newSceneHandle(width, height, tile_width, tile_height);
@@ -2566,6 +3069,12 @@ void *rt_game_scene_new(int64_t width, int64_t height, int64_t tile_width, int64
     SCENE_CATCH(nullptr)
 }
 
+/// @brief Load JSON into a diagnostic-bearing compatibility SceneDocument.
+/// @param text Borrowed scene JSON.
+/// @return New SceneDocument even for parse/schema errors, or `NULL` on an
+///         escaped C++ allocation failure.
+/// @details Inspect diagnostics/has-errors to distinguish an invalid document;
+///          use rt_game_scene_load_json_result() for Result semantics.
 void *rt_game_scene_load_json(rt_string text) {
     SCENE_TRY {
         return handleFromState(loadStateFromJson(text, ""));
@@ -2636,6 +3145,14 @@ void *rt_game_scene_load_json_result(rt_string text) {
     return scene_load_to_result(scene, "SceneDocument.LoadJson failed");
 }
 
+/// @brief Load a scene document from a filesystem path.
+/// @details Reads at most 16 MiB of JSON and records schema or I/O failures on
+///          the returned document. A missing, oversized, or malformed file
+///          therefore produces an editable fallback scene with diagnostics
+///          rather than a null handle.
+/// @param path_s Runtime string containing the scene file path.
+/// @return Owned SceneDocument handle, or `nullptr` if an exception crosses
+///         the runtime allocation/translation boundary.
 void *rt_game_scene_load_file(rt_string path_s) {
     SCENE_TRY {
         std::string path = toStd(path_s);
@@ -2673,6 +3190,13 @@ void *rt_game_scene_load_file_result(rt_string path) {
     return scene_load_to_result(scene, "SceneDocument.Load failed");
 }
 
+/// @brief Serialize a scene document to canonical JSON.
+/// @details The serializer emits normalized dimensions, layers, objects,
+///          scalar properties, typed behavior sections, and preserved rich
+///          sections in deterministic key order.
+/// @param scene SceneDocument handle.
+/// @return Newly allocated runtime string containing the JSON text, or an
+///         empty runtime string if serialization fails.
 rt_string rt_game_scene_to_json(void *scene){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 std::ostringstream out;
@@ -2682,6 +3206,14 @@ return makeString(out.str());
 SCENE_CATCH(makeString(""))
 }
 
+/// @brief Save a scene document using a same-directory atomic replacement.
+/// @details Serializes the document, writes an exclusively created temporary
+///          file, flushes it, and replaces the destination only after the
+///          complete payload is durable. Failed writes leave a diagnostic and
+///          make a best-effort attempt to remove the temporary file.
+/// @param scene SceneDocument handle whose diagnostics receive save failures.
+/// @param path_s Destination filesystem path.
+/// @return `1` after a successful replacement; otherwise `0`.
 int8_t rt_game_scene_save_file(void *scene, rt_string path_s){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 std::string pathText = toStd(path_s);
@@ -2718,6 +3250,10 @@ return 1;
 SCENE_CATCH(0)
 }
 
+/// @brief Return the most recently recorded diagnostic message.
+/// @param scene SceneDocument handle.
+/// @return Newly allocated runtime string, empty when no diagnostic has been
+///         recorded or when the operation fails.
 rt_string rt_game_scene_last_error(void *scene) {
     SCENE_TRY {
         return makeString(requireScene(scene)->state->lastError);
@@ -2725,6 +3261,12 @@ rt_string rt_game_scene_last_error(void *scene) {
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Copy the document's diagnostic messages into a runtime sequence.
+/// @details Messages retain insertion order but omit diagnostic metadata; use
+///          @ref rt_game_scene_diagnostic_records for structured records.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of owned runtime strings, or an empty owned sequence
+///         if the operation fails.
 void *rt_game_scene_diagnostics(void *scene) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -2739,6 +3281,13 @@ void *rt_game_scene_diagnostics(void *scene) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Copy all structured diagnostic records from a scene document.
+/// @details Each sequence item is a map with `code`, `severity`, `message`,
+///          `path`, `line`, `column`, and `source` fields. Records retain their
+///          original insertion order.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of owned diagnostic maps, or an empty owned sequence
+///         if the operation fails.
 void *rt_game_scene_diagnostic_records(void *scene){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 void *seq = rt_seq_new_owned();
@@ -2759,10 +3308,18 @@ return seq;
 SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Test whether a document remains invalid or has error diagnostics.
+/// @param scene SceneDocument handle.
+/// @return `1` when structural validity is false or an error is present;
+///         otherwise `0`.
 int8_t rt_game_scene_has_errors(void *scene) {
     return hasErrors(*requireScene(scene)->state) ? 1 : 0;
 }
 
+/// @brief Acknowledge and remove all queued diagnostics.
+/// @details Clearing messages does not repair or reset the structural-validity
+///          state established while loading the document.
+/// @param scene SceneDocument handle.
 void rt_game_scene_clear_diagnostics(void *scene) {
     SceneState &s = *requireScene(scene)->state;
     // Clear only the diagnostic queue and last-error text. The `valid` flag records
@@ -2773,22 +3330,40 @@ void rt_game_scene_clear_diagnostics(void *scene) {
     s.lastError.clear();
 }
 
+/// @brief Return the scene width in tile cells.
+/// @param scene SceneDocument handle.
+/// @return Positive scene width.
 int64_t rt_game_scene_get_width(void *scene) {
     return requireScene(scene)->state->width;
 }
 
+/// @brief Return the scene height in tile cells.
+/// @param scene SceneDocument handle.
+/// @return Positive scene height.
 int64_t rt_game_scene_get_height(void *scene) {
     return requireScene(scene)->state->height;
 }
 
+/// @brief Return the rendered width of one tile in pixels.
+/// @param scene SceneDocument handle.
+/// @return Positive tile width.
 int64_t rt_game_scene_get_tile_width(void *scene) {
     return requireScene(scene)->state->tileWidth;
 }
 
+/// @brief Return the rendered height of one tile in pixels.
+/// @param scene SceneDocument handle.
+/// @return Positive tile height.
 int64_t rt_game_scene_get_tile_height(void *scene) {
     return requireScene(scene)->state->tileHeight;
 }
 
+/// @brief Append an empty tile layer to the scene.
+/// @details The edit is rejected with a warning if it would exceed the layer
+///          count, aggregate tile-cell budget, or Tilemap layer-name limit.
+/// @param scene SceneDocument handle.
+/// @param name Name assigned to the new layer.
+/// @return Zero-based index of the new layer, or `-1` when rejected.
 int64_t rt_game_scene_add_layer(void *scene, rt_string name){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (static_cast<int64_t>(s.layers.size()) >= kMaxLayers) {
@@ -2813,10 +3388,18 @@ return static_cast<int64_t>(s.layers.size()) - 1;
 SCENE_CATCH(-1)
 }
 
+/// @brief Return the number of tile layers in the document.
+/// @param scene SceneDocument handle.
+/// @return Current layer count.
 int64_t rt_game_scene_layer_count(void *scene) {
     return static_cast<int64_t>(requireScene(scene)->state->layers.size());
 }
 
+/// @brief Copy the name of a tile layer.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @return Newly allocated layer-name string, or an empty string for an
+///         invalid index or failed operation.
 rt_string rt_game_scene_layer_name(void *scene, int64_t layer) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -2825,6 +3408,12 @@ rt_string rt_game_scene_layer_name(void *scene, int64_t layer) {
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Rename a tile layer when the requested name is Tilemap-compatible.
+/// @details Invalid layer indices are ignored. Names longer than the Tilemap
+///          31-byte limit are rejected and recorded as warning diagnostics.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @param name Replacement layer name.
 void rt_game_scene_set_layer_name(void *scene, int64_t layer, rt_string name){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (!validLayer(s, layer))
@@ -2840,17 +3429,32 @@ s.layers[static_cast<size_t>(layer)].name = std::move(layerName);
 SCENE_CATCH_VOID
 }
 
+/// @brief Query whether a tile layer is visible.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @return `1` for a visible valid layer; `0` for a hidden or invalid layer.
 int8_t rt_game_scene_layer_visible(void *scene, int64_t layer) {
     SceneState &s = *requireScene(scene)->state;
     return validLayer(s, layer) && s.layers[static_cast<size_t>(layer)].visible ? 1 : 0;
 }
 
+/// @brief Change a tile layer's visibility flag.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index; invalid indices are ignored.
+/// @param visible Nonzero to show the layer, zero to hide it.
 void rt_game_scene_set_layer_visible(void *scene, int64_t layer, int8_t visible) {
     SceneState &s = *requireScene(scene)->state;
     if (validLayer(s, layer))
         s.layers[static_cast<size_t>(layer)].visible = visible != 0;
 }
 
+/// @brief Move a layer to another position in the layer stack.
+/// @details The selected layer is removed and reinserted at @p to, preserving
+///          its tiles and metadata. Invalid indices and identity moves are
+///          ignored.
+/// @param scene SceneDocument handle.
+/// @param from Current zero-based layer index.
+/// @param to Destination zero-based layer index.
 void rt_game_scene_move_layer(void *scene, int64_t from, int64_t to) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -2863,6 +3467,10 @@ void rt_game_scene_move_layer(void *scene, int64_t from, int64_t to) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Remove a layer while preserving the scene's required base layer.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based index to remove; invalid indices and removal of the
+///        sole remaining layer are ignored.
 void rt_game_scene_remove_layer(void *scene, int64_t layer) {
     SceneState &s = *requireScene(scene)->state;
     if (s.layers.size() <= 1 || !validLayer(s, layer))
@@ -2870,6 +3478,12 @@ void rt_game_scene_remove_layer(void *scene, int64_t layer) {
     s.layers.erase(s.layers.begin() + layer);
 }
 
+/// @brief Read the tile identifier stored at one layer cell.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @param x Horizontal tile coordinate.
+/// @param y Vertical tile coordinate.
+/// @return Stored tile identifier, or `0` when any index is out of range.
 int64_t rt_game_scene_get_tile(void *scene, int64_t layer, int64_t x, int64_t y) {
     SceneState &s = *requireScene(scene)->state;
     if (!validLayer(s, layer) || !validTile(s, x, y))
@@ -2877,6 +3491,12 @@ int64_t rt_game_scene_get_tile(void *scene, int64_t layer, int64_t x, int64_t y)
     return s.layers[static_cast<size_t>(layer)].tiles[static_cast<size_t>(y * s.width + x)];
 }
 
+/// @brief Replace the tile identifier at one layer cell.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @param x Horizontal tile coordinate.
+/// @param y Vertical tile coordinate.
+/// @param tile Tile identifier to store.
 void rt_game_scene_set_tile(void *scene, int64_t layer, int64_t x, int64_t y, int64_t tile) {
     SceneState &s = *requireScene(scene)->state;
     if (!validLayer(s, layer) || !validTile(s, x, y))
@@ -2884,6 +3504,16 @@ void rt_game_scene_set_tile(void *scene, int64_t layer, int64_t x, int64_t y, in
     s.layers[static_cast<size_t>(layer)].tiles[static_cast<size_t>(y * s.width + x)] = tile;
 }
 
+/// @brief Fill the in-bounds portion of a rectangular tile region.
+/// @details The rectangle is clipped to the scene bounds. Non-positive extents,
+///          invalid layers, and overflowing endpoint calculations are ignored.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @param x Left tile coordinate, which may lie outside the scene.
+/// @param y Top tile coordinate, which may lie outside the scene.
+/// @param w Rectangle width in cells.
+/// @param h Rectangle height in cells.
+/// @param tile Tile identifier written to every clipped cell.
 void rt_game_scene_fill_tiles(
     void *scene, int64_t layer, int64_t x, int64_t y, int64_t w, int64_t h, int64_t tile) {
     SceneState &s = *requireScene(scene)->state;
@@ -2901,6 +3531,16 @@ void rt_game_scene_fill_tiles(
                 tile;
 }
 
+/// @brief Flood-fill a four-connected region of equal tile identifiers.
+/// @details The complete bounded queue and visited set are allocated before the
+///          first tile mutation, keeping allocation failures atomic.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @param x Horizontal seed coordinate.
+/// @param y Vertical seed coordinate.
+/// @param tile Replacement tile identifier.
+/// @return Number of changed cells, or `0` for invalid input, an unchanged
+///         replacement, or a failed operation.
 int64_t rt_game_scene_flood_fill_tiles(
     void *scene, int64_t layer, int64_t x, int64_t y, int64_t tile) {
     SCENE_TRY {
@@ -2952,6 +3592,10 @@ int64_t rt_game_scene_flood_fill_tiles(
     SCENE_CATCH(0)
 }
 
+/// @brief Associate an asset path with a tile layer.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index; invalid indices are ignored.
+/// @param asset_path Asset path copied into the layer metadata.
 void rt_game_scene_set_layer_asset(void *scene, int64_t layer, rt_string asset_path){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (validLayer(s, layer))
@@ -2960,6 +3604,11 @@ if (validLayer(s, layer))
 SCENE_CATCH_VOID
 }
 
+/// @brief Copy the asset path associated with a tile layer.
+/// @param scene SceneDocument handle.
+/// @param layer Zero-based layer index.
+/// @return Newly allocated asset-path string, or an empty string for an
+///         invalid index or failed operation.
 rt_string rt_game_scene_layer_asset(void *scene, int64_t layer){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 return makeString(validLayer(s, layer) ? s.layers[static_cast<size_t>(layer)].asset : "");
@@ -2967,6 +3616,14 @@ return makeString(validLayer(s, layer) ? s.layers[static_cast<size_t>(layer)].as
 SCENE_CATCH(makeString(""))
 }
 
+/// @brief Append an object with the supplied metadata and absolute position.
+/// @param scene SceneDocument handle.
+/// @param type Object type copied into the new record.
+/// @param id Object identifier copied into the new record.
+/// @param x Absolute horizontal scene coordinate.
+/// @param y Absolute vertical scene coordinate.
+/// @return Zero-based index of the new root object, or `-1` if the object
+///         limit is reached or the operation fails.
 int64_t rt_game_scene_add_object(void *scene, rt_string type, rt_string id, int64_t x, int64_t y){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (static_cast<int64_t>(s.objects.size()) >= kMaxObjects) {
@@ -2979,10 +3636,18 @@ return static_cast<int64_t>(s.objects.size()) - 1;
 SCENE_CATCH(-1)
 }
 
+/// @brief Return the number of objects in document order.
+/// @param scene SceneDocument handle.
+/// @return Current object count.
 int64_t rt_game_scene_object_count(void *scene) {
     return static_cast<int64_t>(requireScene(scene)->state->objects.size());
 }
 
+/// @brief Remove an object and repair every stored parent index.
+/// @details Direct children are reparented to the removed object's parent, and
+///          references after the erased index are shifted down.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
 void rt_game_scene_remove_object(void *scene, int64_t index) {
     SceneState &s = *requireScene(scene)->state;
     if (!validObjectIndex(s, index))
@@ -2998,6 +3663,11 @@ void rt_game_scene_remove_object(void *scene, int64_t index) {
     s.objects.erase(s.objects.begin() + index);
 }
 
+/// @brief Copy an object's type string.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Newly allocated type string, or an empty string for an invalid
+///         index or failed operation.
 rt_string rt_game_scene_object_type(void *scene, int64_t index){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 return makeString(validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].type : "");
@@ -3005,6 +3675,11 @@ return makeString(validObjectIndex(s, index) ? s.objects[static_cast<size_t>(ind
 SCENE_CATCH(makeString(""))
 }
 
+/// @brief Copy an object's identifier string.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Newly allocated identifier string, or an empty string for an
+///         invalid index or failed operation.
 rt_string rt_game_scene_object_id(void *scene, int64_t index){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 return makeString(validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].id : "");
@@ -3012,21 +3687,42 @@ return makeString(validObjectIndex(s, index) ? s.objects[static_cast<size_t>(ind
 SCENE_CATCH(makeString(""))
 }
 
+/// @brief Return an object's absolute horizontal scene coordinate.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored x coordinate, or `0` for an invalid index.
 int64_t rt_game_scene_object_x(void *scene, int64_t index) {
     SceneState &s = *requireScene(scene)->state;
     return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].x : 0;
 }
 
+/// @brief Return an object's absolute vertical scene coordinate.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored y coordinate, or `0` for an invalid index.
 int64_t rt_game_scene_object_y(void *scene, int64_t index) {
     SceneState &s = *requireScene(scene)->state;
     return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].y : 0;
 }
 
+/// @brief Return an object's organizational parent index.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Parent object index, or `-1` for a root or invalid object.
 int64_t rt_game_scene_object_parent(void *scene, int64_t index) {
     SceneState &s = *requireScene(scene)->state;
     return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].parent : -1;
 }
 
+/// @brief Assign an object's organizational parent without creating a cycle.
+/// @details The requested parent may be `-1` for a root. The edit validates
+///          both indices, reserves the hierarchy serialization slot, and walks
+///          the ancestor chain before changing the object.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index to reparent.
+/// @param parent New parent index, or `-1` to detach the object.
+/// @return `1` when the assignment succeeds; `0` when invalid, cyclic, or over
+///         the object's property budget.
 int8_t rt_game_scene_try_set_object_parent(void *scene, int64_t index, int64_t parent) {
     SceneState &s = *requireScene(scene)->state;
     if (!validObjectIndex(s, index) || (parent != -1 && !validObjectIndex(s, parent)) ||
@@ -3055,6 +3751,11 @@ int8_t rt_game_scene_try_set_object_parent(void *scene, int64_t index, int64_t p
     return 1;
 }
 
+/// @brief Replace an object's type and identifier atomically.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param type Replacement type string.
+/// @param id Replacement identifier string.
 void rt_game_scene_set_object_metadata(void *scene, int64_t index, rt_string type, rt_string id) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3070,6 +3771,11 @@ void rt_game_scene_set_object_metadata(void *scene, int64_t index, rt_string typ
     SCENE_CATCH_VOID
 }
 
+/// @brief Set an object's absolute scene position.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param x Replacement horizontal coordinate.
+/// @param y Replacement vertical coordinate.
 void rt_game_scene_set_object_position(void *scene, int64_t index, int64_t x, int64_t y) {
     SceneState &s = *requireScene(scene)->state;
     if (validObjectIndex(s, index)) {
@@ -3078,6 +3784,15 @@ void rt_game_scene_set_object_position(void *scene, int64_t index, int64_t x, in
     }
 }
 
+/// @brief Duplicate an object immediately after its source.
+/// @details Copies type, position, parent, and scalar properties, replaces the
+///          identifier, then remaps all parent indices to account for the
+///          insertion.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based source object index.
+/// @param id Identifier assigned to the duplicate.
+/// @return Index of the inserted duplicate, or `-1` for invalid input, an
+///         exhausted object budget, or a failed operation.
 int64_t rt_game_scene_duplicate_object(void *scene, int64_t index, rt_string id) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3101,10 +3816,26 @@ int64_t rt_game_scene_duplicate_object(void *scene, int64_t index, rt_string id)
     SCENE_CATCH(-1)
 }
 
+/// @brief Store a legacy string-valued object property.
+/// @details This compatibility entry point delegates to the typed string
+///          setter and therefore observes key, value, capacity, and reserved
+///          hierarchy-key validation.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @param value String value to copy.
 void rt_game_scene_set_object_property(void *scene, int64_t index, rt_string key, rt_string value) {
     rt_game_scene_object_set_str(scene, index, key, value);
 }
 
+/// @brief Read any object scalar through the legacy string interface.
+/// @details Existing null, integer, string, floating-point, and Boolean values
+///          are converted to their canonical textual representation.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @return Newly allocated textual value, or an empty string when absent,
+///         invalid, or unsuccessful.
 rt_string rt_game_scene_get_object_property(void *scene, int64_t index, rt_string key) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3117,10 +3848,20 @@ rt_string rt_game_scene_get_object_property(void *scene, int64_t index, rt_strin
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Remove an object property through the legacy string interface.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key; the reserved hierarchy key cannot be removed.
 void rt_game_scene_delete_object_property(void *scene, int64_t index, rt_string key) {
     rt_game_scene_object_remove(scene, index, key);
 }
 
+/// @brief Read an integer-valued object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @param def Fallback returned for a missing, mismatched, or invalid property.
+/// @return Stored integer or @p def.
 int64_t rt_game_scene_object_get_int(void *scene, int64_t index, rt_string key, int64_t def){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (!validObjectIndex(s, index))
@@ -3131,6 +3872,12 @@ return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
 SCENE_CATCH(def)
 }
 
+/// @brief Read a string-valued object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @param def Fallback copied for a missing, mismatched, or invalid property.
+/// @return Newly allocated stored or fallback string.
 rt_string rt_game_scene_object_get_str(void *scene, int64_t index, rt_string key, rt_string def) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3144,6 +3891,14 @@ rt_string rt_game_scene_object_get_str(void *scene, int64_t index, rt_string key
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Read a numeric object property as a floating-point value.
+/// @details Stored integers are widened exactly when possible; other scalar
+///          kinds use the caller-provided fallback.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @param def Fallback for absence, type mismatch, invalid input, or failure.
+/// @return Stored float, widened integer, or @p def.
 double rt_game_scene_object_get_float(void *scene, int64_t index, rt_string key, double def){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (!validObjectIndex(s, index))
@@ -3160,6 +3915,12 @@ return def;
 SCENE_CATCH(def)
 }
 
+/// @brief Read a Boolean-valued object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @param def Fallback for absence, type mismatch, invalid input, or failure.
+/// @return `1` or `0` for a stored Boolean, otherwise @p def unchanged.
 int8_t rt_game_scene_object_get_bool(void *scene, int64_t index, rt_string key, int8_t def){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (!validObjectIndex(s, index))
@@ -3170,6 +3931,11 @@ return scalar && scalar->kind == ScalarKind::Bool ? (scalar->boolValue ? 1 : 0) 
 SCENE_CATCH(def)
 }
 
+/// @brief Test whether an object contains a scalar property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @return `1` when present on a valid object; otherwise `0`.
 int8_t rt_game_scene_object_has(void *scene, int64_t index, rt_string key){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 return validObjectIndex(s, index) &&
@@ -3180,6 +3946,12 @@ return validObjectIndex(s, index) &&
 SCENE_CATCH(0)
 }
 
+/// @brief Report the stored scalar kind of an object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key.
+/// @return Newly allocated kind name (`null`, `int`, `string`, `float`, or
+///         `bool`), or an empty string when absent or invalid.
 rt_string rt_game_scene_object_property_kind(void *scene, int64_t index, rt_string key) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3192,6 +3964,13 @@ rt_string rt_game_scene_object_property_kind(void *scene, int64_t index, rt_stri
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Enumerate an object's public property keys.
+/// @details Keys follow the lexical order of the document's ordered property
+///          map. The reserved hierarchy encoding is not stored in this map.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Owned sequence of owned key strings, empty for an invalid object or
+///         failed operation.
 void *rt_game_scene_object_keys(void *scene, int64_t index) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3208,6 +3987,11 @@ void *rt_game_scene_object_keys(void *scene, int64_t index) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Store an explicit null object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key; invalid, reserved, or over-budget edits are
+///        ignored and may record a warning.
 void rt_game_scene_object_set_null(void *scene, int64_t index, rt_string key) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3220,6 +4004,11 @@ void rt_game_scene_object_set_null(void *scene, int64_t index, rt_string key) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Store an integer object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key subject to object-property limits.
+/// @param value Integer value to store.
 void rt_game_scene_object_set_int(void *scene, int64_t index, rt_string key, int64_t value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3232,6 +4021,11 @@ void rt_game_scene_object_set_int(void *scene, int64_t index, rt_string key, int
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a string object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key subject to object-property limits.
+/// @param value String value subject to the 64 KiB scalar-value limit.
 void rt_game_scene_object_set_str(void *scene, int64_t index, rt_string key, rt_string value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3247,6 +4041,11 @@ void rt_game_scene_object_set_str(void *scene, int64_t index, rt_string key, rt_
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a finite floating-point object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key subject to object-property limits.
+/// @param value Finite value to store; NaN and infinities are ignored.
 void rt_game_scene_object_set_float(void *scene, int64_t index, rt_string key, double value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3262,6 +4061,11 @@ void rt_game_scene_object_set_float(void *scene, int64_t index, rt_string key, d
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a Boolean object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @param key Property key subject to object-property limits.
+/// @param value Zero for false, nonzero for true.
 void rt_game_scene_object_set_bool(void *scene, int64_t index, rt_string key, int8_t value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3277,6 +4081,10 @@ void rt_game_scene_object_set_bool(void *scene, int64_t index, rt_string key, in
     SCENE_CATCH_VOID
 }
 
+/// @brief Remove a public object property.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param key Property key; the reserved hierarchy key is left untouched.
 void rt_game_scene_object_remove(void *scene, int64_t index, rt_string key){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (validObjectIndex(s, index) && !isReservedObjectProperty(key))
@@ -3285,6 +4093,10 @@ if (validObjectIndex(s, index) && !isReservedObjectProperty(key))
 SCENE_CATCH_VOID
 }
 
+/// @brief Count objects whose type exactly matches a target string.
+/// @param scene SceneDocument handle.
+/// @param type Case-sensitive object type to match.
+/// @return Number of matching objects, or `0` if the operation fails.
 int64_t rt_game_scene_count_of_type(void *scene, rt_string type){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 std::string target = toStd(type);
@@ -3298,6 +4110,12 @@ return count;
 SCENE_CATCH(0)
 }
 
+/// @brief Find the nth object of a given type in document order.
+/// @param scene SceneDocument handle.
+/// @param type Case-sensitive object type to match.
+/// @param n Zero-based match ordinal.
+/// @return Object index, or `-1` when the ordinal is negative, out of range,
+///         or the operation fails.
 int64_t rt_game_scene_object_of_type(void *scene, rt_string type, int64_t n){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 std::string target = toStd(type);
@@ -3314,6 +4132,10 @@ return -1;
 SCENE_CATCH(-1)
 }
 
+/// @brief Find the first object with an exact identifier match.
+/// @param scene SceneDocument handle.
+/// @param id Case-sensitive identifier to search for.
+/// @return Zero-based object index, or `-1` when absent or unsuccessful.
 int64_t rt_game_scene_find_object(void *scene, rt_string id) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3338,6 +4160,13 @@ void *rt_game_scene_find_object_option(void *scene, rt_string id) {
     return index >= 0 ? rt_option_some_i64(index) : rt_option_none();
 }
 
+/// @brief Move an object to another document-order index.
+/// @details Every parent reference is remapped before the selected record is
+///          reinserted, preserving the hierarchy represented by object
+///          indices.
+/// @param scene SceneDocument handle.
+/// @param from Current zero-based object index.
+/// @param to Destination zero-based object index.
 void rt_game_scene_move_object(void *scene, int64_t from, int64_t to) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3352,10 +4181,22 @@ void rt_game_scene_move_object(void *scene, int64_t from, int64_t to) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a legacy string-valued scene property.
+/// @details Delegates to the typed string setter and therefore observes all
+///          property-key, string-size, and property-count limits.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @param value String value to copy.
 void rt_game_scene_set_property(void *scene, rt_string key, rt_string value) {
     rt_game_scene_set_str(scene, key, value);
 }
 
+/// @brief Read any scene scalar through the legacy string interface.
+/// @details Existing scalar kinds are converted to canonical text.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @return Newly allocated textual value, or an empty string when absent or
+///         unsuccessful.
 rt_string rt_game_scene_get_property(void *scene, rt_string key) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3365,10 +4206,18 @@ rt_string rt_game_scene_get_property(void *scene, rt_string key) {
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Remove a scene property through the legacy string interface.
+/// @param scene SceneDocument handle.
+/// @param key Property key to erase.
 void rt_game_scene_delete_property(void *scene, rt_string key) {
     rt_game_scene_remove(scene, key);
 }
 
+/// @brief Read an integer-valued scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @param def Fallback for absence, type mismatch, or failure.
+/// @return Stored integer or @p def.
 int64_t rt_game_scene_get_int(void *scene, rt_string key, int64_t def){
     SCENE_TRY{const SceneScalar *scalar = findScalar(requireScene(scene) -> state->properties, key);
 return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
@@ -3376,6 +4225,11 @@ return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
 SCENE_CATCH(def)
 }
 
+/// @brief Read a string-valued scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @param def Fallback copied when the property is absent or has another type.
+/// @return Newly allocated stored or fallback string.
 rt_string rt_game_scene_get_str(void *scene, rt_string key, rt_string def) {
     SCENE_TRY {
         const SceneScalar *scalar = findScalar(requireScene(scene)->state->properties, key);
@@ -3385,6 +4239,13 @@ rt_string rt_game_scene_get_str(void *scene, rt_string key, rt_string def) {
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Read a numeric scene property as a floating-point value.
+/// @details Floating-point values are returned directly and integer values are
+///          widened; all other kinds use the supplied fallback.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @param def Fallback for absence, type mismatch, or failure.
+/// @return Stored float, widened integer, or @p def.
 double rt_game_scene_get_float(void *scene, rt_string key, double def){
     SCENE_TRY{const SceneScalar *scalar = findScalar(requireScene(scene) -> state->properties, key);
 if (!scalar)
@@ -3398,6 +4259,11 @@ return def;
 SCENE_CATCH(def)
 }
 
+/// @brief Read a Boolean-valued scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @param def Fallback for absence, type mismatch, or failure.
+/// @return `1` or `0` for a stored Boolean, otherwise @p def unchanged.
 int8_t rt_game_scene_get_bool(void *scene, rt_string key, int8_t def){
     SCENE_TRY{const SceneScalar *scalar = findScalar(requireScene(scene) -> state->properties, key);
 return scalar && scalar->kind == ScalarKind::Bool ? (scalar->boolValue ? 1 : 0) : def;
@@ -3405,12 +4271,21 @@ return scalar && scalar->kind == ScalarKind::Bool ? (scalar->boolValue ? 1 : 0) 
 SCENE_CATCH(def)
 }
 
+/// @brief Test whether a scene scalar property exists.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @return `1` when present; otherwise `0`.
 int8_t rt_game_scene_has(void *scene, rt_string key){
     SCENE_TRY{return findScalar(requireScene(scene) -> state->properties, key) ? 1 : 0;
 }
 SCENE_CATCH(0)
 }
 
+/// @brief Report the stored scalar kind of a scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key.
+/// @return Newly allocated kind name (`null`, `int`, `string`, `float`, or
+///         `bool`), or an empty string when absent or unsuccessful.
 rt_string rt_game_scene_property_kind(void *scene, rt_string key) {
     SCENE_TRY {
         const SceneScalar *scalar = findScalar(requireScene(scene)->state->properties, key);
@@ -3419,6 +4294,10 @@ rt_string rt_game_scene_property_kind(void *scene, rt_string key) {
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Enumerate all scene property keys in lexical order.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of owned key strings, or an empty owned sequence if
+///         the operation fails.
 void *rt_game_scene_keys(void *scene) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3433,6 +4312,9 @@ void *rt_game_scene_keys(void *scene) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Store an explicit null scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key subject to key and property-count limits.
 void rt_game_scene_set_null(void *scene, rt_string key) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3441,6 +4323,10 @@ void rt_game_scene_set_null(void *scene, rt_string key) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Store an integer scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key subject to key and property-count limits.
+/// @param value Integer value to store.
 void rt_game_scene_set_int(void *scene, rt_string key, int64_t value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3449,6 +4335,10 @@ void rt_game_scene_set_int(void *scene, rt_string key, int64_t value) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a string scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key subject to key and property-count limits.
+/// @param value String value subject to the 64 KiB scalar-value limit.
 void rt_game_scene_set_str(void *scene, rt_string key, rt_string value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3457,6 +4347,10 @@ void rt_game_scene_set_str(void *scene, rt_string key, rt_string value) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a finite floating-point scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key subject to key and property-count limits.
+/// @param value Finite value to store; NaN and infinities are ignored.
 void rt_game_scene_set_float(void *scene, rt_string key, double value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3466,6 +4360,10 @@ void rt_game_scene_set_float(void *scene, rt_string key, double value) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a Boolean scene property.
+/// @param scene SceneDocument handle.
+/// @param key Property key subject to key and property-count limits.
+/// @param value Zero for false, nonzero for true.
 void rt_game_scene_set_bool(void *scene, rt_string key, int8_t value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3474,6 +4372,9 @@ void rt_game_scene_set_bool(void *scene, rt_string key, int8_t value) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Remove a scene scalar property if present.
+/// @param scene SceneDocument handle.
+/// @param key Property key to erase.
 void rt_game_scene_remove(void *scene, rt_string key) {
     SCENE_TRY {
         requireScene(scene)->state->properties.erase(toStd(key));
@@ -3481,6 +4382,13 @@ void rt_game_scene_remove(void *scene, rt_string key) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Discover structured asset references reachable from the document.
+/// @details The scan covers layer assets plus recognized asset-shaped values
+///          in preserved JSON. Each returned map describes a discovered path
+///          and its source location; descriptors retain deterministic order.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of owned descriptor maps, or an empty owned sequence
+///         if discovery fails.
 void *rt_game_scene_asset_descriptors(void *scene) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3495,6 +4403,11 @@ void *rt_game_scene_asset_descriptors(void *scene) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Enumerate unique asset paths referenced by the document.
+/// @details Paths are deduplicated and returned in lexical order.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of owned path strings, or an empty owned sequence if
+///         discovery fails.
 void *rt_game_scene_asset_paths(void *scene) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3512,6 +4425,12 @@ void *rt_game_scene_asset_paths(void *scene) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Materialize the editable scene as a runtime Tilemap.
+/// @details Copies layer ordering, names, visibility, and tile cells, then
+///          applies typed collision/animation/autotile/property state and any
+///          compatible preserved Tilemap sections.
+/// @param scene SceneDocument handle.
+/// @return Owned Tilemap handle, or `nullptr` if construction fails.
 void *rt_game_scene_build_tilemap(void *scene) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3547,6 +4466,9 @@ void *rt_game_scene_build_tilemap(void *scene) {
 namespace {
 
 /// @brief Validate a setter-facing behavior tile ID (ADR 0176).
+/// @param s Scene that receives a rejection diagnostic.
+/// @param tile Candidate nonzero Tilemap tile identifier.
+/// @return `true` when @p tile is within the editable 1..4095 range.
 bool editableBehaviorTileId(SceneState &s, int64_t tile) {
     if (tile >= kMinBehaviorTileId && tile <= kMaxBehaviorTileId)
         return true;
@@ -3555,6 +4477,11 @@ bool editableBehaviorTileId(SceneState &s, int64_t tile) {
 }
 
 /// @brief Replace a same-key malformed preserved section when typed authoring begins.
+/// @details Typed APIs own the canonical representation of a section. If load
+///          preservation retained an invalid same-named JSON value, the first
+///          typed edit discards it and records the normalization.
+/// @param s Scene containing preserved and typed sections.
+/// @param key Top-level section name being claimed.
 void claimTypedSection(SceneState &s, const char *key) {
     auto it = s.preservedSections.find(key);
     if (it == s.preservedSections.end())
@@ -3566,12 +4493,18 @@ void claimTypedSection(SceneState &s, const char *key) {
     s.preservedSections.erase(it);
 }
 
+/// @brief Append a boxed integer to an owned runtime sequence.
+/// @param seq Borrowed runtime sequence.
+/// @param value Integer to box and append.
 void pushIntValue(void *seq, int64_t value) {
     void *boxed = rt_box_i64(value);
     rt_seq_push(seq, boxed);
     releaseObject(boxed);
 }
 
+/// @brief Convert the ordered keys of an integer map to a runtime sequence.
+/// @param map Map whose ascending keys are copied.
+/// @return Owned sequence of boxed integers.
 void *ascendingKeySeq(const std::map<int64_t, int64_t> &map) {
     void *seq = rt_seq_new_owned();
     for (const auto &[key, _] : map)
@@ -3579,6 +4512,9 @@ void *ascendingKeySeq(const std::map<int64_t, int64_t> &map) {
     return seq;
 }
 
+/// @brief Convert an integer vector to an order-preserving runtime sequence.
+/// @param values Values to box in vector order.
+/// @return Owned sequence of boxed integers.
 void *intVectorSeq(const std::vector<int64_t> &values) {
     void *seq = rt_seq_new_owned();
     for (int64_t value : values)
@@ -3586,6 +4522,14 @@ void *intVectorSeq(const std::vector<int64_t> &values) {
     return seq;
 }
 
+/// @brief Validate and store one typed property for a behavior tile.
+/// @details Enforces the editable tile range, key limit, per-tile capacity,
+///          and global tile-property budget. Empty speculative entries are
+///          removed when capacity validation rejects the edit.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier that owns the property.
+/// @param key Property key.
+/// @param value Scalar value to move into the behavior table.
 void setTilePropertyScalar(void *scene, int64_t tile, rt_string key, SceneScalar value) {
     SceneState &s = *requireScene(scene)->state;
     if (!editableBehaviorTileId(s, tile))
@@ -3613,6 +4557,9 @@ void setTilePropertyScalar(void *scene, int64_t tile, rt_string key, SceneScalar
 }
 
 /// @brief Read one Zia Seq of integers; false on non-seq or non-integer entries.
+/// @param seq Borrowed candidate sequence handle.
+/// @param out Destination replaced with decoded integers on success.
+/// @return `true` when every item is an integral runtime number.
 bool readIntSeq(void *seq, std::vector<int64_t> &out) {
     if (!isSeq(seq))
         return false;
@@ -3628,16 +4575,29 @@ bool readIntSeq(void *seq, std::vector<int64_t> &out) {
     return true;
 }
 
+/// @brief Record a typed-section validation warning and reject the edit.
+/// @param s Scene receiving the diagnostic.
+/// @param message Human-readable constraint failure.
+/// @return Always `false`, allowing direct use in validation expressions.
 bool rejectSectionEdit(SceneState &s, const char *message) {
     addDiagnostic(s, "scene.edit.rejected", "warning", message);
     return false;
 }
 
+/// @brief Test whether a scalar is an integer in a closed interval.
+/// @param value Scalar to inspect.
+/// @param min Inclusive lower bound.
+/// @param max Inclusive upper bound.
+/// @return `true` only for an integer scalar within both bounds.
 bool intFieldInRange(const SceneScalar &value, int64_t min, int64_t max) {
     return value.kind == ScalarKind::Int && value.intValue >= min && value.intValue <= max;
 }
 
 /// @brief Validate the known camera-section fields of ADR 0177; unknown keys pass.
+/// @param s Scene receiving any rejection diagnostic.
+/// @param key Camera field name.
+/// @param value Candidate typed value.
+/// @return `true` when the known-field contract is satisfied.
 bool validCameraField(SceneState &s, const std::string &key, const SceneScalar &value) {
     if (key == "mode") {
         if (value.kind != ScalarKind::String ||
@@ -3669,6 +4629,10 @@ bool validCameraField(SceneState &s, const std::string &key, const SceneScalar &
 }
 
 /// @brief Validate the known lighting-section fields of ADR 0177; unknown keys pass.
+/// @param s Scene receiving any rejection diagnostic.
+/// @param key Lighting field name.
+/// @param value Candidate typed value.
+/// @return `true` when the known-field contract is satisfied.
 bool validLightingField(SceneState &s, const std::string &key, const SceneScalar &value) {
     if (key == "darkness") {
         if (!intFieldInRange(value, 0, 255))
@@ -3688,6 +4652,13 @@ bool validLightingField(SceneState &s, const std::string &key, const SceneScalar
     return true;
 }
 
+/// @brief Validate and store a scalar in the camera or lighting section.
+/// @details Applies shared key/string limits, section-specific known-field
+///          validation, and preserved-section claiming before replacement.
+/// @param s Scene containing the target section.
+/// @param section Camera or lighting field map to update.
+/// @param key Field name.
+/// @param value Scalar value to move into the section.
 void setSectionScalar(SceneState &s,
                       SectionScalarState &section,
                       rt_string key,
@@ -3709,11 +4680,18 @@ void setSectionScalar(SceneState &s,
     section.fields[k] = std::move(value);
 }
 
+/// @brief Find a typed field in a camera or lighting section.
+/// @param section Section to inspect.
+/// @param key Runtime field name.
+/// @return Pointer to the stored scalar, or `nullptr` when absent.
 const SceneScalar *findSectionScalar(const SectionScalarState &section, rt_string key) {
     auto it = section.fields.find(toStd(key));
     return it == section.fields.end() ? nullptr : &it->second;
 }
 
+/// @brief Enumerate typed camera or lighting field names.
+/// @param section Section whose ordered field map is inspected.
+/// @return Owned sequence of owned strings in lexical key order.
 void *sectionKeySeq(const SectionScalarState &section) {
     void *seq = rt_seq_new_owned();
     for (const auto &[key, _] : section.fields) {
@@ -3728,6 +4706,11 @@ void *sectionKeySeq(const SectionScalarState &section) {
 
 extern "C" {
 
+/// @brief Read the collision behavior assigned to a tile identifier.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier to inspect.
+/// @return One of the `RT_TILE_COLLISION_*` values, defaulting to
+///         `RT_TILE_COLLISION_NONE` when no rule exists or lookup fails.
 int64_t rt_game_scene_tile_collision(void *scene, int64_t tile) {
     SCENE_TRY {
         const auto &collision = requireScene(scene)->state->behavior.collision;
@@ -3737,6 +4720,13 @@ int64_t rt_game_scene_tile_collision(void *scene, int64_t tile) {
     SCENE_CATCH(RT_TILE_COLLISION_NONE)
 }
 
+/// @brief Assign or clear a tile collision behavior.
+/// @details Tile IDs must be in the editable 1..4095 range. A `NONE` kind
+///          erases the sparse entry; solid and one-way-up kinds are stored.
+///          Other kind values are rejected with a warning diagnostic.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier to edit.
+/// @param kind One of the `RT_TILE_COLLISION_*` constants.
 void rt_game_scene_set_tile_collision(void *scene, int64_t tile, int64_t kind) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3755,12 +4745,19 @@ void rt_game_scene_set_tile_collision(void *scene, int64_t tile, int64_t kind) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Enumerate tile IDs with non-default collision behavior.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of boxed tile IDs in ascending order, or an empty
+///         owned sequence if the operation fails.
 void *rt_game_scene_collision_tiles(void *scene){
     SCENE_TRY{return ascendingKeySeq(requireScene(scene) -> state->behavior.collision);
 }
 SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Return the configured Tilemap collision-layer index.
+/// @param scene SceneDocument handle.
+/// @return Stored layer index, or `0` if access fails.
 int64_t rt_game_scene_collision_layer(void *scene) {
     SCENE_TRY {
         return requireScene(scene)->state->behavior.collisionLayer;
@@ -3768,6 +4765,12 @@ int64_t rt_game_scene_collision_layer(void *scene) {
     SCENE_CATCH(0)
 }
 
+/// @brief Configure the Tilemap layer used for collision queries.
+/// @details The serialized Tilemap ABI accepts layer slots 0..15; this setter
+///          validates that fixed range independently of the current number of
+///          scene layers.
+/// @param scene SceneDocument handle.
+/// @param layer Collision layer slot in the inclusive range 0..15.
 void rt_game_scene_set_collision_layer(void *scene, int64_t layer){
     SCENE_TRY{SceneState &s = *requireScene(scene) -> state;
 if (layer < 0 || layer >= kMaxLayers) {
@@ -3781,6 +4784,12 @@ s.behavior.hasCollisionLayer = true;
 SCENE_CATCH_VOID
 }
 
+/// @brief Report the stored kind of a typed tile property.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier to inspect.
+/// @param key Property key.
+/// @return Newly allocated kind name, or an empty string when the tile/key is
+///         absent or lookup fails.
 rt_string rt_game_scene_tile_property_kind(void *scene, int64_t tile, rt_string key){
     SCENE_TRY{const auto &tiles = requireScene(scene) -> state->behavior.tileProperties;
 auto it = tiles.find(tile);
@@ -3792,6 +4801,12 @@ return makeString(scalar ? scalarKindName(scalar->kind) : "");
 SCENE_CATCH(makeString(""))
 }
 
+/// @brief Read an integer tile property.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier to inspect.
+/// @param key Property key.
+/// @param def Fallback for absence, type mismatch, or failure.
+/// @return Stored integer or @p def.
 int64_t rt_game_scene_tile_property_int(void *scene, int64_t tile, rt_string key, int64_t def){
     SCENE_TRY{const auto &tiles = requireScene(scene) -> state->behavior.tileProperties;
 auto it = tiles.find(tile);
@@ -3803,6 +4818,12 @@ return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
 SCENE_CATCH(def)
 }
 
+/// @brief Read a Boolean tile property.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier to inspect.
+/// @param key Property key.
+/// @param def Fallback for absence, type mismatch, or failure.
+/// @return `1` or `0` for a stored Boolean, otherwise @p def unchanged.
 int8_t rt_game_scene_tile_property_bool(void *scene, int64_t tile, rt_string key, int8_t def) {
     SCENE_TRY {
         const auto &tiles = requireScene(scene)->state->behavior.tileProperties;
@@ -3815,6 +4836,11 @@ int8_t rt_game_scene_tile_property_bool(void *scene, int64_t tile, rt_string key
     SCENE_CATCH(def)
 }
 
+/// @brief Store an integer property for a behavior tile.
+/// @param scene SceneDocument handle.
+/// @param tile Editable tile identifier in the range 1..4095.
+/// @param key Property key subject to tile-property limits.
+/// @param value Integer value to store.
 void rt_game_scene_set_tile_property_int(void *scene, int64_t tile, rt_string key, int64_t value) {
     SCENE_TRY {
         setTilePropertyScalar(scene, tile, key, makeIntScalar(value));
@@ -3822,6 +4848,11 @@ void rt_game_scene_set_tile_property_int(void *scene, int64_t tile, rt_string ke
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a Boolean property for a behavior tile.
+/// @param scene SceneDocument handle.
+/// @param tile Editable tile identifier in the range 1..4095.
+/// @param key Property key subject to tile-property limits.
+/// @param value Zero for false, nonzero for true.
 void rt_game_scene_set_tile_property_bool(void *scene, int64_t tile, rt_string key, int8_t value) {
     SCENE_TRY {
         setTilePropertyScalar(scene, tile, key, makeBoolScalar(value != 0));
@@ -3829,6 +4860,12 @@ void rt_game_scene_set_tile_property_bool(void *scene, int64_t tile, rt_string k
     SCENE_CATCH_VOID
 }
 
+/// @brief Remove one typed property from a behavior tile.
+/// @details The sparse per-tile container is also erased when its final
+///          property is removed.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier to inspect.
+/// @param key Property key to erase.
 void rt_game_scene_remove_tile_property(void *scene, int64_t tile, rt_string key) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3842,6 +4879,11 @@ void rt_game_scene_remove_tile_property(void *scene, int64_t tile, rt_string key
     SCENE_CATCH_VOID
 }
 
+/// @brief Enumerate the property keys defined for one tile.
+/// @param scene SceneDocument handle.
+/// @param tile Tile identifier to inspect.
+/// @return Owned sequence of owned strings in lexical key order, empty when
+///         the tile has no properties or the operation fails.
 void *rt_game_scene_tile_property_keys(void *scene, int64_t tile) {
     SCENE_TRY {
         const auto &tiles = requireScene(scene)->state->behavior.tileProperties;
@@ -3859,6 +4901,10 @@ void *rt_game_scene_tile_property_keys(void *scene, int64_t tile) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Enumerate tile IDs that currently have typed properties.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of boxed tile IDs in ascending order, or an empty
+///         owned sequence if the operation fails.
 void *rt_game_scene_tile_property_tiles(void *scene) {
     SCENE_TRY {
         const auto &tiles = requireScene(scene)->state->behavior.tileProperties;
@@ -3872,6 +4918,16 @@ void *rt_game_scene_tile_property_tiles(void *scene) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Define or replace a tile animation rule.
+/// @details Both inputs must be integer sequences of equal length containing
+///          1..4096 entries. Every duration must be positive and the complete
+///          document may contain at most the configured aggregate frame
+///          budget. Validation completes before the existing rule is replaced.
+/// @param scene SceneDocument handle.
+/// @param base_tile Editable base tile identifier in the range 1..4095.
+/// @param frames Borrowed runtime sequence of frame tile identifiers.
+/// @param durations_ms Borrowed runtime sequence of positive frame durations
+///        in milliseconds.
 void rt_game_scene_set_tile_anim(void *scene, int64_t base_tile, void *frames, void *durations_ms) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3921,6 +4977,11 @@ void rt_game_scene_set_tile_anim(void *scene, int64_t base_tile, void *frames, v
     SCENE_CATCH_VOID
 }
 
+/// @brief Copy the frame tile IDs of an animation rule.
+/// @param scene SceneDocument handle.
+/// @param base_tile Base tile identifier to inspect.
+/// @return Owned sequence of boxed integers in playback order, empty when the
+///         rule is absent or the operation fails.
 void *rt_game_scene_tile_anim_frames(void *scene, int64_t base_tile) {
     SCENE_TRY {
         const auto &animations = requireScene(scene)->state->behavior.animations;
@@ -3930,6 +4991,11 @@ void *rt_game_scene_tile_anim_frames(void *scene, int64_t base_tile) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Copy the frame durations of an animation rule.
+/// @param scene SceneDocument handle.
+/// @param base_tile Base tile identifier to inspect.
+/// @return Owned sequence of boxed millisecond durations in playback order,
+///         empty when the rule is absent or the operation fails.
 void *rt_game_scene_tile_anim_durations(void *scene, int64_t base_tile) {
     SCENE_TRY {
         const auto &animations = requireScene(scene)->state->behavior.animations;
@@ -3939,6 +5005,9 @@ void *rt_game_scene_tile_anim_durations(void *scene, int64_t base_tile) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Remove a tile animation rule if present.
+/// @param scene SceneDocument handle.
+/// @param base_tile Base tile identifier whose rule is erased.
 void rt_game_scene_remove_tile_anim(void *scene, int64_t base_tile) {
     SCENE_TRY {
         requireScene(scene)->state->behavior.animations.erase(base_tile);
@@ -3946,6 +5015,10 @@ void rt_game_scene_remove_tile_anim(void *scene, int64_t base_tile) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Enumerate base tiles that define animation rules.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of boxed base tile IDs in ascending order, or an
+///         empty owned sequence if the operation fails.
 void *rt_game_scene_tile_anim_bases(void *scene) {
     SCENE_TRY {
         const auto &animations = requireScene(scene)->state->behavior.animations;
@@ -3957,6 +5030,12 @@ void *rt_game_scene_tile_anim_bases(void *scene) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Define or replace a 4-neighbor autotile lookup rule.
+/// @details The variants input must be a runtime sequence containing exactly
+///          16 integral tile identifiers, one for every neighbor mask.
+/// @param scene SceneDocument handle.
+/// @param base_tile Editable base tile identifier in the range 1..4095.
+/// @param variants Borrowed 16-element runtime integer sequence.
 void rt_game_scene_set_autotile_rule(void *scene, int64_t base_tile, void *variants) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -3977,6 +5056,11 @@ void rt_game_scene_set_autotile_rule(void *scene, int64_t base_tile, void *varia
     SCENE_CATCH_VOID
 }
 
+/// @brief Copy the 16 mask-indexed variants of an autotile rule.
+/// @param scene SceneDocument handle.
+/// @param base_tile Base tile identifier to inspect.
+/// @return Owned sequence of boxed variant tile IDs in mask order, empty when
+///         absent or unsuccessful.
 void *rt_game_scene_autotile_variants(void *scene, int64_t base_tile) {
     SCENE_TRY {
         const auto &autotiles = requireScene(scene)->state->behavior.autotiles;
@@ -3988,6 +5072,9 @@ void *rt_game_scene_autotile_variants(void *scene, int64_t base_tile) {
     SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Remove an autotile rule if present.
+/// @param scene SceneDocument handle.
+/// @param base_tile Base tile identifier whose rule is erased.
 void rt_game_scene_remove_autotile_rule(void *scene, int64_t base_tile) {
     SCENE_TRY {
         requireScene(scene)->state->behavior.autotiles.erase(base_tile);
@@ -3995,6 +5082,10 @@ void rt_game_scene_remove_autotile_rule(void *scene, int64_t base_tile) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Enumerate base tiles that define autotile rules.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of boxed base tile IDs in ascending order, or an
+///         empty owned sequence if the operation fails.
 void *rt_game_scene_autotile_bases(void *scene){
     SCENE_TRY{const auto &autotiles = requireScene(scene) -> state->behavior.autotiles;
 void *seq = rt_seq_new_owned();
@@ -4005,6 +5096,11 @@ return seq;
 SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Report the scalar kind of a typed camera field.
+/// @param scene SceneDocument handle.
+/// @param key Camera field name.
+/// @return Newly allocated kind name, or an empty string when absent or
+///         unsuccessful.
 rt_string rt_game_scene_camera_field_kind(void *scene, rt_string key){SCENE_TRY{
     const SceneScalar *scalar = findSectionScalar(requireScene(scene) -> state->camera, key);
 return makeString(scalar ? scalarKindName(scalar->kind) : "");
@@ -4012,6 +5108,11 @@ return makeString(scalar ? scalarKindName(scalar->kind) : "");
 SCENE_CATCH(makeString(""))
 }
 
+/// @brief Read an integer camera field.
+/// @param scene SceneDocument handle.
+/// @param key Camera field name.
+/// @param def Fallback for absence, type mismatch, or failure.
+/// @return Stored integer or @p def.
 int64_t rt_game_scene_camera_get_int(void *scene, rt_string key, int64_t def){SCENE_TRY{
     const SceneScalar *scalar = findSectionScalar(requireScene(scene) -> state->camera, key);
 return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
@@ -4019,6 +5120,11 @@ return scalar && scalar->kind == ScalarKind::Int ? scalar->intValue : def;
 SCENE_CATCH(def)
 }
 
+/// @brief Read a string camera field.
+/// @param scene SceneDocument handle.
+/// @param key Camera field name.
+/// @param def Fallback copied for absence or type mismatch.
+/// @return Newly allocated stored or fallback string.
 rt_string rt_game_scene_camera_get_str(void *scene, rt_string key, rt_string def) {
     SCENE_TRY {
         const SceneScalar *scalar = findSectionScalar(requireScene(scene)->state->camera, key);
@@ -4028,6 +5134,12 @@ rt_string rt_game_scene_camera_get_str(void *scene, rt_string key, rt_string def
     SCENE_CATCH(makeString(""))
 }
 
+/// @brief Store a validated integer camera field.
+/// @details Known camera keys enforce their ADR 0177 ranges; unknown keys are
+///          retained as extension fields after shared key validation.
+/// @param scene SceneDocument handle.
+/// @param key Camera field name.
+/// @param value Integer value to store.
 void rt_game_scene_camera_set_int(void *scene, rt_string key, int64_t value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -4036,6 +5148,12 @@ void rt_game_scene_camera_set_int(void *scene, rt_string key, int64_t value) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Store a validated string camera field.
+/// @details The known `mode` field accepts only `follow` or `fixed`; unknown
+///          keys are retained as extension fields subject to shared limits.
+/// @param scene SceneDocument handle.
+/// @param key Camera field name.
+/// @param value String value to copy.
 void rt_game_scene_camera_set_str(void *scene, rt_string key, rt_string value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -4044,6 +5162,9 @@ void rt_game_scene_camera_set_str(void *scene, rt_string key, rt_string value) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Remove a typed camera field if present.
+/// @param scene SceneDocument handle.
+/// @param key Camera field name to erase.
 void rt_game_scene_camera_remove(void *scene, rt_string key) {
     SCENE_TRY {
         requireScene(scene)->state->camera.fields.erase(toStd(key));
@@ -4051,12 +5172,21 @@ void rt_game_scene_camera_remove(void *scene, rt_string key) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Enumerate typed camera field names.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of owned strings in lexical key order, or an empty
+///         owned sequence if the operation fails.
 void *rt_game_scene_camera_keys(void *scene){
     SCENE_TRY{return sectionKeySeq(requireScene(scene) -> state->camera);
 }
 SCENE_CATCH(rt_seq_new_owned())
 }
 
+/// @brief Report the scalar kind of a typed lighting field.
+/// @param scene SceneDocument handle.
+/// @param key Lighting field name.
+/// @return Newly allocated kind name, or an empty string when absent or
+///         unsuccessful.
 rt_string rt_game_scene_lighting_field_kind(void *scene, rt_string key){SCENE_TRY{
     const SceneScalar *scalar = findSectionScalar(requireScene(scene) -> state->lighting, key);
 return makeString(scalar ? scalarKindName(scalar->kind) : "");
@@ -4064,6 +5194,11 @@ return makeString(scalar ? scalarKindName(scalar->kind) : "");
 SCENE_CATCH(makeString(""))
 }
 
+/// @brief Read an integer lighting field.
+/// @param scene SceneDocument handle.
+/// @param key Lighting field name.
+/// @param def Fallback for absence, type mismatch, or failure.
+/// @return Stored integer or @p def.
 int64_t rt_game_scene_lighting_get_int(void *scene, rt_string key, int64_t def) {
     SCENE_TRY {
         const SceneScalar *scalar = findSectionScalar(requireScene(scene)->state->lighting, key);
@@ -4072,6 +5207,12 @@ int64_t rt_game_scene_lighting_get_int(void *scene, rt_string key, int64_t def) 
     SCENE_CATCH(def)
 }
 
+/// @brief Store a validated integer lighting field.
+/// @details Known darkness, color, and player-light-radius keys enforce their
+///          ADR 0177 ranges; unknown keys remain available for extensions.
+/// @param scene SceneDocument handle.
+/// @param key Lighting field name.
+/// @param value Integer value to store.
 void rt_game_scene_lighting_set_int(void *scene, rt_string key, int64_t value) {
     SCENE_TRY {
         SceneState &s = *requireScene(scene)->state;
@@ -4080,6 +5221,9 @@ void rt_game_scene_lighting_set_int(void *scene, rt_string key, int64_t value) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Remove a typed lighting field if present.
+/// @param scene SceneDocument handle.
+/// @param key Lighting field name to erase.
 void rt_game_scene_lighting_remove(void *scene, rt_string key) {
     SCENE_TRY {
         requireScene(scene)->state->lighting.fields.erase(toStd(key));
@@ -4087,6 +5231,10 @@ void rt_game_scene_lighting_remove(void *scene, rt_string key) {
     SCENE_CATCH_VOID
 }
 
+/// @brief Enumerate typed lighting field names.
+/// @param scene SceneDocument handle.
+/// @return Owned sequence of owned strings in lexical key order, or an empty
+///         owned sequence if the operation fails.
 void *rt_game_scene_lighting_keys(void *scene) {
     SCENE_TRY {
         return sectionKeySeq(requireScene(scene)->state->lighting);

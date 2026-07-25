@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_screenfx.c
+/// @file
+/// @brief Implements composable screen shake, color overlays, and Canvas-drawn
+///        transition effects.
 // Purpose: Screen effects manager for Zanna games. Provides camera shake,
 //   color flash, fade-in, and fade-out effects that are composited each frame.
 //   Effects are stored in a growable slot array and updated with a delta-time
@@ -54,16 +57,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Per-instance Linear Congruential Generator returning a 15-bit pseudo-random number.
-/// Uses the classic `glibc` parameters (1103515245, 12345) and discards the low 16 bits to
-/// improve distribution. State is owned by each ScreenFX instance, so concurrent instances on
-/// different threads produce independent sequences without locks.
+/// @brief Advance a per-instance linear congruential generator.
+/// @details Uses the classic `glibc` parameters (1103515245, 12345) and
+///          discards the low 16 bits. Per-object state keeps concurrent
+///          ScreenFX instances independent without a shared lock.
+/// @param state Mutable 64-bit generator state.
+/// @return Next pseudo-random value in the inclusive range 0..32767.
 static int64_t screenfx_rand(uint64_t *state) {
     *state = (*state) * UINT64_C(1103515245) + UINT64_C(12345);
     return (int64_t)((*state >> 16) & UINT64_C(0x7FFF));
 }
 
-/// Internal effect structure.
+/// @brief Storage shared by every supported effect type.
 struct screenfx_effect {
     rt_screenfx_type_t type; ///< Effect type.
     int64_t color;           ///< Color (RGBA for old effects, RGB for transitions).
@@ -78,7 +83,7 @@ struct screenfx_effect {
                              ///< frame is observable to Draw/TransitionProgress (VDOC-265).
 };
 
-/// Internal manager structure.
+/// @brief ScreenFX object's growable slots and cached composite output.
 struct rt_screenfx_impl {
     struct screenfx_effect *effects;
     int64_t effect_capacity;
@@ -90,7 +95,10 @@ struct rt_screenfx_impl {
 };
 
 /// @brief Safe-cast a handle to the ScreenFX impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p fx is NULL.
+///        class-id mismatch.
+/// @param fx Borrowed candidate ScreenFX handle.
+/// @param api Trap message identifying the calling API.
+/// @return Borrowed implementation pointer, or `NULL` when @p fx is `NULL`.
 static rt_screenfx checked_screenfx(rt_screenfx fx, const char *api) {
     if (!fx)
         return NULL;
@@ -103,6 +111,9 @@ static rt_screenfx checked_screenfx(rt_screenfx fx, const char *api) {
 
 /// @brief Add a non-negative @p b to @p a, saturating at INT64_MAX
 ///        (negative @p b is treated as 0).
+/// @param a Starting signed value.
+/// @param b Non-negative increment; negative values are ignored.
+/// @return Saturated sum.
 static int64_t add_sat_nonnegative_i64(int64_t a, int64_t b) {
     if (b <= 0)
         return a;
@@ -110,6 +121,9 @@ static int64_t add_sat_nonnegative_i64(int64_t a, int64_t b) {
 }
 
 /// @brief Saturating int64 addition (clamps to INT64_MIN/MAX on overflow).
+/// @param a First addend.
+/// @param b Second addend.
+/// @return Exact sum when representable, otherwise the matching signed bound.
 static int64_t add_sat_i64(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -122,6 +136,8 @@ static int64_t add_sat_i64(int64_t a, int64_t b) {
 /// @details Non-finite -> INT64_MIN/MAX by sign. The platforms whose long
 ///          double has < 64-bit mantissa back the bound off by 4096 so the
 ///          comparison itself can't round past the representable limit.
+/// @param value Extended-precision value to convert.
+/// @return Truncated value clamped to the signed 64-bit range.
 static int64_t ld_to_i64_sat(long double value) {
     if (!isfinite(value))
         return value < 0.0L ? INT64_MIN : INT64_MAX;
@@ -141,6 +157,10 @@ static int64_t ld_to_i64_sat(long double value) {
 
 /// @brief Compute (a*b)/divisor in long double, saturating to int64; 0 when
 ///        @p divisor is 0.
+/// @param a First multiplicand.
+/// @param b Second multiplicand.
+/// @param divisor Divisor, which may be zero.
+/// @return Saturated quotient, or `0` for a zero divisor.
 static int64_t mul_div_sat_i64(int64_t a, int64_t b, int64_t divisor) {
     if (divisor == 0)
         return 0;
@@ -148,6 +168,13 @@ static int64_t mul_div_sat_i64(int64_t a, int64_t b, int64_t divisor) {
     return ld_to_i64_sat(value);
 }
 
+/// @brief Ensure the manager has at least a requested number of effect slots.
+/// @details Capacity doubles geometrically and new slots are zero-initialized.
+///          Integer and allocation-size overflow are rejected before realloc.
+/// @param fx Borrowed ScreenFX implementation.
+/// @param needed Minimum required slot count.
+/// @return `1` when capacity is sufficient; `0` on overflow or allocation
+///         failure.
 static int8_t ensure_effect_capacity(rt_screenfx fx, int64_t needed) {
     if (!fx || needed <= fx->effect_capacity)
         return 1;
@@ -174,6 +201,8 @@ static int8_t ensure_effect_capacity(rt_screenfx fx, int64_t needed) {
 
 /// @brief Effect progress as per-mille (0..1000) of elapsed/duration; returns
 ///        1000 (complete) for a zero/negative duration or NULL effect.
+/// @param e Borrowed effect slot.
+/// @return Clamped progress in the inclusive range 0..1000.
 static int64_t effect_progress_per_mille(const struct screenfx_effect *e) {
     if (!e || e->duration <= 0)
         return 1000;
@@ -188,6 +217,8 @@ static int64_t effect_progress_per_mille(const struct screenfx_effect *e) {
 /// @brief Floor integer square root of a non-negative value. Seeds from the
 ///        floating-point sqrt then corrects any rounding drift so the result is
 ///        exact for all inputs.
+/// @param n Non-negative radicand; nonpositive values return zero.
+/// @return Greatest integer whose square does not exceed @p n.
 static int64_t screenfx_isqrt(int64_t n) {
     if (n <= 0)
         return 0;
@@ -205,6 +236,9 @@ static int64_t screenfx_isqrt(int64_t n) {
 /// Exposed (non-static) so tests can verify the mask is genuinely circular —
 /// a diagonal point outside the disc but inside its bounding square must fall
 /// beyond the half-chord (VDOC-269). Internal symbol; not a registered API.
+/// @param radius Disc radius.
+/// @param dy Signed vertical distance from the center.
+/// @return Non-negative horizontal half-chord, or `0` outside/at the boundary.
 int64_t rt_screenfx_circle_half_chord(int64_t radius, int64_t dy) {
     if (radius <= 0)
         return 0;
@@ -214,6 +248,8 @@ int64_t rt_screenfx_circle_half_chord(int64_t radius, int64_t dy) {
     return screenfx_isqrt(inside);
 }
 
+/// @brief Release heap-owned effect slots during runtime-object finalization.
+/// @param obj Borrowed ScreenFX object being finalized.
 static void screenfx_finalizer(void *obj) {
     rt_screenfx fx = (rt_screenfx)obj;
     if (!fx)
@@ -225,23 +261,51 @@ static void screenfx_finalizer(void *obj) {
 
 // Effect-type constants — return the private enum values as stable public
 // identifiers so callers of IsTypeActive/CancelType never copy raw integers.
+/// @brief Return the stable camera-shake effect identifier.
+/// @return @ref RT_SCREENFX_SHAKE.
 int64_t rt_screenfx_type_shake(void) { return RT_SCREENFX_SHAKE; }
+/// @brief Return the stable color-flash effect identifier.
+/// @return @ref RT_SCREENFX_FLASH.
 int64_t rt_screenfx_type_flash(void) { return RT_SCREENFX_FLASH; }
+/// @brief Return the stable fade-in effect identifier.
+/// @return @ref RT_SCREENFX_FADE_IN.
 int64_t rt_screenfx_type_fade_in(void) { return RT_SCREENFX_FADE_IN; }
+/// @brief Return the stable fade-out effect identifier.
+/// @return @ref RT_SCREENFX_FADE_OUT.
 int64_t rt_screenfx_type_fade_out(void) { return RT_SCREENFX_FADE_OUT; }
+/// @brief Return the stable directional-wipe effect identifier.
+/// @return @ref RT_SCREENFX_WIPE.
 int64_t rt_screenfx_type_wipe(void) { return RT_SCREENFX_WIPE; }
+/// @brief Return the stable closing-circle effect identifier.
+/// @return @ref RT_SCREENFX_CIRCLE_IN.
 int64_t rt_screenfx_type_circle_in(void) { return RT_SCREENFX_CIRCLE_IN; }
+/// @brief Return the stable opening-circle effect identifier.
+/// @return @ref RT_SCREENFX_CIRCLE_OUT.
 int64_t rt_screenfx_type_circle_out(void) { return RT_SCREENFX_CIRCLE_OUT; }
+/// @brief Return the stable ordered-dissolve effect identifier.
+/// @return @ref RT_SCREENFX_DISSOLVE.
 int64_t rt_screenfx_type_dissolve(void) { return RT_SCREENFX_DISSOLVE; }
+/// @brief Return the stable pixelate-grid effect identifier.
+/// @return @ref RT_SCREENFX_PIXELATE.
 int64_t rt_screenfx_type_pixelate(void) { return RT_SCREENFX_PIXELATE; }
 
 // Wipe-direction constants.
+/// @brief Return the left-origin wipe direction identifier.
+/// @return @ref RT_DIR_LEFT.
 int64_t rt_screenfx_dir_left(void) { return RT_DIR_LEFT; }
+/// @brief Return the right-origin wipe direction identifier.
+/// @return @ref RT_DIR_RIGHT.
 int64_t rt_screenfx_dir_right(void) { return RT_DIR_RIGHT; }
+/// @brief Return the top-origin wipe direction identifier.
+/// @return @ref RT_DIR_UP.
 int64_t rt_screenfx_dir_up(void) { return RT_DIR_UP; }
+/// @brief Return the bottom-origin wipe direction identifier.
+/// @return @ref RT_DIR_DOWN.
 int64_t rt_screenfx_dir_down(void) { return RT_DIR_DOWN; }
 
 /// @brief Clamp @p v to a single 0-255 color channel.
+/// @param v Signed channel value.
+/// @return Unsigned channel value in the inclusive range 0..255.
 static uint32_t clamp_channel(int64_t v) {
     return (uint32_t)(v < 0 ? 0 : v > 255 ? 255 : v);
 }
@@ -249,12 +313,21 @@ static uint32_t clamp_channel(int64_t v) {
 /// @brief Pack a Flash/FadeIn/FadeOut overlay color as 0xRRGGBBAA (alpha low byte).
 /// This is deliberately a different byte order from the canonical
 /// Zanna.Graphics.Color (0xAARRGGBB) — see the header note.
+/// @param r Red channel.
+/// @param g Green channel.
+/// @param b Blue channel.
+/// @param a Alpha channel.
+/// @return Packed color after independently clamping every channel.
 int64_t rt_screenfx_rgba(int64_t r, int64_t g, int64_t b, int64_t a) {
     return (int64_t)((clamp_channel(r) << 24) | (clamp_channel(g) << 16) |
                      (clamp_channel(b) << 8) | clamp_channel(a));
 }
 
 /// @brief Pack a transition color as 0x00RRGGBB (Canvas byte order, no alpha).
+/// @param r Red channel.
+/// @param g Green channel.
+/// @param b Blue channel.
+/// @return Packed Canvas color after independently clamping every channel.
 int64_t rt_screenfx_rgb(int64_t r, int64_t g, int64_t b) {
     return (int64_t)((clamp_channel(r) << 16) | (clamp_channel(g) << 8) | clamp_channel(b));
 }
@@ -264,6 +337,7 @@ int64_t rt_screenfx_rgb(int64_t r, int64_t g, int64_t b) {
 ///          reproduce effects through RANDOMIZE without relying on process
 ///          address layout. Returns a GC-managed handle; NULL on allocation
 ///          failure.
+/// @return Owned ScreenFX handle, or `NULL` if object or slot allocation fails.
 rt_screenfx rt_screenfx_new(void) {
     struct rt_screenfx_impl *fx = (struct rt_screenfx_impl *)rt_obj_new_i64(
         RT_SCREENFX_CLASS_ID, (int64_t)sizeof(struct rt_screenfx_impl));
@@ -289,6 +363,7 @@ rt_screenfx rt_screenfx_new(void) {
 
 /// @brief Release the ScreenFX manager; frees the inline struct when refcount hits zero.
 /// Provided for API symmetry — GC finalization also reclaims the allocation automatically.
+/// @param fx Owned ScreenFX reference to release; `NULL` is ignored.
 void rt_screenfx_destroy(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.Destroy: expected Zanna.Game.ScreenFX");
     if (fx && rt_obj_release_check0(fx))
@@ -296,6 +371,8 @@ void rt_screenfx_destroy(rt_screenfx fx) {
 }
 
 /// @brief Linear scan for the first free slot, growing the slot array if needed.
+/// @param fx Borrowed ScreenFX implementation.
+/// @return Free zero-based slot index, or `-1` if growth fails.
 static int64_t find_free_slot(rt_screenfx fx) {
     for (int64_t i = 0; i < fx->effect_capacity; i++) {
         if (fx->effects[i].type == RT_SCREENFX_NONE)
@@ -309,6 +386,9 @@ static int64_t find_free_slot(rt_screenfx fx) {
 
 /// @brief Locate an existing effect of the given type so it can be reused/restarted (e.g. shake
 /// only ever lives in one slot — re-triggering replaces in place rather than allocating).
+/// @param fx Borrowed ScreenFX implementation.
+/// @param type Effect type to locate.
+/// @return First matching slot index, or `-1` when absent.
 static int64_t find_effect_of_type(rt_screenfx fx, rt_screenfx_type_t type) {
     for (int64_t i = 0; i < fx->effect_capacity; i++) {
         if (fx->effects[i].type == type)
@@ -329,6 +409,7 @@ static int64_t find_effect_of_type(rt_screenfx fx, rt_screenfx_type_t type) {
 /// Splitting this out of the update tick lets cancellation paths rebuild the cached draw state
 /// from the surviving slots, so a canceled flash/fade/shake can never keep drawing stale output
 /// after its slot is gone (VDOC-266).
+/// @param fx Borrowed ScreenFX implementation whose caches are replaced.
 static void screenfx_recompute(rt_screenfx fx) {
     fx->shake_x = 0;
     fx->shake_y = 0;
@@ -434,6 +515,9 @@ static void screenfx_recompute(rt_screenfx fx) {
 /// fully-covered final frame is composited and stays drawable for one more Draw. The slot is
 /// reclaimed on the following update. This separates "finished advancing" from "removed" so a
 /// covering fade/wipe cannot vanish before its last frame is observed (VDOC-265).
+/// @param fx Borrowed ScreenFX handle.
+/// @param dt Positive elapsed time in milliseconds; nonpositive values are
+///        ignored without recomputing cached output.
 void rt_screenfx_update(rt_screenfx fx, int64_t dt) {
     fx = checked_screenfx(fx, "ScreenFX.Update: expected Zanna.Game.ScreenFX");
     if (!fx || dt <= 0)
@@ -467,6 +551,11 @@ void rt_screenfx_update(rt_screenfx fx, int64_t dt) {
 /// @brief Trigger a camera shake: random per-frame offset of magnitude `intensity` (pixels),
 /// damped over `duration` ms by the `decay` model (0 = constant, 1000 = linear, ≥1500 = quadratic).
 /// Replaces any existing shake in place — only one shake runs at a time.
+/// @param fx Borrowed ScreenFX handle.
+/// @param intensity Maximum per-axis offset magnitude in pixels; negatives
+///        clamp to zero.
+/// @param duration Positive effect duration in milliseconds.
+/// @param decay Per-mille decay-model selector.
 void rt_screenfx_shake(rt_screenfx fx, int64_t intensity, int64_t duration, int64_t decay) {
     fx = checked_screenfx(fx, "ScreenFX.Shake: expected Zanna.Game.ScreenFX");
     if (!fx || duration <= 0)
@@ -494,6 +583,9 @@ void rt_screenfx_shake(rt_screenfx fx, int64_t intensity, int64_t duration, int6
 /// @brief Trigger a one-shot color flash. `color` is 0xRRGGBBAA (alpha encodes peak intensity);
 /// alpha fades from peak to 0 over `duration` ms. Useful for hit-frames, lightning, screen blasts.
 /// Multiple simultaneous flashes pick the one with the highest current alpha.
+/// @param fx Borrowed ScreenFX handle.
+/// @param color Packed 0xRRGGBBAA peak overlay color.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_flash(rt_screenfx fx, int64_t color, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.Flash: expected Zanna.Game.ScreenFX");
     if (!fx || duration <= 0)
@@ -514,6 +606,9 @@ void rt_screenfx_flash(rt_screenfx fx, int64_t color, int64_t duration) {
 
 /// @brief Fade FROM the color TO clear (alpha goes peak→0). Used at scene-entry — start covered,
 /// reveal underlying gameplay. Cancels any in-flight FADE_IN/FADE_OUT first so fades don't stack.
+/// @param fx Borrowed ScreenFX handle.
+/// @param color Packed 0xRRGGBBAA starting overlay color.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_fade_in(rt_screenfx fx, int64_t color, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.FadeIn: expected Zanna.Game.ScreenFX");
     if (!fx || duration <= 0)
@@ -538,6 +633,9 @@ void rt_screenfx_fade_in(rt_screenfx fx, int64_t color, int64_t duration) {
 
 /// @brief Fade FROM clear TO the color (alpha goes 0→peak). Used at scene-exit — start clear,
 /// end covered. Cancels any in-flight FADE_IN/FADE_OUT first.
+/// @param fx Borrowed ScreenFX handle.
+/// @param color Packed 0xRRGGBBAA final overlay color.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_fade_out(rt_screenfx fx, int64_t color, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.FadeOut: expected Zanna.Game.ScreenFX");
     if (!fx || duration <= 0)
@@ -562,6 +660,7 @@ void rt_screenfx_fade_out(rt_screenfx fx, int64_t color, int64_t duration) {
 
 /// @brief Stop every active effect immediately and zero the composited shake/overlay state.
 /// Use between scene transitions to guarantee a clean slate.
+/// @param fx Borrowed ScreenFX handle.
 void rt_screenfx_cancel_all(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.CancelAll: expected Zanna.Game.ScreenFX");
     if (!fx)
@@ -583,6 +682,8 @@ void rt_screenfx_cancel_all(rt_screenfx fx) {
 /// flash/fade cannot keep drawing its cached overlay and a canceled shake cannot leave a stale
 /// camera offset (VDOC-266). When nothing of that type was active the recompute is a cheap no-op
 /// over the same slots the caller would have scanned anyway.
+/// @param fx Borrowed ScreenFX handle.
+/// @param type Stable effect-type identifier to cancel.
 void rt_screenfx_cancel_type(rt_screenfx fx, int64_t type) {
     fx = checked_screenfx(fx, "ScreenFX.CancelType: expected Zanna.Game.ScreenFX");
     if (!fx)
@@ -599,6 +700,9 @@ void rt_screenfx_cancel_type(rt_screenfx fx, int64_t type) {
 }
 
 /// @brief Returns 1 if any effect slot is currently in use.
+/// @param fx Borrowed ScreenFX handle.
+/// @return `1` when any effect, including a terminal-frame effect, occupies a
+///         slot; otherwise `0`.
 int8_t rt_screenfx_is_active(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.IsActive: expected Zanna.Game.ScreenFX");
     if (!fx)
@@ -613,6 +717,9 @@ int8_t rt_screenfx_is_active(rt_screenfx fx) {
 
 /// @brief Returns 1 if at least one slot of the given effect type is active. Useful for guarding
 /// "don't restart this effect if it's still running" patterns.
+/// @param fx Borrowed ScreenFX handle.
+/// @param type Stable effect-type identifier to query.
+/// @return `1` when a matching slot exists; otherwise `0`.
 int8_t rt_screenfx_is_type_active(rt_screenfx fx, int64_t type) {
     fx = checked_screenfx(fx, "ScreenFX.IsTypeActive: expected Zanna.Game.ScreenFX");
     if (!fx)
@@ -627,12 +734,16 @@ int8_t rt_screenfx_is_type_active(rt_screenfx fx, int64_t type) {
 
 /// @brief Read the composited X-axis camera-shake offset for the current frame. Caller adds this
 /// to the camera position before drawing the world.
+/// @param fx Borrowed ScreenFX handle.
+/// @return Current accumulated horizontal offset in pixels, or `0` for null.
 int64_t rt_screenfx_get_shake_x(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.ShakeX: expected Zanna.Game.ScreenFX");
     return fx ? fx->shake_x : 0;
 }
 
 /// @brief Read the composited Y-axis camera-shake offset for the current frame.
+/// @param fx Borrowed ScreenFX handle.
+/// @return Current accumulated vertical offset in pixels, or `0` for null.
 int64_t rt_screenfx_get_shake_y(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.ShakeY: expected Zanna.Game.ScreenFX");
     return fx ? fx->shake_y : 0;
@@ -640,6 +751,8 @@ int64_t rt_screenfx_get_shake_y(rt_screenfx fx) {
 
 /// @brief Read the current overlay color (RGB packed in upper 24 bits, alpha in low byte = 0).
 /// Use together with `get_overlay_alpha` to render a full-screen tinted box on top of gameplay.
+/// @param fx Borrowed ScreenFX handle.
+/// @return Packed 0xRRGGBB00 overlay color, or `0` when unavailable.
 int64_t rt_screenfx_get_overlay_color(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.OverlayColor: expected Zanna.Game.ScreenFX");
     return fx ? fx->overlay_color : 0;
@@ -647,6 +760,8 @@ int64_t rt_screenfx_get_overlay_color(rt_screenfx fx) {
 
 /// @brief Read the current overlay alpha (0–255). Effects use max-alpha compositing — the
 /// brightest active overlay (FLASH, FADE_IN, FADE_OUT) wins.
+/// @param fx Borrowed ScreenFX handle.
+/// @return Current overlay alpha in the inclusive range 0..255.
 int64_t rt_screenfx_get_overlay_alpha(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.OverlayAlpha: expected Zanna.Game.ScreenFX");
     return fx ? fx->overlay_alpha : 0;
@@ -659,6 +774,10 @@ int64_t rt_screenfx_get_overlay_alpha(rt_screenfx fx) {
 /// @brief Trigger a directional wipe transition. `direction` ∈ {LEFT, RIGHT, UP, DOWN};
 /// out-of-range values default to LEFT. The colored rectangle grows from one screen edge across the
 /// duration, rendered in `draw()`.
+/// @param fx Borrowed ScreenFX handle.
+/// @param direction Stable wipe-direction identifier.
+/// @param color Packed 0x00RRGGBB Canvas color.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_wipe(rt_screenfx fx, int64_t direction, int64_t color, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.Wipe: expected Zanna.Game.ScreenFX");
     if (!fx || duration <= 0)
@@ -681,8 +800,13 @@ void rt_screenfx_wipe(rt_screenfx fx, int64_t direction, int64_t color, int64_t 
 }
 
 /// @brief Iris-out / "closing aperture" transition centered at (cx, cy). A colored region grows
-/// inward, leaving a shrinking unobscured circle. Implemented in `draw()` as four rectangles
-/// surrounding the visible circle (cheap; no per-pixel mask required).
+/// inward, leaving a shrinking unobscured circle. The draw pass fills scanline
+/// spans outside the Euclidean circle without requiring a per-pixel mask.
+/// @param fx Borrowed ScreenFX handle.
+/// @param cx Horizontal aperture center in Canvas coordinates.
+/// @param cy Vertical aperture center in Canvas coordinates.
+/// @param color Packed 0x00RRGGBB Canvas color.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_circle_in(
     rt_screenfx fx, int64_t cx, int64_t cy, int64_t color, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.CircleIn: expected Zanna.Game.ScreenFX");
@@ -706,6 +830,11 @@ void rt_screenfx_circle_in(
 /// @brief Iris-in / "opening aperture" transition centered at (cx, cy). The colored region recedes
 /// from the screen as a growing visible circle reveals the underlying scene. The reverse companion
 /// to `circle_in` — pair them across a scene boundary for a smooth iris transition.
+/// @param fx Borrowed ScreenFX handle.
+/// @param cx Horizontal aperture center in Canvas coordinates.
+/// @param cy Vertical aperture center in Canvas coordinates.
+/// @param color Packed 0x00RRGGBB Canvas color.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_circle_out(
     rt_screenfx fx, int64_t cx, int64_t cy, int64_t color, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.CircleOut: expected Zanna.Game.ScreenFX");
@@ -730,6 +859,9 @@ void rt_screenfx_circle_out(
 /// dissolve): each pixel's threshold is its `bayer4x4[y%4][x%4]` value, and a global threshold
 /// sweeps 0→255 over the duration. Visually a pleasing "scatter" effect; rendered pixel-by-pixel
 /// in `draw()` (avoid for very high-resolution canvases).
+/// @param fx Borrowed ScreenFX handle.
+/// @param color Packed 0x00RRGGBB Canvas color.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_dissolve(rt_screenfx fx, int64_t color, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.Dissolve: expected Zanna.Game.ScreenFX");
     if (!fx || duration <= 0)
@@ -753,6 +885,9 @@ void rt_screenfx_dissolve(rt_screenfx fx, int64_t color, int64_t duration) {
 /// minimum 2) over the duration. The runtime cannot read pixels back, so this is approximated
 /// by drawing a darkening grid overlay rather than true block-averaging — the visual hint of
 /// pixelation without the readback cost.
+/// @param fx Borrowed ScreenFX handle.
+/// @param max_block_size Final grid spacing, clamped to at least two pixels.
+/// @param duration Positive effect duration in milliseconds.
 void rt_screenfx_pixelate(rt_screenfx fx, int64_t max_block_size, int64_t duration) {
     fx = checked_screenfx(fx, "ScreenFX.Pixelate: expected Zanna.Game.ScreenFX");
     if (!fx || duration <= 0)
@@ -776,6 +911,9 @@ void rt_screenfx_pixelate(rt_screenfx fx, int64_t max_block_size, int64_t durati
 
 /// @brief Returns 1 when no slots are active. Useful for chaining transitions ("when fade-out
 /// finishes, load the next scene"). Treats a NULL handle as finished (returns 1).
+/// @param fx Borrowed ScreenFX handle.
+/// @return `1` when no effect slots are occupied or @p fx is null; otherwise
+///         `0`.
 int8_t rt_screenfx_is_finished(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.IsFinished: expected Zanna.Game.ScreenFX");
     if (!fx)
@@ -791,6 +929,9 @@ int8_t rt_screenfx_is_finished(rt_screenfx fx) {
 /// @brief Read the progress (0–1000 per mille) of the first active transition effect (WIPE,
 /// CIRCLE_*, DISSOLVE, PIXELATE). Returns 0 when no transition is running, 1000 when complete.
 /// Used to drive scene-load timing — kick off the next scene at progress=500 (mid-transition).
+/// @param fx Borrowed ScreenFX handle.
+/// @return First transition slot's clamped progress in 0..1000, or `0` when
+///         none is active.
 int64_t rt_screenfx_get_transition_progress(rt_screenfx fx) {
     fx = checked_screenfx(fx, "ScreenFX.TransitionProgress: expected Zanna.Game.ScreenFX");
     if (!fx)
@@ -822,6 +963,13 @@ int64_t rt_screenfx_get_transition_progress(rt_screenfx fx) {
 ///        cross the disc are filled left of and right of the circular chord. This
 ///        replaces the earlier four-rectangle approximation, whose opening was a
 ///        square rather than a circle (VDOC-269).
+/// @param canvas Borrowed Canvas handle.
+/// @param cx Horizontal disc center.
+/// @param cy Vertical disc center.
+/// @param radius Non-negative disc radius.
+/// @param screen_w Canvas width in pixels.
+/// @param screen_h Canvas height in pixels.
+/// @param color Packed 0x00RRGGBB fill color.
 static void screenfx_draw_circle_mask(void *canvas,
                                       int64_t cx,
                                       int64_t cy,
@@ -861,6 +1009,10 @@ static const uint8_t bayer4x4[4][4] = {
 ///   - **DISSOLVE:** per-pixel ordered Bayer dither vs a global 0→255 threshold.
 ///   - **PIXELATE:** semi-transparent grid overlay simulating block-pixelation without read-back.
 /// Caller provides the canvas dimensions explicitly so this function never queries the canvas.
+/// @param fx Borrowed ScreenFX handle.
+/// @param canvas Borrowed Canvas handle receiving all drawing.
+/// @param screen_w Positive Canvas width in pixels.
+/// @param screen_h Positive Canvas height in pixels.
 void rt_screenfx_draw(rt_screenfx fx, void *canvas, int64_t screen_w, int64_t screen_h) {
     fx = checked_screenfx(fx, "ScreenFX.Draw: expected Zanna.Game.ScreenFX");
     if (!fx || !canvas || screen_w <= 0 || screen_h <= 0)

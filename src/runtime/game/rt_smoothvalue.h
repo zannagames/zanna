@@ -4,18 +4,22 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/game/rt_smoothvalue.h
+/// @file
+/// @brief Declares a finite exponential scalar smoother with target, velocity,
+///        immediate-set, and impulse operations.
 // Purpose: Smooth value interpolation for camera follow and UI animations, applying exponential
 // smoothing each frame so the current value asymptotically approaches the target.
 //
 // Key invariants:
-//   - Smoothing factor must be in [0, 1); values >= 1 cause undefined behavior.
-//   - rt_smoothvalue_update must be called exactly once per frame.
-//   - The value never exactly reaches the target; it asymptotically approaches it.
-//   - Setting the value directly (rt_smoothvalue_set) snaps without smoothing.
+//   - Smoothing factors are clamped to [0.0, 0.999]; non-finite values become 0.
+//   - Each rt_smoothvalue_update call performs exactly one elapsed-time-independent step.
+//   - Values within 0.001 of the target snap exactly to it and clear velocity.
+//   - rt_smoothvalue_set_immediate snaps current and target without smoothing.
 //
 // Ownership/Lifetime:
-//   - Caller owns the handle; destroy with rt_smoothvalue_destroy.
-//   - No reference counting; explicit destruction is required.
+//   - Handles are runtime reference-counted objects.
+//   - rt_smoothvalue_destroy releases the caller's owned reference; runtime GC
+//     may also reclaim an otherwise unreachable object.
 //
 // Links: src/runtime/game/rt_smoothvalue.c (implementation)
 //
@@ -28,79 +32,85 @@
 extern "C" {
 #endif
 
+/// @brief Runtime class identifier used to validate SmoothValue handles.
 #define RT_SMOOTHVALUE_CLASS_ID INT64_C(-0x510203)
 
-/// Opaque handle to a SmoothValue instance.
+/// @brief Opaque handle to a SmoothValue instance.
 typedef struct rt_smoothvalue_impl *rt_smoothvalue;
 
 /// @brief Create a new SmoothValue.
-/// @param initial Initial value (both current and target are set to this).
-/// @param smoothing Smoothing factor (0.0 = instant, 1.0 = never moves).
-///                  Typically 0.8-0.95 for pleasant animations.
-/// @return A new SmoothValue instance.
+/// @param initial Initial current and target value; non-finite input becomes
+///        zero.
+/// @param smoothing Old-value weight clamped to [0.0, 0.999], where zero
+///        snaps on the next update and larger values move more slowly.
+/// @return Owned SmoothValue handle, or `NULL` if allocation fails.
 rt_smoothvalue rt_smoothvalue_new(double initial, double smoothing);
 
-/// @brief Destroy a SmoothValue and free its memory.
-/// @param sv The smooth value to destroy.
+/// @brief Release one owned SmoothValue reference.
+/// @param sv Owned handle to release; `NULL` is ignored.
 void rt_smoothvalue_destroy(rt_smoothvalue sv);
 
 /// @brief Get the current smoothed value.
-/// @param sv The smooth value.
-/// @return Current interpolated value.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Current finite value, or `0.0` for null.
 double rt_smoothvalue_get(rt_smoothvalue sv);
 
 /// @brief Get the current smoothed value as an integer.
-/// @param sv The smooth value.
-/// @return Current interpolated value (rounded to nearest integer).
+/// @param sv Borrowed SmoothValue handle.
+/// @return Saturating round-half-away-from-zero result, or `0` for null.
 int64_t rt_smoothvalue_get_i64(rt_smoothvalue sv);
 
 /// @brief Get the target value.
-/// @param sv The smooth value.
-/// @return The target value that the current value is approaching.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Finite target value, or `0.0` for null.
 double rt_smoothvalue_target(rt_smoothvalue sv);
 
 /// @brief Set the target value (current value will smoothly approach it).
-/// @param sv The smooth value.
-/// @param target New target value.
+/// @details Non-finite targets are ignored.
+/// @param sv Borrowed SmoothValue handle.
+/// @param target New finite target value.
 void rt_smoothvalue_set_target(rt_smoothvalue sv, double target);
 
 /// @brief Set both current and target value immediately (no smoothing).
-/// @param sv The smooth value.
-/// @param value New value applied to both current and target, bypassing
-///              interpolation.
+/// @details Also clears velocity; non-finite values normalize to zero.
+/// @param sv Borrowed SmoothValue handle.
+/// @param value New value applied to both current and target.
 void rt_smoothvalue_set_immediate(rt_smoothvalue sv, double value);
 
 /// @brief Get the smoothing factor.
-/// @param sv The smooth value.
-/// @return Smoothing factor in the range [0.0, 1.0).
+/// @param sv Borrowed SmoothValue handle.
+/// @return Old-value weight in [0.0, 0.999], or `0.0` for null.
 double rt_smoothvalue_smoothing(rt_smoothvalue sv);
 
 /// @brief Set the smoothing factor.
-/// @param sv The smooth value.
-/// @param smoothing New smoothing factor (0.0 = instant, 1.0 = never moves).
+/// @param sv Borrowed SmoothValue handle.
+/// @param smoothing Candidate factor clamped to [0.0, 0.999]; non-finite
+///        input becomes zero.
 void rt_smoothvalue_set_smoothing(rt_smoothvalue sv, double smoothing);
 
 /// @brief Update the smooth value by one frame.
 /// @details Call once per frame to advance the interpolation. The current
 ///          value moves toward the target by: current += (target - current)
-///          * (1 - smoothing).
-/// @param sv The smooth value.
+///          * (1 - smoothing). Values within 0.001 snap to the target.
+/// @param sv Borrowed SmoothValue handle.
 void rt_smoothvalue_update(rt_smoothvalue sv);
 
 /// @brief Check if the value has reached the target (within epsilon).
-/// @param sv The smooth value.
-/// @return 1 if at target, 0 otherwise.
+/// @param sv Borrowed SmoothValue handle.
+/// @return `1` when the absolute difference is below 0.001; a null handle is
+///         treated as converged.
 int8_t rt_smoothvalue_at_target(rt_smoothvalue sv);
 
 /// @brief Get the velocity (rate of change per frame).
-/// @param sv The smooth value.
-/// @return Current velocity (difference between this frame and last).
+/// @param sv Borrowed SmoothValue handle.
+/// @return Delta produced by the latest update, or `0.0` for null.
 double rt_smoothvalue_velocity(rt_smoothvalue sv);
 
 /// @brief Add an impulse to the current value.
-/// @param sv The smooth value.
-/// @param impulse Value to add immediately to the current value
-///                (does not change the target).
+/// @details Leaves the target unchanged so later updates smooth the displaced
+///          value back toward it. Non-finite impulses are ignored.
+/// @param sv Borrowed SmoothValue handle.
+/// @param impulse Finite offset added immediately to the current value.
 void rt_smoothvalue_impulse(rt_smoothvalue sv, double impulse);
 
 #ifdef __cplusplus

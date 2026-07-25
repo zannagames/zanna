@@ -22,13 +22,24 @@
 //
 // Ownership/Lifetime:
 //   - New sequences returned by functional operations are GC-managed.
-//   - Elements are shallow-copied (pointer only); ownership stays with the source.
+//   - Filter/range results preserve source ownership mode and independently
+//     retain shallow-copied elements when owning. Apply always returns an
+//     owning sequence of callback results.
+//   - FindWhere returns a borrowed element; its Option companion retains the
+//     selected value through the Option object.
 //
 // Links: src/runtime/collections/rt_seq_internal.h (struct definition),
 //        src/runtime/collections/rt_seq.c (core operations),
 //        src/runtime/collections/rt_seq_functional.c (void* wrapper layer)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements stable sorting and callback-driven operations for Seq.
+/// @details Sorting rearranges the shared Seq pointer allocation under a GC
+///          mutator scope. Functional operators inspect source storage and
+///          build new sequences through the public mutation API so ownership
+///          and retention stay consistent with core Seq behavior.
 
 #include "rt_internal.h"
 
@@ -48,6 +59,9 @@
 
 /// @brief Checked cast of an opaque handle to the Seq implementation;
 ///        traps with @p what if @p obj is NULL or not a Seq.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated Seq implementation, or `NULL` after trapping.
 static rt_seq_impl *as_seq(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_SEQ_CLASS_ID, sizeof(rt_seq_impl))) {
         rt_trap(what);
@@ -58,6 +72,8 @@ static rt_seq_impl *as_seq(void *obj, const char *what) {
 
 /// @brief Create an empty seq inheriting @p source's element-ownership mode
 ///        (defaults to owning when @p source is NULL).
+/// @param source Source implementation whose mode should be copied, or `NULL`.
+/// @return New runtime-managed empty Seq.
 static void *seq_new_empty_like(rt_seq_impl *source) {
     void *seq = rt_seq_new();
     if (!source || source->owns_elements)
@@ -82,7 +98,8 @@ static int64_t seq_default_compare(void *a, void *b) {
 
 /// @brief Merge two sorted halves of an array.
 /// @details Used by merge sort. Merges items[left..mid] and items[mid+1..right]
-///          into a sorted sequence.
+///          into a sorted sequence. Choosing the left element when comparison
+///          returns zero preserves stability.
 /// @param items Array of element pointers.
 /// @param temp Temporary buffer for merging.
 /// @param left Start index of left half.
@@ -125,6 +142,8 @@ static void seq_merge(void **items,
 }
 
 /// @brief Recursive merge sort implementation.
+/// @details Divides the inclusive range with overflow-safe midpoint arithmetic
+///          and merges after recursively sorting each half.
 /// @param items Array of element pointers.
 /// @param temp Temporary buffer.
 /// @param left Start index.
@@ -144,13 +163,13 @@ static void seq_merge_sort(
 /// @brief Sorts the elements in the Seq in ascending order.
 ///
 /// Rearranges elements into ascending order using a stable merge sort algorithm.
-/// Strings are compared lexicographically (case-sensitive). Non-string objects
-/// are compared by their memory address (pointer value).
+/// The shared collection comparator provides a total, transitive order across
+/// boxed strings, integers, other boxed values, nulls, and ordinary handles.
 ///
 /// **Sorting behavior:**
-/// - Strings: Lexicographic comparison ("a" < "b" < "z")
-/// - Other objects: Pointer comparison (for consistent ordering)
-/// - NULL values sort before non-NULL values
+/// - Boxed values: shared type-aware value ordering
+/// - Ordinary objects: shared deterministic fallback ordering
+/// - NULL: positioned by the same collection-wide comparator
 ///
 /// **Stability:**
 /// The sort is stable, meaning equal elements maintain their relative order.
@@ -203,12 +222,15 @@ void rt_seq_sort(void *obj) {
 /// ```
 ///
 /// @param obj Pointer to a Seq object. If NULL, this is a no-op.
-/// @param cmp Comparison function. If NULL, uses default string/pointer comparison.
+/// @param cmp Comparison function. If NULL, uses the shared collection order.
 ///
 /// @note O(n log n) time complexity.
 /// @note O(n) additional space for the merge operation.
 /// @note Modifies the Seq in place.
 /// @note The comparison function must be consistent (transitive ordering).
+/// @note A comparator trap releases the temporary merge buffer and propagates
+///       its diagnostic. Sorting is in place, so elements may already be
+///       partially reordered when a later comparison traps.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_sort For default ascending sort
@@ -265,6 +287,11 @@ void rt_seq_sort_by(void *obj, int64_t (*cmp)(void *, void *)) {
 }
 
 /// @brief Comparison function for descending sort.
+/// @details Negates the shared comparator's normalized sign result.
+/// @param a First element.
+/// @param b Second element.
+/// @return Negative when @p a belongs after @p b in ascending order, zero for
+///         equality, otherwise positive.
 static int64_t seq_compare_desc(void *a, void *b) {
     return -seq_default_compare(a, b);
 }
@@ -328,6 +355,9 @@ void rt_seq_sort_desc(void *obj) {
 ///
 /// @note O(n) time complexity.
 /// @note Creates a new Seq; original is not modified.
+/// @note The result preserves source ownership mode and independently retains
+///       selected values when that mode is owning. A null source yields an
+///       empty owning Seq.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_reject For the inverse operation
@@ -378,6 +408,8 @@ void *rt_seq_keep(void *obj, int8_t (*pred)(void *)) {
 /// @return New Seq containing only non-matching elements.
 ///
 /// @note O(n) time complexity.
+/// @note The result preserves source ownership mode and independently retains
+///       selected values when owning.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_keep For the inverse operation
@@ -427,7 +459,8 @@ void *rt_seq_reject(void *obj, int8_t (*pred)(void *)) {
 /// @return New Seq containing transformed elements.
 ///
 /// @note O(n) time complexity.
-/// @note The transform function must return a valid object pointer.
+/// @note The result is always an owning Seq; each non-null callback result is
+///       retained when appended. Null results are valid elements.
 /// @note Thread safety: Not thread-safe.
 void *rt_seq_apply(void *obj, void *(*fn)(void *)) {
     if (!obj)
@@ -634,6 +667,8 @@ int64_t rt_seq_count_where(void *obj, int8_t (*pred)(void *)) {
 /// @return First matching element, or NULL if none found.
 ///
 /// @note O(n) worst case, but short-circuits on first match.
+/// @note The returned element is borrowed and receives no additional retain;
+///       a matching stored null is ambiguous with absence.
 /// @note Thread safety: Not thread-safe.
 void *rt_seq_find_where(void *obj, int8_t (*pred)(void *)) {
     if (!obj)
@@ -663,7 +698,8 @@ void *rt_seq_find_where(void *obj, int8_t (*pred)(void *)) {
 ///          behavior.
 /// @param obj Opaque Seq object pointer, or NULL.
 /// @param pred Predicate function; NULL selects the first element.
-/// @return Opaque Zanna.Option containing the first matching element, or None.
+/// @return New runtime-managed Option containing the first matching element,
+///         or None. `Some` retains a non-null selected value.
 void *rt_seq_find_where_option(void *obj, int8_t (*pred)(void *)) {
     if (!obj)
         return rt_option_none();
@@ -701,6 +737,8 @@ void *rt_seq_find_where_option(void *obj, int8_t (*pred)(void *)) {
 /// @return New Seq containing at most n elements from the start.
 ///
 /// @note O(n) time complexity.
+/// @note The result preserves source ownership mode; a null source produces
+///       an empty owning Seq.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_drop For skipping elements
@@ -737,6 +775,8 @@ void *rt_seq_take(void *obj, int64_t n) {
 /// @return New Seq containing elements after the first n.
 ///
 /// @note O(n) time complexity.
+/// @note The result preserves source ownership mode; a null source produces
+///       an empty owning Seq.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_take For taking elements
@@ -782,6 +822,8 @@ void *rt_seq_drop(void *obj, int64_t n) {
 /// @return New Seq with leading elements matching predicate.
 ///
 /// @note O(n) time complexity.
+/// @note The result preserves source ownership mode and independently retains
+///       selected values when owning.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_drop_while For the inverse operation
@@ -833,6 +875,8 @@ void *rt_seq_take_while(void *obj, int8_t (*pred)(void *)) {
 /// @return New Seq with elements after the leading matching ones.
 ///
 /// @note O(n) time complexity.
+/// @note The result preserves source ownership mode and independently retains
+///       selected values when owning.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_seq_take_while For the inverse operation
@@ -881,6 +925,8 @@ void *rt_seq_drop_while(void *obj, int8_t (*pred)(void *)) {
 /// @return Final accumulated value.
 ///
 /// @note O(n) time complexity.
+/// @note Seq does not retain or release @p init or callback-produced
+///       accumulators; ownership is entirely defined by the reducer contract.
 /// @note Thread safety: Not thread-safe.
 void *rt_seq_fold(void *obj, void *init, void *(*fn)(void *, void *)) {
     if (!obj || !fn)

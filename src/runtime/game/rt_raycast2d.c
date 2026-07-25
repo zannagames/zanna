@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_raycast2d.c
+/// @file
+/// @brief Implements segment/shape intersection and tile-grid DDA raycasting.
+//
 // Purpose: 2D raycasting — DDA tilemap traversal, line-segment intersection.
 //
 // Key invariants:
@@ -27,6 +30,19 @@
 //=============================================================================
 
 /// @brief Test whether a line segment intersects an axis-aligned rectangle (Liang-Barsky).
+/// @param x1 Segment start X.
+/// @param y1 Segment start Y.
+/// @param x2 Segment end X.
+/// @param y2 Segment end Y.
+/// @param rx Rectangle top-left X.
+/// @param ry Rectangle top-left Y.
+/// @param rw Nonnegative rectangle width.
+/// @param rh Nonnegative rectangle height.
+/// @return `1` when the closed segment intersects or touches the rectangle,
+///         otherwise `0`.
+/// @details Non-finite inputs and negative dimensions are rejected. A
+///          zero-length segment is treated as a point test; zero-size
+///          rectangles are permitted.
 int8_t rt_collision_line_rect(
     double x1, double y1, double x2, double y2, double rx, double ry, double rw, double rh) {
     if (!isfinite(x1) || !isfinite(y1) || !isfinite(x2) || !isfinite(y2) || !isfinite(rx) ||
@@ -63,6 +79,17 @@ int8_t rt_collision_line_rect(
 //=============================================================================
 
 /// @brief Test whether a line segment intersects a circle (quadratic formula).
+/// @param x1 Segment start X.
+/// @param y1 Segment start Y.
+/// @param x2 Segment end X.
+/// @param y2 Segment end Y.
+/// @param cx Circle center X.
+/// @param cy Circle center Y.
+/// @param r Nonnegative radius.
+/// @return `1` when the segment intersects, touches, or lies within the circle,
+///         otherwise `0`.
+/// @details Non-finite inputs and negative radius are rejected. A zero-length
+///          segment becomes a closed point-in-circle test.
 int8_t rt_collision_line_circle(
     double x1, double y1, double x2, double y2, double cx, double cy, double r) {
     if (!isfinite(x1) || !isfinite(y1) || !isfinite(x2) || !isfinite(y2) || !isfinite(cx) ||
@@ -90,6 +117,10 @@ int8_t rt_collision_line_circle(
 // Tilemap Raycast (DDA)
 //=============================================================================
 
+/// @brief Compute mathematical floor division for signed integers.
+/// @param n Dividend.
+/// @param d Nonzero divisor.
+/// @return `floor(n / d)`, correcting C's truncation toward zero.
 static int64_t floor_div_i64(int64_t n, int64_t d) {
     int64_t q = n / d;
     int64_t r = n % d;
@@ -98,8 +129,10 @@ static int64_t floor_div_i64(int64_t n, int64_t d) {
     return q;
 }
 
-/// @brief Convert a long double to int64, saturating to the int64 range;
-///        non-finite input yields 0.
+/// @brief Convert a long double to int64 with endpoint saturation.
+/// @param value Candidate value.
+/// @return Truncated integer, nearest endpoint when outside int64 range, or
+///         zero when conversion to double reports non-finite.
 static int64_t clamp_ld_to_i64(long double value) {
     if (!isfinite((double)value))
         return 0;
@@ -111,8 +144,13 @@ static int64_t clamp_ld_to_i64(long double value) {
 }
 
 /// @brief Liang–Barsky per-boundary clip test: narrows the parametric ray
-///        interval [t0, t1] for one axis/edge. @return 0 if the segment is
-///        wholly outside that boundary, 1 otherwise (with t0/t1 tightened).
+///        interval [t0, t1] for one axis/edge.
+/// @param p Signed direction coefficient for the boundary.
+/// @param q Signed start-to-boundary distance.
+/// @param t0 In/out lower parametric bound.
+/// @param t1 In/out upper parametric bound.
+/// @return `0` when wholly outside that boundary, otherwise `1` with the
+///         interval tightened as needed.
 static int8_t clip_axis(long double p, long double q, long double *t0, long double *t1) {
     if (fabsl(p) < 1e-18L)
         return q >= 0.0L;
@@ -132,7 +170,24 @@ static int8_t clip_axis(long double p, long double q, long double *t0, long doub
 }
 
 /// @brief Test one tile cell along a ray for a solid hit and, if so, record
-///        the entry point/normal. @return 1 on hit (out params set), else 0.
+///        the clamped entry point.
+/// @param tilemap Tilemap queried for solidity.
+/// @param tile_x Candidate tile X.
+/// @param tile_y Candidate tile Y.
+/// @param mw_tiles Map width in tiles.
+/// @param mh_tiles Map height in tiles.
+/// @param tw Tile width in pixels.
+/// @param th Tile height in pixels.
+/// @param x1 Original segment start X.
+/// @param y1 Original segment start Y.
+/// @param full_dx Original segment X delta.
+/// @param full_dy Original segment Y delta.
+/// @param current_t Parametric entry time for the candidate cell.
+/// @param hit_x Optional hit-X output.
+/// @param hit_y Optional hit-Y output.
+/// @return `1` for an in-range solid tile, otherwise `0`.
+/// @details Hit coordinates are saturated then clamped to the tile's inclusive
+///          pixel bounds.
 static int8_t raycast_check_tile(void *tilemap,
                                  int64_t tile_x,
                                  int64_t tile_y,
@@ -176,9 +231,20 @@ static int8_t raycast_check_tile(void *tilemap,
 }
 
 /// @brief Cast a ray through a tilemap and return the first solid tile hit.
+/// @param tilemap Tilemap whose configured solidity is queried.
+/// @param x1 Segment start X in pixels.
+/// @param y1 Segment start Y in pixels.
+/// @param x2 Segment end X in pixels.
+/// @param y2 Segment end Y in pixels.
+/// @param hit_x Optional destination for first-hit X.
+/// @param hit_y Optional destination for first-hit Y.
 /// @details Clips the segment to the finite map bounds, then uses tile DDA so
 ///          long rays traverse touched tiles rather than a capped pixel sample.
-/// @return 1 if a solid tile was hit (hit_x/hit_y set), 0 if clear.
+///          The map extent is half-open. Exact corner crossings test both
+///          side-adjacent tiles before entering the diagonal tile. Output
+///          pointers are written only on a hit.
+/// @return `1` if a solid tile was hit, or `0` for a clear segment, null map,
+///         invalid/overflowing map dimensions, or a segment missing the map.
 int8_t rt_raycast_tilemap(
     void *tilemap, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t *hit_x, int64_t *hit_y) {
     if (!tilemap)
@@ -341,7 +407,16 @@ int8_t rt_raycast_tilemap(
     return 0;
 }
 
-/// @brief Check whether two points have unobstructed line of sight through a tilemap.
+/// @brief Check whether two pixel positions have no solid tile between them.
+/// @param tilemap Tilemap to traverse.
+/// @param x1 Segment start X.
+/// @param y1 Segment start Y.
+/// @param x2 Segment end X.
+/// @param y2 Segment end Y.
+/// @return Logical inverse of rt_raycast_tilemap(): `1` when no hit is
+///         reported, otherwise `0`.
+/// @details Because all raycast failure/no-hit cases return zero, a null or
+///          invalid-dimension tilemap is reported as unobstructed.
 int8_t rt_has_line_of_sight(void *tilemap, int64_t x1, int64_t y1, int64_t x2, int64_t y2) {
     return !rt_raycast_tilemap(tilemap, x1, y1, x2, y2, NULL, NULL);
 }

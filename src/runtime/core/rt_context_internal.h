@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_context_internal.h
+/// @file
+/// @brief Declares internal context-state locking and thread-binding handoff.
+///
 // Purpose: Internal context-binding handoff used by the platform thread
 //   adapters to reserve an inherited context before an OS thread can run.
 //
@@ -58,11 +61,15 @@ RtContext *rt_context_acquire_state(rt_context_state_kind_t kind, int *is_legacy
 ///          therefore does not need legacy-context resolution.
 /// @param ctx Initialized context with live mutex storage.
 /// @param kind Mutable subsystem to serialize.
+/// @note Lock nesting is tracked per thread for trap unwinding. Invalid lock
+///       storage or nesting beyond the fixed internal capacity aborts.
 void rt_context_state_lock(RtContext *ctx, rt_context_state_kind_t kind);
 
 /// @brief Release one context subsystem lock acquired by this thread.
 /// @param ctx Context returned to or supplied by the matching acquire operation.
 /// @param kind Subsystem passed to the matching lock operation.
+/// @note Nonempty acquisitions must be released in strict LIFO order; an order
+///       mismatch aborts. Calling with no tracked lock is a no-op.
 void rt_context_release_state(RtContext *ctx, rt_context_state_kind_t kind);
 
 /// @brief Abandon all context-state locks before a trap performs `longjmp`.

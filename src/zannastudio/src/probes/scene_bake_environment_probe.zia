@@ -169,7 +169,17 @@ func main() {
     pump(editor, sceneDoc, shell);
     var cancelBaseline = sceneDoc.content;
     if editor.StartBake() == false or editor.IsBakeActive() == false {
-        fail(shell, workDir, "bake did not start on unique meshes");
+        var debugStatics = "";
+        var debugIndex = 0;
+        while debugIndex < editor.flatNodes.count() {
+            debugStatics = debugStatics + " "
+                + editor.flatNodes.get(debugIndex).GetStatic();
+            debugIndex = debugIndex + 1;
+        }
+        fail(shell, workDir, "bake did not start on unique meshes: statics="
+             + debugStatics
+             + " nodes=" + editor.flatNodes.count()
+             + " active=" + editor.IsBakeActive());
         return;
     }
     var cancelEditRevision = editor.GetRevision();

@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_context.c
+/// @file
+/// @brief Implements runtime-context lifecycle, binding, locking, and fallback state.
+///
 // Purpose: Per-VM runtime context management. Each Zanna VM instance owns an
 //   RtContext that holds all per-VM state: RNG seed, open file handles,
 //   command-line arguments, module-level variables, and the OOP type registry.
@@ -16,10 +19,10 @@
 //   - A context is bound to a thread via a thread-local pointer
 //     (_Thread_local RtContext *g_rt_context). At most one context is active
 //     per thread at any time; VMs must bind before executing and unbind after.
-//   - bind_count is an atomic reference count incremented on bind and
-//     decremented on unbind. When it reaches 0, the context's open files and
-//     registered types are migrated to the legacy context so native post-VM
-//     code continues to work correctly.
+//   - bind_count is an atomic reference count incremented on bind/reservation
+//     and decremented on unbind/cancellation. A last unbind to no replacement,
+//     or cancellation of the last reservation, hands eligible state back to
+//     the legacy context for native post-VM calls.
 //   - A process-wide legacy context is initialized through an atomic state
 //     machine and used as a fallback when g_rt_context is NULL. Shutdown may
 //     clean it and publish an uninitialized state for safe later reuse.
@@ -115,6 +118,8 @@ __attribute__((weak)) void rt_type_registry_state_write_unlock(RtContext *ctx) {
     (void)ctx;
 }
 #endif
+/// @brief Releases argument strings and storage owned by a context.
+/// @param ctx Context whose argument state is being destroyed.
 void rt_args_state_cleanup(RtContext *ctx);
 
 /// @brief Thread-local pointer to the active runtime context.
@@ -123,7 +128,8 @@ void rt_args_state_cleanup(RtContext *ctx);
 /// The VM sets this pointer before executing Zanna code and clears it
 /// afterward. When NULL, runtime functions fall back to the legacy context.
 ///
-/// @note Thread-local storage ensures thread safety without locking.
+/// @note The pointer is borrowed. Binding counts and lifecycle synchronization
+///       keep the caller-owned context storage live while it is published.
 RT_THREAD_LOCAL RtContext *g_rt_context = NULL;
 
 /// @brief Global legacy context for backward compatibility.
@@ -301,6 +307,8 @@ void rt_context_state_lock(RtContext *ctx, rt_context_state_kind_t kind) {
 }
 
 /// @copydoc rt_context_release_state
+/// @note An empty per-thread lock stack makes this a no-op; otherwise locks
+///       must be released in strict last-in, first-out order or the runtime aborts.
 void rt_context_release_state(RtContext *ctx, rt_context_state_kind_t kind) {
     if (g_context_lock_depth == 0)
         return;
@@ -313,6 +321,8 @@ void rt_context_release_state(RtContext *ctx, rt_context_state_kind_t kind) {
 }
 
 /// @copydoc rt_context_state_abort_for_trap
+/// @note Releases every tracked recursive acquisition in reverse order and
+///       resets the current thread's lock depth to zero.
 void rt_context_state_abort_for_trap(void) {
     while (g_context_lock_depth > 0) {
         rt_context_lock_frame_t frame = g_context_lock_stack[--g_context_lock_depth];
@@ -347,6 +357,7 @@ static int g_main_thread_lock_ = 0;
 ///          Explicit calls to @ref rt_set_main_thread may later override the
 ///          captured value under the same lock without racing concurrent
 ///          calls to @ref rt_is_main_thread.
+/// @note A prior successful capture is left unchanged.
 static void rt_capture_process_main_thread_(void) {
     if (__atomic_load_n(&g_main_thread_set_, __ATOMIC_ACQUIRE) == RT_MAIN_THREAD_READY)
         return;
@@ -386,6 +397,7 @@ __attribute__((constructor)) static void rt_capture_process_main_thread_ctor(voi
 ///          the constructor fired on the loader's thread rather than
 ///          the actual UI thread. Updates the native identifier while holding
 ///          the same lock used by readers, then publishes the ready flag.
+/// @note Later calls intentionally replace the previously designated thread.
 void rt_set_main_thread(void) {
     rt_spin_lock(&g_main_thread_lock_);
 #if RT_PLATFORM_WINDOWS
@@ -403,6 +415,7 @@ void rt_set_main_thread(void) {
 ///          On Windows uses thread-ID compare; on POSIX uses
 ///          `pthread_equal` because `pthread_t` is opaque and
 ///          comparison via `==` isn't portable.
+/// @return One when the caller matches the designated main thread, otherwise zero.
 int8_t rt_is_main_thread(void) {
     if (__atomic_load_n(&g_main_thread_set_, __ATOMIC_ACQUIRE) != RT_MAIN_THREAD_READY)
         rt_capture_process_main_thread_();
@@ -423,6 +436,11 @@ int8_t rt_is_main_thread(void) {
 ///          `InvalidOperation` trap with the source location so the
 ///          developer can find the offending call site immediately
 ///          rather than discovering a corrupted UI later.
+/// @param file Source filename supplied by the assertion macro; null is shown
+///             as `<unknown>`.
+/// @param line Source line included in the trap metadata and message.
+/// @note Returns normally only on the designated main thread or if a configured
+///       trap hook handles the violation and returns.
 void rt_assert_main_thread_(const char *file, int line) {
     if (!rt_is_main_thread()) {
         char buffer[256];
@@ -557,6 +575,8 @@ RtContext *rt_context_acquire_state(rt_context_state_kind_t kind, int *is_legacy
 ///
 /// @param ctx Pointer to the context to initialize. Must not be NULL.
 ///
+/// @pre @p ctx is zeroed/uninitialized or has completed rt_context_cleanup();
+///      reinitializing a live context would discard ownership metadata.
 /// @note Allocates platform-private subsystem locks. Initialization is
 ///       transactional: failure releases every lock constructed so far and
 ///       leaves the lifecycle uninitialized.
@@ -1111,8 +1131,8 @@ RtContext *rt_get_current_context(void) {
 /// @brief Get the global legacy context for backward compatibility.
 ///
 /// Returns the shared fallback context used when no VM context is bound.
-/// The legacy context is lazily initialized on first access and persists
-/// for the lifetime of the process.
+/// The legacy context is lazily initialized on first access. An explicit
+/// quiescent shutdown can clean it and reset lazy initialization for later reuse.
 ///
 /// **When to use:**
 /// - Native code not running under a VM
@@ -1128,7 +1148,8 @@ RtContext *rt_get_current_context(void) {
 /// // Now ctx is guaranteed non-NULL
 /// ```
 ///
-/// @return Pointer to the global legacy context (never NULL after first call).
+/// @return Borrowed pointer to the global legacy context, or `NULL` if
+///         initialization trapped and the trap handler returned.
 ///
 /// @note Thread-safe: uses atomic lazy initialization.
 /// @note The returned context is shared across all threads not using a VM context.

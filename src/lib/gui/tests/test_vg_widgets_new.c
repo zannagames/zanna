@@ -324,6 +324,52 @@ TEST(image_scale_none_preserves_original_size) {
     vgfx_destroy_window(win);
 }
 
+TEST(image_focusable_opt_in_focus_and_ring) {
+    vgfx_window_params_t params = {
+        .width = 8, .height = 8, .title = "image", .fps = 0, .resizable = 0};
+    vgfx_window_t win = vgfx_create_window(&params);
+    ASSERT_NOT_NULL(win);
+
+    vg_image_t *image = vg_image_create(NULL);
+    ASSERT_NOT_NULL(image);
+
+    const uint8_t pixel[4] = {0, 255, 0, 255};
+    vg_image_set_pixels(image, pixel, 1, 1);
+    vg_image_set_scale_mode(image, VG_IMAGE_SCALE_STRETCH);
+    image->bg_color = 0x000000;
+    vg_widget_arrange(&image->base, 0.0f, 0.0f, 8.0f, 8.0f);
+
+    /* Presentation images decline focus by default. */
+    ASSERT(image->base.vtable->can_focus != NULL);
+    ASSERT(!image->base.vtable->can_focus(&image->base));
+
+    /* The opt-in makes the image focusable like any interactive widget. */
+    vg_image_set_focusable(image, true);
+    ASSERT(image->base.vtable->can_focus(&image->base));
+    vg_widget_set_focus(&image->base);
+    ASSERT((image->base.state & VG_STATE_FOCUSED) != 0);
+
+    /* A focused focusable image paints the theme focus ring over its border
+     * while interior content stays image pixels. */
+    vgfx_cls(win, VGFX_BLACK);
+    vg_widget_paint(&image->base, win);
+    const vg_theme_t *theme = vg_theme_get_current();
+    ASSERT_NOT_NULL(theme);
+    vgfx_color_t corner = 0;
+    vgfx_color_t center = 0;
+    ASSERT_EQ(vgfx_point(win, 0, 0, &corner), 1);
+    ASSERT_EQ(vgfx_point(win, 4, 4, &center), 1);
+    ASSERT_EQ(corner, theme->focus.glow_color & 0x00FFFFFFu);
+    ASSERT_EQ(center, 0x00FF00);
+
+    /* Clearing the opt-in restores presentation-only behavior. */
+    vg_image_set_focusable(image, false);
+    ASSERT(!image->base.vtable->can_focus(&image->base));
+
+    vg_widget_destroy(&image->base);
+    vgfx_destroy_window(win);
+}
+
 TEST(image_opacity_and_stretch_affect_framebuffer) {
     vgfx_window_params_t params = {
         .width = 8, .height = 8, .title = "image", .fps = 0, .resizable = 0};
@@ -994,6 +1040,7 @@ int main(void) {
 
     printf("\nGroup E2c — Image:\n");
     RUN(image_scale_none_preserves_original_size);
+    RUN(image_focusable_opt_in_focus_and_ring);
     RUN(image_opacity_and_stretch_affect_framebuffer);
     RUN(image_atomic_upload_and_region_update);
     RUN(image_bilinear_filter_and_scaled_cache);

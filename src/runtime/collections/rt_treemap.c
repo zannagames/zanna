@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/collections/rt_treemap.c
+/// @file
+/// @brief Implements the GC-managed, sorted string-keyed TreeMap collection.
+///
 // Purpose: Implements a sorted string-keyed map (TreeMap) backed by a
 //   dynamically-resizing sorted array with binary search. Keys are maintained
 //   in ascending lexicographic order at all times, supporting ordered iteration
@@ -13,7 +16,9 @@
 //   unordered Map.
 //
 // Key invariants:
-//   - Entries array is sorted by key in ascending strcmp order at all times.
+//   - Entries are sorted by length-aware unsigned byte order at all times.
+//     Embedded null bytes participate in comparison; a null key is normalized
+//     to the zero-length key.
 //   - Binary search provides O(log n) lookup, Floor, and Ceiling queries.
 //   - Insertion uses binary search to find the insertion point, then memmove
 //     to shift the suffix right: O(n) per insert.
@@ -28,6 +33,11 @@
 // Ownership/Lifetime:
 //   - TreeMap objects are GC-managed (rt_obj_new_i64). The entries array and
 //     all heap-copied key strings are freed by the GC finalizer (treemap_finalizer).
+//   - Stored values are retained by the map and released when replaced,
+//     removed, cleared, or finalized. Lookup returns a borrowed value.
+//   - Key-navigation calls construct result strings. Keys() and Values()
+//     return new owning Seq snapshots whose elements remain valid independently
+//     of later mutations to the map.
 //
 // Links: src/runtime/collections/rt_treemap.h (public API),
 //        src/runtime/collections/rt_map.h (unordered hash map counterpart)
@@ -49,8 +59,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Installs @p buf as the current thread's non-local trap recovery target.
+/// @param buf Jump buffer that receives control when a runtime trap is raised.
 void rt_trap_set_recovery(jmp_buf *buf);
+
+/// @brief Removes the current thread's trap recovery target.
 void rt_trap_clear_recovery(void);
+
+/// @brief Returns the diagnostic text associated with the most recent runtime trap.
+/// @return Borrowed null-terminated error text, or an empty/null result when unavailable.
 const char *rt_trap_get_error(void);
 
 /// @brief Initial capacity for the entries array when first allocation occurs.
@@ -90,6 +107,9 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the TreeMap implementation;
 ///        traps with @p what if @p obj is NULL or not a TreeMap.
+/// @param obj Opaque runtime object to validate.
+/// @param what Diagnostic message used if validation fails.
+/// @return The validated implementation pointer, or `NULL` after raising a trap.
 static treemap_impl *as_treemap(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_TREEMAP_CLASS_ID, sizeof(treemap_impl))) {
         rt_trap(what);
@@ -101,12 +121,14 @@ static treemap_impl *as_treemap(void *obj, const char *what) {
 /// @brief Extracts raw key data and length from an rt_string.
 ///
 /// Converts a Zanna string to a C string pointer and computes its length.
-/// Handles NULL strings gracefully by returning an empty string.
+/// A null string, a non-positive runtime length, or unavailable character data
+/// is normalized to the zero-length key.
 ///
 /// @param key The Zanna string to extract data from.
 /// @param out_len Output parameter that receives the key length in bytes.
 ///
-/// @return Pointer to the key's character data, or "" if key is NULL.
+/// @return Borrowed pointer to @p key's bytes, or a stable empty C string for
+///         a normalized zero-length key.
 static const char *get_key_data(rt_string key, size_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -198,7 +220,8 @@ static size_t binary_search(treemap_impl *tm, const char *key, size_t keylen, bo
 ///
 /// @param tm The TreeMap to grow if needed.
 ///
-/// @note Traps with "TreeMap: memory allocation failed" if realloc fails.
+/// @return Nonzero when capacity is available; zero after trapping for
+///         capacity, allocation-size, or memory-allocation failure.
 static int ensure_capacity(treemap_impl *tm) {
     if (tm->count < tm->capacity)
         return 1;
@@ -231,22 +254,39 @@ static int ensure_capacity(treemap_impl *tm) {
 /// reference).
 ///
 /// @param e The entry to clean up.
+/// @note The entry itself is not cleared; callers must overwrite or zero it
+///       before treating the slot as reusable.
 static void free_entry_contents(treemap_entry *e) {
     free(e->key);
     if (e->value && rt_obj_release_check0(e->value))
         rt_obj_free(e->value);
 }
 
+/// @brief Releases one retained runtime object and frees it if its count reaches zero.
+/// @param obj Nullable runtime object reference to release.
 static void treemap_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Copies the active trap diagnostic into a caller-owned fixed buffer.
+/// @param buffer Destination buffer for a null-terminated message.
+/// @param buffer_size Size of @p buffer in bytes.
+/// @param fallback Message used when the trap subsystem has no nonempty diagnostic.
 static void treemap_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Appends a copied key string to a snapshot sequence with trap cleanup.
+///
+/// If string construction or sequence insertion traps, this helper releases
+/// the temporary string and the entire partially constructed sequence before
+/// re-raising the saved diagnostic.
+///
+/// @param seq Owning sequence being populated; consumed on a trapped failure.
+/// @param key Key bytes to copy into a runtime string.
+/// @param keylen Number of bytes available at @p key.
 static void treemap_push_key_or_release_seq(void *seq, const char *key, size_t keylen) {
     rt_string volatile str = NULL;
     jmp_buf recovery;
@@ -275,6 +315,14 @@ static void treemap_push_key_or_release_seq(void *seq, const char *key, size_t k
     rt_trap_clear_recovery();
 }
 
+/// @brief Appends a value to an owning snapshot sequence with trap cleanup.
+///
+/// The sequence retains @p value through `rt_seq_push`. If insertion traps,
+/// the entire partially constructed sequence is released before the saved
+/// diagnostic is re-raised.
+///
+/// @param seq Owning sequence being populated; consumed on a trapped failure.
+/// @param value Nullable borrowed value to append and retain.
 static void treemap_push_value_or_release_seq(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -296,30 +344,9 @@ static void treemap_push_value_or_release_seq(void *seq, void *value) {
 // Public API
 //=============================================================================
 
-/// @brief Creates a new empty TreeMap.
-///
-/// Allocates and initializes an empty sorted map. The entries array is
-/// not allocated until the first insertion to save memory for empty maps.
-///
-/// **Usage example:**
-/// ```
-/// Dim map = TreeMap.New()
-/// map.Set("charlie", obj1)
-/// map.Set("alpha", obj2)
-/// map.Set("bravo", obj3)
-/// ' Keys are stored in sorted order: alpha, bravo, charlie
-/// ```
-///
-/// @return A pointer to the newly created TreeMap.
-///
-/// @note O(1) time complexity.
-/// @note Traps if memory allocation fails.
-///
-/// @see rt_treemap_set For adding key-value pairs
-/// @see rt_treemap_keys For retrieving keys in sorted order
-
 /// @brief GC finalizer: free each entry's contents (key + released value),
 ///        then free the sorted entries array.
+/// @param obj TreeMap instance being finalized; a null pointer is ignored.
 static void treemap_finalizer(void *obj) {
     if (!obj)
         return;
@@ -337,6 +364,9 @@ static void treemap_finalizer(void *obj) {
 }
 
 /// @brief GC traversal: visit every stored value in sorted-key order.
+/// @param obj TreeMap instance whose outgoing references are being traced.
+/// @param visitor Callback invoked once for each nullable stored value.
+/// @param ctx Opaque context forwarded unchanged to @p visitor.
 static void treemap_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -347,6 +377,16 @@ static void treemap_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
         visitor(tm->entries[i].value, ctx);
 }
 
+/// @brief Creates a new empty TreeMap.
+///
+/// Allocates the GC-managed object but defers allocation of the sorted entry
+/// array until the first insertion.
+///
+/// @return New empty TreeMap, or `NULL` after trapping if allocation fails.
+/// @note The returned object is tracked by the garbage collector and must not
+///       be freed directly by the caller.
+/// @see rt_treemap_set
+/// @see rt_treemap_keys
 void *rt_treemap_new(void) {
     treemap_impl *tm =
         (treemap_impl *)rt_obj_new_i64(RT_TREEMAP_CLASS_ID, (int64_t)sizeof(treemap_impl));
@@ -372,6 +412,7 @@ void *rt_treemap_new(void) {
 /// @return The number of entries in the map.
 ///
 /// @note O(1) time complexity.
+/// @note A null handle is treated as an empty map; a non-TreeMap handle traps.
 int64_t rt_treemap_len(void *obj) {
     if (!obj)
         return 0;
@@ -388,6 +429,7 @@ int64_t rt_treemap_len(void *obj) {
 /// @return 1 (true) if the TreeMap is empty, 0 (false) otherwise.
 ///
 /// @note O(1) time complexity.
+/// @note A null handle is treated as empty; a non-TreeMap handle traps.
 int8_t rt_treemap_is_empty(void *obj) {
     if (!obj)
         return 1;
@@ -411,12 +453,14 @@ int8_t rt_treemap_is_empty(void *obj) {
 /// ```
 ///
 /// @param obj Pointer to a TreeMap object.
-/// @param key The key string. A copy is made and stored.
+/// @param key The key string. Its bytes are copied for a new entry; a null
+///            string denotes the empty key.
 /// @param value The value to associate with the key. May be NULL.
 ///              The TreeMap retains a reference to this value.
 ///
 /// @note O(log n) for lookup + O(n) for insertion (array shifting).
-/// @note Traps if memory allocation fails.
+/// @note Updating an existing key is O(log n). Passing a null map is a no-op.
+/// @note Traps for an invalid object or if capacity/key allocation fails.
 ///
 /// @see rt_treemap_get For retrieving values by key
 void rt_treemap_set(void *obj, rt_string key, void *value) {
@@ -496,11 +540,13 @@ void rt_treemap_set(void *obj, rt_string key, void *value) {
 /// Performs binary search to find the key and returns its associated value.
 ///
 /// @param obj Pointer to a TreeMap object.
-/// @param key The key to look up.
+/// @param key The key to look up; a null string denotes the empty key.
 ///
-/// @return The value associated with the key, or NULL if the key is not found.
+/// @return Borrowed value associated with the key, or `NULL` if the key is
+///         absent, its stored value is null, or @p obj is null.
 ///
 /// @note O(log n) time complexity (binary search).
+/// @note A nonnull object of the wrong runtime class raises a trap.
 ///
 /// @see rt_treemap_has For checking if a key exists
 /// @see rt_treemap_set For storing key-value pairs
@@ -525,11 +571,12 @@ void *rt_treemap_get(void *obj, rt_string key) {
 /// @brief Checks whether a key exists in the TreeMap.
 ///
 /// @param obj Pointer to a TreeMap object.
-/// @param key The key to check for.
+/// @param key The key to check for; a null string denotes the empty key.
 ///
 /// @return 1 (true) if the key exists, 0 (false) otherwise.
 ///
 /// @note O(log n) time complexity (binary search).
+/// @note A null map returns false; a non-TreeMap handle raises a trap.
 int8_t rt_treemap_has(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -552,11 +599,13 @@ int8_t rt_treemap_has(void *obj, rt_string key) {
 /// the value reference, and shifts remaining entries to maintain sorted order.
 ///
 /// @param obj Pointer to a TreeMap object.
-/// @param key The key to remove.
+/// @param key The key to remove; a null string denotes the empty key.
 ///
 /// @return 1 (true) if the key was found and removed, 0 (false) if not found.
 ///
 /// @note O(log n) for lookup + O(n) for removal (array shifting).
+/// @note Removal releases the map's retained value reference. A null map
+///       returns false; a non-TreeMap handle raises a trap.
 int8_t rt_treemap_remove(void *obj, rt_string key) {
     if (!obj)
         return 0;
@@ -602,6 +651,8 @@ int8_t rt_treemap_remove(void *obj, rt_string key) {
 /// @param obj Pointer to a TreeMap object.
 ///
 /// @note O(n) time complexity where n is the number of entries.
+/// @note The allocated entry capacity is retained for reuse. A null map is
+///       ignored; a non-TreeMap handle raises a trap.
 void rt_treemap_clear(void *obj) {
     if (!obj)
         return;
@@ -638,9 +689,12 @@ void rt_treemap_clear(void *obj) {
 ///
 /// @param obj Pointer to a TreeMap object.
 ///
-/// @return A new Seq containing all keys in sorted order.
+/// @return A new owning Seq containing independent key strings in sorted
+///         order, or `NULL` if sequence allocation fails.
 ///
 /// @note O(n) time complexity where n is the number of entries.
+/// @note A null map produces an empty sequence. Snapshot construction releases
+///       the partial sequence before propagating an append trap.
 ///
 /// @see rt_treemap_values For retrieving values
 void *rt_treemap_keys(void *obj) {
@@ -668,9 +722,12 @@ void *rt_treemap_keys(void *obj) {
 ///
 /// @param obj Pointer to a TreeMap object.
 ///
-/// @return A new Seq containing all values in key-sorted order.
+/// @return A new owning Seq containing retained value references in key-sorted
+///         order, or `NULL` if sequence allocation fails.
 ///
 /// @note O(n) time complexity where n is the number of entries.
+/// @note A null map produces an empty sequence. Snapshot construction releases
+///       the partial sequence before propagating an append trap.
 ///
 /// @see rt_treemap_keys For retrieving keys
 void *rt_treemap_values(void *obj) {
@@ -706,10 +763,11 @@ void *rt_treemap_values(void *obj) {
 ///
 /// @param obj Pointer to a TreeMap object.
 ///
-/// @return The smallest key in the TreeMap, or an empty string if the
-///         TreeMap is empty.
+/// @return Newly constructed smallest key, or the runtime empty-string
+///         constant when the map is null or empty.
 ///
 /// @note O(1) time complexity.
+/// @note A non-TreeMap handle raises a trap. String allocation may also trap.
 ///
 /// @see rt_treemap_last For the largest key
 rt_string rt_treemap_first(void *obj) {
@@ -740,10 +798,11 @@ rt_string rt_treemap_first(void *obj) {
 ///
 /// @param obj Pointer to a TreeMap object.
 ///
-/// @return The largest key in the TreeMap, or an empty string if the
-///         TreeMap is empty.
+/// @return Newly constructed largest key, or the runtime empty-string
+///         constant when the map is null or empty.
 ///
 /// @note O(1) time complexity.
+/// @note A non-TreeMap handle raises a trap. String allocation may also trap.
 ///
 /// @see rt_treemap_first For the smallest key
 rt_string rt_treemap_last(void *obj) {
@@ -778,11 +837,14 @@ rt_string rt_treemap_last(void *obj) {
 /// ```
 ///
 /// @param obj Pointer to a TreeMap object.
-/// @param key The key to find the floor for.
+/// @param key The key to find the floor for; a null string denotes the empty key.
 ///
-/// @return The floor key, or an empty string if no key <= the given key exists.
+/// @return Newly constructed floor key, or the runtime empty-string constant
+///         if no key is less than or equal to @p key.
 ///
 /// @note O(log n) time complexity (binary search).
+/// @note The empty string is also a valid stored key, so callers cannot use
+///       the returned contents alone to distinguish it from “no result.”
 ///
 /// @see rt_treemap_ceil For finding the smallest key >= a given key
 rt_string rt_treemap_floor(void *obj, rt_string key) {
@@ -831,11 +893,14 @@ rt_string rt_treemap_floor(void *obj, rt_string key) {
 /// ```
 ///
 /// @param obj Pointer to a TreeMap object.
-/// @param key The key to find the ceiling for.
+/// @param key The key to find the ceiling for; a null string denotes the empty key.
 ///
-/// @return The ceiling key, or an empty string if no key >= the given key exists.
+/// @return Newly constructed ceiling key, or the runtime empty-string constant
+///         if no key is greater than or equal to @p key.
 ///
 /// @note O(log n) time complexity (binary search).
+/// @note The empty string is also a valid stored key, so callers cannot use
+///       the returned contents alone to distinguish it from “no result.”
 ///
 /// @see rt_treemap_floor For finding the largest key <= a given key
 rt_string rt_treemap_ceil(void *obj, rt_string key) {

@@ -12,6 +12,8 @@
 //   - Event batches copy event IDs from the producer when the batch is created.
 //   - Batch contents are immutable and survive later animation updates.
 //   - Event IDs are signed 64-bit application-defined values.
+//   - Order and duplicate IDs are preserved.
+//   - Empty input returns an object; copy allocation failure returns NULL.
 //
 // Ownership/Lifetime:
 //   - Batches are GC-managed via rt_obj_new_i64 with a finalizer.
@@ -22,6 +24,8 @@
 //        src/runtime/game/rt_animstate.c, src/runtime/game/rt_animtimeline.c
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Immutable fired-animation-event snapshot API.
 #pragma once
 
 #include <stdint.h>
@@ -30,13 +34,16 @@
 extern "C" {
 #endif
 
+/// @brief Runtime class ID for AnimationEventBatch objects.
 #define RT_ANIMATION_EVENT_BATCH_CLASS_ID INT64_C(-0x51021F)
 
 /// @brief Create an immutable animation-event batch from a contiguous ID array.
 /// @details Copies @p count IDs out of @p ids. A NULL @p ids pointer or
 ///          non-positive @p count creates an empty batch. The returned object is
 ///          independent from the animation state/timeline that produced it.
-/// @param ids Pointer to event IDs to copy, or NULL for an empty batch.
+///          Size overflow or ID-array allocation failure releases the partially
+///          constructed object and returns NULL rather than an empty snapshot.
+/// @param ids Borrowed event IDs to copy, or NULL for an empty batch.
 /// @param count Number of IDs available in @p ids.
 /// @return A new Zanna.Game.AnimationEventBatch object, or NULL on allocation failure.
 void *rt_animation_event_batch_from_ids(const int64_t *ids, int64_t count);
@@ -59,10 +66,11 @@ int64_t rt_animation_event_batch_get_id(void *batch, int64_t index);
 int8_t rt_animation_event_batch_contains(void *batch, int64_t event_id);
 
 /// @brief Copy batch event IDs into a new Zanna.Collections.Seq.
-/// @details Each ID is boxed as an integer. The caller owns the returned Seq.
-/// @param batch Zanna.Game.AnimationEventBatch object.
+/// @details Each ID is boxed in original order and the Seq owns its elements.
+///          The caller owns the returned Seq.
+/// @param batch Borrowed Zanna.Game.AnimationEventBatch object.
 /// @return New Seq of boxed integer event IDs, or an empty Seq for NULL input.
-///   A non-NULL wrong-type value traps.
+///         A non-NULL wrong-type value traps; Seq allocation failure returns NULL.
 void *rt_animation_event_batch_ids(void *batch);
 
 #ifdef __cplusplus

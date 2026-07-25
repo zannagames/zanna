@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_duration.h
+/// @file
+/// @brief Declares scalar millisecond Duration construction, arithmetic, and formatting.
+///
 // Purpose: Duration/TimeSpan type for representing time intervals stored as milliseconds, with
 // creation helpers for common units and arithmetic/formatting operations.
 //
@@ -80,22 +83,22 @@ int64_t rt_duration_total_millis(int64_t duration);
 
 /// @brief Get total seconds in the duration (truncated).
 /// @param duration Duration value (milliseconds).
-/// @return Total seconds.
+/// @return Total seconds truncated toward zero.
 int64_t rt_duration_total_seconds(int64_t duration);
 
 /// @brief Get total minutes in the duration (truncated).
 /// @param duration Duration value (milliseconds).
-/// @return Total minutes.
+/// @return Total minutes truncated toward zero.
 int64_t rt_duration_total_minutes(int64_t duration);
 
 /// @brief Get total hours in the duration (truncated).
 /// @param duration Duration value (milliseconds).
-/// @return Total hours.
+/// @return Total hours truncated toward zero.
 int64_t rt_duration_total_hours(int64_t duration);
 
 /// @brief Get total days in the duration (truncated).
 /// @param duration Duration value (milliseconds).
-/// @return Total days.
+/// @return Total days truncated toward zero.
 int64_t rt_duration_total_days(int64_t duration);
 
 /// @brief Get total seconds as a double (with fractional part).
@@ -109,27 +112,27 @@ double rt_duration_total_seconds_f(int64_t duration);
 
 /// @brief Get the days component of the duration.
 /// @param duration Duration value (milliseconds).
-/// @return Days component.
+/// @return Nonnegative whole-day component of the absolute magnitude.
 int64_t rt_duration_get_days(int64_t duration);
 
 /// @brief Get the hours component (0-23) after extracting days.
 /// @param duration Duration value (milliseconds).
-/// @return Hours component (0-23).
+/// @return Absolute-magnitude hours component (0-23).
 int64_t rt_duration_get_hours(int64_t duration);
 
 /// @brief Get the minutes component (0-59) after extracting hours.
 /// @param duration Duration value (milliseconds).
-/// @return Minutes component (0-59).
+/// @return Absolute-magnitude minutes component (0-59).
 int64_t rt_duration_get_minutes(int64_t duration);
 
 /// @brief Get the seconds component (0-59) after extracting minutes.
 /// @param duration Duration value (milliseconds).
-/// @return Seconds component (0-59).
+/// @return Absolute-magnitude seconds component (0-59).
 int64_t rt_duration_get_seconds(int64_t duration);
 
 /// @brief Get the milliseconds component (0-999) after extracting seconds.
 /// @param duration Duration value (milliseconds).
-/// @return Milliseconds component (0-999).
+/// @return Absolute-magnitude milliseconds component (0-999).
 int64_t rt_duration_get_millis(int64_t duration);
 
 //=========================================================================
@@ -157,7 +160,8 @@ int64_t rt_duration_mul(int64_t duration, int64_t factor);
 /// @brief Divide a duration by a scalar.
 /// @param duration Duration value (milliseconds).
 /// @param divisor Division factor (must not be 0).
-/// @return Divided duration (milliseconds).
+/// @return Divided duration truncated toward zero.
+/// @note Traps on zero or the overflowing `INT64_MIN / -1` case.
 int64_t rt_duration_div(int64_t duration, int64_t divisor);
 
 /// @brief Get the absolute value of a duration.
@@ -191,7 +195,8 @@ int64_t rt_duration_cmp(int64_t d1, int64_t d2);
 rt_string rt_duration_to_string(int64_t duration);
 
 /// @brief Format a duration in ISO 8601 duration format.
-/// @details Format: "P[n]DT[n]H[n]M[n]S" (e.g., "PT1H30M").
+/// @details Format: `[-]P[n]DT[n]H[n]M[n[.fff]]S`; zero is `PT0S` and
+///          fractional-second trailing zeroes are omitted.
 /// @param duration Duration value (milliseconds).
 /// @return ISO 8601 duration string.
 rt_string rt_duration_to_iso(int64_t duration);

@@ -5,6 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
+///
+/// @file rt_physics2d.c
+/// @brief Implements bounded-step 2D rigid-body worlds, body state, contact
+///        queries, and analytic projectile trajectories.
+///
+/// @details The rigid-body subsystem integrates axis-aligned boxes and circles,
+/// retains bodies and joints through world membership, records queryable
+/// per-step contacts, and uses a deterministic adaptive-grid broad phase with
+/// an exhaustive fallback. The Projectile2D subsystem is independent of world
+/// simulation and evaluates closed-form motion under constant gravity and
+/// optional linear drag.
+///
 // File: src/runtime/graphics/2d/rt_physics2d.c
 // Purpose: Simple 2D rigid-body physics engine with AABB/circle collision detection
 //   and impulse-based collision response. Designed for game use cases: enemies,
@@ -23,22 +35,23 @@
 //   - Collision filtering uses 64-bit layer/mask bitmasks: bodies A and B
 //     collide only when (A.layer & B.mask) && (B.layer & A.mask) are both
 //     non-zero (bidirectional filter).
-//   - Broad-phase uses a stack-local 8×8 uniform grid rebuilt each step.
-//     The grid arrays live on the stack, making concurrent physics worlds safe.
+//   - Broad-phase uses a stack-local adaptive uniform grid (8×8, 12×12, or
+//     16×16) rebuilt each step. The grid arrays live on the stack, making
+//     concurrent physics worlds safe.
 //   - Broad-phase candidate pairs are collected into a growable scratch buffer,
 //     sorted, and de-duplicated so each pair resolves at most once per step, even
 //     when the two bodies share multiple grid cells.
 //   - Positional correction uses the Baumgarte stabilisation technique with
-//     a 1% slop and 40% correction factor to prevent sinking while avoiding
-//     jitter.
+//     a 0.01-world-unit slop and 40% correction factor to prevent sinking
+//     while avoiding jitter.
 //
 // Ownership/Lifetime:
 //   - World objects are GC-managed (rt_obj_new_i64). The world_finalizer
 //     releases reference-counted bodies.
 //   - Body objects are reference-counted: the world retains them on Add and
 //     releases them on Remove or finalisation.
-//   - Callers should call rt_physics2d_world_remove() before dropping a body
-//     handle to avoid dangling references.
+//   - Callers may release their own body reference after Add; the world keeps
+//     the object alive. Remove detaches a body when it should leave simulation.
 //
 // Links: src/runtime/graphics/2d/rt_physics2d.h (public API), docs/zannalib/game.md (usage guide)
 //
@@ -56,9 +69,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @name Public-step timestep bounds
+/// @{
 #define PHYSICS2D_MAX_PUBLIC_STEP_DT 8.0
 #define PHYSICS2D_MAX_SUBSTEP_DT 1.0
 #define PHYSICS2D_MAX_SUBSTEPS 8
+/// @}
 
 //=============================================================================
 // Internal types
@@ -66,6 +82,16 @@
 
 // Internal types are in rt_physics2d_internal.h
 
+/// @brief Compute a geometrically grown signed capacity without overflowing.
+/// @details Starts from @p current when positive, otherwise
+///          @p default_capacity, with an absolute minimum of one. Capacity
+///          doubles until it reaches @p needed; when another doubling would
+///          overflow, the exact needed value is selected instead.
+/// @param current Current allocated capacity.
+/// @param needed Nonnegative minimum capacity requested.
+/// @param default_capacity Initial capacity used when @p current is nonpositive.
+/// @param out Receives the selected capacity on success.
+/// @return `1` on success, or `0` when @p out is null or @p needed is negative.
 static int8_t grow_capacity_i64(int64_t current,
                                 int64_t needed,
                                 int64_t default_capacity,
@@ -86,6 +112,13 @@ static int8_t grow_capacity_i64(int64_t current,
     return 1;
 }
 
+/// @brief Ensure a world's retained-body array can hold @p needed entries.
+/// @details Growth uses `PH_MAX_BODIES` as the initial reservation, rejects
+///          byte-size overflow, and zero-initializes newly allocated slots.
+/// @param w Mutable world implementation whose body array may be reallocated.
+/// @param needed Nonnegative minimum number of body slots.
+/// @return Nonzero when capacity is already sufficient or growth succeeds;
+///         zero for invalid input, overflow, or allocation failure.
 static int8_t ensure_body_capacity(rt_world_impl *w, int64_t needed) {
     if (!w || needed < 0)
         return 0;
@@ -107,6 +140,13 @@ static int8_t ensure_body_capacity(rt_world_impl *w, int64_t needed) {
     return 1;
 }
 
+/// @brief Ensure a world's retained-joint array can hold @p needed entries.
+/// @details Growth uses `PH_MAX_JOINTS` as the initial reservation, rejects
+///          byte-size overflow, and zero-initializes newly allocated slots.
+/// @param w Mutable world implementation whose joint array may be reallocated.
+/// @param needed Nonnegative minimum number of joint slots.
+/// @return Nonzero when capacity is already sufficient or growth succeeds;
+///         zero for invalid input, overflow, or allocation failure.
 int8_t rt_physics2d_world_reserve_joint_capacity(rt_world_impl *w, int64_t needed) {
     if (!w || needed < 0)
         return 0;
@@ -127,6 +167,13 @@ int8_t rt_physics2d_world_reserve_joint_capacity(rt_world_impl *w, int64_t neede
     return 1;
 }
 
+/// @brief Ensure a world's contact-record array can hold @p needed entries.
+/// @details Growth uses `PH_MAX_CONTACTS` as the initial reservation and
+///          zero-initializes newly allocated records.
+/// @param w Mutable world implementation whose contact array may be reallocated.
+/// @param needed Nonnegative minimum number of contact slots.
+/// @return Nonzero when capacity is already sufficient or growth succeeds;
+///         zero for invalid input, overflow, or allocation failure.
 static int8_t ensure_contact_capacity(rt_world_impl *w, int64_t needed) {
     if (!w || needed < 0)
         return 0;
@@ -148,6 +195,15 @@ static int8_t ensure_contact_capacity(rt_world_impl *w, int64_t needed) {
     return 1;
 }
 
+/// @brief Ensure all parallel per-step force-snapshot arrays have @p needed slots.
+/// @details The body-pointer, X-force, and Y-force arrays grow to one common
+///          capacity. Successfully reallocated earlier arrays remain installed
+///          if a later parallel allocation fails, while `force_capacity` is
+///          advanced only after all three succeed.
+/// @param w Mutable world implementation whose snapshot arrays may grow.
+/// @param needed Nonnegative minimum number of snapshot entries.
+/// @return Nonzero when capacity is already sufficient or all growth succeeds;
+///         zero for invalid input, overflow, or allocation failure.
 static int8_t ensure_force_capacity(rt_world_impl *w, int64_t needed) {
     if (!w || needed < 0)
         return 0;
@@ -183,6 +239,10 @@ static int8_t ensure_force_capacity(rt_world_impl *w, int64_t needed) {
 /// @details Grows geometrically so repeated appends across a step amortize to O(1).
 ///   Returns 0 on overflow/allocation failure, in which case the caller falls back
 ///   to the exhaustive O(n^2) pair pass so collision correctness is preserved.
+/// @param w Mutable world implementation whose scratch buffer may grow.
+/// @param needed Nonnegative minimum number of packed pair slots.
+/// @return Nonzero when capacity is sufficient or growth succeeds; zero for
+///         invalid input, overflow, or allocation failure.
 static int8_t ensure_pair_scratch_capacity(rt_world_impl *w, int64_t needed) {
     if (!w || needed < 0)
         return 0;
@@ -202,6 +262,9 @@ static int8_t ensure_pair_scratch_capacity(rt_world_impl *w, int64_t needed) {
 }
 
 /// @brief Append candidate pair (ii, jj) to the scratch list, ordered ii < jj.
+/// @param w Mutable world implementation owning the scratch list.
+/// @param ii First body-array index.
+/// @param jj Second body-array index.
 /// @return 1 on success, 0 if the scratch could not grow (caller must fall back).
 static int8_t pair_scratch_push(rt_world_impl *w, int ii, int jj) {
     if (ii == jj)
@@ -220,6 +283,10 @@ static int8_t pair_scratch_push(rt_world_impl *w, int ii, int jj) {
 
 /// @brief qsort comparator over packed pair keys (ascending). Total order on
 ///        distinct (ii, jj) pairs makes the resolution sweep deterministic.
+/// @param a Pointer to the first packed `uint64_t` pair key.
+/// @param b Pointer to the second packed `uint64_t` pair key.
+/// @return A negative, zero, or positive value when @p a sorts before, equal to,
+///         or after @p b.
 static int pair_key_cmp(const void *a, const void *b) {
     uint64_t ka = *(const uint64_t *)a;
     uint64_t kb = *(const uint64_t *)b;
@@ -228,6 +295,9 @@ static int pair_key_cmp(const void *a, const void *b) {
 
 /// @brief Clear the world's per-step contact list (called at the start of
 ///        each physics step before broad/narrow-phase regenerates contacts).
+/// @details Releases both body references held by every initialized record,
+///          zeroes those records, and resets the count and overflow flag.
+/// @param w Mutable world implementation; `NULL` is accepted as a no-op.
 static void world_clear_contacts(rt_world_impl *w) {
     if (!w)
         return;
@@ -247,6 +317,12 @@ static void world_clear_contacts(rt_world_impl *w) {
 ///   manifold values so downstream queries always see a clean list even in degenerate numerical
 ///   situations. Penetration is clamped to [0, +inf) because negative depth would indicate
 ///   separation, not contact.
+/// @param w Mutable world receiving the contact.
+/// @param a First body, retained by the contact record.
+/// @param b Second body, retained by the contact record.
+/// @param nx Finite contact-normal X component pointing from @p a toward @p b.
+/// @param ny Finite contact-normal Y component pointing from @p a toward @p b.
+/// @param pen Penetration depth, clamped to a nonnegative value.
 void world_record_contact(
     rt_world_impl *w, rt_body_impl *a, rt_body_impl *b, double nx, double ny, double pen) {
     if (!w || !a || !b)
@@ -268,6 +344,9 @@ void world_record_contact(
 }
 
 /// @brief Return `value` if finite, otherwise `fallback`. Used for gravity and position setters.
+/// @param value Candidate floating-point value.
+/// @param fallback Replacement returned for NaN or infinity.
+/// @return @p value when finite, otherwise @p fallback.
 static double finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
@@ -276,11 +355,16 @@ static double finite_or(double value, double fallback) {
 /// @details Used for body dimensions (width, height) and mass to guarantee they
 ///   are always valid physics inputs — a zero or NaN dimension would make AABB
 ///   overlap tests degenerate.
+/// @param value Candidate floating-point value.
+/// @param fallback Replacement for non-finite or nonpositive input.
+/// @return @p value when finite and positive, otherwise @p fallback.
 static double positive_or(double value, double fallback) {
     return (isfinite(value) && value > 0.0) ? value : fallback;
 }
 
 /// @brief Clamp `value` to [0, 1], returning 0 for NaN/Inf. Used for restitution and friction.
+/// @param value Coefficient to sanitize.
+/// @return @p value clamped to `[0, 1]`, or `0` for non-finite input.
 static double clamp01(double value) {
     if (!isfinite(value))
         return 0.0;
@@ -295,6 +379,11 @@ static double clamp01(double value) {
 /// @details Used by sanitize_body_state to cap position, velocity, and force magnitudes
 ///   to large but representable values, preventing IEEE infinity from propagating through
 ///   the integrator and corrupting the broad-phase grid bounds.
+/// @param value Candidate signed quantity.
+/// @param fallback Replacement for non-finite input.
+/// @param limit Positive magnitude limit.
+/// @return A finite value in `[-limit, +limit]`, using @p fallback for
+///         non-finite input.
 static double clamp_abs_finite(double value, double fallback, double limit) {
     if (!isfinite(value))
         return fallback;
@@ -310,6 +399,10 @@ static double clamp_abs_finite(double value, double fallback, double limit) {
 ///   casting, trapping with `api` as the message on mismatch.  NULL input short-
 ///   circuits immediately without a trap so callers can chain checked_world checks
 ///   with early NULL guards.
+/// @param obj Opaque world candidate.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The validated world implementation, or `NULL` for null or mistyped
+///         input.
 static rt_world_impl *checked_world(void *obj, const char *api) {
     if (!obj)
         return NULL;
@@ -323,6 +416,10 @@ static rt_world_impl *checked_world(void *obj, const char *api) {
 /// @brief Downcast a raw handle to rt_body_impl* after confirming its class ID.
 /// @details Mirror of checked_world — verifies the GC class-ID is the physics-body
 ///   sentinel before casting, trapping with `api` on mismatch.
+/// @param obj Opaque body candidate.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The validated body implementation, or `NULL` for null or mistyped
+///         input.
 static rt_body_impl *checked_body(void *obj, const char *api) {
     if (!obj)
         return NULL;
@@ -340,6 +437,8 @@ static rt_body_impl *checked_body(void *obj, const char *api) {
 ///   velocities/forces in ±1e9/±1e12, mass/inv_mass consistent (static bodies keep
 ///   both at 0), restitution/friction in [0,1].  Circle bodies with radius ≤ 0 get
 ///   a fallback radius of 1.0; box bodies have radius forced to 0.
+/// @param b Mutable body implementation to sanitize; `NULL` is accepted as a
+///          no-op.
 void sanitize_body_state(rt_body_impl *b) {
     if (!b)
         return;
@@ -380,41 +479,57 @@ void sanitize_body_state(rt_body_impl *b) {
  * bottom edge. */
 
 /// @brief Left edge (min x) of this body's current AABB (circle or box).
+/// @param b Borrowed sanitized body implementation.
+/// @return The circle's center X minus radius or the box's top-left X.
 static double body_min_x(rt_body_impl *b) {
     return b->is_circle ? b->x - b->radius : b->x;
 }
 
 /// @brief Top edge (min y) of this body's current AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The circle's center Y minus radius or the box's top-left Y.
 static double body_min_y(rt_body_impl *b) {
     return b->is_circle ? b->y - b->radius : b->y;
 }
 
 /// @brief Right edge (max x) of this body's current AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The circle's center X plus radius or the box's X plus width.
 static double body_max_x(rt_body_impl *b) {
     return b->is_circle ? b->x + b->radius : b->x + b->w;
 }
 
 /// @brief Bottom edge (max y) of this body's current AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The circle's center Y plus radius or the box's Y plus height.
 static double body_max_y(rt_body_impl *b) {
     return b->is_circle ? b->y + b->radius : b->y + b->h;
 }
 
 /// @brief Left edge (min x) of this body's previous-frame AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The previous circle center X minus radius or previous box X.
 double body_prev_min_x(rt_body_impl *b) {
     return b->is_circle ? b->prev_x - b->radius : b->prev_x;
 }
 
 /// @brief Top edge (min y) of this body's previous-frame AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The previous circle center Y minus radius or previous box Y.
 double body_prev_min_y(rt_body_impl *b) {
     return b->is_circle ? b->prev_y - b->radius : b->prev_y;
 }
 
 /// @brief Right edge (max x) of this body's previous-frame AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The previous circle center X plus radius or previous box X plus width.
 double body_prev_max_x(rt_body_impl *b) {
     return b->is_circle ? b->prev_x + b->radius : b->prev_x + b->w;
 }
 
 /// @brief Bottom edge (max y) of this body's previous-frame AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The previous circle center Y plus radius or previous box Y plus height.
 double body_prev_max_y(rt_body_impl *b) {
     return b->is_circle ? b->prev_y + b->radius : b->prev_y + b->h;
 }
@@ -422,6 +537,8 @@ double body_prev_max_y(rt_body_impl *b) {
 /// @brief Minimum X of the union AABB spanning both previous and current positions.
 /// @details The swept bound is used by the broad-phase grid to catch fast-moving bodies
 ///   that cross a grid cell boundary within a single time step.
+/// @param b Borrowed sanitized body implementation.
+/// @return The lesser of the current and previous minimum X edges.
 static double body_swept_min_x(rt_body_impl *b) {
     double now = body_min_x(b);
     double prev = body_prev_min_x(b);
@@ -429,6 +546,8 @@ static double body_swept_min_x(rt_body_impl *b) {
 }
 
 /// @brief Minimum Y of the swept union AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The lesser of the current and previous minimum Y edges.
 static double body_swept_min_y(rt_body_impl *b) {
     double now = body_min_y(b);
     double prev = body_prev_min_y(b);
@@ -436,6 +555,8 @@ static double body_swept_min_y(rt_body_impl *b) {
 }
 
 /// @brief Maximum X of the swept union AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The greater of the current and previous maximum X edges.
 static double body_swept_max_x(rt_body_impl *b) {
     double now = body_max_x(b);
     double prev = body_prev_max_x(b);
@@ -443,6 +564,8 @@ static double body_swept_max_x(rt_body_impl *b) {
 }
 
 /// @brief Maximum Y of the swept union AABB.
+/// @param b Borrowed sanitized body implementation.
+/// @return The greater of the current and previous maximum Y edges.
 static double body_swept_max_y(rt_body_impl *b) {
     double now = body_max_y(b);
     double prev = body_prev_max_y(b);
@@ -453,6 +576,8 @@ static double body_swept_max_y(rt_body_impl *b) {
 /// @details Marks the joint inactive before releasing so any in-flight solver callbacks
 ///   that still hold a pointer see it as dead.  Uses swap-with-tail compaction to keep
 ///   the array packed without shifting.
+/// @param w Mutable world implementation owning the joint reference.
+/// @param joint_index Zero-based joint-array index; invalid indices are ignored.
 static void world_release_joint_at(rt_world_impl *w, int64_t joint_index) {
     if (!w || joint_index < 0 || joint_index >= w->joint_count)
         return;
@@ -473,6 +598,8 @@ static void world_release_joint_at(rt_world_impl *w, int64_t joint_index) {
 ///   body pointers inside live joint objects.  Iterates in place using an index
 ///   loop that does not advance when world_release_joint_at swaps the tail item
 ///   into the current slot.
+/// @param w Mutable world implementation whose joints are inspected.
+/// @param body Borrowed body endpoint being detached.
 static void world_remove_joints_for_body(rt_world_impl *w, rt_body_impl *body) {
     if (!w || !body)
         return;
@@ -495,6 +622,8 @@ static void world_remove_joints_for_body(rt_world_impl *w, rt_body_impl *body) {
 ///   frees all world-owned growable arrays (bodies, joints, contacts, pair scratch,
 ///   force snapshot) and zeroes their sizes. Order (joints → contacts → bodies)
 ///   matters: joints and contacts hold body references that must be released first.
+/// @param obj Finalizing world implementation supplied by the object system;
+///            `NULL` is accepted.
 static void world_finalizer(void *obj) {
     rt_world_impl *w = (rt_world_impl *)obj;
     if (w) {
@@ -853,6 +982,9 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
 ///          semi-implicit Euler behavior. Larger hitch values are capped and
 ///          split into bounded substeps so joints and collision detection never
 ///          receive an unbounded timestep after a pause.
+/// @param obj Opaque Physics2D.World handle to advance; `NULL` is ignored and a
+///            non-null class mismatch traps.
+/// @param dt Requested elapsed simulation time in seconds.
 void rt_physics2d_world_step(void *obj, double dt) {
     if (!obj)
         return;
@@ -898,6 +1030,13 @@ void rt_physics2d_world_step(void *obj, double dt) {
 
 /// @brief Insert a body into the world's simulation list. The world retains the body; remove
 /// later via `_remove`. Body storage grows from the PH_MAX_BODIES initial reservation.
+/// @details Adding the same body to the same world again is a no-op. A body is
+///          intended to belong to at most one world; callers must remove it
+///          from any previous world before adding it elsewhere. Invalid
+///          non-null classes, solver-index overflow, and storage-allocation
+///          failure raise runtime traps.
+/// @param obj Opaque destination Physics2D.World handle.
+/// @param body Opaque Physics2D.Body handle retained on successful insertion.
 void rt_physics2d_world_add(void *obj, void *body) {
     rt_world_impl *w;
     if (!obj || !body)
@@ -937,8 +1076,15 @@ void rt_physics2d_world_add(void *obj, void *body) {
     w->bodies[w->body_count++] = bd;
 }
 
-/// @brief Remove a body from the world (linear scan, O(n)). The body is released; if its refcount
-/// hits 0, it's freed. Order is not preserved (uses swap-with-tail compaction).
+/// @brief Detach and release a body retained by the world.
+/// @details Uses the body's recorded owner/index for the common O(1) path and
+///          falls back to a linear search when that metadata is stale. All
+///          joints referencing the body and all current contacts are released
+///          first. Body ordering is not preserved because removal swaps in the
+///          tail entry and updates its index.
+/// @param obj Opaque source Physics2D.World handle.
+/// @param body Opaque Physics2D.Body handle to remove; absence from the world
+///             is a no-op.
 void rt_physics2d_world_remove(void *obj, void *body) {
     rt_world_impl *w;
     int64_t i;
@@ -987,6 +1133,8 @@ void rt_physics2d_world_remove(void *obj, void *body) {
 }
 
 /// @brief Number of bodies currently registered with the world.
+/// @param obj Opaque Physics2D.World handle to query.
+/// @return The retained body count, or `0` for `NULL` or a mistyped handle.
 int64_t rt_physics2d_world_body_count(void *obj) {
     if (!obj)
         return 0;
@@ -995,6 +1143,10 @@ int64_t rt_physics2d_world_body_count(void *obj) {
 }
 
 /// @brief Set world gravity in world-units per second² (typical: gx=0, gy=9.8 for downward grav).
+/// @details Each non-finite component is independently replaced with zero.
+/// @param obj Opaque Physics2D.World handle to update.
+/// @param gx Horizontal acceleration.
+/// @param gy Vertical acceleration in positive-Y-down coordinates.
 void rt_physics2d_world_set_gravity(void *obj, double gx, double gy) {
     if (!obj)
         return;
@@ -1010,6 +1162,9 @@ void rt_physics2d_world_set_gravity(void *obj, double gx, double gy) {
 ///   stored in a growable list. If the list cannot grow,
 ///   `rt_physics2d_world_contact_overflowed` reports that additional contacts were omitted.
 ///   Query it between steps to drive game logic (e.g. damage on collision, sound effects).
+/// @param obj Opaque Physics2D.World handle to query.
+/// @return The number of retained records from the latest public step, or `0`
+///         for `NULL` or a mistyped handle.
 int64_t rt_physics2d_world_contact_count(void *obj) {
     if (!obj)
         return 0;
@@ -1032,35 +1187,56 @@ int8_t rt_physics2d_world_contact_overflowed(void *obj) {
 }
 
 /// @brief Guard for all contact-list accessors — returns 1 only when `index` is in range.
+/// @param w Borrowed validated world implementation, possibly `NULL`.
+/// @param index Candidate zero-based contact index.
+/// @return `1` exactly when @p index addresses a current contact record.
 static int8_t checked_contact(rt_world_impl *w, int64_t index) {
     return w && index >= 0 && index < w->contact_count;
 }
 
 /// @brief Return the first body in a contact pair (the "A" side) at the given contact index.
+/// @param obj Opaque Physics2D.World handle.
+/// @param index Zero-based contact index.
+/// @return The borrowed first body handle, or `NULL` for an invalid world or
+///         index. The contact retains it only until contacts are cleared.
 void *rt_physics2d_world_contact_body_a(void *obj, int64_t index) {
     rt_world_impl *w = checked_world(obj, "Physics2D.World.ContactBodyA: expected Physics2D.World");
     return checked_contact(w, index) ? w->contacts[index].body_a : NULL;
 }
 
 /// @brief Return the second body in a contact pair (the "B" side) at the given contact index.
+/// @param obj Opaque Physics2D.World handle.
+/// @param index Zero-based contact index.
+/// @return The borrowed second body handle, or `NULL` for an invalid world or
+///         index. The contact retains it only until contacts are cleared.
 void *rt_physics2d_world_contact_body_b(void *obj, int64_t index) {
     rt_world_impl *w = checked_world(obj, "Physics2D.World.ContactBodyB: expected Physics2D.World");
     return checked_contact(w, index) ? w->contacts[index].body_b : NULL;
 }
 
 /// @brief Contact normal X component (points from body A toward body B).
+/// @param obj Opaque Physics2D.World handle.
+/// @param index Zero-based contact index.
+/// @return The stored normal X component, or `0.0` for invalid input.
 double rt_physics2d_world_contact_nx(void *obj, int64_t index) {
     rt_world_impl *w = checked_world(obj, "Physics2D.World.ContactNX: expected Physics2D.World");
     return checked_contact(w, index) ? w->contacts[index].nx : 0.0;
 }
 
 /// @brief Contact normal Y component (points from body A toward body B).
+/// @param obj Opaque Physics2D.World handle.
+/// @param index Zero-based contact index.
+/// @return The stored normal Y component, or `0.0` for invalid input.
 double rt_physics2d_world_contact_ny(void *obj, int64_t index) {
     rt_world_impl *w = checked_world(obj, "Physics2D.World.ContactNY: expected Physics2D.World");
     return checked_contact(w, index) ? w->contacts[index].ny : 0.0;
 }
 
 /// @brief Penetration depth at the contact point (0 for tunnelling contacts caught by CCD).
+/// @param obj Opaque Physics2D.World handle.
+/// @param index Zero-based contact index.
+/// @return The nonnegative penetration depth, or `0.0` for invalid input or a
+///         swept contact without overlap depth.
 double rt_physics2d_world_contact_depth(void *obj, int64_t index) {
     rt_world_impl *w = checked_world(obj, "Physics2D.World.ContactDepth: expected Physics2D.World");
     return checked_contact(w, index) ? w->contacts[index].penetration : 0.0;
@@ -1073,6 +1249,13 @@ double rt_physics2d_world_contact_depth(void *obj, int64_t index) {
 /// @brief Construct a 2D rigid body with top-left position (x, y), size (w, h), and `mass`.
 /// `mass <= 0` ⇒ static (immovable, infinite mass). Defaults: restitution 0.5 (moderately bouncy),
 /// friction 0.3, collision_layer 1, collision_mask -1 (collides with all 64 layers).
+/// @param x Initial top-left X coordinate; non-finite values become zero.
+/// @param y Initial top-left Y coordinate; non-finite values become zero.
+/// @param w Requested AABB width; non-finite or nonpositive values become one.
+/// @param h Requested AABB height; non-finite or nonpositive values become one.
+/// @param mass Positive dynamic mass, or a nonpositive/non-finite value for a
+///             static body.
+/// @return A new AABB Physics2D.Body handle, or `NULL` after allocation failure.
 void *rt_physics2d_body_new(double x, double y, double w, double h, double mass) {
     rt_body_impl *b =
         (rt_body_impl *)rt_obj_new_i64(RT_PHYSICS2D_BODY_CLASS_ID, (int64_t)sizeof(rt_body_impl));
@@ -1109,61 +1292,84 @@ void *rt_physics2d_body_new(double x, double y, double w, double h, double mass)
     return b;
 }
 
-// The next six functions are simple accessors over the body's stored state
+// The following functions are simple accessors over the body's stored state
 // (position, size, velocity). Each returns 0.0 for a NULL handle.
 
-/// @brief Top-left X position in world units.
+/// @brief Return the body's stored X reference coordinate.
+/// @details This is the top-left X for an AABB body and center X for a circle.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored X coordinate, or `0.0` for null or mistyped input.
 double rt_physics2d_body_x(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.X: expected Physics2D.Body");
     return b ? b->x : 0.0;
 }
 
-/// @brief Top-left Y position in world units (positive y is downward).
+/// @brief Return the body's stored Y reference coordinate.
+/// @details This is the top-left Y for an AABB body and center Y for a circle;
+///          positive Y points downward.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored Y coordinate, or `0.0` for null or mistyped input.
 double rt_physics2d_body_y(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Y: expected Physics2D.Body");
     return b ? b->y : 0.0;
 }
 
-/// @brief X position at the start of the last step (before integration).
+/// @brief X position at the start of the most recent integration substep.
 /// @details Used by the swept CCD path; useful in game logic for computing per-frame
-///   displacement without storing a separate previous-position variable.
+///   displacement without storing a separate previous-position variable. It is
+///   top-left X for AABBs and center X for circles.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The previous X coordinate, or `0.0` for null or mistyped input.
 double rt_physics2d_body_prev_x(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.PrevX: expected Physics2D.Body");
     return b ? b->prev_x : 0.0;
 }
 
-/// @brief Y position at the start of the last step (before integration).
+/// @brief Y position at the start of the most recent integration substep.
 /// @details Mirror of rt_physics2d_body_prev_x for the vertical axis. Used by
 ///   the swept CCD path to construct the previous-frame AABB, and is useful in
 ///   game logic for computing per-frame vertical displacement without storing a
-///   separate previous-position variable.
+///   separate previous-position variable. It is top-left Y for AABBs and center
+///   Y for circles.
 /// @param obj Physics2D.Body instance.
 /// @return Y coordinate recorded at the beginning of the most recent simulation
-///   step, or 0.0 if @p obj is not a valid body.
+///   substep, or 0.0 if @p obj is not a valid body.
 double rt_physics2d_body_prev_y(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.PrevY: expected Physics2D.Body");
     return b ? b->prev_y : 0.0;
 }
 
 /// @brief AABB width in world units.
+/// @details This stored field describes box bodies and is not the circle
+///          diameter.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored width, or `0.0` for null or mistyped input.
 double rt_physics2d_body_w(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Width: expected Physics2D.Body");
     return b ? b->w : 0.0;
 }
 
 /// @brief AABB height in world units.
+/// @details This stored field describes box bodies and is not the circle
+///          diameter.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored height, or `0.0` for null or mistyped input.
 double rt_physics2d_body_h(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Height: expected Physics2D.Body");
     return b ? b->h : 0.0;
 }
 
 /// @brief Linear X-velocity in world units per second.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored horizontal velocity, or `0.0` for invalid input.
 double rt_physics2d_body_vx(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.VelocityX: expected Physics2D.Body");
     return b ? b->vx : 0.0;
 }
 
 /// @brief Linear Y-velocity in world units per second.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored vertical velocity, or `0.0` for invalid input.
 double rt_physics2d_body_vy(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.VelocityY: expected Physics2D.Body");
     return b ? b->vy : 0.0;
@@ -1171,6 +1377,12 @@ double rt_physics2d_body_vy(void *obj) {
 
 /// @brief Teleport the body to (x, y) world coordinates. Bypasses collision (the next `_step`
 /// will resolve any resulting overlap). Use `_apply_impulse` for physically realistic motion.
+/// @details Updates both current and previous coordinates, so the teleport
+///          creates no swept motion. Coordinates are top-left for AABBs and
+///          center-based for circles. Non-finite coordinates are ignored.
+/// @param obj Opaque Physics2D.Body handle to move.
+/// @param x New X reference coordinate.
+/// @param y New Y reference coordinate.
 void rt_physics2d_body_set_pos(void *obj, double x, double y) {
     if (!obj)
         return;
@@ -1193,6 +1405,9 @@ void rt_physics2d_body_set_pos(void *obj, double x, double y) {
 ///   it) and driven with SetVel, since a mass-0 body neither integrates position
 ///   nor sweeps. SetPos teleports and resets the swept-motion history, so it does
 ///   not carry bodies either.
+/// @param obj Opaque Physics2D.Body handle to update.
+/// @param vx Finite horizontal velocity; non-finite input is ignored.
+/// @param vy Finite vertical velocity; non-finite input is ignored.
 void rt_physics2d_body_set_vel(void *obj, double vx, double vy) {
     if (!obj)
         return;
@@ -1213,6 +1428,11 @@ void rt_physics2d_body_set_vel(void *obj, double vx, double vy) {
 
 /// @brief Add (fx, fy) to the body's accumulated force vector. Forces are integrated and
 /// cleared each `_step`; call repeatedly within a frame to combine multiple force contributors.
+/// @details Static bodies and non-finite force components are ignored. The
+///          accumulated result is sanitized to the engine's finite force range.
+/// @param obj Opaque Physics2D.Body handle to update.
+/// @param fx Finite horizontal force contribution.
+/// @param fy Finite vertical force contribution.
 void rt_physics2d_body_apply_force(void *obj, double fx, double fy) {
     if (!obj)
         return;
@@ -1233,6 +1453,11 @@ void rt_physics2d_body_apply_force(void *obj, double fx, double fy) {
 /// @brief Apply an instantaneous velocity change of (ix, iy) * inv_mass. Use for jumps,
 /// explosions, kicks — anything that should change velocity *now* without requiring a force
 /// applied for a duration.
+/// @details Static bodies and non-finite impulse components are ignored; the
+///          resulting velocity is sanitized to the supported finite range.
+/// @param obj Opaque Physics2D.Body handle to update.
+/// @param ix Finite horizontal impulse.
+/// @param iy Finite vertical impulse.
 void rt_physics2d_body_apply_impulse(void *obj, double ix, double iy) {
     rt_body_impl *b;
     if (!obj)
@@ -1252,13 +1477,19 @@ void rt_physics2d_body_apply_impulse(void *obj, double ix, double iy) {
 }
 
 /// @brief Read the body's bounciness coefficient ([0, 1] typical).
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored restitution in `[0, 1]`, or `0.0` for invalid input.
 double rt_physics2d_body_restitution(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Restitution: expected Physics2D.Body");
     return b ? b->restitution : 0.0;
 }
 
-/// @brief Set bounciness: 0 = no bounce, 1 = perfectly elastic. Pair-wise restitution averages
-/// both bodies' values during collision response.
+/// @brief Set bounciness: zero disables bounce and one is perfectly elastic.
+/// @details Collision response uses the lower of the two bodies' coefficients
+///          and suppresses bounce below the resting-contact speed threshold.
+/// @param obj Opaque Physics2D.Body handle to update.
+/// @param r Requested coefficient, clamped to `[0, 1]`; non-finite values
+///          become zero.
 void rt_physics2d_body_set_restitution(void *obj, double r) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Restitution.set: expected Physics2D.Body");
     if (b)
@@ -1266,12 +1497,17 @@ void rt_physics2d_body_set_restitution(void *obj, double r) {
 }
 
 /// @brief Read the body's friction coefficient ([0, 1] typical).
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored friction in `[0, 1]`, or `0.0` for invalid input.
 double rt_physics2d_body_friction(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Friction: expected Physics2D.Body");
     return b ? b->friction : 0.0;
 }
 
 /// @brief Set friction: 0 = ice, 1 = sandpaper. Applied as a tangential damping during contact.
+/// @param obj Opaque Physics2D.Body handle to update.
+/// @param f Requested coefficient, clamped to `[0, 1]`; non-finite values
+///          become zero.
 void rt_physics2d_body_set_friction(void *obj, double f) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Friction.set: expected Physics2D.Body");
     if (b)
@@ -1279,6 +1515,9 @@ void rt_physics2d_body_set_friction(void *obj, double f) {
 }
 
 /// @brief Returns 1 if the body is static (mass=0, immovable). Static bodies skip integration.
+/// @param obj Opaque Physics2D.Body handle.
+/// @return `1` when inverse mass is zero, otherwise `0`; invalid input returns
+///         `0`.
 int8_t rt_physics2d_body_is_static(void *obj) {
     /* A body is static when its inverse-mass is zero (mass == 0 at creation) */
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.IsStatic: expected Physics2D.Body");
@@ -1286,12 +1525,16 @@ int8_t rt_physics2d_body_is_static(void *obj) {
 }
 
 /// @brief Read the body's mass (0 if static or NULL).
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The positive dynamic mass, or `0.0` for a static or invalid body.
 double rt_physics2d_body_mass(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.Mass: expected Physics2D.Body");
     return b ? b->mass : 0.0;
 }
 
 /// @brief Read the body's collision-layer bitmask (which layers it belongs to).
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored signed 64-bit layer mask, or `0` for invalid input.
 int64_t rt_physics2d_body_collision_layer(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.CollisionLayer: expected Physics2D.Body");
     return b ? b->collision_layer : 0;
@@ -1299,6 +1542,8 @@ int64_t rt_physics2d_body_collision_layer(void *obj) {
 
 /// @brief Set the collision-layer bitmask. Combined with the *other* body's collision_mask
 /// during overlap tests — only pairs where each body's layer matches the other's mask collide.
+/// @param obj Opaque Physics2D.Body handle to update.
+/// @param layer Signed 64-bit membership mask stored verbatim.
 void rt_physics2d_body_set_collision_layer(void *obj, int64_t layer) {
     rt_body_impl *b =
         checked_body(obj, "Physics2D.Body.CollisionLayer.set: expected Physics2D.Body");
@@ -1307,6 +1552,8 @@ void rt_physics2d_body_set_collision_layer(void *obj, int64_t layer) {
 }
 
 /// @brief Read the body's collision-mask bitmask (which layers it tests against).
+/// @param obj Opaque Physics2D.Body handle.
+/// @return The stored signed 64-bit collision mask, or `0` for invalid input.
 int64_t rt_physics2d_body_collision_mask(void *obj) {
     rt_body_impl *b = checked_body(obj, "Physics2D.Body.CollisionMask: expected Physics2D.Body");
     return b ? b->collision_mask : 0;
@@ -1314,6 +1561,8 @@ int64_t rt_physics2d_body_collision_mask(void *obj) {
 
 /// @brief Set the collision-mask. Each bit corresponds to a layer this body collides with.
 /// Default -1 = collides with all 64 layers. Use 0 to make the body collision-free.
+/// @param obj Opaque Physics2D.Body handle to update.
+/// @param mask Signed 64-bit collision-selection mask stored verbatim.
 void rt_physics2d_body_set_collision_mask(void *obj, int64_t mask) {
     rt_body_impl *b =
         checked_body(obj, "Physics2D.Body.CollisionMask.set: expected Physics2D.Body");
@@ -1325,19 +1574,31 @@ void rt_physics2d_body_set_collision_mask(void *obj, int64_t mask) {
 // Projectile2D
 //=============================================================================
 
+/// @brief Analytic projectile launch parameters and elapsed-state tracker.
 typedef struct {
+    /// Reserved runtime object virtual-table slot.
     void *vptr;
+    /// Initial horizontal and vertical position.
     double p0x, p0y;
+    /// Initial horizontal and vertical velocity.
     double v0x, v0y;
+    /// Constant horizontal and vertical acceleration.
     double gx, gy;
+    /// Nonnegative linear drag coefficient.
     double drag;
+    /// Accumulated positive time passed to Advance.
     double total_time;
+    /// Boolean ground-threshold state latched by Advance.
     int8_t landed;
+    /// Positive-Y-down ground threshold, or infinity when disabled.
     double ground_y;
 } rt_projectile2d_impl;
 
 /// @brief Safe-cast a handle to the Projectile2D impl, trapping @p api on a
 ///        class-id mismatch. @return The impl, or NULL if @p obj is NULL.
+/// @param obj Opaque Projectile2D candidate.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The validated implementation pointer, or `NULL`.
 static rt_projectile2d_impl *checked_projectile(void *obj, const char *api) {
     if (!obj)
         return NULL;
@@ -1350,10 +1611,24 @@ static rt_projectile2d_impl *checked_projectile(void *obj, const char *api) {
 
 /// @brief Return @p value if finite, else @p fallback (sanitizes user-supplied
 ///        projectile parameters against NaN/Inf).
+/// @param value Candidate projectile parameter.
+/// @param fallback Replacement for non-finite input.
+/// @return @p value when finite, otherwise @p fallback.
 static double projectile_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
 
+/// @brief Allocate an analytic projectile with initial position, velocity, and gravity.
+/// @details Every non-finite component is replaced with zero. Drag starts at
+///          zero, elapsed time starts at zero, and ground detection is disabled
+///          by an infinite ground threshold.
+/// @param p0x Initial horizontal position.
+/// @param p0y Initial vertical position.
+/// @param v0x Initial horizontal velocity.
+/// @param v0y Initial vertical velocity.
+/// @param gx Constant horizontal acceleration.
+/// @param gy Constant vertical acceleration in positive-Y-down coordinates.
+/// @return A new Projectile2D handle, or `NULL` if allocation fails.
 void *rt_projectile2d_new(double p0x, double p0y, double v0x, double v0y, double gx, double gy) {
     rt_projectile2d_impl *p = (rt_projectile2d_impl *)rt_obj_new_i64(
         RT_PHYSICS2D_PROJECTILE_CLASS_ID, (int64_t)sizeof(rt_projectile2d_impl));
@@ -1370,6 +1645,12 @@ void *rt_projectile2d_new(double p0x, double p0y, double v0x, double v0y, double
     return p;
 }
 
+/// @brief Set the projectile's nonnegative linear drag coefficient.
+/// @details Positive finite input is stored verbatim; zero, negative, NaN, and
+///          infinity disable drag. Existing elapsed time and landed state are
+///          unchanged.
+/// @param obj Opaque Projectile2D handle to update.
+/// @param drag Requested linear damping coefficient.
 void rt_projectile2d_set_drag(void *obj, double drag) {
     rt_projectile2d_impl *p =
         checked_projectile(obj, "Projectile2D.SetDrag: expected Projectile2D");
@@ -1378,6 +1659,11 @@ void rt_projectile2d_set_drag(void *obj, double drag) {
     p->drag = isfinite(drag) && drag > 0.0 ? drag : 0.0;
 }
 
+/// @brief Set the positive-Y-down threshold used by landed detection.
+/// @details Non-finite input restores infinity and therefore disables landing.
+///          This setter does not immediately recompute the current landed flag.
+/// @param obj Opaque Projectile2D handle to update.
+/// @param y Finite ground Y coordinate, or a non-finite value to disable it.
 void rt_projectile2d_set_ground_y(void *obj, double y) {
     rt_projectile2d_impl *p =
         checked_projectile(obj, "Projectile2D.SetGroundY: expected Projectile2D");
@@ -1385,6 +1671,10 @@ void rt_projectile2d_set_ground_y(void *obj, double y) {
         p->ground_y = isfinite(y) ? y : INFINITY;
 }
 
+/// @brief Reset elapsed time and clear the latched landed flag.
+/// @details Launch parameters, gravity, drag, and ground threshold are
+///          preserved.
+/// @param obj Opaque Projectile2D handle to reset.
 void rt_projectile2d_reset(void *obj) {
     rt_projectile2d_impl *p = checked_projectile(obj, "Projectile2D.Reset: expected Projectile2D");
     if (!p)
@@ -1395,6 +1685,12 @@ void rt_projectile2d_reset(void *obj) {
 
 /// @brief Position of one axis at time @p t under constant gravity @p g and
 ///        linear @p drag (closed-form; reduces to p0+v0·t+½g·t² when drag==0).
+/// @param p0 Initial position on the selected axis.
+/// @param v0 Initial velocity on the selected axis.
+/// @param g Constant acceleration on the selected axis.
+/// @param drag Nonnegative linear drag coefficient.
+/// @param t Time since launch; nonpositive or non-finite values select @p p0.
+/// @return The closed-form position at @p t.
 static double projectile_pos_at(double p0, double v0, double g, double drag, double t) {
     if (!isfinite(t) || t <= 0.0)
         return p0;
@@ -1406,6 +1702,11 @@ static double projectile_pos_at(double p0, double v0, double g, double drag, dou
 
 /// @brief Velocity of one axis at time @p t under gravity @p g and linear
 ///        @p drag (closed-form; reduces to v0+g·t when drag==0).
+/// @param v0 Initial velocity on the selected axis.
+/// @param g Constant acceleration on the selected axis.
+/// @param drag Nonnegative linear drag coefficient.
+/// @param t Time since launch; nonpositive or non-finite values select @p v0.
+/// @return The closed-form velocity at @p t.
 static double projectile_vel_at(double v0, double g, double drag, double t) {
     if (!isfinite(t) || t <= 0.0)
         return v0;
@@ -1415,6 +1716,13 @@ static double projectile_vel_at(double v0, double g, double drag, double t) {
     return v0 * e + (g / drag) * (1.0 - e);
 }
 
+/// @brief Advance the projectile's elapsed-time tracker and update landing state.
+/// @details Positive finite @p dt is added only while the projectile is not
+///          landed. Landing latches when the analytic Y position at the new
+///          total time is at or below the configured screen-space ground
+///          (`y >= ground_y`). The time is not clamped back to the exact impact.
+/// @param obj Opaque Projectile2D handle to advance.
+/// @param dt Positive finite elapsed time.
 void rt_projectile2d_advance(void *obj, double dt) {
     rt_projectile2d_impl *p =
         checked_projectile(obj, "Projectile2D.Advance: expected Projectile2D");
@@ -1425,38 +1733,77 @@ void rt_projectile2d_advance(void *obj, double dt) {
         p->landed = 1;
 }
 
+/// @brief Evaluate horizontal position at an absolute time since launch.
+/// @param obj Opaque Projectile2D handle.
+/// @param t Time since launch; nonpositive or non-finite values select the
+///          initial position.
+/// @return The analytic horizontal position, or `0.0` for invalid input.
 double rt_projectile2d_x_at(void *obj, double t) {
     rt_projectile2d_impl *p = checked_projectile(obj, "Projectile2D.XAt: expected Projectile2D");
     return p ? projectile_pos_at(p->p0x, p->v0x, p->gx, p->drag, t) : 0.0;
 }
 
+/// @brief Evaluate vertical position at an absolute time since launch.
+/// @param obj Opaque Projectile2D handle.
+/// @param t Time since launch; nonpositive or non-finite values select the
+///          initial position.
+/// @return The analytic vertical position, or `0.0` for invalid input.
 double rt_projectile2d_y_at(void *obj, double t) {
     rt_projectile2d_impl *p = checked_projectile(obj, "Projectile2D.YAt: expected Projectile2D");
     return p ? projectile_pos_at(p->p0y, p->v0y, p->gy, p->drag, t) : 0.0;
 }
 
+/// @brief Evaluate horizontal velocity at an absolute time since launch.
+/// @param obj Opaque Projectile2D handle.
+/// @param t Time since launch; nonpositive or non-finite values select the
+///          initial velocity.
+/// @return The analytic horizontal velocity, or `0.0` for invalid input.
 double rt_projectile2d_vx_at(void *obj, double t) {
     rt_projectile2d_impl *p = checked_projectile(obj, "Projectile2D.VXAt: expected Projectile2D");
     return p ? projectile_vel_at(p->v0x, p->gx, p->drag, t) : 0.0;
 }
 
+/// @brief Evaluate vertical velocity at an absolute time since launch.
+/// @param obj Opaque Projectile2D handle.
+/// @param t Time since launch; nonpositive or non-finite values select the
+///          initial velocity.
+/// @return The analytic vertical velocity, or `0.0` for invalid input.
 double rt_projectile2d_vy_at(void *obj, double t) {
     rt_projectile2d_impl *p = checked_projectile(obj, "Projectile2D.VYAt: expected Projectile2D");
     return p ? projectile_vel_at(p->v0y, p->gy, p->drag, t) : 0.0;
 }
 
+/// @brief Return the landed flag latched by `rt_projectile2d_advance`.
+/// @param obj Opaque Projectile2D handle.
+/// @return `1` after the configured ground threshold is reached, otherwise
+///         `0`; invalid input also returns `0`.
 int8_t rt_projectile2d_has_landed(void *obj) {
     rt_projectile2d_impl *p =
         checked_projectile(obj, "Projectile2D.HasLanded: expected Projectile2D");
     return p ? p->landed : 0;
 }
 
+/// @brief Return the elapsed time accumulated by successful Advance calls.
+/// @param obj Opaque Projectile2D handle.
+/// @return Accumulated elapsed time, or `0.0` for invalid input.
 double rt_projectile2d_total_time(void *obj) {
     rt_projectile2d_impl *p =
         checked_projectile(obj, "Projectile2D.TotalTime: expected Projectile2D");
     return p ? p->total_time : 0.0;
 }
 
+/// @brief Estimate a nonnegative absolute launch time at the ground threshold.
+/// @details Returns infinity when ground detection is disabled or no supported
+///          crossing is found. With drag, the implementation expands a
+///          positive-time bracket for at most 64 iterations and then performs
+///          64 bisection iterations. Without drag, it solves the constant-
+///          acceleration quadratic and selects the smaller nonnegative root,
+///          with linear and stationary fallbacks for near-zero acceleration.
+///          The result is measured from launch, not from the current
+///          `total_time`.
+/// @param obj Opaque Projectile2D handle.
+/// @return A nonnegative time since launch, or positive infinity for invalid,
+///         disabled, or unreachable cases.
 double rt_projectile2d_time_to_ground(void *obj) {
     rt_projectile2d_impl *p =
         checked_projectile(obj, "Projectile2D.TimeToGround: expected Projectile2D");

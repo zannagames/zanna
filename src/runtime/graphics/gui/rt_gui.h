@@ -2607,6 +2607,12 @@ int64_t rt_image_get_filter(void *image);
 /// @param opacity Opacity (0.0 to 1.0).
 void rt_image_set_opacity(void *image, double opacity);
 
+/// @brief Opt the image into keyboard focus: click-to-focus plus a theme
+///        focus ring, for interactive canvases (scene viewports).
+/// @param image Image widget handle.
+/// @param focusable 1 to accept focus; 0 restores presentation-only.
+void rt_image_set_focusable(void *image, int8_t focusable);
+
 /// @brief Load an image file (PNG, BMP, JPEG, or GIF) into the image widget.
 /// @param image Image widget handle.
 /// @param path File path (runtime string).

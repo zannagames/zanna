@@ -22,11 +22,18 @@
 // Links: src/runtime/core/rt_error.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares structured runtime errors and trap diagnostic metadata.
+/// @details The API combines small by-value `RtError` results with thread-local
+///   metadata used by language catch handlers and `Zanna.Diagnostics.TrapInfo`.
+
 #pragma once
 
 #include "rt_string.h"
 #include <stdint.h>
 
+/// @brief Internal runtime class identifier assigned to TrapInfo snapshots.
 #define RT_TRAP_INFO_CLASS_ID INT64_C(-0x440301)
 
 #ifdef __cplusplus
@@ -35,17 +42,29 @@ extern "C" {
 
 /// @brief Canonical runtime trap kinds shared by the native runtime and VM.
 typedef enum RtTrapKind {
+    /// Integer or numeric division by zero.
     RT_TRAP_KIND_DIVIDE_BY_ZERO = 0,
+    /// Checked numeric overflow.
     RT_TRAP_KIND_OVERFLOW = 1,
+    /// Invalid runtime type conversion.
     RT_TRAP_KIND_INVALID_CAST = 2,
+    /// Value outside an operation's domain.
     RT_TRAP_KIND_DOMAIN_ERROR = 3,
+    /// Index or range bounds violation.
     RT_TRAP_KIND_BOUNDS = 4,
+    /// Requested filesystem entry was absent.
     RT_TRAP_KIND_FILE_NOT_FOUND = 5,
+    /// End of an input stream was reached.
     RT_TRAP_KIND_EOF = 6,
+    /// General input/output failure.
     RT_TRAP_KIND_IO_ERROR = 7,
+    /// Operation invalid for current state.
     RT_TRAP_KIND_INVALID_OPERATION = 8,
+    /// Unclassified runtime failure.
     RT_TRAP_KIND_RUNTIME_ERROR = 9,
+    /// Execution interrupted or cancelled.
     RT_TRAP_KIND_INTERRUPT = 10,
+    /// Network or protocol failure.
     RT_TRAP_KIND_NETWORK_ERROR = 11
 } RtTrapKind;
 
@@ -92,10 +111,12 @@ static inline int8_t rt_ok(RtError error) {
 extern const RtError RT_ERROR_NONE;
 
 /// @brief Store the thrown message string for retrieval by catch handlers.
-/// @param msg The message string (ownership is NOT transferred; the string is copied).
+/// @details Replaces and releases the previous thread-local message.
+/// @param msg Borrowed message whose reference is retained, or NULL to clear.
 void rt_throw_msg_set(rt_string msg);
 
 /// @brief Clear the last thrown message string.
+/// @details Releases the retained thread-local reference, if present.
 void rt_throw_msg_clear(void);
 
 /// @brief Retrieve the last thrown message string.
@@ -104,12 +125,25 @@ void rt_throw_msg_clear(void);
 rt_string rt_throw_msg_get(void);
 
 /// @brief Convert a trap kind enum value to a stable user-facing type name.
+/// @param kind Canonical `RT_TRAP_KIND_*` value.
+/// @return Caller-owned runtime string; unknown values produce `RuntimeError`.
 rt_string rt_error_kind_name(int32_t kind);
 
 /// @brief Build a user-facing message for a caught trap.
+/// @details Runtime-error traps reuse a retained thrown message when present;
+///   other classifications use stable default text.
+/// @param kind Canonical `RT_TRAP_KIND_*` value.
+/// @param code Secondary error code, currently reserved.
+/// @param line Source line number, currently reserved.
+/// @return Caller-owned runtime string containing the selected message.
 rt_string rt_error_message(int32_t kind, int32_t code, int32_t line);
 
 /// @brief Build a user-facing location string for a caught trap.
+/// @param kind Canonical trap kind, currently reserved.
+/// @param code Secondary error code, currently reserved.
+/// @param line Source line number, or a negative value when unavailable.
+/// @return Caller-owned `line N` string, or an empty runtime string when the
+///   source line is unavailable.
 rt_string rt_error_location(int32_t kind, int32_t code, int32_t line);
 
 /// @brief Store trap classification fields for retrieval by catch handlers.
@@ -119,6 +153,8 @@ rt_string rt_error_location(int32_t kind, int32_t code, int32_t line);
 void rt_trap_fields_set(int32_t kind, int32_t code, int32_t line);
 
 /// @brief Store the native instruction pointer associated with the most recent trap.
+/// @details Marks current trap metadata as available without replacing its
+///   kind, code, or source line.
 /// @param ip Native return address captured at the trap site.
 void rt_trap_set_ip(uint64_t ip);
 
@@ -127,8 +163,10 @@ void rt_trap_set_ip(uint64_t ip);
 ///          current thread. Otherwise returns `Some(TrapInfo)` containing a
 ///          read-only copy of the kind, code, instruction pointer, source line,
 ///          message, kind name, and formatted location currently stored by the
-///          trap machinery.
-/// @return Opaque `Zanna.Option` object containing `Zanna.Diagnostics.TrapInfo`.
+///          trap machinery. Allocation failures raise a trap after temporary
+///          references and recovery state are cleaned up.
+/// @return Caller-owned opaque `Zanna.Option` object containing
+///   `Zanna.Diagnostics.TrapInfo`.
 void *rt_diagnostics_current_trap(void);
 
 /// @brief Read the trap kind from a `Zanna.Diagnostics.TrapInfo` snapshot.
@@ -167,46 +205,59 @@ rt_string rt_trap_info_get_message(void *obj);
 rt_string rt_trap_info_get_location(void *obj);
 
 /// @brief Retrieve the last trap's kind classification.
+/// @return Canonical trap kind stored for the current thread.
 int64_t rt_trap_get_kind(void);
 
 /// @brief Retrieve the last trap's error code.
+/// @return Secondary runtime error code stored for the current thread.
 int64_t rt_trap_get_code(void);
 
 /// @brief Retrieve the native instruction pointer of the last trap.
+/// @return Stored native or IL instruction pointer, or zero when unavailable.
 int64_t rt_trap_get_ip(void);
 
 /// @brief Retrieve the last trap's source line number.
+/// @return Stored source line, or -1 when unavailable.
 int64_t rt_trap_get_line(void);
 
 /// @brief Map a legacy runtime Err_* code to the canonical trap-kind integer.
+/// @details Network codes map to `RT_TRAP_KIND_NETWORK_ERROR`; unknown codes
+///   and `Err_None` map to `RT_TRAP_KIND_RUNTIME_ERROR`.
+/// @param code Legacy runtime `Err_*` value.
+/// @return Corresponding canonical `RT_TRAP_KIND_*` integer.
 int32_t rt_err_to_trap_kind(int32_t code);
 
 /// @brief Construct the current thread's native trap payload and return an opaque token.
 /// @param code Legacy Err_* code.
-/// @param msg User-visible trap message.
-/// @return Opaque token value suitable for carrying the Error-typed result in native codegen.
+/// @param msg Borrowed runtime string retained as the thrown message.
+/// @return Non-owning opaque token encoding the low 32 bits of @p code for
+///   native Error-typed results; no object is allocated.
 void *rt_trap_error_make(int32_t code, rt_string msg);
 
 /// @brief Raise a trap with explicit trap metadata.
 /// @param kind Canonical trap classification.
 /// @param code Secondary runtime error code (Err_* or 0).
 /// @param line Source line number (-1 if unknown).
-/// @param msg User-visible trap message.
+/// @param msg Borrowed null-terminated message, or NULL for no message.
+/// @note Dispatch may perform a non-local transfer, call the VM trap hook, or
+///   return if an embedder's hook permits it.
 void rt_trap_raise_kind(int32_t kind, int32_t code, int32_t line, const char *msg);
 
 /// @brief Raise a trap with explicit trap metadata and no message.
 /// @param kind Canonical trap classification.
 /// @param code Secondary runtime error code (Err_* or 0).
 /// @param line Source line number (-1 if unknown).
+/// @note Equivalent to @ref rt_trap_raise_kind with a NULL message.
 void rt_trap_raise_kind_nomsg(int32_t kind, int32_t code, int32_t line);
 
 /// @brief Raise a trap classified from a legacy Err_* code while preserving @p msg.
 /// @param code Legacy Err_* code.
-/// @param msg User-visible trap message.
+/// @param msg Borrowed null-terminated message, or NULL for no message.
 void rt_trap_raise_error_msg(int32_t code, const char *msg);
 
 /// @brief Raise a trap classified from a legacy runtime Err_* code.
 /// @param code Legacy Err_* code.
+/// @note Dispatches without an explicit user-visible message.
 void rt_trap_raise_error(int32_t code);
 
 #ifdef __cplusplus

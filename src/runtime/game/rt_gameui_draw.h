@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_gameui_draw.h
+/// @file
+/// @brief Declares the canvas-polymorphic GameUI draw-operation adapter.
+//
 // Purpose: Canvas-polymorphic draw-operation table for the Game.UI widgets so
 //   one widget implementation renders on both the 2D Canvas and Canvas3D
 //   (ADR 0065). Widgets call through this table instead of rt_canvas_*.
@@ -35,21 +38,32 @@ extern "C" {
 /// @invariant Every function pointer is non-NULL after a successful resolve.
 /// @ownership Stack value; borrows the canvas handle for the duration of a Draw.
 typedef struct rt_gameui_draw_ops {
+    /// Borrowed concrete canvas handle supplied to every operation.
     void *canvas;
+    /// Draw an opaque axis-aligned filled rectangle.
     void (*box)(void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color);
+    /// Draw an alpha-blended axis-aligned filled rectangle.
     void (*box_alpha)(
         void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color, int64_t alpha);
+    /// Draw a one-pixel axis-aligned rectangular outline.
     void (*frame)(void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color);
+    /// Draw a line segment between two canvas coordinates.
     void (*line)(void *canvas, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t color);
+    /// Draw an opaque filled rounded rectangle.
     void (*round_box)(
         void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t radius, int64_t color);
+    /// Draw a rounded rectangular outline.
     void (*round_frame)(
         void *canvas, int64_t x, int64_t y, int64_t w, int64_t h, int64_t radius, int64_t color);
+    /// Draw default-font text at native scale.
     void (*text)(void *canvas, int64_t x, int64_t y, rt_string text, int64_t color);
+    /// Draw default-font text at an integer scale.
     void (*text_scaled)(
         void *canvas, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t color);
+    /// Draw native-scale text with an explicit BitmapFont.
     void (*text_font)(
         void *canvas, int64_t x, int64_t y, rt_string text, void *font, int64_t color);
+    /// Draw scaled text with an explicit BitmapFont.
     void (*text_font_scaled)(void *canvas,
                              int64_t x,
                              int64_t y,
@@ -57,6 +71,7 @@ typedef struct rt_gameui_draw_ops {
                              void *font,
                              int64_t scale,
                              int64_t color);
+    /// Copy a rectangular Pixels source region to the canvas.
     void (*blit_region)(void *canvas,
                         int64_t dx,
                         int64_t dy,
@@ -65,18 +80,27 @@ typedef struct rt_gameui_draw_ops {
                         int64_t sy,
                         int64_t w,
                         int64_t h);
+    /// Query the target canvas width.
     int64_t (*width)(void *canvas);
+    /// Query the target canvas height.
     int64_t (*height)(void *canvas);
 } rt_gameui_draw_ops_t;
 
 /// @brief Fill @p ops for @p canvas (2D Canvas or a registered Canvas3D).
+/// @param canvas Candidate canvas handle.
+/// @param ops Required caller-owned output table.
 /// @return 1 when the handle resolved to a known canvas kind, 0 otherwise.
+/// @details Null arguments and unknown handles return zero. A 2D Canvas binds
+///          directly to rt_canvas_* operations. An accepted Canvas3D delegates
+///          table population to the registered adapter.
 int rt_gameui_resolve_draw_ops(void *canvas, rt_gameui_draw_ops_t *ops);
 
 /// @brief Register the Canvas3D probe + ops-fill hooks (called by Canvas3D at init).
+/// @param probe Predicate for recognizing Canvas3D handles.
+/// @param fill Callback that fills @p ops for a recognized handle.
 /// @details Keeps runtime/game free of graphics/3d includes: the 3D layer pushes its
 ///   binding down rather than the widgets reaching up. Idempotent; later calls replace
-///   the hooks.
+///   the hooks. Either pointer may be null to disable the paired 3D path.
 void rt_gameui_register_canvas3d_ops(int8_t (*probe)(void *canvas),
                                      void (*fill)(void *canvas, rt_gameui_draw_ops_t *ops));
 

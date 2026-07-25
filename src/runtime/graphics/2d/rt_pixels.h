@@ -3,21 +3,33 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
-// File: src/runtime/graphics/rt_pixels.h
+/// @file rt_pixels.h
+/// @brief Declares the CPU-side Pixels image API for allocation, raw access,
+///        image I/O, transforms, effects, drawing, and text.
+///
+/// @details Pixels store row-major numeric `0xRRGGBBAA` words. Scalar storage
+/// APIs distinguish raw RGBA, Canvas-style RGB, and tagged Color values, while
+/// drawing primitives accept RGB/tagged Color input and clip to image bounds.
+/// Operations returning Pixels or Bytes create independent managed objects;
+/// direct-buffer access is borrowed.
+///
+// File: src/runtime/graphics/2d/rt_pixels.h
 // Purpose: Software image buffer manipulation for Zanna.Graphics.Pixels, providing pixel-level
-// read/write, drawing primitives, image loading/saving, and blitting operations.
+// read/write, drawing primitives, image loading/saving, transforms, and rectangle copying.
 //
 // Key invariants:
-//   - Pixel format is 0xRRGGBBAA (big-endian RGBA); drawing helpers use 0x00RRGGBB.
+//   - Pixel words use numeric 0xRRGGBBAA packing; drawing helpers use 0x00RRGGBB
+//     or explicitly tagged Color values.
 //   - Coordinates are 0-based from the top-left corner.
 //   - Out-of-bounds reads return 0; out-of-bounds writes and drawing spans are clipped/no-op.
 //   - Drawing primitives (box, disc, line, etc.) render directly into the pixel buffer.
 //
 // Ownership/Lifetime:
-//   - Pixels objects are heap-allocated opaque pointers.
-//   - Caller is responsible for lifetime management.
+//   - Pixels objects are managed runtime objects exposed as opaque pointers.
+//   - Newly returned objects carry their own reference; raw-buffer pointers are
+//     borrowed and must not be freed.
 //
-// Links: src/runtime/graphics/rt_pixels.c (implementation)
+// Links: src/runtime/graphics/2d/rt_pixels.c (implementation)
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -27,6 +39,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/// Runtime class identifier assigned to Pixels object payloads.
 #define RT_PIXELS_CLASS_ID INT64_C(-0x600201)
 
 #ifdef __cplusplus
@@ -34,15 +47,20 @@ extern "C" {
 #endif
 
 /// @brief Create a new Pixels buffer with given dimensions.
-/// @param width Width in pixels.
-/// @param height Height in pixels.
-/// @return New Pixels object with zero-filled (transparent black) buffer.
+/// @param width Nonnegative width in pixels; zero is permitted.
+/// @param height Nonnegative height in pixels; zero is permitted.
+/// @return A new transparent-black Pixels object, or `NULL` for invalid
+///         dimensions or allocation failure.
 void *rt_pixels_new(int64_t width, int64_t height);
 
 /// @brief Get the width of the Pixels buffer.
+/// @param pixels Opaque Pixels handle.
+/// @return The stored width, or `0` after invalid input.
 int64_t rt_pixels_width(void *pixels);
 
 /// @brief Get the height of the Pixels buffer.
+/// @param pixels Opaque Pixels handle.
+/// @return The stored height, or `0` after invalid input.
 int64_t rt_pixels_height(void *pixels);
 
 /// @brief Get a pixel color at (x, y) as raw packed RGBA.
@@ -53,9 +71,18 @@ int64_t rt_pixels_height(void *pixels);
 int64_t rt_pixels_get(void *pixels, int64_t x, int64_t y);
 
 /// @brief Get a pixel color at (x, y) as raw packed RGBA. Explicit alias for Pixels.GetRGBA.
+/// @param pixels Opaque Pixels handle.
+/// @param x Zero-based column.
+/// @param y Zero-based row.
+/// @return Raw `0xRRGGBBAA`, or transparent black when out of bounds.
 int64_t rt_pixels_get_rgba(void *pixels, int64_t x, int64_t y);
 
 /// @brief Get a pixel color at (x, y) as a Zanna.Graphics.Color-compatible value.
+/// @param pixels Opaque Pixels handle.
+/// @param x Zero-based column.
+/// @param y Zero-based row.
+/// @return The tagged Color representation; out-of-bounds reads convert
+///         transparent black.
 int64_t rt_pixels_get_color(void *pixels, int64_t x, int64_t y);
 
 /// @brief Set a raw RGBA pixel at (x, y).
@@ -66,22 +93,31 @@ int64_t rt_pixels_get_color(void *pixels, int64_t x, int64_t y);
 void rt_pixels_set(void *pixels, int64_t x, int64_t y, int64_t color);
 
 /// @brief Set a raw RGBA pixel at (x, y). Explicit alias for Pixels.SetRGBA.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Zero-based column.
+/// @param y Zero-based row.
+/// @param rgba Raw `0xRRGGBBAA` or explicitly tagged Color value.
 void rt_pixels_set_rgba(void *pixels, int64_t x, int64_t y, int64_t rgba);
 
 /// @brief Set a pixel from a Canvas RGB or Color.RGBA value, converting to raw RGBA.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Zero-based column.
+/// @param y Zero-based row.
+/// @param color Canvas `0x00RRGGBB` or explicitly tagged Color value.
 void rt_pixels_set_color(void *pixels, int64_t x, int64_t y, int64_t color);
 
 /// @brief Get direct read-only access to the underlying RGBA pixel buffer.
 /// @param pixels Pixels object.
 /// @return Pointer to width*height uint32_t values (0xRRGGBBAA), or NULL.
 /// @warning The buffer length is width*height — query rt_pixels_width()/height()
-///   for bounds; no length is returned here. The pointer is only valid until the
-///   next operation that resizes or reallocates this Pixels object (scale, resize,
-///   transform) or a GC cycle that could move it. Do NOT cache it across such calls
-///   or across frames; re-fetch it (and the dimensions) each time you need it.
+///   for bounds; no length is returned here. The pointer is embedded in and
+///   valid only for the lifetime of this exact Pixels object. Do not free it or
+///   retain it after releasing the object.
 const uint32_t *rt_pixels_raw_buffer(void *pixels);
 
 /// @brief Return the mutation generation for cache invalidation.
+/// @param pixels Opaque Pixels handle.
+/// @return The current generation, or `0` for invalid input.
 uint64_t rt_pixels_generation(void *pixels);
 
 /// @brief Fill entire buffer with a raw RGBA color.
@@ -90,12 +126,17 @@ uint64_t rt_pixels_generation(void *pixels);
 void rt_pixels_fill(void *pixels, int64_t color);
 
 /// @brief Fill entire buffer with a raw RGBA color. Explicit alias for Pixels.Fill.
+/// @param pixels Opaque destination Pixels handle.
+/// @param rgba Raw `0xRRGGBBAA` or explicitly tagged Color value.
 void rt_pixels_fill_rgba(void *pixels, int64_t rgba);
 
 /// @brief Fill entire buffer from a Canvas RGB or Color.RGBA value, converting to raw RGBA.
+/// @param pixels Opaque destination Pixels handle.
+/// @param color Canvas `0x00RRGGBB` or explicitly tagged Color value.
 void rt_pixels_fill_color(void *pixels, int64_t color);
 
 /// @brief Clear buffer to transparent black (0x00000000).
+/// @param pixels Opaque destination Pixels handle.
 void rt_pixels_clear(void *pixels);
 
 /// @brief Copy a rectangle from source to destination.
@@ -111,17 +152,22 @@ void rt_pixels_copy(
     void *dst, int64_t dx, int64_t dy, void *src, int64_t sx, int64_t sy, int64_t w, int64_t h);
 
 /// @brief Create a deep copy of a Pixels buffer.
+/// @param pixels Opaque source Pixels handle.
+/// @return A new independent Pixels object with a distinct cache identity, or
+///         `NULL` on failure.
 void *rt_pixels_clone(void *pixels);
 
 /// @brief Convert Pixels to raw bytes (RGBA, row-major).
+/// @param pixels Opaque source Pixels handle.
 /// @return A Zanna.Collections.Bytes object containing the pixel data.
 void *rt_pixels_to_bytes(void *pixels);
 
 /// @brief Create Pixels from raw bytes.
-/// @param width Width in pixels.
-/// @param height Height in pixels.
+/// @param width Nonnegative width in pixels.
+/// @param height Nonnegative height in pixels.
 /// @param bytes Zanna.Collections.Bytes object containing RGBA data.
-/// @return New Pixels object, or NULL if bytes is insufficient.
+/// @return New Pixels object, or NULL if dimensions or bytes are invalid,
+///         insufficient, or allocation fails.
 void *rt_pixels_from_bytes(int64_t width, int64_t height, void *bytes);
 
 //=========================================================================
@@ -153,6 +199,11 @@ void *rt_pixels_load_png(void *path);
 /// @brief Decode a PNG memory buffer into malloc-owned raw RGBA32 pixels.
 /// @details Internal worker-safe helper. The returned buffer stores 0xRRGGBBAA
 ///          pixels in row-major order; caller frees it with free().
+/// @param data Borrowed encoded PNG byte buffer.
+/// @param len Encoded buffer length in bytes.
+/// @param out_pixels Receives the malloc-owned pixel array on success.
+/// @param out_width Receives the decoded positive width.
+/// @param out_height Receives the decoded positive height.
 /// @return 1 on success, 0 on failure.
 int rt_png_decode_buffer_rgba32(const uint8_t *data,
                                 size_t len,
@@ -175,6 +226,11 @@ void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len);
 /// @brief Decode a JPEG memory buffer into malloc-owned raw RGBA32 pixels.
 /// @details Internal worker-safe helper. The returned buffer stores 0xRRGGBBAA
 ///          pixels in row-major order; caller frees it with free().
+/// @param data Borrowed encoded JPEG byte buffer.
+/// @param len Encoded buffer length in bytes.
+/// @param out_pixels Receives the malloc-owned pixel array on success.
+/// @param out_width Receives the decoded positive width.
+/// @param out_height Receives the decoded positive height.
 /// @return 1 on success, 0 on failure.
 int rt_jpeg_decode_buffer_rgba32(const uint8_t *data,
                                  size_t len,
@@ -284,44 +340,110 @@ void *rt_pixels_resize(void *pixels, int64_t new_width, int64_t new_height);
 // values preserve alpha. Coordinates outside the buffer are silently clipped.
 
 /// @brief Set a pixel using 0x00RRGGBB color format (alpha = 255).
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Zero-based column.
+/// @param y Zero-based row.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_set_rgb(void *pixels, int64_t x, int64_t y, int64_t color);
 
 /// @brief Get a pixel as 0x00RRGGBB (alpha channel discarded).
+/// @param pixels Opaque Pixels handle.
+/// @param x Zero-based column.
+/// @param y Zero-based row.
+/// @return Low-24-bit RGB, or `0` for invalid/out-of-bounds input.
 int64_t rt_pixels_get_rgb(void *pixels, int64_t x, int64_t y);
 
 /// @brief Draw a line between two points (Bresenham algorithm).
+/// @param pixels Opaque destination Pixels handle.
+/// @param x1 Start X.
+/// @param y1 Start Y.
+/// @param x2 End X.
+/// @param y2 End Y.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_line(
     void *pixels, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t color);
 
 /// @brief Draw a filled rectangle.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Rectangle origin X.
+/// @param y Rectangle origin Y.
+/// @param w Requested width.
+/// @param h Requested height.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_box(void *pixels, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color);
 
 /// @brief Draw a rectangle outline.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Rectangle origin X.
+/// @param y Rectangle origin Y.
+/// @param w Requested width.
+/// @param h Requested height.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_frame(void *pixels, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color);
 
 /// @brief Draw a filled circle.
+/// @param pixels Opaque destination Pixels handle.
+/// @param cx Center X.
+/// @param cy Center Y.
+/// @param r Radius.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_disc(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_t color);
 
 /// @brief Draw a circle outline.
+/// @param pixels Opaque destination Pixels handle.
+/// @param cx Center X.
+/// @param cy Center Y.
+/// @param r Radius.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_ring(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_t color);
 
 /// @brief Draw a filled ellipse.
+/// @param pixels Opaque destination Pixels handle.
+/// @param cx Center X.
+/// @param cy Center Y.
+/// @param rx Horizontal radius.
+/// @param ry Vertical radius.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_ellipse(
     void *pixels, int64_t cx, int64_t cy, int64_t rx, int64_t ry, int64_t color);
 
 /// @brief Draw an ellipse outline.
+/// @param pixels Opaque destination Pixels handle.
+/// @param cx Center X.
+/// @param cy Center Y.
+/// @param rx Horizontal radius.
+/// @param ry Vertical radius.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_ellipse_frame(
     void *pixels, int64_t cx, int64_t cy, int64_t rx, int64_t ry, int64_t color);
 
 /// @brief Flood fill from a seed point (iterative scanline, any canvas size).
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Seed X.
+/// @param y Seed Y.
+/// @param color Replacement Canvas RGB or tagged Color value.
 void rt_pixels_flood_fill(void *pixels, int64_t x, int64_t y, int64_t color);
 
 /// @brief Draw a thick line (pen-radius approach).
+/// @param pixels Opaque destination Pixels handle.
+/// @param x1 Start X.
+/// @param y1 Start Y.
+/// @param x2 End X.
+/// @param y2 End Y.
 /// @param thickness Stroke width in pixels (pen diameter).
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_thick_line(
     void *pixels, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t thickness, int64_t color);
 
 /// @brief Draw a filled triangle (scanline fill).
+/// @param pixels Opaque destination Pixels handle.
+/// @param x1 First vertex X.
+/// @param y1 First vertex Y.
+/// @param x2 Second vertex X.
+/// @param y2 Second vertex Y.
+/// @param x3 Third vertex X.
+/// @param y3 Third vertex Y.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_triangle(void *pixels,
                              int64_t x1,
                              int64_t y1,
@@ -332,9 +454,14 @@ void rt_pixels_draw_triangle(void *pixels,
                              int64_t color);
 
 /// @brief Draw a quadratic Bézier curve.
-/// @param x1,y1 Start point.
-/// @param cx,cy Control point.
-/// @param x2,y2 End point.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x1 Start X.
+/// @param y1 Start Y.
+/// @param cx Control-point X.
+/// @param cy Control-point Y.
+/// @param x2 End X.
+/// @param y2 End Y.
+/// @param color Canvas RGB or tagged Color value.
 void rt_pixels_draw_bezier(void *pixels,
                            int64_t x1,
                            int64_t y1,
@@ -345,37 +472,81 @@ void rt_pixels_draw_bezier(void *pixels,
                            int64_t color);
 
 /// @brief Draw built-in 8x8 bitmap-font text at (x, y).
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Text origin X.
+/// @param y Text origin Y.
+/// @param text Runtime string to render.
+/// @param color Foreground Canvas RGB or tagged Color value.
 void rt_pixels_draw_text(void *pixels, int64_t x, int64_t y, rt_string text, int64_t color);
 
 /// @brief Draw built-in 8x8 bitmap-font text with a filled background cell per glyph pixel.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Text origin X.
+/// @param y Text origin Y.
+/// @param text Runtime string to render.
+/// @param fg Foreground Canvas RGB or tagged Color value.
+/// @param bg Background Canvas RGB or tagged Color value.
 void rt_pixels_draw_text_bg(
     void *pixels, int64_t x, int64_t y, rt_string text, int64_t fg, int64_t bg);
 
 /// @brief Return rendered text width in pixels at 1x scale.
+/// @param text Runtime string to measure.
+/// @return Rendered width in pixels.
 int64_t rt_pixels_text_width(rt_string text);
 
 /// @brief Return built-in font line height in pixels.
+/// @return The fixed built-in font line height.
 int64_t rt_pixels_text_height(void);
 
 /// @brief Draw built-in text scaled by an integer factor.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Text origin X.
+/// @param y Text origin Y.
+/// @param text Runtime string to render.
+/// @param scale Requested integer scale.
+/// @param color Foreground Canvas RGB or tagged Color value.
 void rt_pixels_draw_text_scaled(
     void *pixels, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t color);
 
 /// @brief Draw scaled built-in text with a filled background cell per glyph pixel.
+/// @param pixels Opaque destination Pixels handle.
+/// @param x Text origin X.
+/// @param y Text origin Y.
+/// @param text Runtime string to render.
+/// @param scale Requested integer scale.
+/// @param fg Foreground Canvas RGB or tagged Color value.
+/// @param bg Background Canvas RGB or tagged Color value.
 void rt_pixels_draw_text_scaled_bg(
     void *pixels, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t fg, int64_t bg);
 
 /// @brief Return rendered text width in pixels at the given integer scale.
+/// @param text Runtime string to measure.
+/// @param scale Requested integer scale.
+/// @return Rendered width in pixels.
 int64_t rt_pixels_text_scaled_width(rt_string text, int64_t scale);
 
 /// @brief Draw text horizontally centered in the Pixels buffer at row y.
+/// @param pixels Opaque destination Pixels handle.
+/// @param y Text origin Y.
+/// @param text Runtime string to render.
+/// @param color Foreground Canvas RGB or tagged Color value.
 void rt_pixels_draw_text_centered(void *pixels, int64_t y, rt_string text, int64_t color);
 
 /// @brief Draw text right-aligned to the Pixels buffer with the given margin.
+/// @param pixels Opaque destination Pixels handle.
+/// @param margin Distance from the image's right edge.
+/// @param y Text origin Y.
+/// @param text Runtime string to render.
+/// @param color Foreground Canvas RGB or tagged Color value.
 void rt_pixels_draw_text_right(
     void *pixels, int64_t margin, int64_t y, rt_string text, int64_t color);
 
 /// @brief Draw scaled text horizontally centered in the Pixels buffer at row y.
+/// @param pixels Opaque destination Pixels handle.
+/// @param y Text origin Y.
+/// @param text Runtime string to render.
+/// @param color Foreground Canvas RGB or tagged Color value.
+/// @param scale Requested integer scale.
 void rt_pixels_draw_text_centered_scaled(
     void *pixels, int64_t y, rt_string text, int64_t color, int64_t scale);
 

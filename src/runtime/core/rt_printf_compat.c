@@ -6,19 +6,18 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_printf_compat.c
-// Purpose: Provides weak-linked printf-style wrappers used throughout the
-//          runtime for formatted output. The symbols carry weak linkage so
-//          test harnesses can interpose custom implementations (e.g., to
-//          capture or suppress output) without modifying production code.
+// Purpose: Provides the runtime's overridable, snprintf-compatible formatting
+//          entry point and isolates its varargs forwarding to libc vsnprintf.
 //
 // Key invariants:
-//   - rt_snprintf forwards to vsnprintf; return semantics match vsnprintf
-//     (returns number of characters that would have been written, negative
-//     on encoding error).
-//   - Weak linkage allows test binaries to override with strong symbols; the
-//     default implementation is never called when a strong override is linked.
-//   - The function is not thread-unsafe by itself; underlying vsnprintf is
-//     reentrant, but stdout/stderr access is not serialized here.
+//   - rt_snprintf forwards its buffer, bound, format, and variadic arguments
+//     directly to the platform vsnprintf implementation.
+//   - Return, truncation, termination, encoding-error, and invalid-format
+//     behavior is exactly the behavior of that platform implementation.
+//   - RT_WEAK controls link-time interposition where the selected compiler
+//     supports it; on compilers where it expands to nothing this is an ordinary
+//     definition and replacement remains a build/link concern.
+//   - The wrapper owns no mutable state and performs no stream I/O.
 //
 // Ownership/Lifetime:
 //   - Writes into a caller-supplied buffer; no heap allocation is performed.
@@ -29,6 +28,8 @@
 //        src/runtime/core/rt_output.c (higher-level output buffering)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Default implementation of the runtime snprintf compatibility entry.
 
 #include "rt_printf_compat.h"
 #include "rt_platform.h"
@@ -37,13 +38,18 @@
 #include <stdio.h>
 
 /// @brief snprintf-compatible formatting wrapper with weak linkage.
-/// @details Forwards to `vsnprintf` using a varargs interface. Marked weak so
-///          tests may interpose custom formatting behavior or capture output.
-/// @param str Destination buffer.
-/// @param size Size of the destination buffer in bytes.
-/// @param fmt printf-style format string.
-/// @return Number of characters that would have been written (excluding NUL),
-///         or a negative value on encoding error, mirroring `vsnprintf`.
+/// @details Initializes a `va_list`, forwards it once to `vsnprintf`, closes
+///          the list, and returns libc's result unchanged. No argument
+///          validation or portability normalization is added. @ref RT_WEAK
+///          permits strong-symbol interposition only on toolchains where that
+///          platform macro provides the required linkage semantics.
+/// @param str Destination buffer accepted by `vsnprintf`; may be `NULL` only
+///            when the platform permits it for the supplied @p size.
+/// @param size Capacity of @p str in bytes, including any terminator.
+/// @param fmt Non-null `printf`-style format string.
+/// @param ... Arguments whose promoted types must match @p fmt.
+/// @return The exact `vsnprintf` result: normally the number of characters
+///         required excluding the terminator, or a negative platform error.
 RT_WEAK int rt_snprintf(char *str, size_t size, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);

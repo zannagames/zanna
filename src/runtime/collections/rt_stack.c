@@ -32,6 +32,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime growable LIFO Stack collection.
+/// @details Stack uses a contiguous pointer array and selectable borrowing or
+///          retained-element ownership. Ownership mode controls GC traversal
+///          and result lifetimes but never changes bottom-to-top storage or
+///          constant-time top access.
+
 #include "rt_collection_ids.h"
 
 #include "rt_box.h"
@@ -43,7 +50,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Pointer slots reserved by a newly constructed Stack.
 #define STACK_DEFAULT_CAP 16
+/// @brief Multiplicative capacity increase used when Push fills the array.
 #define STACK_GROWTH_FACTOR 2
 
 /// @brief Internal stack implementation structure.
@@ -74,11 +83,15 @@ typedef struct rt_stack_impl {
     int64_t len;  ///< Number of elements currently on the stack
     int64_t cap;  ///< Current capacity (allocated slots)
     void **items; ///< Array of element pointers
+    /// @brief Whether live slots retain, release, and participate in GC traversal.
     int8_t owns_elements;
 } rt_stack_impl;
 
 /// @brief Checked cast of an opaque handle to the Stack implementation;
 ///        traps with @p what if @p obj is NULL or not a Stack.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated Stack implementation, or `NULL` after trapping.
 static rt_stack_impl *as_stack(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_STACK_CLASS_ID, sizeof(rt_stack_impl))) {
         rt_trap(what);
@@ -88,6 +101,7 @@ static rt_stack_impl *as_stack(void *obj, const char *what) {
 }
 
 /// @brief Drop one GC reference to a stored element and free it at zero.
+/// @param value Runtime object reference, or `NULL` for a no-op.
 static void stack_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
@@ -127,6 +141,9 @@ static void rt_stack_finalize(void *obj) {
 
 /// @brief GC traversal: visit every live element (only when the stack owns
 ///        its elements).
+/// @param obj Stack whose owned slots are to be traced.
+/// @param visitor Collector callback invoked from bottom to top.
+/// @param ctx Opaque collector context forwarded unchanged.
 static void rt_stack_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -150,6 +167,8 @@ static void rt_stack_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 ///
 /// @param stack Pointer to the stack implementation. Must not be NULL.
 /// @param needed Minimum required capacity after this call.
+/// @return 1 when capacity is sufficient, or 0 after an overflow/allocation
+///         trap.
 ///
 /// @note Traps on memory allocation failure with "Stack: memory allocation failed".
 /// @note Never shrinks the capacity - only grows when needed.
@@ -208,8 +227,8 @@ static int stack_ensure_capacity(rt_stack_impl *stack, int64_t needed) {
 ///         return if memory allocation fails.
 ///
 /// @note Initial capacity is 16 elements (STACK_DEFAULT_CAP).
-/// @note The Stack does not own the elements stored in it - they must be
-///       managed separately by the caller.
+/// @note A new Stack starts in borrowing mode. Retained ownership may be
+///       enabled with @ref rt_stack_set_owns_elements while empty.
 /// @note Thread safety: Not thread-safe. External synchronization required
 ///       for concurrent access.
 ///
@@ -241,6 +260,12 @@ void *rt_stack_new(void) {
     return stack;
 }
 
+/// @brief Select borrowing or retained-element ownership for an empty Stack.
+/// @details A mode change while non-empty traps because existing slots were
+///          inserted under the current lifetime contract. A null Stack is a
+///          no-op.
+/// @param obj Stack to configure, or `NULL`.
+/// @param owns Nonzero to retain/trace/release elements; zero to borrow them.
 void rt_stack_set_owns_elements(void *obj, int8_t owns) {
     if (!obj)
         return;
@@ -260,6 +285,9 @@ void rt_stack_set_owns_elements(void *obj, int8_t owns) {
     rt_gc_mutator_exit();
 }
 
+/// @brief Report whether a Stack retains and traces its elements.
+/// @param obj Stack handle, or `NULL`.
+/// @return 1 in owning mode, otherwise 0; `NULL` reports 0.
 int8_t rt_stack_owns_elements(void *obj) {
     if (!obj)
         return 0;
@@ -329,7 +357,7 @@ int8_t rt_stack_is_empty(void *obj) {
 /// @param elem The element to push. May be NULL (NULL is a valid element).
 ///
 /// @note O(1) amortized time complexity. Occasional O(n) when resizing occurs.
-/// @note The Stack does not take ownership of elem - the caller manages its lifetime.
+/// @note Owning Stacks retain @p elem; borrowing Stacks store it raw.
 /// @note Traps with "Stack.Push: null stack" if obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -386,8 +414,8 @@ void rt_stack_push(void *obj, void *elem) {
 /// @return The element that was on top of the Stack.
 ///
 /// @note O(1) time complexity.
-/// @note The Stack releases its reference to the element - the caller now
-///       owns it and is responsible for its lifetime.
+/// @note Owning Stacks return a caller-retained value; borrowing Stacks return
+///       the raw pushed pointer without extending its lifetime.
 /// @note Traps if the Stack is empty or obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -448,8 +476,8 @@ void *rt_stack_pop(void *obj) {
 /// @return The element on top of the Stack (not removed).
 ///
 /// @note O(1) time complexity.
-/// @note The Stack retains ownership - the returned pointer is only valid
-///       as long as the element remains on the Stack.
+/// @note No retain is created. In owning mode the result is borrowed from the
+///       Stack; in borrowing mode the original producer controls lifetime.
 /// @note Traps if the Stack is empty or obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -483,13 +511,12 @@ void *rt_stack_peek(void *obj) {
 /// - Length becomes 0
 /// - is_empty returns true
 /// - Capacity unchanged (no reallocation)
-/// - All element references are forgotten (not freed)
+/// - Owning values are released; borrowing pointers are forgotten
 ///
 /// @param obj Pointer to a Stack object. If NULL, this is a no-op.
 ///
-/// @note O(1) time complexity - just resets the length counter.
-/// @note The Stack does NOT free the elements - they must be managed
-///       separately by the caller if needed.
+/// @note O(n) time complexity because all active slots are cleared; owning
+///       Stacks additionally release every value.
 /// @note Active slots are cleared so released handles do not remain in
 ///       reusable storage.
 /// @note Thread safety: Not thread-safe.
@@ -520,9 +547,11 @@ void rt_stack_clear(void *obj) {
     rt_gc_mutator_exit();
 }
 
-/// @brief Check if the stack contains a given element (pointer equality).
-/// @param obj Opaque Stack object pointer.
-/// @param elem Element to search for.
+/// @brief Check whether the Stack contains an equal element.
+/// @details Scans bottom to top with `rt_box_equal`: boxed numeric/string
+///          values compare by content and ordinary objects by identity.
+/// @param obj Stack handle, or `NULL`.
+/// @param elem Element to compare; may be `NULL`.
 /// @return 1 if found, 0 otherwise.
 int8_t rt_stack_has(void *obj, void *elem) {
     if (!obj)
@@ -537,8 +566,10 @@ int8_t rt_stack_has(void *obj, void *elem) {
 }
 
 /// @brief Pop the top element, or return NULL if empty (no trap).
-/// @param obj Opaque Stack object pointer.
-/// @return The removed element, or NULL if empty.
+/// @details Ownership matches @ref rt_stack_pop. A stored null is ambiguous
+///          with an empty/null Stack; use the Option form when that matters.
+/// @param obj Stack handle, or `NULL`.
+/// @return Removed top value, or `NULL` if unavailable/null-valued.
 void *rt_stack_try_pop(void *obj) {
     if (!obj)
         return NULL;
@@ -567,8 +598,8 @@ void *rt_stack_try_pop(void *obj) {
 ///          literal NULL pointer, this returns `Some(NULL)`. For owning stacks,
 ///          the retained transfer returned by @ref rt_stack_try_pop is released
 ///          after the Option has retained the value.
-/// @param obj Opaque Stack object pointer.
-/// @return `Some(value)` when an element is removed, otherwise `None`.
+/// @param obj Stack handle, or `NULL`.
+/// @return New runtime-managed `Some(value)` when removed, otherwise `None`.
 void *rt_stack_try_pop_option(void *obj) {
     if (!obj)
         return rt_option_none();
@@ -589,9 +620,11 @@ void *rt_stack_try_pop_option(void *obj) {
 ///
 /// Allocates a new Stack and pushes all elements from the source in
 /// bottom-to-top order, preserving the original stack ordering.
+/// The ownership mode is preserved: an owning clone independently retains
+/// values, while a borrowing clone copies raw pointers.
 ///
-/// @param obj Source Stack pointer (may be NULL).
-/// @return New Stack with the same elements, or empty stack if NULL.
+/// @param obj Source Stack handle, or `NULL`.
+/// @return New runtime-managed clone, or an empty borrowing Stack for `NULL`.
 void *rt_stack_clone(void *obj) {
     void *result = rt_stack_new();
     if (!obj)

@@ -4,22 +4,26 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_printf_compat.h
-// Purpose: Overridable wrapper around libc snprintf that allows test code to interpose formatting
-// behavior portably across platforms without modifying production code.
+// Purpose: Declares the runtime formatting entry point that forwards to libc
+// vsnprintf by default and may be interposed where the build supports it.
 //
 // Key invariants:
-//   - Default implementation forwards directly to the platform's snprintf.
-//   - Test code may define a strong symbol rt_snprintf to override behavior.
-//   - Return value semantics match standard snprintf (would-write count or negative on error).
-//   - The weak symbol pattern works on ELF and Mach-O; MSVC requires different approach.
+//   - The default implementation forwards through a va_list to platform
+//     vsnprintf without changing return or truncation semantics.
+//   - The implementation is annotated RT_WEAK; actual interposition behavior
+//     is compiler- and link-strategy-dependent.
+//   - Callers must provide a valid format and matching promoted argument types.
 //
 // Ownership/Lifetime:
 //   - No heap allocation; output is written into a caller-supplied buffer.
-//   - No ownership transfer; the function is purely a formatting utility.
+//   - The wrapper retains no buffer, format, argument, or process-global state.
 //
-// Links: src/runtime/core/rt_printf_compat.c (implementation), src/runtime/core/rt_string_builder.h
+// Links: src/runtime/core/rt_printf_compat.c (implementation),
+//        src/runtime/rt_platform.h (RT_WEAK definition)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Runtime snprintf-compatible formatting declaration.
 #pragma once
 
 #include <stddef.h>
@@ -29,15 +33,17 @@ extern "C" {
 #endif
 
 /// @brief snprintf-compatible formatting wrapper.
-/// @details Forwards to the platform's snprintf by default. Tests may define
-///          a strong symbol to override this function and capture or redirect
-///          formatted output portably across platforms.
-/// @param str  Destination buffer to write formatted output into.
-/// @param size Maximum number of bytes to write (including NUL terminator).
-/// @param fmt  printf-style format string.
-/// @param ...  Variadic arguments corresponding to format specifiers.
-/// @return Number of characters that would have been written (excluding NUL),
-///         or a negative value on encoding error (same semantics as snprintf).
+/// @details The default implementation forwards to platform `vsnprintf`
+///          without validating arguments or normalizing platform behavior.
+///          Its definition uses @ref RT_WEAK, allowing link-time replacement
+///          only where the active toolchain/build supports that mechanism.
+/// @param str Destination buffer accepted by `vsnprintf`; a null pointer is
+///            valid only when permitted for the supplied @p size.
+/// @param size Capacity of @p str in bytes, including any terminator.
+/// @param fmt Non-null `printf`-style format string.
+/// @param ... Arguments with promoted types matching @p fmt.
+/// @return The exact platform `vsnprintf` result, normally the required
+///         character count excluding the terminator or a negative error.
 int rt_snprintf(char *str, size_t size, const char *fmt, ...);
 
 #ifdef __cplusplus

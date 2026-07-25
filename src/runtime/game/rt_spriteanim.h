@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/game/rt_spriteanim.h
+/// @file
+/// @brief Declares a tick-based sprite-frame animation controller with loop,
+///        ping-pong, one-shot, pause, and fractional-speed modes.
 // Purpose: Frame-based sprite animation controller tracking frame index, timing, playback mode
 // (loop/ping-pong), and speed for game sprite animations.
 //
@@ -30,38 +33,40 @@
 extern "C" {
 #endif
 
+/// @brief Runtime class identifier used to validate SpriteAnimation handles.
 #define RT_SPRITEANIM_CLASS_ID INT64_C(-0x510219)
 
-/// Opaque handle to a SpriteAnimation instance.
+/// @brief Opaque handle to a SpriteAnimation instance.
 typedef struct rt_spriteanim_impl *rt_spriteanim;
 
 /// @brief Allocates and initializes a new SpriteAnimation in the stopped
 ///   state.
-/// @return A new SpriteAnimation handle. The caller must free it with
-///   rt_spriteanim_destroy().
+/// @details Defaults to frame zero, six update ticks per displayed frame,
+///          looping enabled, forward direction, and speed 1.0.
+/// @return Owned SpriteAnimation handle, or `NULL` if allocation fails.
 rt_spriteanim rt_spriteanim_new(void);
 
-/// @brief Destroys a SpriteAnimation and releases its memory.
-/// @param anim The animation to destroy. Passing NULL is a no-op.
+/// @brief Release one owned SpriteAnimation reference.
+/// @param anim Owned handle to release; `NULL` is ignored.
 void rt_spriteanim_destroy(rt_spriteanim anim);
 
 /// @brief Configures the animation's frame range and timing.
-/// @param anim The animation to configure.
-/// @param start_frame Index of the first frame in the sprite sheet. Must
-///   be >= 0.
-/// @param end_frame Index of the last frame (inclusive). Must be >=
-///   start_frame. No upper limit is imposed on the frame range.
+/// @details Resets position, whole-tick timing, direction, and completion
+///          without changing play, pause, loop, ping-pong, or speed settings.
+/// @param anim Borrowed animation handle.
+/// @param start_frame First frame index; negative values clamp to zero.
+/// @param end_frame Last frame index, inclusive; values below the normalized
+///        start collapse the clip to one frame.
 /// @param frame_duration Number of game frames to display each animation
-///   frame before advancing. Must be >= 1.
+///   frame before advancing; values below one clamp to one.
 void rt_spriteanim_setup(rt_spriteanim anim,
                          int64_t start_frame,
                          int64_t end_frame,
                          int64_t frame_duration);
 
 /// @brief Enables or disables looping playback.
-/// @param anim The animation to modify.
-/// @param loop 1 to loop the animation indefinitely when it reaches the
-///   last frame, 0 for one-shot playback that stops at the end.
+/// @param anim Borrowed animation handle.
+/// @param loop Zero for one-shot playback, nonzero to loop.
 void rt_spriteanim_set_loop(rt_spriteanim anim, int8_t loop);
 
 /// @brief Enables or disables ping-pong (palindrome) playback.
@@ -69,9 +74,9 @@ void rt_spriteanim_set_loop(rt_spriteanim anim, int8_t loop);
 /// When enabled, the animation plays forward to the last frame, then
 /// reverses back to the first frame, and repeats. Requires looping to be
 /// enabled for continuous ping-pong.
-/// @param anim The animation to modify.
-/// @param pingpong 1 to enable ping-pong mode, 0 for normal forward
-///   playback.
+/// @param anim Borrowed animation handle.
+/// @param pingpong Zero for forward-only playback, nonzero for alternating
+///        direction.
 void rt_spriteanim_set_pingpong(rt_spriteanim anim, int8_t pingpong);
 
 /// @brief Queries whether looping is enabled for this animation.
@@ -115,7 +120,8 @@ void rt_spriteanim_reset(rt_spriteanim anim);
 /// @brief Advances the animation by one game frame.
 ///
 /// Should be called once per game frame while the animation is playing.
-/// Handles frame advancement, looping, and ping-pong reversal.
+/// Adds the speed multiplier to a fractional tick accumulator and may process
+/// multiple ticks or frame steps when the multiplier exceeds one.
 /// @param anim The animation to update.
 /// @return 1 if the animation just completed on this frame (relevant for
 ///   one-shot animations; always 0 for looping animations), 0 otherwise.
@@ -128,6 +134,8 @@ int8_t rt_spriteanim_update(rt_spriteanim anim);
 int64_t rt_spriteanim_frame(rt_spriteanim anim);
 
 /// @brief Jumps to a specific frame index without affecting play state.
+/// @details Clears the whole-tick frame counter but preserves fractional
+///          speed, direction, and completion state.
 /// @param anim The animation to modify.
 /// @param frame The desired frame index. Clamped to [start_frame,
 ///   end_frame].
@@ -142,7 +150,7 @@ int64_t rt_spriteanim_frame_duration(rt_spriteanim anim);
 /// @brief Changes the number of game frames each animation frame is
 ///   displayed.
 /// @param anim The animation to modify.
-/// @param duration New frame duration in game frames. Must be >= 1.
+/// @param duration New frame duration in game frames, clamped to at least one.
 void rt_spriteanim_set_frame_duration(rt_spriteanim anim, int64_t duration);
 
 /// @brief Retrieves the total number of frames in the animation sequence.
@@ -161,12 +169,16 @@ int8_t rt_spriteanim_is_playing(rt_spriteanim anim);
 int8_t rt_spriteanim_is_paused(rt_spriteanim anim);
 
 /// @brief Queries whether a one-shot animation has reached its final frame.
+/// @details A forward one-shot finishes at the end frame; a non-looping
+///          ping-pong finishes after returning to the start frame.
 /// @param anim The animation to query.
 /// @return 1 if the animation has finished and will not advance further
 ///   (only meaningful for non-looping animations), 0 otherwise.
 int8_t rt_spriteanim_is_finished(rt_spriteanim anim);
 
 /// @brief Retrieves the animation progress as an integer percentage.
+/// @details The value reflects forward position within the frame range and
+///          therefore decreases during a ping-pong reverse leg.
 /// @param anim The animation to query.
 /// @return A value from 0 (just started) to 100 (reached last frame).
 int64_t rt_spriteanim_progress(rt_spriteanim anim);
@@ -183,14 +195,15 @@ void rt_spriteanim_set_speed(rt_spriteanim anim, double speed);
 /// @return The speed multiplier (1.0 = normal).
 double rt_spriteanim_speed(rt_spriteanim anim);
 
-/// @brief Queries whether the displayed frame changed on the most recent
-///   update.
+/// @brief Queries whether the most recent update processed a frame step.
 ///
 /// Useful for triggering game events (e.g., sound effects, hitbox changes)
-/// synchronized with specific animation frames.
+/// synchronized with animation timing. Usually the displayed index changes,
+/// but the terminal one-shot step also reports true while retaining its
+/// endpoint frame.
 /// @param anim The animation to query.
-/// @return 1 if the frame index changed during the last
-///   rt_spriteanim_update() call, 0 if it stayed the same.
+/// @return `1` if a frame step was attempted during the last update;
+///         otherwise `0`.
 int8_t rt_spriteanim_frame_changed(rt_spriteanim anim);
 
 #ifdef __cplusplus

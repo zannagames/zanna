@@ -311,6 +311,46 @@ func main() {
         return;
     }
 
+    // The viewport is a real focusable surface: a click grants it keyboard
+    // focus, W/E/R route without any toolbar-button proxy, and Escape clears
+    // the selection workspace-only.
+    editor.SetGizmoMode(scene_editor_3d.GIZMO_MODE_SCALE);
+    var clickX = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenX() + 6.0);
+    var clickY = HarnessCoordinate(
+        shell, editor.viewportImage.GetScreenY() + 6.0);
+    harness.SendMouse("move", clickX, clickY, 0);
+    harness.SendMouse("down", clickX, clickY, 0);
+    harness.SendMouse("up", clickX, clickY, 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.viewportImage.IsFocused() == false {
+        Fail(shell, harness, "viewport click did not grant surface focus");
+        return;
+    }
+    harness.SendKey("e", 0);
+    harness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.gizmoMode != scene_editor_3d.GIZMO_MODE_ROTATE {
+        Fail(shell, harness,
+             "focused viewport did not own the E tool shortcut: mode="
+             + editor.gizmoMode);
+        return;
+    }
+    editor.SelectSceneNodes([0], 0);
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    if editor.Pump(sceneDoc)
+       or editor.selectedIndices.count() != 0
+       or sceneDoc.content != canonical
+       or editor.GetRevision() != revision {
+        Fail(shell, harness,
+             "focused-viewport Escape did not clear selection workspace-only: "
+             + "selected=" + editor.selectedIndices.count());
+        return;
+    }
+
     harness.UnbindApp();
     shell.Destroy();
     Terminal.Say("RESULT: ok");

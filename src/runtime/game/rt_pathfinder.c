@@ -6,6 +6,10 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_pathfinder.c
+/// @file
+/// @brief Implements fixed-grid A* pathfinding, nearest-value search, and
+///        immutable path-result snapshots.
+//
 // Purpose: A* grid pathfinding. Uses a binary min-heap open set and flat
 //   per-node arrays for g-cost, parent, and closed state. Supports 4-way
 //   (Manhattan heuristic) and 8-way (octile heuristic) movement with per-cell
@@ -81,23 +85,38 @@ typedef struct {
     int8_t found;   ///< 1 when a path was found.
 } rt_path_result_impl;
 
-/// @brief Flat index for (x, y) in the grid.
+/// @brief Convert an in-range coordinate to its row-major cell index.
+/// @param pf Pathfinder supplying grid width.
+/// @param x In-range X coordinate.
+/// @param y In-range Y coordinate.
+/// @return Flat index `y * width + x`.
 static inline int32_t pf_idx(const rt_pathfinder_impl *pf, int32_t x, int32_t y) {
     return y * pf->width + x;
 }
 
-/// @brief Bounds check.
+/// @brief Test signed 32-bit coordinates against the pathfinder bounds.
+/// @param pf Pathfinder supplying dimensions.
+/// @param x Candidate X coordinate.
+/// @param y Candidate Y coordinate.
+/// @return `1` when `(x,y)` is inside the grid, otherwise `0`.
 static inline int8_t pf_in_bounds(const rt_pathfinder_impl *pf, int32_t x, int32_t y) {
     return x >= 0 && x < pf->width && y >= 0 && y < pf->height;
 }
 
-/// @brief True if grid cell (x, y) lies within the pathfinder's bounds.
+/// @brief Test signed 64-bit public coordinates before narrowing to int32.
+/// @param pf Pathfinder supplying dimensions.
+/// @param x Candidate X coordinate.
+/// @param y Candidate Y coordinate.
+/// @return `1` when `(x,y)` is inside the grid, otherwise `0`.
 static inline int8_t pf_in_bounds_i64(const rt_pathfinder_impl *pf, int64_t x, int64_t y) {
     return x >= 0 && y >= 0 && x < pf->width && y < pf->height;
 }
 
-/// @brief Safe-cast a handle to the Pathfinder impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque Pathfinder handle.
+/// @param ptr Candidate object; `NULL` is accepted.
+/// @param api Trap message for a non-null class mismatch.
+/// @return Pathfinder implementation when valid, otherwise `NULL`.
+/// @details A class mismatch raises a runtime trap before returning `NULL`.
 static rt_pathfinder_impl *checked_pathfinder(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -109,9 +128,10 @@ static rt_pathfinder_impl *checked_pathfinder(void *ptr, const char *api) {
 }
 
 /// @brief Safe-cast a handle to PathResult, trapping on a class mismatch.
-/// @param ptr Candidate PathResult object.
-/// @param api Public API name for diagnostics.
-/// @return PathResult implementation, or NULL when @p ptr is NULL.
+/// @param ptr Candidate PathResult object; `NULL` is accepted.
+/// @param api Trap message for a non-null class mismatch.
+/// @return PathResult implementation when valid, otherwise `NULL`.
+/// @details A class mismatch raises a runtime trap before returning `NULL`.
 static rt_path_result_impl *checked_path_result(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -122,7 +142,9 @@ static rt_path_result_impl *checked_path_result(void *ptr, const char *api) {
     return (rt_path_result_impl *)ptr;
 }
 
-/// @brief Release the retained path list inside a PathResult.
+/// @brief Release the path list owned by a PathResult during finalization.
+/// @param obj PathResult object supplied by the runtime finalizer system.
+/// @details The stored pointer is cleared after releasing its reference.
 static void path_result_finalizer(void *obj) {
     rt_path_result_impl *result = (rt_path_result_impl *)obj;
     if (result->path && rt_obj_release_check0(result->path))
@@ -131,8 +153,15 @@ static void path_result_finalizer(void *obj) {
 }
 
 /// @brief Create a PathResult and take ownership of @p path.
+/// @param path Path list reference transferred to the result on success.
+/// @param found Nonzero when the associated operation found a path.
+/// @param steps Number of nodes expanded by the operation.
+/// @param cost Weighted A* movement cost when available.
+/// @return New PathResult, or `NULL` on allocation failure.
 /// @details The path reference is released by the PathResult finalizer. On
-///          allocation failure the caller still owns @p path and must release it.
+///          allocation failure the caller still owns @p path and must release
+///          it. Failed results store cost and length as `-1`; successful length
+///          is waypoint count minus one.
 static void *path_result_new_take_path(void *path, int8_t found, int64_t steps, int64_t cost) {
     rt_path_result_impl *result = (rt_path_result_impl *)rt_obj_new_i64(
         RT_PATH_RESULT_CLASS_ID, (int64_t)sizeof(rt_path_result_impl));
@@ -148,7 +177,10 @@ static void *path_result_new_take_path(void *path, int8_t found, int64_t steps, 
     return result;
 }
 
-/// @brief Create an empty PathResult and release its empty path on allocation failure.
+/// @brief Create a not-found PathResult containing a new empty path list.
+/// @return New PathResult, or `NULL` if result allocation fails.
+/// @details If the result allocation fails, the temporary empty list is
+///          released before returning.
 static void *path_result_new_empty(void) {
     void *path = rt_list_new();
     void *result = path_result_new_take_path(path, 0, 0, -1);
@@ -177,10 +209,10 @@ static int8_t pf_checked_cell_count(int32_t w, int32_t h, int32_t *out_count) {
     return 1;
 }
 
-/// @brief Return true when @p count elements of @p elem_size fit in `size_t`.
+/// @brief Check whether an array byte count is representable in `size_t`.
 /// @param count Signed element count from pathfinder indexing.
 /// @param elem_size Size of one element.
-/// @return 1 when `count * elem_size` cannot overflow, 0 otherwise.
+/// @return `1` when `count * elem_size` cannot overflow, otherwise `0`.
 static int8_t pf_allocation_count_ok(int32_t count, size_t elem_size) {
     return count >= 0 && (elem_size == 0 || (size_t)count <= SIZE_MAX / elem_size);
 }
@@ -189,6 +221,9 @@ static int8_t pf_allocation_count_ok(int32_t count, size_t elem_size) {
 // GC Finalizer
 //=============================================================================
 
+/// @brief Release the separately allocated cell array during finalization.
+/// @param obj Pathfinder object supplied by the runtime finalizer system.
+/// @details The stored cell pointer is cleared after `free()`.
 static void pf_finalizer(void *obj) {
     rt_pathfinder_impl *pf = (rt_pathfinder_impl *)obj;
     free(pf->cells);
@@ -200,6 +235,14 @@ static void pf_finalizer(void *obj) {
 //=============================================================================
 
 /// @brief Allocate and initialize a pathfinder with given dimensions.
+/// @param w Requested width; nonpositive values fail and values above
+///        PF_MAX_DIM are capped.
+/// @param h Requested height; nonpositive values fail and values above
+///        PF_MAX_DIM are capped.
+/// @return New Pathfinder implementation, or `NULL` on validation or
+///         allocation failure.
+/// @details Every cell starts walkable with value zero and cardinal cost 100.
+///          Diagonal movement is disabled and the search budget is unlimited.
 static rt_pathfinder_impl *pf_alloc(int32_t w, int32_t h) {
     if (w <= 0 || h <= 0)
         return NULL;
@@ -247,13 +290,20 @@ static rt_pathfinder_impl *pf_alloc(int32_t w, int32_t h) {
 /// @brief Construct an empty grid pathfinder of `width × height` cells. All cells start
 /// walkable with cost 100. Configure with `_set_walkable` / `_set_cost` before pathing. The
 /// algorithm is A* with octile (or 4-connected) neighborhood.
+/// @param width Grid width in cells.
+/// @param height Grid height in cells.
+/// @return A new runtime-managed Pathfinder reference, or `NULL` when either
+///         dimension is outside `[1, 4096]` or allocation fails.
 void *rt_pathfinder_new(int64_t width, int64_t height) {
     if (width <= 0 || height <= 0 || width > PF_MAX_DIM || height > PF_MAX_DIM)
         return NULL;
     return pf_alloc((int32_t)width, (int32_t)height);
 }
 
-/// @brief Release the pathfinder and free its internal cell array when the last reference drops.
+/// @brief Release one runtime reference to a Pathfinder.
+/// @param ptr Handle to release; `NULL` is a no-op.
+/// @details The cell-array finalizer runs when the last reference is freed. A
+///          non-null wrong-class handle raises a runtime trap.
 void rt_pathfinder_destroy(void *ptr) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.Destroy: expected Zanna.Game.Pathfinder");
@@ -262,7 +312,13 @@ void rt_pathfinder_destroy(void *ptr) {
 }
 
 /// @brief Build a pathfinder from a Tilemap — cells with collision != 0 are non-walkable.
-/// One-shot snapshot of the tilemap; later tilemap changes don't update the pathfinder.
+/// @param tilemap Source Tilemap handle.
+/// @return A new Pathfinder matching the tilemap dimensions, or `NULL` for a
+///         null source, unsupported dimensions, or allocation failure.
+/// @details This is a one-shot snapshot; later tilemap changes do not update
+///          the pathfinder. Values come from the designated collision layer.
+///          Each tile ID is retained as the cell value, while the tile's
+///          collision type determines walkability. Costs remain at 100.
 void *rt_pathfinder_from_tilemap(void *tilemap) {
     if (!tilemap)
         return NULL;
@@ -296,7 +352,12 @@ void *rt_pathfinder_from_tilemap(void *tilemap) {
 }
 
 /// @brief Build a pathfinder from a Grid2D — cells with non-zero values are non-walkable.
-/// Useful when the level uses an int grid rather than a tilemap.
+/// @param grid Source Grid2D handle.
+/// @return A new Pathfinder matching the grid dimensions, or `NULL` for a null
+///         source, unsupported dimensions, or allocation failure.
+/// @details This is a one-shot snapshot. Each integer is retained as the cell
+///          value for nearest-value queries; zero is walkable and nonzero is
+///          blocked. Costs remain at 100.
 void *rt_pathfinder_from_grid2d(void *grid) {
     if (!grid)
         return NULL;
@@ -328,7 +389,13 @@ void *rt_pathfinder_from_grid2d(void *grid) {
 // Configuration
 //=============================================================================
 
-/// @brief Mark cell (x, y) as walkable (1) or blocked (0). Out-of-bounds is a silent no-op.
+/// @brief Change whether a cell may be entered by searches.
+/// @param ptr Pathfinder to modify.
+/// @param x Cell X coordinate.
+/// @param y Cell Y coordinate.
+/// @param walkable Zero blocks the cell; any nonzero value makes it walkable.
+/// @details Null and out-of-bounds input are no-ops. A non-null wrong-class
+///          handle raises a runtime trap.
 void rt_pathfinder_set_walkable(void *ptr, int64_t x, int64_t y, int8_t walkable) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.SetWalkable: expected Zanna.Game.Pathfinder");
@@ -339,7 +406,13 @@ void rt_pathfinder_set_walkable(void *ptr, int64_t x, int64_t y, int8_t walkable
     pf->cells[pf_idx(pf, (int32_t)x, (int32_t)y)].walkable = walkable ? 1 : 0;
 }
 
-/// @brief Returns 1 if cell (x, y) is walkable. Out-of-bounds returns 0 (treat as wall).
+/// @brief Test whether a cell is currently traversable.
+/// @param ptr Pathfinder to query.
+/// @param x Cell X coordinate.
+/// @param y Cell Y coordinate.
+/// @return `1` for a walkable in-range cell, otherwise `0`.
+/// @details Null and out-of-bounds coordinates are treated as walls. A
+///          non-null wrong-class handle raises a runtime trap.
 int8_t rt_pathfinder_is_walkable(void *ptr, int64_t x, int64_t y) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.IsWalkable: expected Zanna.Game.Pathfinder");
@@ -351,7 +424,13 @@ int8_t rt_pathfinder_is_walkable(void *ptr, int64_t x, int64_t y) {
 }
 
 /// @brief Set per-cell traversal cost multiplier. Walkable cells are clamped to [1, 30000].
-/// Use SetWalkable(x, y, 0) to block a cell.
+/// @param ptr Pathfinder to modify.
+/// @param x Cell X coordinate.
+/// @param y Cell Y coordinate.
+/// @param cost Requested destination-cell cost, clamped to `[1, 30000]`.
+/// @details Cost 100 represents normal movement. Use SetWalkable to block a
+///          cell; cost zero does not create a wall. Null and out-of-bounds
+///          input are no-ops. A non-null wrong-class handle traps.
 void rt_pathfinder_set_cost(void *ptr, int64_t x, int64_t y, int64_t cost) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.SetCost: expected Zanna.Game.Pathfinder");
@@ -366,7 +445,12 @@ void rt_pathfinder_set_cost(void *ptr, int64_t x, int64_t y, int64_t cost) {
     pf->cells[pf_idx(pf, (int32_t)x, (int32_t)y)].cost = (int16_t)cost;
 }
 
-/// @brief Read the traversal cost multiplier for cell (x, y). Default is 100.
+/// @brief Read a cell's destination traversal-cost multiplier.
+/// @param ptr Pathfinder to query.
+/// @param x Cell X coordinate.
+/// @param y Cell Y coordinate.
+/// @return Stored value in `[1, 30000]`, or zero for null/out-of-bounds input.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfinder_get_cost(void *ptr, int64_t x, int64_t y) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.GetCost: expected Zanna.Game.Pathfinder");
@@ -377,7 +461,12 @@ int64_t rt_pathfinder_get_cost(void *ptr, int64_t x, int64_t y) {
     return pf->cells[pf_idx(pf, (int32_t)x, (int32_t)y)].cost;
 }
 
-/// @brief Toggle diagonal moves. 1 = octile (8-neighbor), 0 = manhattan (4-neighbor only).
+/// @brief Select four-way or eight-way search neighborhoods.
+/// @param ptr Pathfinder to modify; `NULL` is a no-op.
+/// @param allow Zero selects cardinal movement; any nonzero value also permits
+///        diagonals.
+/// @details Diagonal moves cannot cut between blocked cardinal neighbors. A
+///          non-null wrong-class handle raises a runtime trap.
 void rt_pathfinder_set_diagonal(void *ptr, int8_t allow) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.SetDiagonal: expected Zanna.Game.Pathfinder");
@@ -388,6 +477,11 @@ void rt_pathfinder_set_diagonal(void *ptr, int8_t allow) {
 
 /// @brief Cap the search-step budget — A* gives up after `max` cell expansions and reports
 /// "no path". 0 disables the cap. Useful to prevent runaway searches in pathological maps.
+/// @param ptr Pathfinder to modify; `NULL` is a no-op.
+/// @param max Requested expansion limit. Negative values become zero and
+///        values above INT32_MAX are capped.
+/// @details The same budget applies to A* and nearest-value BFS. A non-null
+///          wrong-class handle raises a runtime trap.
 void rt_pathfinder_set_max_steps(void *ptr, int64_t max) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.SetMaxSteps: expected Zanna.Game.Pathfinder");
@@ -404,14 +498,20 @@ void rt_pathfinder_set_max_steps(void *ptr, int64_t max) {
 // Properties
 //=============================================================================
 
-/// @brief Grid width in cells.
+/// @brief Read the pathfinder grid width.
+/// @param ptr Pathfinder to query.
+/// @return Width in cells, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfinder_get_width(void *ptr) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.Width: expected Zanna.Game.Pathfinder");
     return pf ? pf->width : 0;
 }
 
-/// @brief Grid height in cells.
+/// @brief Read the pathfinder grid height.
+/// @param ptr Pathfinder to query.
+/// @return Height in cells, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfinder_get_height(void *ptr) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.Height: expected Zanna.Game.Pathfinder");
@@ -420,13 +520,21 @@ int64_t rt_pathfinder_get_height(void *ptr) {
 
 /// @brief Number of cell expansions performed by the most recent `_find_path` call. Useful
 /// for performance tuning and verifying the max-steps cap.
+/// @param ptr Pathfinder to query.
+/// @return Last A* or nearest-value expansion count, or zero for `NULL`.
+/// @details Starting any public search replaces the previous value. A non-null
+///          wrong-class handle raises a runtime trap.
 int64_t rt_pathfinder_get_last_steps(void *ptr) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.LastSteps: expected Zanna.Game.Pathfinder");
     return pf ? pf->last_steps : 0;
 }
 
-/// @brief Returns 1 if the most recent `_find_path` actually reached the goal, 0 otherwise.
+/// @brief Test whether the most recent search produced a complete path.
+/// @param ptr Pathfinder to query.
+/// @return `1` after a successful A* or nearest-value search, otherwise `0`.
+/// @details A payload allocation failure is reported as not found. A non-null
+///          wrong-class handle raises a runtime trap.
 int8_t rt_pathfinder_get_last_found(void *ptr) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.LastFound: expected Zanna.Game.Pathfinder");
@@ -437,36 +545,64 @@ int8_t rt_pathfinder_get_last_found(void *ptr) {
 // PathResult API
 //=============================================================================
 
+/// @brief Test whether a PathResult represents a successful search.
+/// @param ptr PathResult to query.
+/// @return `1` when found, or `0` for not found or `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int8_t rt_path_result_found(void *ptr) {
     rt_path_result_impl *result =
         checked_path_result(ptr, "PathResult.Found: expected Zanna.Game.PathResult");
     return result ? result->found : 0;
 }
 
+/// @brief Read the number of nodes expanded by the captured search.
+/// @param ptr PathResult to query.
+/// @return Stored expansion count, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_path_result_steps(void *ptr) {
     rt_path_result_impl *result =
         checked_path_result(ptr, "PathResult.Steps: expected Zanna.Game.PathResult");
     return result ? result->steps : 0;
 }
 
+/// @brief Read the captured weighted movement cost.
+/// @param ptr PathResult to query.
+/// @return Fixed-point A* cost, or `-1` when unavailable, not found, or null.
+/// @details Nearest-value searches do not compute weighted cost. A non-null
+///          wrong-class handle raises a runtime trap.
 int64_t rt_path_result_cost(void *ptr) {
     rt_path_result_impl *result =
         checked_path_result(ptr, "PathResult.Cost: expected Zanna.Game.PathResult");
     return result ? result->cost : -1;
 }
 
+/// @brief Read the captured number of cell-to-cell path steps.
+/// @param ptr PathResult to query.
+/// @return Waypoint count minus one, or `-1` when not found or null.
+/// @details A start-equals-goal path has zero steps. A non-null wrong-class
+///          handle raises a runtime trap.
 int64_t rt_path_result_step_count(void *ptr) {
     rt_path_result_impl *result =
         checked_path_result(ptr, "PathResult.StepCount: expected Zanna.Game.PathResult");
     return result ? result->length : -1;
 }
 
+/// @brief Read the legacy alias for rt_path_result_step_count().
+/// @param ptr PathResult to query.
+/// @return Stored cell-to-cell step count, or `-1` when not found or null.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_path_result_length(void *ptr) {
     rt_path_result_impl *result =
         checked_path_result(ptr, "PathResult.Length: expected Zanna.Game.PathResult");
     return result ? result->length : -1;
 }
 
+/// @brief Obtain an independently retained reference to a result's path list.
+/// @param ptr PathResult to query.
+/// @return Retained `List[Seq[Integer]]`, or a new empty list for null/invalid
+///         input.
+/// @details The caller may retain the returned path after releasing the
+///          PathResult. A non-null wrong-class handle raises a runtime trap.
 void *rt_path_result_path(void *ptr) {
     rt_path_result_impl *result =
         checked_path_result(ptr, "PathResult.Path: expected Zanna.Game.PathResult");
@@ -500,6 +636,9 @@ typedef struct {
 
 /// @brief Swap heap slots @p a and @p b, keeping the node->slot position
 ///        index consistent (the open-set is an indexed binary min-heap).
+/// @param h Heap to mutate.
+/// @param a First valid heap-array slot.
+/// @param b Second valid heap-array slot.
 static void heap_swap(pf_heap *h, int32_t a, int32_t b) {
     int32_t tmp = h->data[a];
     h->data[a] = h->data[b];
@@ -510,6 +649,8 @@ static void heap_swap(pf_heap *h, int32_t a, int32_t b) {
 
 /// @brief Restore the min-heap invariant upward from slot @p i after a
 ///        decrease-key or insertion (orders by node f-score).
+/// @param h Heap to repair.
+/// @param i Valid starting heap-array slot.
 static void heap_sift_up(pf_heap *h, int32_t i) {
     while (i > 0) {
         int32_t parent = (i - 1) / 2;
@@ -523,6 +664,8 @@ static void heap_sift_up(pf_heap *h, int32_t i) {
 
 /// @brief Restore the min-heap invariant downward from slot @p i after a
 ///        pop (root replaced by the last element).
+/// @param h Heap to repair.
+/// @param i Valid starting heap-array slot.
 static void heap_sift_down(pf_heap *h, int32_t i) {
     while (1) {
         int32_t left = 2 * i + 1;
@@ -544,6 +687,11 @@ static void heap_sift_down(pf_heap *h, int32_t i) {
 
 /// @brief Insert @p node_idx into the open set, or decrease-key it if already
 ///        present (re-sifts from its current slot). No-op at capacity.
+/// @param h Indexed heap to mutate.
+/// @param node_idx Nonnegative node-array index.
+/// @details Existing nodes are sifted upward after a decreased f-score. New
+///          nodes are appended and sifted. Invalid indices and full heaps are
+///          silently ignored.
 static void heap_push(pf_heap *h, int32_t node_idx) {
     if (node_idx < 0)
         return;
@@ -561,6 +709,8 @@ static void heap_push(pf_heap *h, int32_t node_idx) {
 
 /// @brief Remove and return the lowest-f node index, or -1 if the open set is
 ///        empty (re-heapifies the remaining elements).
+/// @param h Indexed heap to mutate.
+/// @return Removed node index, or `-1` when empty.
 static int32_t heap_pop(pf_heap *h) {
     if (h->count == 0)
         return -1;
@@ -575,7 +725,13 @@ static int32_t heap_pop(pf_heap *h) {
     return top;
 }
 
-/// @brief Compute heuristic from (ax,ay) to (bx,by).
+/// @brief Compute an unweighted fixed-point grid-distance heuristic.
+/// @param ax Source X.
+/// @param ay Source Y.
+/// @param bx Goal X.
+/// @param by Goal Y.
+/// @param diagonal Nonzero selects octile distance; zero selects Manhattan.
+/// @return Heuristic cost using cardinal unit 100 and diagonal unit 141.
 static int64_t pf_heuristic(int32_t ax, int32_t ay, int32_t bx, int32_t by, int8_t diagonal) {
     int32_t dx = ax > bx ? ax - bx : bx - ax;
     int32_t dy = ay > by ? ay - by : by - ay;
@@ -594,6 +750,14 @@ static int64_t pf_heuristic(int32_t ax, int32_t ay, int32_t bx, int32_t by, int8
 
 /// @brief Heuristic scaled by the grid's minimum per-cell cost so it stays
 ///        admissible (never overestimates) when tiles have custom costs.
+/// @param ax Source X.
+/// @param ay Source Y.
+/// @param bx Goal X.
+/// @param by Goal Y.
+/// @param diagonal Nonzero selects octile distance; zero selects Manhattan.
+/// @param min_cost Minimum positive traversal cost among walkable cells,
+///        clamped internally to at least one.
+/// @return Admissible weighted fixed-point heuristic.
 static int64_t pf_scaled_heuristic(
     int32_t ax, int32_t ay, int32_t bx, int32_t by, int8_t diagonal, int64_t min_cost) {
     if (min_cost < 1)
@@ -609,8 +773,12 @@ static const int32_t dir4_dy[4] = {-1, 0, 1, 0};
 static const int32_t dir8_dx[8] = {0, 1, 0, -1, 1, 1, -1, -1};
 static const int32_t dir8_dy[8] = {-1, 0, 1, 0, -1, 1, 1, -1};
 
-/// @brief Build a List[Seq[Integer]] of x,y pairs from the parent chain.
 /// @brief Reconstruct the path as List[Seq[Integer]], or NULL on any failure.
+/// @param nodes Completed search-state array containing parent links.
+/// @param goal_idx Flat index at which reconstruction begins.
+/// @param width Grid width used to recover X/Y coordinates.
+/// @return New start-to-goal `List[Seq[Integer]]`, or `NULL` on allocation or
+///         size-validation failure.
 /// @details Transactional: an allocation failure for the coordinate buffer, a
 ///          waypoint Seq, or a coordinate box drops all partial work and returns
 ///          NULL instead of a silently empty or shortened list, so the caller
@@ -692,8 +860,22 @@ static void *pf_build_path(pf_node *nodes, int32_t goal_idx, int32_t width) {
     return list;
 }
 
-/// @brief Core A* implementation. Returns path as List or NULL.
-/// If cost_only is true, returns NULL but sets pf->last_found and returns cost via out_cost.
+/// @brief Run the core weighted A* search.
+/// @param pf Pathfinder and mutable last-search state.
+/// @param sx In-range start X.
+/// @param sy In-range start Y.
+/// @param gx In-range goal X.
+/// @param gy In-range goal Y.
+/// @param cost_only Nonzero suppresses path construction.
+/// @param out_cost Optional destination initialized to `-1` and set to the
+///        fixed-point movement cost on success.
+/// @return In normal mode, a new start-to-goal path or an empty list on
+///         failure; in cost-only mode, always `NULL`.
+/// @details The search resets last-found and last-steps. It uses destination
+///          cell weights, saturating score addition, and Manhattan or octile
+///          heuristics scaled by the minimum walkable cost. Diagonals cannot
+///          cut blocked corners. Search-array allocation or path construction
+///          failure is reported as not found.
 static void *pf_astar(rt_pathfinder_impl *pf,
                       int32_t sx,
                       int32_t sy,
@@ -900,6 +1082,17 @@ static void *pf_astar(rt_pathfinder_impl *pf,
 /// @brief Compute the shortest path from (sx, sy) to (gx, gy) using A* with the configured
 /// neighborhood + costs. Returns a List of (x, y) cell pairs (each entry is a 2-int Seq).
 /// Empty list if no path exists or `max_steps` was hit before reaching the goal.
+/// @param ptr Pathfinder to search.
+/// @param sx Start cell X.
+/// @param sy Start cell Y.
+/// @param gx Goal cell X.
+/// @param gy Goal cell Y.
+/// @return New start-to-goal `List[Seq[Integer]]`, including both endpoints,
+///         or a new empty list when no complete path is available.
+/// @details The call replaces LastFound and LastSteps. Null/out-of-bounds
+///          input, blocked endpoints, budget exhaustion, allocation failure,
+///          and unreachable goals yield an empty list. A non-null wrong-class
+///          handle raises a runtime trap.
 void *rt_pathfinder_find_path(void *ptr, int64_t sx, int64_t sy, int64_t gx, int64_t gy) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.FindPath: expected Zanna.Game.Pathfinder");
@@ -913,6 +1106,17 @@ void *rt_pathfinder_find_path(void *ptr, int64_t sx, int64_t sy, int64_t gx, int
     return pf_astar(pf, (int32_t)sx, (int32_t)sy, (int32_t)gx, (int32_t)gy, 0, NULL);
 }
 
+/// @brief Run A* and capture path, found state, steps, length, and cost.
+/// @param ptr Pathfinder to search.
+/// @param sx Start cell X.
+/// @param sy Start cell Y.
+/// @param gx Goal cell X.
+/// @param gy Goal cell Y.
+/// @return New PathResult, or `NULL` if result allocation fails.
+/// @details Search semantics match rt_pathfinder_find_path(). A null
+///          Pathfinder produces a not-found result with an empty path. The
+///          result owns its path independently of later searches. A non-null
+///          wrong-class handle raises a runtime trap.
 void *rt_pathfinder_find_path_result(void *ptr, int64_t sx, int64_t sy, int64_t gx, int64_t gy) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.FindPathResult: expected Zanna.Game.Pathfinder");
@@ -937,6 +1141,16 @@ void *rt_pathfinder_find_path_result(void *ptr, int64_t sx, int64_t sy, int64_t 
 
 /// @brief Compute just the path length (number of cell-to-cell steps) from start to goal.
 /// -1 if no path exists.
+/// @param ptr Pathfinder to search.
+/// @param sx Start cell X.
+/// @param sy Start cell Y.
+/// @param gx Goal cell X.
+/// @param gy Goal cell Y.
+/// @return Waypoint count minus one, zero when start equals goal, or `-1` when
+///         no complete path is available.
+/// @details The implementation constructs and releases the same path payload
+///          as rt_pathfinder_find_path(), and replaces LastFound/LastSteps.
+///          A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfinder_find_path_length(void *ptr, int64_t sx, int64_t sy, int64_t gx, int64_t gy) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.FindPathLength: expected Zanna.Game.Pathfinder");
@@ -959,6 +1173,17 @@ int64_t rt_pathfinder_find_path_length(void *ptr, int64_t sx, int64_t sy, int64_
 /// @brief BFS-style search: walk outward from (sx, sy) and return the path to the closest
 /// reachable cell whose stored value matches `target_value`. Useful for "find nearest
 /// resource / enemy / waypoint marker" workflows. Empty list if none found within `max_steps`.
+/// @param ptr Pathfinder to search.
+/// @param sx Start cell X.
+/// @param sy Start cell Y.
+/// @param target_value Tile/Grid2D value copied when the pathfinder was built.
+/// @return New start-to-target `List[Seq[Integer]]`, or a new empty list when
+///         no complete match path is available.
+/// @details Breadth-first order minimizes unweighted edge count and ignores
+///          per-cell costs. It respects the configured four/eight-way
+///          neighborhood, corner blocking, walkability, and max-step budget.
+///          The start cell itself may match. The call replaces
+///          LastFound/LastSteps. A non-null wrong-class handle traps.
 void *rt_pathfinder_find_nearest(void *ptr, int64_t sx, int64_t sy, int64_t target_value) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.FindNearest: expected Zanna.Game.Pathfinder");
@@ -1044,6 +1269,16 @@ void *rt_pathfinder_find_nearest(void *ptr, int64_t sx, int64_t sy, int64_t targ
     return result ? result : rt_list_new();
 }
 
+/// @brief Run nearest-value BFS and capture its immutable operation result.
+/// @param ptr Pathfinder to search.
+/// @param sx Start cell X.
+/// @param sy Start cell Y.
+/// @param target_value Source tile/grid value to find.
+/// @return New PathResult, or `NULL` if result allocation fails.
+/// @details Search semantics match rt_pathfinder_find_nearest(). Weighted cost
+///          is stored as `-1` because BFS does not compute it. A null
+///          Pathfinder produces a not-found result with an empty path. A
+///          non-null wrong-class handle raises a runtime trap.
 void *rt_pathfinder_find_nearest_result(void *ptr, int64_t sx, int64_t sy, int64_t target_value) {
     rt_pathfinder_impl *pf =
         checked_pathfinder(ptr, "Pathfinder.FindNearestResult: expected Zanna.Game.Pathfinder");

@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_args.c
+/// @file
+/// @brief Implements context-scoped arguments and process environment access.
+///
 // Purpose: Implements the Zanna.System.Environment class - access to command-line
 //          arguments (argc/argv) and environment variables. Provides argument
 //          count/value queries, lossy space-joined command-line display, and
@@ -22,9 +25,11 @@
 //     on Windows (platform behavior is preserved transparently).
 //   - SetVariable affects the current process environment. Subsequent child
 //     processes inherit it unless their launch API supplies a replacement block.
-//   - The legacy host-argv initialization flag is process-global and currently
-//     non-atomic; concurrent first access is unsafe (VDOC-211).
-//   - Returned rt_string values are newly allocated; callers own the reference.
+//   - Legacy host-argv initialization uses a process-global atomic state
+//     machine. Exactly one first reader imports while concurrent readers yield
+//     until the completed state is published.
+//   - Returned rt_string values transfer a reference to the caller. Empty
+//     results may use the shared empty-string singleton.
 //
 // Ownership/Lifetime:
 //   - Pushed arguments are retained by the store.
@@ -58,6 +63,10 @@
 #endif
 #include <windows.h>
 
+/// @brief Splits a Windows command line into a system-allocated UTF-16 argv array.
+/// @param lpCmdLine Null-terminated command line to parse.
+/// @param pNumArgs Receives the number of returned argument pointers.
+/// @return Buffer released by the caller with `LocalFree`, or null on failure.
 LPWSTR *WINAPI CommandLineToArgvW(LPCWSTR lpCmdLine, int *pNumArgs);
 #elif defined(__APPLE__)
 #include <crt_externs.h>
@@ -66,14 +75,14 @@ LPWSTR *WINAPI CommandLineToArgvW(LPCWSTR lpCmdLine, int *pNumArgs);
 #include <sched.h>
 #endif
 
-// Legacy-context host-argv import state: 0 = uninitialized, 1 = a thread is
-// importing, 2 = done/suppressed. Atomic with acquire/release ordering so a
-// concurrent first read from another thread can never observe partially
-// populated arguments or spin on a value whose plain-int mutation was undefined
-// in C (VDOC-211).
+/// @brief Process-wide legacy host-argv import state.
+/// @details State 0 is uninitialized, 1 means one thread is importing, and 2
+///          means import is complete or suppressed. Acquire/release ordering
+///          prevents readers from observing a partially populated store.
 static atomic_int g_legacy_args_host_init_state; // zero-initialized = 0
 
 /// @brief Yield the CPU while spin-waiting for another thread's import.
+/// @note Uses `SwitchToThread`/`Sleep(0)` on Windows and `sched_yield` elsewhere.
 static void rt_args_spin_yield(void) {
 #ifdef _WIN32
     if (!SwitchToThread())
@@ -83,12 +92,26 @@ static void rt_args_spin_yield(void) {
 #endif
 }
 
+/// @brief Ensures an argument-state buffer can hold @p new_size items.
+/// @param state Argument state whose storage may be reallocated.
+/// @param new_size Minimum required element capacity.
+/// @return Nonzero on success; zero for null state or after raising a trap.
 static int rt_args_grow_if_needed(RtArgsState *state, size_t new_size);
 
 #ifdef _WIN32
+/// @brief Converts a known-length UTF-16 span to a runtime UTF-8 string.
+/// @param wide UTF-16 code units to decode.
+/// @param wide_len Number of code units at @p wide.
+/// @param context Fallback diagnostic for malformed input.
+/// @return New UTF-8 runtime string, or the shared empty string for empty input.
 static rt_string rt_env_wide_to_string_or_trap(const wchar_t *wide,
                                                int wide_len,
                                                const char *context);
+/// @brief Converts a UTF-8 byte span to a caller-owned UTF-16 buffer.
+/// @param utf8 UTF-8 bytes to decode.
+/// @param utf8_len Number of bytes at @p utf8.
+/// @param context Fallback diagnostic for malformed input.
+/// @return Heap-allocated null-terminated UTF-16 string, or null for null input.
 static wchar_t *rt_env_utf8_span_to_wide_or_trap(const char *utf8,
                                                  size_t utf8_len,
                                                  const char *context);
@@ -100,6 +123,8 @@ static wchar_t *rt_env_utf8_span_to_wide_or_trap(const char *utf8,
 ///          argument buffer. The caller must release `RT_CONTEXT_STATE_ARGS`.
 /// @param is_legacy Optional output identifying the process fallback context.
 /// @return Locked effective context, or NULL after initialization failure.
+/// @warning A nonnull result must be paired with
+///          `rt_context_release_state(..., RT_CONTEXT_STATE_ARGS)`.
 static RtContext *rt_args_context_with_kind(int *is_legacy) {
     return rt_context_acquire_state(RT_CONTEXT_STATE_ARGS, is_legacy);
 }
@@ -110,6 +135,8 @@ static RtContext *rt_args_context_with_kind(int *is_legacy) {
 ///          on another thread) so a re-entrant call doesn't race past the
 ///          population step. Used by manual mutation paths to suppress an
 ///          impending lazy host-argv import.
+/// @note The compare/exchange changes only state 0 to state 2 and deliberately
+///       leaves an in-progress state 1 untouched.
 static void rt_args_mark_legacy_host_initialized(void) {
     // Move 0 -> 2 (suppress a not-yet-started lazy import). If the state is
     // already 1 (another thread mid-import) or 2 (done), leave it: the CAS fails
@@ -137,6 +164,7 @@ static void rt_args_note_manual_mutation(int is_legacy) {
 ///          reference is unchanged.
 /// @param state Args state to append to (may be `NULL`).
 /// @param s     String to append; `NULL` treated as empty.
+/// @note This stores a retained reference, not a bytewise copy.
 static void rt_args_append(RtArgsState *state, rt_string s) {
     if (!state)
         return;
@@ -156,6 +184,7 @@ static void rt_args_append(RtArgsState *state, rt_string s) {
 /// @param state Args state to append to.
 /// @param bytes Pointer to the byte run; `NULL` treated as empty.
 /// @param len   Length in bytes (only honoured when @p bytes is non-NULL).
+/// @note The temporary runtime string is released after the state retains it.
 static void rt_args_append_bytes(RtArgsState *state, const char *bytes, size_t len) {
     rt_string tmp = rt_string_from_bytes(bytes ? bytes : "", bytes ? len : 0);
     rt_args_append(state, tmp);
@@ -174,7 +203,11 @@ static void rt_args_append_bytes(RtArgsState *state, const char *bytes, size_t l
 ///            separated by NUL bytes, into a heap buffer and splits on every NUL.
 ///          - **Other**: no-op (the legacy context simply stays empty).
 /// @param state Args state to populate.
+/// @note The imported sequence is the host process argv and may include the
+///       executable path, unlike explicitly supplied tool-runner arguments.
 #if defined(_WIN32)
+/// @brief Populates @p state from the parsed Windows process command line.
+/// @param state Argument state receiving converted UTF-8 strings.
 static void rt_args_populate_host(RtArgsState *state) {
     int argc = 0;
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -194,6 +227,8 @@ static void rt_args_populate_host(RtArgsState *state) {
     LocalFree(argv);
 }
 #elif defined(__APPLE__)
+/// @brief Populates @p state from the macOS process argc/argv accessors.
+/// @param state Argument state receiving copied host argument strings.
 static void rt_args_populate_host(RtArgsState *state) {
     int *argc_ptr = _NSGetArgc();
     char ***argv_ptr = _NSGetArgv();
@@ -205,6 +240,8 @@ static void rt_args_populate_host(RtArgsState *state) {
     }
 }
 #elif defined(__linux__)
+/// @brief Populates @p state from null-delimited `/proc/self/cmdline` bytes.
+/// @param state Argument state receiving copied host argument strings.
 static void rt_args_populate_host(RtArgsState *state) {
     FILE *file = fopen("/proc/self/cmdline", "rb");
     if (!file)
@@ -257,6 +294,8 @@ static void rt_args_populate_host(RtArgsState *state) {
     free(data);
 }
 #else
+/// @brief Leaves @p state unchanged on platforms without a host-argv adapter.
+/// @param state Unused argument state.
 static void rt_args_populate_host(RtArgsState *state) {
     (void)state;
 }
@@ -308,6 +347,8 @@ static void rt_args_ensure_legacy_host_initialized(RtArgsState *state) {
 ///          contexts are owned by an explicit caller (tool runner, REPL).
 /// @param out_ctx Receives the locked owning context for later release.
 /// @return The args state to read from; `NULL` if no context is active.
+/// @warning When @p out_ctx receives a nonnull context, the caller must release
+///          its argument-state lock after finishing the read.
 static RtArgsState *rt_args_query_state(RtContext **out_ctx) {
     if (out_ctx)
         *out_ctx = NULL;
@@ -327,6 +368,10 @@ static RtArgsState *rt_args_query_state(RtContext **out_ctx) {
 ///          depend on Win32 conversion helpers before runtime heap allocation is
 ///          fully usable. Caller owns the returned buffer and must `free` it.
 ///          Traps on malformed UTF-8 or allocation failure.
+/// @param utf8 UTF-8 byte span to decode; null returns null.
+/// @param utf8_len Number of bytes at @p utf8.
+/// @param context Diagnostic used for malformed/truncated input.
+/// @return Heap-allocated null-terminated UTF-16 data owned by the caller.
 static wchar_t *rt_env_utf8_span_to_wide_or_trap(const char *utf8,
                                                  size_t utf8_len,
                                                  const char *context) {
@@ -404,6 +449,10 @@ static wchar_t *rt_env_utf8_span_to_wide_or_trap(const char *utf8,
 /// @details Inverse of `rt_env_utf8_span_to_wide_or_trap`. Performs strict
 ///          in-tree UTF-16 decoding and traps instead of silently losing data
 ///          on malformed input from the OS.
+/// @param wide UTF-16 code units to decode.
+/// @param wide_len Number of code units at @p wide.
+/// @param context Diagnostic used for malformed/truncated input.
+/// @return New runtime UTF-8 string, or the shared empty string for null/empty input.
 static rt_string rt_env_wide_to_string_or_trap(const wchar_t *wide,
                                                int wide_len,
                                                const char *context) {
@@ -473,6 +522,10 @@ static rt_string rt_env_wide_to_string_or_trap(const wchar_t *wide,
 
 /// @brief Ensure the args array has capacity for at least @p new_size entries.
 /// @details Doubles capacity until sufficient; traps on overflow or alloc failure.
+/// @param state Argument state whose item buffer may be reallocated.
+/// @param new_size Minimum number of item slots required.
+/// @return Nonzero when sufficient capacity exists; zero for null state or
+///         after raising a capacity/allocation trap.
 static int rt_args_grow_if_needed(RtArgsState *state, size_t new_size) {
     if (!state)
         return 0;
@@ -508,6 +561,8 @@ static int rt_args_grow_if_needed(RtArgsState *state, size_t new_size) {
 ///
 /// @note Internal use - typically not called directly from Zanna code.
 /// @note Releases references to all stored strings.
+/// @note Preserves allocated item capacity for reuse and suppresses future
+///       lazy host-argv import when mutating the legacy context.
 void rt_args_clear(void) {
     int is_legacy = 0;
     RtContext *ctx = rt_args_context_with_kind(&is_legacy);
@@ -532,8 +587,9 @@ void rt_args_clear(void) {
 /// @param s Argument string to add. NULL is stored as empty string.
 ///
 /// @note Internal use - arguments are set up by the runtime before main runs.
-/// @note The string is retained (reference count incremented).
+/// @note The string handle is retained rather than copied byte-for-byte.
 /// @note Traps on allocation failure.
+/// @note A successful legacy-context mutation suppresses lazy host-argv import.
 void rt_args_push(rt_string s) {
     int is_legacy = 0;
     RtContext *ctx = rt_args_context_with_kind(&is_legacy);
@@ -564,6 +620,8 @@ void rt_args_push(rt_string s) {
 ///
 /// @note Under tool runners, index 0 is the first user argument.
 /// @note O(1) time complexity.
+/// @note The first read of an untouched legacy context may atomically import
+///       host argv before computing the count.
 ///
 /// @see rt_args_get For retrieving individual arguments
 int64_t rt_args_count(void) {
@@ -590,10 +648,11 @@ int64_t rt_args_count(void) {
 ///
 /// @param index Zero-based index of the argument to retrieve.
 ///
-/// @return The argument string at the specified index.
+/// @return Retained reference to the argument string at the specified index.
 ///
 /// @note Traps if index is out of range.
 /// @note Returns a new reference (caller must manage memory).
+/// @note The first read of an untouched legacy context may import host argv.
 ///
 /// @see rt_args_count For getting the argument count
 rt_string rt_args_get(int64_t index) {
@@ -616,7 +675,7 @@ rt_string rt_args_get(int64_t index) {
 /// @brief Get the full command line as a single string.
 ///
 /// Returns all command-line arguments concatenated with spaces. This is
-/// useful for logging or displaying the exact invocation.
+/// useful for display but does not preserve the exact invocation.
 ///
 /// **Usage example:**
 /// ```
@@ -625,10 +684,14 @@ rt_string rt_args_get(int64_t index) {
 /// Log("Started with: " & cmdLine)
 /// ```
 ///
-/// @return String containing all arguments separated by spaces.
+/// @return New string containing all arguments separated by spaces, or the
+///         shared empty string when no arguments exist or builder growth fails.
 ///
 /// @note Returns empty string if no arguments are available.
 /// @note Arguments are joined with single spaces.
+/// @note No quoting or escaping is added, so original argument boundaries
+///       cannot be recovered. Embedded null bytes are truncated by the C-string
+///       builder interface.
 ///
 /// @see rt_args_get For individual argument access
 /// @see rt_args_count For argument count
@@ -668,6 +731,8 @@ cmdline_error:
 /// @param ctx The context whose arguments should be cleaned up.
 ///
 /// @note Internal use only.
+/// @note Unlike rt_args_clear(), this also frees the item array and resets
+///       capacity to zero. A null context is ignored.
 void rt_args_state_cleanup(RtContext *ctx) {
     if (!ctx)
         return;
@@ -717,7 +782,8 @@ int64_t rt_env_is_native(void) {
 ///          deterministic failure instead of undefined behaviour.
 /// @param name Runtime string naming the environment variable.
 /// @param context Human-readable operation for diagnostics.
-/// @return Null-terminated name suitable for getenv/setenv.
+/// @return Borrowed null-terminated name suitable for platform environment APIs.
+/// @note Null, empty, and embedded-null names raise @p context as a trap.
 static const char *rt_env_require_name(rt_string name, const char *context) {
     if (!name) {
         rt_trap(context ? context : "Environment: variable name is null");
@@ -740,9 +806,12 @@ static const char *rt_env_require_name(rt_string name, const char *context) {
 
 /// @brief Retrieve an environment variable's value.
 /// @details Returns an empty runtime string when the variable is unset. The
-///          variable name must be non-empty; traps on invalid input.
+///          variable name must be non-empty and contain no null byte; traps on
+///          invalid input or platform/conversion failure.
 /// @param name Environment variable to look up.
-/// @return Newly allocated runtime string containing the value or empty when missing.
+/// @return New runtime string containing the value, or the shared empty string
+///         when missing or present with an empty value.
+/// @note Use rt_env_has_var() to distinguish an unset variable from an empty one.
 rt_string rt_env_get_var(rt_string name) {
     const char *cname =
         rt_env_require_name(name, "Zanna.System.Environment.GetVariable: name must not be empty");
@@ -817,7 +886,7 @@ rt_string rt_env_get_var(rt_string name) {
 
 /// @brief Determine whether an environment variable exists.
 /// @details Returns 1 when @p name is present (even if its value is empty) and
-///          0 otherwise. Traps on invalid names.
+///          0 otherwise. Traps on invalid names or platform-query failure.
 /// @param name Environment variable to probe.
 /// @return 1 if present, 0 if missing.
 int64_t rt_env_has_var(rt_string name) {
@@ -850,9 +919,13 @@ int64_t rt_env_has_var(rt_string name) {
 
 /// @brief Set or overwrite an environment variable.
 /// @details Accepts empty strings as values. Traps when the name is empty and
-///          when the underlying platform call fails.
+///          when conversion or the underlying platform call fails. Names and
+///          values containing embedded null bytes are rejected rather than
+///          silently truncated by C/Win32 environment APIs.
 /// @param name Environment variable to set.
 /// @param value New value (NULL treated as empty string).
+/// @note The update affects the current process and normally propagates to
+///       subsequently created children that inherit its environment.
 void rt_env_set_var(rt_string name, rt_string value) {
     const char *cname =
         rt_env_require_name(name, "Zanna.System.Environment.SetVariable: name must not be empty");
@@ -896,6 +969,8 @@ void rt_env_set_var(rt_string name, rt_string value) {
 ///          binaries use a CRT-less startup shim, so they must not route through
 ///          the CRT exit machinery.
 /// @param code Exit status to report.
+/// @note This function does not return. The host platform narrows @p code to
+///       its native exit-status width.
 void rt_env_exit(int64_t code) {
 #if RT_PLATFORM_WINDOWS
     ExitProcess((UINT)(uint32_t)code);

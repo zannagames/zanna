@@ -13,9 +13,11 @@
 //
 // Key invariants:
 //   - Prefers CLOCK_MONOTONIC (POSIX) or QueryPerformanceCounter (Windows).
-//     POSIX falls back to CLOCK_REALTIME when the monotonic query fails; the
-//     fallback reading is clamped to a process-local atomic floor (CAS-max) so
-//     elapsed intervals cannot go negative on that failure path (VDOC-223).
+//     POSIX realtime fallback readings are ratcheted through a process-local
+//     floor, and Windows falls back from QPC to GetTickCount64.
+//   - Fallback samples from one source are monotonic among themselves, but this
+//     module does not translate epochs when an interval mixes primary and
+//     fallback sources; such an interval can jump or become negative.
 //   - Elapsed time accumulates correctly across multiple Start/Stop cycles;
 //     total elapsed = accumulated_ns + (current interval if running).
 //   - Stopwatch objects are not thread-safe; external synchronization is
@@ -27,13 +29,17 @@
 //   - Stopwatch instances are heap-allocated via rt_obj_new_i64 and managed
 //     by the runtime GC; callers do not free them explicitly.
 //   - The internal ZannaStopwatch struct contains no pointers to external
-//     resources; the finalizer is a no-op.
+//     resources and no finalizer is registered.
+//   - Public receiver methods assume runtime traps do not return. Their current
+//     call sites do not guard the NULL fallback from receiver validation.
 //
 // Links: src/runtime/core/rt_stopwatch.h (public API),
 //        src/runtime/core/rt_countdown.c (counts down instead of up),
 //        src/runtime/core/rt_time.c (platform sleep and tick helpers)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Runtime-managed, non-thread-safe elapsed-time stopwatch implementation.
 
 #include "rt_stopwatch.h"
 
@@ -58,7 +64,8 @@
 ///          published with acquire/release atomics rather than a plain shared
 ///          write, which makes concurrent first use well-defined instead of a C
 ///          data race (VDOC-224). Duplicate concurrent stores write the identical
-///          constant, so no once primitive is required for correctness.
+///          constant, so no once primitive is required for correctness. Failed
+///          queries are not cached and may be retried.
 /// @return QPC ticks-per-second, or 0 when the counter is unavailable.
 static int64_t stopwatch_qpc_freq(void) {
     static int64_t cached = 0; // 0 = not yet resolved
@@ -76,6 +83,8 @@ static int64_t stopwatch_qpc_freq(void) {
 #endif
 
 /// @brief Internal stopwatch structure.
+/// @details Holds only scalar timing state. Callers must synchronize all reads
+///          and mutations when sharing one instance between threads.
 typedef struct {
     int64_t accumulated_ns; ///< Total accumulated nanoseconds from completed intervals.
     int64_t start_time_ns;  ///< Timestamp when current interval started (if running).
@@ -86,7 +95,11 @@ typedef struct {
 // triplet seen in rt_countdown / rt_duration / rt_dateonly — pre-checks operands
 // before performing the arithmetic to avoid signed-overflow UB.
 
-/// @brief Overflow-checked signed 64-bit addition. Returns 1 on overflow.
+/// @brief Add two signed 64-bit values with overflow detection.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @param out Required destination; meaningful only on success.
+/// @return One on overflow; otherwise zero after writing the exact sum.
 static int stopwatch_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b))
         return 1;
@@ -94,7 +107,11 @@ static int stopwatch_checked_add_i64(int64_t a, int64_t b, int64_t *out) {
     return 0;
 }
 
-/// @brief Overflow-checked signed 64-bit subtraction. Returns 1 on overflow.
+/// @brief Subtract two signed 64-bit values with overflow detection.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @param out Required destination; meaningful only on success.
+/// @return One on overflow; otherwise zero after writing `a - b`.
 static int stopwatch_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b))
         return 1;
@@ -102,7 +119,11 @@ static int stopwatch_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
     return 0;
 }
 
-/// @brief Overflow-checked signed 64-bit multiplication. Returns 1 on overflow.
+/// @brief Multiply two signed 64-bit values with overflow detection.
+/// @param a Left factor.
+/// @param b Right factor.
+/// @param out Required destination; meaningful only when the return is zero.
+/// @return One on overflow; otherwise zero after writing the exact product.
 static int stopwatch_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 #if defined(__GNUC__) || defined(__clang__)
     return __builtin_mul_overflow(a, b, out);
@@ -137,6 +158,9 @@ static int stopwatch_checked_mul_i64(int64_t a, int64_t b, int64_t *out) {
 ///          (`> INT64_MAX / 1_000_000`) catches the moment when the multiply would
 ///          overflow signed 64-bit on long-uptime systems.
 #if defined(_WIN32)
+/// @brief Convert the Windows uptime tick count to nanoseconds.
+/// @return Millisecond-resolution uptime expressed in nanoseconds, or zero
+///         after trapping on signed-range overflow.
 static int64_t stopwatch_tick_count_ns(void) {
     ULONGLONG ticks = GetTickCount64();
     if (ticks > (ULONGLONG)(INT64_MAX / 1000000LL)) {
@@ -153,6 +177,9 @@ static int64_t stopwatch_tick_count_ns(void) {
 ///          contract of the Win32 `stopwatch_tick_count_ns` helper for the rest of
 ///          the file.
 #if !defined(_WIN32)
+/// @brief Convert one POSIX timespec to signed nanoseconds.
+/// @param ts Seconds/nanoseconds pair to convert.
+/// @return Converted value, or zero after trapping on arithmetic overflow.
 static int64_t stopwatch_timespec_to_ns(struct timespec ts) {
     int64_t seconds_ns;
     int64_t result;
@@ -171,7 +198,11 @@ static int64_t stopwatch_timespec_to_ns(struct timespec ts) {
 ///          Verifies the heap kind, class ID, and payload size via
 ///          rt_obj_is_instance so a null receiver *or* an unrelated object (e.g. a
 ///          Seq passed to the static compatibility form) traps instead of being
-///          reinterpreted as a Stopwatch payload (VDOC-229).
+///          reinterpreted as a Stopwatch payload (VDOC-229). The helper returns
+///          `NULL` if a trap hook returns, but current public callers assume
+///          ordinary non-returning trap dispatch and dereference the result.
+/// @param obj Candidate runtime object.
+/// @return Validated Stopwatch payload, or `NULL` after an invalid-receiver trap.
 static ZannaStopwatch *require_stopwatch(void *obj) {
     if (!rt_obj_is_instance(obj, RT_STOPWATCH_CLASS_ID, sizeof(ZannaStopwatch))) {
         rt_trap("Stopwatch: invalid receiver");
@@ -180,8 +211,17 @@ static ZannaStopwatch *require_stopwatch(void *obj) {
     return (ZannaStopwatch *)obj;
 }
 
-/// @brief Get current timestamp in nanoseconds from monotonic clock.
-/// @return Nanoseconds since unspecified epoch.
+/// @brief Read the best available platform timestamp in nanoseconds.
+/// @details Windows prefers QPC, converting whole and fractional ticks without
+///          overflowing intermediate products, and falls back to
+///          `GetTickCount64`. POSIX prefers `CLOCK_MONOTONIC`; on failure it
+///          samples `CLOCK_REALTIME` and applies a process-local CAS-max floor
+///          shared by fallback calls from this helper. Clock sources are not
+///          epoch-normalized across calls. Arithmetic overflow traps and returns
+///          zero if the hook returns; failure of every POSIX clock returns zero
+///          without trapping.
+/// @return Timestamp in nanoseconds from the selected source, or zero for a
+///         documented failure/fallback.
 static int64_t get_timestamp_ns(void) {
 #if defined(_WIN32)
     // QPC frequency is constant; cache it through an atomic slot so concurrent
@@ -229,8 +269,13 @@ static int64_t get_timestamp_ns(void) {
 }
 
 /// @brief Internal helper to get total elapsed nanoseconds.
-/// @param sw Stopwatch pointer.
-/// @return Total elapsed nanoseconds including current interval if running.
+/// @details Starts with completed-interval accumulation. When running, samples
+///          the clock, subtracts the recorded start, and adds the interval with
+///          signed-overflow checks. Mixed clock sources may produce a negative
+///          interval. Overflow traps and returns zero if the hook returns.
+/// @param sw Required valid Stopwatch payload.
+/// @return Accumulated nanoseconds including the current interval when running,
+///         or zero after an overflow trap.
 static int64_t stopwatch_get_elapsed_ns(ZannaStopwatch *sw) {
     int64_t total = sw->accumulated_ns;
 
@@ -265,7 +310,8 @@ static int64_t stopwatch_get_elapsed_ns(ZannaStopwatch *sw) {
 /// Print sw.ElapsedMs & " ms"
 /// ```
 ///
-/// @return A new Stopwatch object in stopped state. Traps on allocation failure.
+/// @return A new runtime-managed Stopwatch object in stopped state. Allocation
+///         failure traps and returns `NULL` if the trap hook returns.
 ///
 /// @note O(1) time complexity.
 /// @note The stopwatch is managed by Zanna's garbage collector.
@@ -308,6 +354,9 @@ void *rt_stopwatch_new(void) {
 /// ```
 ///
 /// @return A new Stopwatch object that is already running.
+/// @warning If allocation trapping is configured to return, this convenience
+///          path passes the null result to @ref rt_stopwatch_start; public
+///          receiver methods require non-returning trap semantics.
 ///
 /// @note O(1) time complexity.
 /// @note This is the preferred way to create a stopwatch for benchmarking.
@@ -347,6 +396,8 @@ void *rt_stopwatch_start_new(void) {
 /// @note O(1) time complexity.
 /// @note Has no effect if already running.
 /// @note Elapsed time accumulates across multiple start/stop cycles.
+/// @warning Invalid receivers trap. The implementation assumes that trap does
+///          not return before it dereferences the validated payload.
 ///
 /// @see rt_stopwatch_stop For pausing the stopwatch
 /// @see rt_stopwatch_restart For resetting and starting
@@ -384,6 +435,9 @@ void rt_stopwatch_start(void *obj) {
 ///
 /// @note O(1) time complexity.
 /// @note Preserves accumulated elapsed time.
+/// @note Overflow in interval subtraction or accumulation traps before changing
+///       the running flag and leaves completed accumulation unchanged.
+/// @warning Invalid receivers require non-returning trap semantics.
 ///
 /// @see rt_stopwatch_start For resuming the stopwatch
 /// @see rt_stopwatch_reset For clearing elapsed time
@@ -422,6 +476,7 @@ void rt_stopwatch_stop(void *obj) {
 ///
 /// @note O(1) time complexity.
 /// @note After reset: Elapsed = 0, IsRunning = false
+/// @warning Invalid receivers require non-returning trap semantics.
 ///
 /// @see rt_stopwatch_restart For resetting and immediately starting
 /// @see rt_stopwatch_start For starting after reset
@@ -461,6 +516,7 @@ void rt_stopwatch_reset(void *obj) {
 /// @note O(1) time complexity.
 /// @note After restart: Elapsed = 0, IsRunning = true
 /// @note Useful for repeated measurements in a loop.
+/// @warning Invalid receivers require non-returning trap semantics.
 ///
 /// @see rt_stopwatch_reset For resetting without starting
 /// @see rt_stopwatch_start For starting without resetting
@@ -486,11 +542,14 @@ void rt_stopwatch_restart(void *obj) {
 ///
 /// @param obj Pointer to a Stopwatch object.
 ///
-/// @return Total elapsed time in nanoseconds.
+/// @return Total elapsed time in nanoseconds, which can be negative when an
+///         interval mixes clock sources. Overflow traps and yields zero only if
+///         the trap hook returns.
 ///
 /// @note O(1) time complexity.
 /// @note Can be called while running (returns current elapsed time).
 /// @note Maximum measurable time: ~292 years at nanosecond precision.
+/// @warning Invalid receivers require non-returning trap semantics.
 ///
 /// @see rt_stopwatch_elapsed_us For microseconds
 /// @see rt_stopwatch_elapsed_ms For milliseconds
@@ -511,10 +570,12 @@ int64_t rt_stopwatch_elapsed_ns(void *obj) {
 ///
 /// @param obj Pointer to a Stopwatch object.
 ///
-/// @return Total elapsed time in microseconds.
+/// @return Total elapsed nanoseconds divided by 1,000 with C truncation toward
+///         zero.
 ///
 /// @note O(1) time complexity.
 /// @note Truncates (does not round) nanoseconds.
+/// @warning Invalid receivers require non-returning trap semantics.
 ///
 /// @see rt_stopwatch_elapsed_ns For nanoseconds (highest precision)
 /// @see rt_stopwatch_elapsed_ms For milliseconds
@@ -540,10 +601,12 @@ int64_t rt_stopwatch_elapsed_us(void *obj) {
 ///
 /// @param obj Pointer to a Stopwatch object.
 ///
-/// @return Total elapsed time in milliseconds.
+/// @return Total elapsed nanoseconds divided by 1,000,000 with C truncation
+///         toward zero.
 ///
 /// @note O(1) time complexity.
 /// @note Truncates (does not round) nanoseconds.
+/// @warning Invalid receivers require non-returning trap semantics.
 ///
 /// @see rt_stopwatch_elapsed_ns For nanoseconds (highest precision)
 /// @see rt_stopwatch_elapsed_us For microseconds
@@ -573,6 +636,7 @@ int64_t rt_stopwatch_elapsed_ms(void *obj) {
 /// @return 1 (true) if running, 0 (false) if stopped.
 ///
 /// @note O(1) time complexity.
+/// @warning Invalid receivers require non-returning trap semantics.
 ///
 /// @see rt_stopwatch_start For starting the stopwatch
 /// @see rt_stopwatch_stop For stopping the stopwatch

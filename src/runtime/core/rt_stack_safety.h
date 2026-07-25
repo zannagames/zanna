@@ -4,27 +4,33 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_stack_safety.h
-// Purpose: Stack overflow detection and graceful error handling for native code, registering
-// platform-specific exception/signal handlers to produce a diagnostic message instead of a hard
-// crash.
+// Purpose: Declares best-effort native stack/fatal-fault handler setup and an
+// unconditional diagnostic termination entry point.
 //
 // Key invariants:
-//   - rt_init_stack_safety is idempotent and safe under concurrent first use.
+//   - Successful process-handler initialization is idempotent and concurrent;
+//     failed setup is silent and may be retried.
 //   - On Unix, every calling thread preserves an existing alternate stack or
-//     receives its own SIGSTKSZ-byte fallback stack.
-//   - Process-wide handlers are installed once and do not replace an existing
-//     non-default sanitizer, debugger, host, or crash-reporter handler.
-//   - On Windows, uses Vectored Exception Handling to catch EXCEPTION_STACK_OVERFLOW.
-//   - rt_trap_stack_overflow prints a diagnostic to stderr and exits with code 1.
+//     attempts to install its own SIGSTKSZ-byte fallback stack.
+//   - POSIX setup defers entirely if either SIGSEGV or SIGBUS already has a
+//     non-default owner; otherwise both signals use one alternate-stack handler.
+//   - Windows uses vectored exception handling for EXCEPTION_STACK_OVERFLOW and
+//     requests a per-thread emergency stack guarantee when the API is available.
+//   - rt_trap_stack_overflow always emits a best-effort diagnostic and
+//     terminates with status 1.
 //
 // Ownership/Lifetime:
 //   - Handler registration has process-wide effect and is managed internally.
 //   - Fallback alternate-stack storage is thread-local; callers never free it.
 //   - Pre-existing alternate stacks and handlers retain their original ownership.
+//   - No unregister/reset operation is exposed; successful setup lasts until
+//     process or thread teardown as appropriate.
 //
 // Links: src/runtime/core/rt_stack_safety.c (implementation)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Native stack-overflow diagnostic initialization and termination API.
 #pragma once
 
 #ifdef __cplusplus
@@ -32,19 +38,22 @@ extern "C" {
 #endif
 
 /// @brief Initialize stack safety handlers.
-/// @details Registers exception handlers to catch stack overflow and provide
-///          a graceful error message instead of crashing. Concurrent calls are
-///          safe. On POSIX, callers should invoke this once on every native
-///          thread that needs a runtime-provided alternate stack; an existing
-///          stack or non-default process signal handler is preserved.
-/// @note On Windows, uses Vectored Exception Handling.
-///       On Unix, uses signal handlers with alternate signal stack.
+/// @details On Windows, every call best-effort requests a current-thread stack
+///          guarantee and successful first use registers a process-wide
+///          vectored exception handler. On POSIX, every caller preserves or
+///          best-effort installs its thread-local alternate stack; successful
+///          first use installs both SIGSEGV and SIGBUS handlers only when
+///          neither disposition has another owner. Unsupported-platform setup
+///          is a no-op. Setup errors are not returned and remain retryable.
+/// @note POSIX reports all handled SIGSEGV/SIGBUS faults as possible stack
+///       overflow because this layer cannot reliably classify the fault.
 void rt_init_stack_safety(void);
 
 /// @brief Report a stack overflow trap and terminate the process.
-/// @details Prints a diagnostic message to stderr and exits with code 1.
-///          This function is called by the exception handler when stack
-///          overflow is detected.
+/// @details Performs a best-effort low-stack-safe standard-error write and
+///          terminates immediately with status 1 on Windows/POSIX. The generic
+///          fallback uses stdio followed by `exit(1)`. The function never
+///          dispatches a recoverable runtime trap and never returns.
 void rt_trap_stack_overflow(void);
 
 #ifdef __cplusplus

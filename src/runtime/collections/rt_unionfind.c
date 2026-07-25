@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/collections/rt_unionfind.c
+/// @file
+/// @brief Implements the GC-managed disjoint-set UnionFind collection.
+///
 // Purpose: Implements a disjoint-set union-find data structure (also called
 //   Union-Find or Merge-Find Set). Supports near-O(1) amortized Union and
 //   Find operations using path compression and union by rank. Typical uses:
@@ -29,6 +32,8 @@
 // Ownership/Lifetime:
 //   - UnionFind objects are GC-managed (rt_obj_new_i64). The parent, rank, and
 //     size arrays are freed by the GC finalizer (unionfind_finalizer).
+//   - The arrays contain only integers, so the object requires no GC traversal
+//     callback and does not retain references to other runtime objects.
 //
 // Links: src/runtime/collections/rt_unionfind.h (public API)
 //
@@ -48,6 +53,10 @@
 // Internal structure
 // ---------------------------------------------------------------------------
 
+/// @brief Runtime object payload and parallel-array storage for UnionFind.
+///
+/// Only root indexes have meaningful `rank` and `size` entries. The element
+/// count is fixed after construction; `sets` changes after unions and resets.
 typedef struct {
     void *vptr;
     int64_t *parent; // Parent array (path-compressed)
@@ -59,6 +68,9 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the UnionFind implementation;
 ///        traps with @p what if @p obj is NULL or not a UnionFind.
+/// @param obj Opaque runtime object to validate.
+/// @param what Diagnostic raised when validation fails.
+/// @return Validated implementation pointer, or `NULL` after raising a trap.
 static rt_unionfind_impl *as_unionfind(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_UNIONFIND_CLASS_ID, sizeof(rt_unionfind_impl))) {
         rt_trap(what);
@@ -71,7 +83,8 @@ static rt_unionfind_impl *as_unionfind(void *obj, const char *what) {
 // Finalizer
 // ---------------------------------------------------------------------------
 
-/// @brief GC finalizer: free the parent and rank arrays.
+/// @brief GC finalizer that releases all three parallel integer arrays.
+/// @param obj UnionFind instance being finalized; null is ignored.
 static void unionfind_finalizer(void *obj) {
     rt_unionfind_impl *uf = obj ? as_unionfind(obj, "UnionFind: invalid UnionFind object") : NULL;
     if (!uf)
@@ -88,6 +101,16 @@ static void unionfind_finalizer(void *obj) {
 // Constructor
 // ---------------------------------------------------------------------------
 
+/// @brief Creates a UnionFind whose elements initially form singleton sets.
+///
+/// A requested size of zero is normalized to one element for compatibility.
+/// Negative counts, allocation-size overflow, and allocation failure trap.
+///
+/// @param n Requested number of indexed elements.
+/// @return New GC-managed UnionFind over indexes `[0, n)`, subject to zero
+///         normalization, or `NULL` after a trap.
+/// @note Construction initializes `parent[i] = i`, rank zero, size one, and
+///       the disjoint-set count equal to the normalized element count.
 void *rt_unionfind_new(int64_t n) {
     if (n < 0) {
         rt_trap("UnionFind: negative element count");
@@ -137,6 +160,12 @@ void *rt_unionfind_new(int64_t n) {
 /// @brief Find the representative (root) of the set containing the element.
 /// @details Applies path compression during traversal so subsequent
 ///          lookups on the same path are O(1) amortized.
+/// @param uf_ptr UnionFind to query; null is treated as invalid input.
+/// @param x Zero-based element index.
+/// @return Representative index, or `-1` if @p uf_ptr is null or @p x is out
+///         of range.
+/// @note Although logically a query, this operation mutates parent links as
+///       part of path compression. A wrong-class object raises a trap.
 int64_t rt_unionfind_find(void *uf_ptr, int64_t x) {
     if (!uf_ptr)
         return -1;
@@ -163,7 +192,9 @@ int64_t rt_unionfind_find(void *uf_ptr, int64_t x) {
 /// @brief Return the representative root as a Zanna.Option.
 /// @param uf_ptr UnionFind object pointer, or NULL.
 /// @param x Element index to resolve.
-/// @return Some(root) for valid elements, or None for NULL/out-of-range input.
+/// @return New `Some(root)` for valid elements, or new `None` for
+///         null/out-of-range input.
+/// @note Preserves the path-compression side effect of rt_unionfind_find().
 void *rt_unionfind_find_root_option(void *uf_ptr, int64_t x) {
     int64_t root = rt_unionfind_find(uf_ptr, x);
     if (root < 0)
@@ -178,6 +209,13 @@ void *rt_unionfind_find_root_option(void *uf_ptr, int64_t x) {
 /// @brief Merge the sets containing two elements into one.
 /// @details Uses union-by-rank to keep the tree balanced. After this
 ///          operation, find(a) == find(b).
+/// @param uf_ptr UnionFind to mutate; null returns zero.
+/// @param x First zero-based element index.
+/// @param y Second zero-based element index.
+/// @return One if two distinct components were merged; zero if either index
+///         is invalid or both indexes already share a representative.
+/// @note A successful merge decreases the component count once and adds the
+///       absorbed root's size to the surviving root.
 int64_t rt_unionfind_union(void *uf_ptr, int64_t x, int64_t y) {
     if (!uf_ptr)
         return 0;
@@ -212,6 +250,11 @@ int64_t rt_unionfind_union(void *uf_ptr, int64_t x, int64_t y) {
 
 /// @brief Check whether two elements belong to the same set.
 /// @details Equivalent to find(a) == find(b).
+/// @param uf_ptr UnionFind to query; null returns false.
+/// @param x First zero-based element index.
+/// @param y Second zero-based element index.
+/// @return One only when both indexes are valid and share a representative.
+/// @note Performs path compression for both valid indexes.
 int8_t rt_unionfind_connected(void *uf_ptr, int64_t x, int64_t y) {
     if (!uf_ptr)
         return false;
@@ -221,6 +264,9 @@ int8_t rt_unionfind_connected(void *uf_ptr, int64_t x, int64_t y) {
 }
 
 /// @brief Return the number of disjoint sets currently in the structure.
+/// @param uf_ptr UnionFind to query; null returns zero.
+/// @return Current component count.
+/// @note A wrong-class object raises a trap.
 int64_t rt_unionfind_count(void *uf_ptr) {
     if (!uf_ptr)
         return 0;
@@ -232,6 +278,7 @@ int64_t rt_unionfind_count(void *uf_ptr) {
 /// @param uf_ptr Union-find object pointer; returns 0 if NULL.
 /// @param x Element whose set size is queried.
 /// @return Size of the set, or 0 if the element is invalid.
+/// @note The lookup performs path compression. A wrong-class object traps.
 int64_t rt_unionfind_set_size(void *uf_ptr, int64_t x) {
     if (!uf_ptr)
         return 0;
@@ -242,6 +289,9 @@ int64_t rt_unionfind_set_size(void *uf_ptr, int64_t x) {
 }
 
 /// @brief Reset the union-find so every element is its own set.
+/// @param uf_ptr UnionFind to reset; null is ignored.
+/// @note Runs in O(n), resets every rank to zero and size to one, and restores
+///       the component count to the fixed element count.
 void rt_unionfind_reset(void *uf_ptr) {
     if (!uf_ptr)
         return;

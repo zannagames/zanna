@@ -14,17 +14,23 @@
 // Key invariants:
 //   - Clip table is a fixed-size array (max 32 states). States are looked up by
 //     linear scan; the table is small enough that this is faster than hashing.
+//   - Each clip has up to 8 frame events and one update exposes up to 8 fired IDs.
 //   - Animation frame counter and state frame counter are both advanced by
 //     Update(). The state counter increments unconditionally; the animation
 //     counter follows the SpriteAnimation frame-duration convention.
 //   - Edge flags (just_entered, just_exited) latch until ClearFlags().
+//   - Frame ranges may run forward or reverse and may loop.
 //
 // Ownership/Lifetime:
 //   - GC-managed (rt_obj_new_i64). No retained references — no finalizer.
+//   - Named states copy at most 31 C-string bytes into fixed clip storage.
+//   - PollEvents returns an independent owned immutable batch snapshot.
 //
 // Links: rt_animstate.h (public API)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Fixed-capacity animation state machine, playback, and frame events.
 
 #include "rt_animstate.h"
 #include "rt_animation_events.h"
@@ -44,6 +50,7 @@
 #define ANIMSTATE_MAX_EVENTS_PER_STATE 8
 #define ANIMSTATE_MAX_FIRED_EVENTS 8
 
+/// @brief One state-to-clip binding and its per-loop event definitions.
 typedef struct {
     int64_t state_id;
     int64_t start_frame;
@@ -58,6 +65,7 @@ typedef struct {
     uint16_t event_fired_mask;
 } anim_clip_t;
 
+/// @brief Native payload backing a Zanna.Game.AnimStateMachine object.
 typedef struct {
     anim_clip_t clips[ANIMSTATE_MAX_CLIPS];
     int32_t clip_count;
@@ -90,12 +98,18 @@ typedef struct {
 // Helpers
 //=============================================================================
 
+/// @brief Reinterpret an opaque handle without validation.
+/// @param asm_ Opaque pointer; may be NULL.
+/// @return Same pointer cast to implementation type.
 static animstate_impl *get(void *asm_) {
     return (animstate_impl *)asm_;
 }
 
 /// @brief Safe-cast a handle to the AnimStateMachine impl, trapping @p api on
-///        a class-id mismatch. @return The impl, or NULL if @p asm_ is NULL.
+///        a class-id mismatch.
+/// @param asm_ Borrowed candidate handle; may be NULL.
+/// @param api Borrowed mismatch diagnostic.
+/// @return Valid implementation pointer, or NULL for null/mismatch.
 static animstate_impl *checked_animstate(void *asm_, const char *api) {
     if (!asm_)
         return NULL;
@@ -107,6 +121,9 @@ static animstate_impl *checked_animstate(void *asm_, const char *api) {
 }
 
 /// @brief Find the index of the valid clip bound to @p state_id, or -1.
+/// @param a Borrowed valid machine.
+/// @param state_id Application-defined state ID.
+/// @return Clip-table index, or -1 when absent.
 static int find_clip(animstate_impl *a, int64_t state_id) {
     for (int i = 0; i < a->clip_count; i++) {
         if (a->clips[i].valid && a->clips[i].state_id == state_id)
@@ -116,6 +133,9 @@ static int find_clip(animstate_impl *a, int64_t state_id) {
 }
 
 /// @brief True if @p frame is inside a clip's inclusive frame range.
+/// @param c Borrowed clip; may be NULL.
+/// @param frame Absolute sprite-frame index.
+/// @return One when within forward or reverse inclusive endpoints.
 static int8_t animstate_frame_in_clip(const anim_clip_t *c, int64_t frame) {
     if (!c)
         return 0;
@@ -126,6 +146,8 @@ static int8_t animstate_frame_in_clip(const anim_clip_t *c, int64_t frame) {
 
 /// @brief Make @p clip_idx the active clip, resetting frame/event playback
 ///        state. A negative index stops playback.
+/// @param a Mutable machine.
+/// @param clip_idx Valid clip index, or negative to stop.
 static void apply_clip(animstate_impl *a, int clip_idx) {
     a->active_clip_idx = clip_idx;
     if (clip_idx < 0) {
@@ -148,6 +170,13 @@ static void apply_clip(animstate_impl *a, int clip_idx) {
 ///        and @p current_frame this step.
 /// @details Handles exact landing, plus loop wrap-around for both
 ///          forward (start<=end) and reverse (start>end) clips.
+/// @param start Inclusive clip start.
+/// @param end Inclusive clip end.
+/// @param loop Nonzero when wraparound is enabled.
+/// @param prev_frame Frame before the update.
+/// @param current_frame Frame after the update.
+/// @param event_frame Candidate event frame.
+/// @return One when the update crossed or newly landed on the event.
 static int8_t animstate_crossed_frame(int64_t start,
                                       int64_t end,
                                       int8_t loop,
@@ -169,6 +198,8 @@ static int8_t animstate_crossed_frame(int64_t start,
 
 /// @brief Legacy single-event check: set event_triggered when the current
 ///        frame first lands on the clip's event_frame (debounced).
+/// @param a Mutable machine.
+/// @param prev_frame Frame before the update.
 static void animstate_maybe_fire_event(animstate_impl *a, int64_t prev_frame) {
     if (a->event_frame < 0)
         return;
@@ -186,6 +217,9 @@ static void animstate_maybe_fire_event(animstate_impl *a, int64_t prev_frame) {
 ///        were crossed this step into a->events_fired_ids.
 /// @details Per-clip event_fired_mask debounces repeats; the mask resets on
 ///          loop wrap so events fire again each cycle.
+/// @param a Mutable machine.
+/// @param c Mutable active clip.
+/// @param prev_frame Frame before the update.
 static void animstate_maybe_fire_events(animstate_impl *a, anim_clip_t *c, int64_t prev_frame) {
     if (!a || !c)
         return;
@@ -214,6 +248,9 @@ static void animstate_maybe_fire_events(animstate_impl *a, anim_clip_t *c, int64
 
 /// @brief Integer percentage (value*100/total) clamped to [0, INT64_MAX];
 ///        returns 0 for non-positive inputs.
+/// @param value Completed units.
+/// @param total Total units.
+/// @return Truncated percentage clamped to 0–100.
 static int64_t animstate_percent_i64(int64_t value, int64_t total) {
     if (value <= 0 || total <= 0)
         return 0;
@@ -226,6 +263,10 @@ static int64_t animstate_percent_i64(int64_t value, int64_t total) {
 // Creation
 //=============================================================================
 
+/// @brief Create an empty animation state machine.
+/// @details Initializes all sentinel state IDs/clip indices/event frames to -1;
+///          fixed tables and counters begin zeroed.
+/// @return Owned runtime object, or NULL on allocation failure.
 void *rt_animstate_new(void) {
     animstate_impl *a =
         (animstate_impl *)rt_obj_new_i64(RT_ANIMSTATE_CLASS_ID, (int64_t)sizeof(animstate_impl));
@@ -244,6 +285,18 @@ void *rt_animstate_new(void) {
 // State/Clip Definition
 //=============================================================================
 
+/// @brief Add or redefine a numeric state and its playback clip.
+/// @details Rejects negative state IDs, clamps negative frame endpoints to
+///          zero, and normalizes non-positive frame duration to one update per
+///          animation frame. A new 33rd state traps. Redefinition clears that
+///          clip's events; redefining the active clip restarts playback without
+///          changing state IDs or transition-edge flags.
+/// @param asm_ Borrowed machine.
+/// @param state_id Nonnegative application-defined state ID.
+/// @param start_frame Inclusive start frame.
+/// @param end_frame Inclusive end frame; may precede start for reverse playback.
+/// @param frame_duration Updates per animation-frame step.
+/// @param loop Nonzero to wrap at the end.
 void rt_animstate_add_state(void *asm_,
                             int64_t state_id,
                             int64_t start_frame,
@@ -294,6 +347,12 @@ void rt_animstate_add_state(void *asm_,
 }
 
 /// @brief Set the starting state and reset all transition flags to initial values.
+/// @details Requires a previously defined nonnegative state, resets playback
+///          and event buffers, sets previous state to -1, and latches
+///          `just_entered`.
+/// @param asm_ Borrowed machine.
+/// @param state_id Defined state ID.
+/// @return One on success; zero for invalid machine/state.
 int8_t rt_animstate_set_initial(void *asm_, int64_t state_id) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.SetInitial: expected Zanna.Game.AnimStateMachine");
@@ -321,6 +380,13 @@ int8_t rt_animstate_set_initial(void *asm_, int64_t state_id) {
 //=============================================================================
 
 /// @brief Transition to a new state, setting entered/exited flags and resetting the frame counter.
+/// @details A transition to the already-current state succeeds without changing
+///          flags or playback. A different defined state becomes current,
+///          previous records the old ID, edge flags latch, and clip/event
+///          playback restarts.
+/// @param asm_ Borrowed machine.
+/// @param state_id Defined target state ID.
+/// @return One on success/no-op same-state transition; zero when unavailable.
 int8_t rt_animstate_transition(void *asm_, int64_t state_id) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.Transition: expected Zanna.Game.AnimStateMachine");
@@ -347,6 +413,12 @@ int8_t rt_animstate_transition(void *asm_, int64_t state_id) {
 }
 
 /// @brief Update the animstate state (called per frame/tick).
+/// @details Clears per-update event outputs, saturating-increments
+///          frames-in-state, and advances the active frame once its duration
+///          counter expires. Supports inclusive forward/reverse ranges,
+///          looping, non-loop completion, legacy single events, and up to eight
+///          clip events crossed during the step.
+/// @param asm_ Borrowed machine.
 void rt_animstate_update(void *asm_) {
     animstate_impl *a =
         checked_animstate(asm_, "AnimStateMachine.Update: expected Zanna.Game.AnimStateMachine");
@@ -399,6 +471,7 @@ void rt_animstate_update(void *asm_) {
 
 /// @brief Reset the just_entered and just_exited one-shot flags (call once per frame after
 /// checking).
+/// @param asm_ Borrowed machine.
 void rt_animstate_clear_flags(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.ClearFlags: expected Zanna.Game.AnimStateMachine");
@@ -413,6 +486,8 @@ void rt_animstate_clear_flags(void *asm_) {
 //=============================================================================
 
 /// @brief Return the ID of the currently active state.
+/// @param asm_ Borrowed machine.
+/// @return Current ID, or -1 for no state/invalid input.
 int64_t rt_animstate_current_state(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.CurrentState: expected Zanna.Game.AnimStateMachine");
@@ -420,6 +495,8 @@ int64_t rt_animstate_current_state(void *asm_) {
 }
 
 /// @brief Return the ID of the state that was active before the last transition.
+/// @param asm_ Borrowed machine.
+/// @return Previous ID, or -1 before a transition/for invalid input.
 int64_t rt_animstate_previous_state(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.PreviousState: expected Zanna.Game.AnimStateMachine");
@@ -427,6 +504,8 @@ int64_t rt_animstate_previous_state(void *asm_) {
 }
 
 /// @brief Check whether the current state was entered this frame (one-shot flag).
+/// @param asm_ Borrowed machine.
+/// @return Latched flag, or zero for invalid input.
 int8_t rt_animstate_just_entered(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.JustEntered: expected Zanna.Game.AnimStateMachine");
@@ -434,6 +513,8 @@ int8_t rt_animstate_just_entered(void *asm_) {
 }
 
 /// @brief Check whether the previous state was exited this frame (one-shot flag).
+/// @param asm_ Borrowed machine.
+/// @return Latched flag, or zero for invalid input.
 int8_t rt_animstate_just_exited(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.JustExited: expected Zanna.Game.AnimStateMachine");
@@ -441,6 +522,8 @@ int8_t rt_animstate_just_exited(void *asm_) {
 }
 
 /// @brief Return how many frames have elapsed since entering the current state.
+/// @param asm_ Borrowed machine.
+/// @return Saturating update count, or zero for invalid input.
 int64_t rt_animstate_frames_in_state(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.FramesInState: expected Zanna.Game.AnimStateMachine");
@@ -448,6 +531,8 @@ int64_t rt_animstate_frames_in_state(void *asm_) {
 }
 
 /// @brief Return the current animation frame index within the active clip.
+/// @param asm_ Borrowed machine.
+/// @return Absolute sprite-frame index, or zero for invalid input.
 int64_t rt_animstate_current_frame(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.CurrentFrame: expected Zanna.Game.AnimStateMachine");
@@ -455,13 +540,19 @@ int64_t rt_animstate_current_frame(void *asm_) {
 }
 
 /// @brief Check whether the current clip has reached its last frame (non-looping only).
+/// @param asm_ Borrowed machine.
+/// @return One after non-loop playback completes; otherwise zero.
 int8_t rt_animstate_is_anim_finished(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.IsAnimFinished: expected Zanna.Game.AnimStateMachine");
     return a ? a->anim_finished : 0;
 }
 
-/// @brief Progress the animstate.
+/// @brief Return active clip progress as an integer percentage.
+/// @details Measures absolute frame displacement between inclusive endpoints;
+///          zero-length clips report 100 and absent clips report zero.
+/// @param asm_ Borrowed machine.
+/// @return Truncated value from zero through 100.
 int64_t rt_animstate_progress(void *asm_) {
     animstate_impl *a =
         checked_animstate(asm_, "AnimStateMachine.Progress: expected Zanna.Game.AnimStateMachine");
@@ -486,6 +577,17 @@ int64_t rt_animstate_progress(void *asm_) {
 // Named State API
 //=============================================================================
 
+/// @brief Add a state addressable by a copied short name.
+/// @details Chooses the lowest unused nonnegative numeric ID, delegates clip
+///          validation/creation to @ref rt_animstate_add_state, then copies the
+///          C-string-visible name prefix into a 32-byte field. Names therefore
+///          truncate to 31 bytes and embedded NUL terminates early.
+/// @param asm_ Borrowed machine.
+/// @param name_str Borrowed runtime string handle.
+/// @param start Inclusive start frame.
+/// @param end Inclusive end frame.
+/// @param dur Updates per animation-frame step.
+/// @param loop Nonzero to loop.
 void rt_animstate_add_named(
     void *asm_, void *name_str, int64_t start, int64_t end, int64_t dur, int8_t loop) {
     animstate_impl *a =
@@ -517,6 +619,11 @@ void rt_animstate_add_named(
     }
 }
 
+/// @brief Transition to the first state with an equal stored C-string name.
+/// @details Comparison is case-sensitive and scans only registered clip order.
+///          Missing/null names are no-ops.
+/// @param asm_ Borrowed machine.
+/// @param name_str Borrowed runtime string handle.
 void rt_animstate_play(void *asm_, void *name_str) {
     animstate_impl *a =
         checked_animstate(asm_, "AnimStateMachine.Play: expected Zanna.Game.AnimStateMachine");
@@ -533,6 +640,9 @@ void rt_animstate_play(void *asm_, void *name_str) {
     }
 }
 
+/// @brief Copy the active clip's stored short name to a runtime string.
+/// @param asm_ Borrowed machine.
+/// @return Owned copied name or shared empty string when no active clip exists.
 void *rt_animstate_current_name(void *asm_) {
     animstate_impl *a =
         checked_animstate(asm_, "AnimStateMachine.StateName: expected Zanna.Game.AnimStateMachine");
@@ -543,6 +653,11 @@ void *rt_animstate_current_name(void *asm_) {
     return (void *)rt_const_cstr("");
 }
 
+/// @brief Configure the legacy single event frame.
+/// @details Any signed frame is stored; negative values disable firing. Existing
+///          trigger/debounce state is cleared.
+/// @param asm_ Borrowed machine.
+/// @param frame Absolute frame index, or negative to disable.
 void rt_animstate_set_event_frame(void *asm_, int64_t frame) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.SetEventFrame: expected Zanna.Game.AnimStateMachine");
@@ -553,6 +668,9 @@ void rt_animstate_set_event_frame(void *asm_, int64_t frame) {
     a->last_event_frame = -1;
 }
 
+/// @brief Consume the legacy event-fired latch.
+/// @param asm_ Borrowed machine.
+/// @return One once after a trigger; otherwise zero.
 int8_t rt_animstate_event_fired(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.EventFired: expected Zanna.Game.AnimStateMachine");
@@ -565,6 +683,15 @@ int8_t rt_animstate_event_fired(void *asm_) {
     return 0;
 }
 
+/// @brief Add a multi-event marker to a defined clip.
+/// @details The frame must lie within inclusive forward/reverse endpoints.
+///          Appends in registration order up to eight events per state and
+///          clears that slot's fired bit.
+/// @param asm_ Borrowed machine.
+/// @param state_id Defined state ID.
+/// @param frame Absolute event frame.
+/// @param event_id Application-defined event ID.
+/// @return One when added; zero for invalid state/frame or full event table.
 int8_t rt_animstate_add_event(void *asm_, int64_t state_id, int64_t frame, int64_t event_id) {
     animstate_impl *a =
         checked_animstate(asm_, "AnimStateMachine.AddEvent: expected Zanna.Game.AnimStateMachine");
@@ -587,6 +714,11 @@ int8_t rt_animstate_add_event(void *asm_, int64_t state_id, int64_t frame, int64
     return 1;
 }
 
+/// @brief Remove every multi-event marker from a state.
+/// @details Also clears current-update fired IDs when clearing the active clip.
+///          The legacy single event frame is unaffected.
+/// @param asm_ Borrowed machine.
+/// @param state_id Defined state ID.
 void rt_animstate_clear_events(void *asm_, int64_t state_id) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.ClearEvents: expected Zanna.Game.AnimStateMachine");
@@ -608,12 +740,19 @@ void rt_animstate_clear_events(void *asm_, int64_t state_id) {
     }
 }
 
+/// @brief Return how many multi-events fired during the latest update.
+/// @param asm_ Borrowed machine.
+/// @return Count from zero through eight.
 int64_t rt_animstate_events_fired_count(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.EventsFiredCount: expected Zanna.Game.AnimStateMachine");
     return a ? a->events_fired_count : 0;
 }
 
+/// @brief Read a fired multi-event ID by latest-update order.
+/// @param asm_ Borrowed machine.
+/// @param index Zero-based fired-event index.
+/// @return Event ID, or zero for invalid input/index.
 int64_t rt_animstate_event_fired_id(void *asm_, int64_t index) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.EventFiredId: expected Zanna.Game.AnimStateMachine");
@@ -622,6 +761,11 @@ int64_t rt_animstate_event_fired_id(void *asm_, int64_t index) {
     return a->events_fired_ids[index];
 }
 
+/// @brief Snapshot multi-event IDs fired by the latest update.
+/// @details Copies current fired IDs into an immutable independent batch.
+///          Null/invalid machine yields an owned empty batch.
+/// @param asm_ Borrowed machine.
+/// @return Owned AnimationEventBatch, or NULL on snapshot allocation failure.
 void *rt_animstate_poll_events(void *asm_) {
     animstate_impl *a = checked_animstate(
         asm_, "AnimStateMachine.PollEvents: expected Zanna.Game.AnimStateMachine");

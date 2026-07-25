@@ -4,14 +4,18 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_bits.h
+/// @file
+/// @brief Declares deterministic 64-bit scalar bit-manipulation operations.
+///
 // Purpose: Bit manipulation utilities implementing the Zanna.Bits runtime namespace, providing
 // bitwise operations, shifts, population count, and bit scanning on 64-bit integer values.
 //
 // Key invariants:
 //   - All operations treat values as 64-bit two's complement integers.
-//   - Shift counts outside [0, 63] produce implementation-defined results; callers must validate.
-//   - rt_bits_popcount uses the platform's most efficient instruction when available.
-//   - rt_bits_clz/ctz return 64 for input value 0.
+//   - Shift edge cases are explicitly defined and never rely on C's undefined
+//     out-of-range shift behavior; rotations normalize counts modulo 64.
+//   - rt_bits_count uses a platform intrinsic when available.
+//   - rt_bits_leadz and rt_bits_trailz return 64 for input value 0.
 //
 // Ownership/Lifetime:
 //   - All functions are pure with no heap allocation or side effects.
@@ -55,7 +59,8 @@ int64_t rt_bits_not(int64_t val);
 /// @param val The value to shift.
 /// @param count Number of bit positions to shift left (0-63).
 /// @return The value with bits shifted left by @p count positions,
-///         with vacated positions filled with zeros.
+///         with vacated positions filled with zeros; returns zero when
+///         @p count is negative or at least 64.
 int64_t rt_bits_shl(int64_t val, int64_t count);
 
 /// @brief Arithmetic shift right (sign-extended).
@@ -63,24 +68,27 @@ int64_t rt_bits_shl(int64_t val, int64_t count);
 /// @param count Number of bit positions to shift right (0-63).
 /// @return The value with bits shifted right by @p count positions,
 ///         with vacated positions filled with copies of the sign bit.
+/// @note A negative count returns @p val unchanged; a count of at least 64
+///       returns `-1` for a negative value and zero otherwise.
 int64_t rt_bits_shr(int64_t val, int64_t count);
 
 /// @brief Logical shift right (zero-fill).
 /// @param val The value to shift.
 /// @param count Number of bit positions to shift right (0-63).
 /// @return The value with bits shifted right by @p count positions,
-///         with vacated positions filled with zeros.
+///         with vacated positions filled with zeros; returns zero when
+///         @p count is negative or at least 64.
 int64_t rt_bits_ushr(int64_t val, int64_t count);
 
 /// @brief Rotate left.
 /// @param val The value to rotate.
-/// @param count Number of bit positions to rotate left (0-63).
+/// @param count Number of positions; only the low six bits are used.
 /// @return The value with bits circularly shifted left by @p count positions.
 int64_t rt_bits_rotl(int64_t val, int64_t count);
 
 /// @brief Rotate right.
 /// @param val The value to rotate.
-/// @param count Number of bit positions to rotate right (0-63).
+/// @param count Number of positions; only the low six bits are used.
 /// @return The value with bits circularly shifted right by @p count positions.
 int64_t rt_bits_rotr(int64_t val, int64_t count);
 
@@ -123,18 +131,21 @@ int8_t rt_bits_get(int64_t val, int64_t bit);
 /// @param val The original value.
 /// @param bit The zero-based bit position to set (0 = LSB, 63 = MSB).
 /// @return The value with the bit at position @p bit set to 1.
+/// @note Out-of-range positions return @p val unchanged.
 int64_t rt_bits_set(int64_t val, int64_t bit);
 
 /// @brief Clear bit at position (0-63).
 /// @param val The original value.
 /// @param bit The zero-based bit position to clear (0 = LSB, 63 = MSB).
 /// @return The value with the bit at position @p bit set to 0.
+/// @note Out-of-range positions return @p val unchanged.
 int64_t rt_bits_clear(int64_t val, int64_t bit);
 
 /// @brief Toggle bit at position (0-63).
 /// @param val The original value.
 /// @param bit The zero-based bit position to toggle (0 = LSB, 63 = MSB).
 /// @return The value with the bit at position @p bit flipped.
+/// @note Out-of-range positions return @p val unchanged.
 int64_t rt_bits_toggle(int64_t val, int64_t bit);
 
 #ifdef __cplusplus

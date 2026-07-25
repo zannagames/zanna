@@ -134,7 +134,11 @@ mixed state and resolves the complete node selection in one transaction. The
 2D inspector can create, rename, update, and remove scene-wide typed metadata,
 as well as set/remove one typed property across the object selection.
 Scene-metadata selection is tab-local and survives session restore. The 3D
-numeric inspector applies explicit relative position/rotation/scale batches.
+numeric inspector edits a single node's transform live — spinner changes
+mutate the live node immediately and serialize exactly once when the
+spinners lose focus, with Escape restoring the captured values — while
+multi-selections keep explicit relative position/rotation/scale batches
+behind the Apply button.
 The 2D Select tool also owns
 focus-safe one-pixel or one-tile keyboard nudging plus primary-axis alignment
 and stable distribution commands. The 3D Parent chooser reparents selected
@@ -327,6 +331,21 @@ camera controls, property editing, object creation/deletion/duplication,
 history, and import/export-oriented file workflows. A 2D object drag and a 3D
 transform drag each become one undo entry.
 
+The 2D editor is a three-pane workbench: a persistent left Objects pane
+(search, full-height hierarchy tree, parent chooser, creation/duplication/
+removal/ordering actions), the center canvas with the tile palette in a real
+strip beneath it, and a right Inspector with explicit Object | Scene tabs that
+auto-follow the selection: the Object tab scopes object fields and component
+groups to the selection — a single object's X/Y edits commit live (one
+undoable transaction when the spinners lose focus, Escape restores the
+captured position) and id/type commit on Enter, retiring the explicit Apply
+— while the Scene tab owns setup, imports, scene properties,
+camera/lighting, layers, and tile behavior. A manual tab choice
+holds until the next selection change. All three split positions persist per
+document, and hosts too narrow for a useful Objects pane collapse it
+automatically while Find and the canvas selection vocabulary remain
+available.
+
 The 2D tile toolbox has captured gap-free Paint and Erase strokes, inclusive
 forward/reverse Rectangle painting with a non-destructive preview,
 four-connected Fill, and active-layer Pick. Escape rolls back a freehand stroke
@@ -360,7 +379,8 @@ subtrees, and is usable without a precision pointer drop. Object positions
 remain absolute, and internal hierarchy links survive duplicate and
 cross-scene paste. Dragging any selected object on the canvas moves the group
 while preserving offsets; duplicate and remove apply to the complete selection
-and preserve typed properties. While the Select button owns keyboard focus,
+and preserve typed properties. While the focused canvas surface (or the
+Select button) owns keyboard focus,
 Arrow keys move
 the selection by one pixel and Shift+Arrow moves it by one tile; inspector and
 hierarchy controls keep their native arrow behavior. The layout row aligns X
@@ -403,6 +423,21 @@ bounds each source to 16 MB, each
 decoded atlas to 4,194,304 pixels, and aggregate decoded/cached scene imagery to
 8,388,608 pixels. Missing, invalid, over-budget, or out-of-range frames retain a
 deterministic placeholder and contextual inspector status.
+
+The 3D editor is a three-pane workbench: a persistent left Hierarchy pane
+(search, full-height tree, parent/sibling controls), the center viewport, and
+a right Inspector with explicit Object | Scene tabs that auto-follow the
+selection: the Object tab scopes node groups to the selection (single-node
+groups — metadata, camera, collider, prefab instance, probe grid — need
+exactly one node), component groups appear only when the component is
+present on the selection, and an Add-component row creates the absent
+built-ins (Light, Material, and for single nodes Camera and Collider) with
+defaults as one undoable edit each, while the Scene tab owns imports, bake,
+environment, and the material library. The batch Visible and Static
+checkboxes both present truthful native mixed states for group selections. A manual tab choice holds until the next selection
+change. Both split positions persist per document, and hosts too narrow for
+a useful hierarchy pane collapse it automatically while Find and selection
+commands remain available.
 
 The 3D viewport is projection-switchable through one retained camera:
 perspective is the default and orthographic is one toggle away. Every overlay

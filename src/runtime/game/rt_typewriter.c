@@ -4,18 +4,24 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/game/rt_typewriter.c
+/// @file
+/// @brief Implements a millisecond-driven, UTF-8-aware text reveal effect.
 // Purpose: Character-by-character text reveal effect. Accumulates ms via
 //   Update(dt), revealing one character per rate_ms interval. GetVisibleText()
 //   returns a null-terminated substring of the source text. Skip() reveals all.
 //
 // Key invariants:
-//   - Full text is strdup'd; visible buffer is a separate copy.
+//   - Full text is copied into owned storage; the visible buffer is separate.
 //   - char_index tracks revealed bytes; visible_chars tracks revealed UTF-8 codepoints.
 //   - Update() returns 1 on the exact frame the byte index reaches strlen.
 //   - After completion, is_complete=1 and further Update() calls are no-ops.
+//   - Malformed UTF-8 bytes are revealed individually so input cannot stall.
 //
 // Ownership/Lifetime:
-//   - GC-managed via rt_obj_new_i64. Text buffers are heap-allocated.
+//   - The object is reference-counted via rt_obj_new_i64. Its registered
+//     finalizer releases both heap-allocated text buffers.
+//   - Text passed to Say is borrowed and copied. Text getters return newly
+//     owned runtime strings.
 //
 // Links: src/runtime/game/rt_typewriter.h
 //
@@ -28,21 +34,35 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Mutable reveal state stored in a Typewriter runtime object.
 struct rt_typewriter_impl {
+    /// Owned, null-terminated copy of the entire input text.
     char *full_text;
+    /// Owned, zero-filled buffer containing the currently revealed prefix.
     char *visible_buf;
+    /// Byte length of @ref full_text, excluding its null terminator.
     int64_t total_len;
+    /// Byte offset immediately after the revealed prefix.
     int64_t char_index;
+    /// Number of UTF-8 sequences in the complete input.
     int64_t total_chars;
+    /// Number of UTF-8 sequences copied into @ref visible_buf.
     int64_t visible_chars;
+    /// Milliseconds required to reveal one UTF-8 sequence.
     int64_t rate_ms;
+    /// Unconsumed update time in milliseconds.
     int64_t accum;
+    /// Nonzero while additional text can be revealed by Update.
     int8_t active;
+    /// Nonzero after an empty Say, Skip, or natural completion.
     int8_t complete;
 };
 
 /// @brief Safe-cast a handle to the Typewriter impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p tw is NULL.
+///        class-id mismatch.
+/// @param tw Borrowed candidate Typewriter handle.
+/// @param api Trap message identifying the calling API.
+/// @return Borrowed implementation pointer, or `NULL` when @p tw is `NULL`.
 static struct rt_typewriter_impl *checked_typewriter(void *tw, const char *api) {
     if (!tw)
         return NULL;
@@ -54,6 +74,7 @@ static struct rt_typewriter_impl *checked_typewriter(void *tw, const char *api) 
 }
 
 /// @brief GC finalizer: free the full-text and visible-text buffers.
+/// @param obj Typewriter implementation being finalized; `NULL` is ignored.
 static void typewriter_finalizer(void *obj) {
     struct rt_typewriter_impl *t = (struct rt_typewriter_impl *)obj;
     if (!t)
@@ -65,6 +86,8 @@ static void typewriter_finalizer(void *obj) {
 }
 
 /// @brief True if @p c is a UTF-8 continuation byte (10xxxxxx).
+/// @param c Byte to classify.
+/// @return `1` when the two most-significant bits are `10`; otherwise `0`.
 static int8_t typewriter_is_utf8_continuation(unsigned char c) {
     return (c & 0xC0u) == 0x80u;
 }
@@ -72,6 +95,11 @@ static int8_t typewriter_is_utf8_continuation(unsigned char c) {
 /// @brief Byte length (1–4) of the UTF-8 codepoint starting at @p index.
 /// @details Validates continuation bytes; malformed sequences fall back to 1
 ///          so the typewriter never stalls. 0 if @p index is out of range.
+/// @param text Borrowed byte string to inspect.
+/// @param index Zero-based byte offset of the candidate leading byte.
+/// @param len Number of readable bytes in @p text.
+/// @return Sequence length in bytes, `1` for malformed input, or `0` when no
+///         sequence starts at @p index.
 static int64_t typewriter_utf8_codepoint_len(const char *text, int64_t index, int64_t len) {
     if (!text || index < 0 || index >= len)
         return 0;
@@ -97,6 +125,11 @@ static int64_t typewriter_utf8_codepoint_len(const char *text, int64_t index, in
 
 /// @brief Count UTF-8 codepoints (not bytes) in the first @p len bytes of
 ///        @p text — used so reveal speed is per-character.
+/// @details Each malformed byte counts as one character, matching the reveal
+///          traversal performed by rt_typewriter_update().
+/// @param text Borrowed text buffer to traverse.
+/// @param len Number of bytes to inspect.
+/// @return Number of recognized UTF-8 sequences and malformed single bytes.
 static int64_t typewriter_utf8_char_count(const char *text, int64_t len) {
     int64_t count = 0;
     for (int64_t i = 0; i < len;) {
@@ -113,6 +146,8 @@ static int64_t typewriter_utf8_char_count(const char *text, int64_t len) {
 /// @details Reveals text one character at a time at a configurable rate, producing
 ///          the classic RPG dialogue effect. Use say() to load text, update() each
 ///          frame, and get_visible_text() to read the partially-revealed string.
+/// @return Owned idle Typewriter handle with a default 30-ms rate, or `NULL`
+///         when allocation fails.
 rt_typewriter rt_typewriter_new(void) {
     struct rt_typewriter_impl *t = (struct rt_typewriter_impl *)rt_obj_new_i64(
         RT_TYPEWRITER_CLASS_ID, (int64_t)sizeof(struct rt_typewriter_impl));
@@ -134,7 +169,10 @@ rt_typewriter rt_typewriter_new(void) {
     return t;
 }
 
-/// @brief Destroy a typewriter and free its text buffers.
+/// @brief Release one owned Typewriter reference.
+/// @details The object finalizer frees its text buffers when the final
+///          reference is released.
+/// @param tw Owned Typewriter handle to release; `NULL` is ignored.
 void rt_typewriter_destroy(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.Destroy: expected Zanna.Game.Typewriter");
@@ -143,6 +181,13 @@ void rt_typewriter_destroy(void *tw) {
 }
 
 /// @brief Load new text and begin the typewriter reveal at the given character rate.
+/// @details Copies @p text before replacing the prior buffers, resets all
+///          progress, and uses 30 ms when @p rate_ms is nonpositive. A null
+///          input is treated as empty text; empty text completes immediately.
+///          Allocation failure traps and leaves the previous state intact.
+/// @param tw Borrowed Typewriter handle to configure.
+/// @param text Borrowed null-terminated UTF-8 text; may be `NULL`.
+/// @param rate_ms Milliseconds per revealed UTF-8 sequence.
 void rt_typewriter_say(void *tw, const char *text, int64_t rate_ms) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.Say: expected Zanna.Game.Typewriter");
@@ -187,6 +232,13 @@ void rt_typewriter_say(void *tw, const char *text, int64_t rate_ms) {
 }
 
 /// @brief Advance the typewriter by dt milliseconds. Returns 1 if it just completed.
+/// @details Positive deltas accumulate with saturation. One UTF-8 sequence is
+///          copied for every complete rate interval, so a single call can
+///          reveal multiple characters and retains any sub-interval remainder.
+///          Null, inactive, completed, or nonpositive-delta calls are no-ops.
+/// @param tw Borrowed Typewriter handle to update.
+/// @param dt Elapsed milliseconds to add.
+/// @return `1` only if this call reveals the final character; otherwise `0`.
 int8_t rt_typewriter_update(void *tw, int64_t dt) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.Update: expected Zanna.Game.Typewriter");
@@ -222,6 +274,10 @@ int8_t rt_typewriter_update(void *tw, int64_t dt) {
 }
 
 /// @brief Instantly reveal all remaining text (skip the animation).
+/// @details Copies the entire stored text into the visible buffer, synchronizes
+///          byte and character counts, marks completion, and stops playback.
+///          An object with no loaded text is unchanged.
+/// @param tw Borrowed Typewriter handle to complete.
 void rt_typewriter_skip(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.Skip: expected Zanna.Game.Typewriter");
@@ -239,6 +295,10 @@ void rt_typewriter_skip(void *tw) {
 }
 
 /// @brief Clear all text and reset to the initial idle state.
+/// @details Frees both text buffers and clears progress and status flags. The
+///          most recently configured reveal rate is retained for internal
+///          state consistency but is replaced by the next Say call.
+/// @param tw Borrowed Typewriter handle to reset.
 void rt_typewriter_reset(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.Reset: expected Zanna.Game.Typewriter");
@@ -258,6 +318,9 @@ void rt_typewriter_reset(void *tw) {
 }
 
 /// @brief Get the currently revealed portion of the text.
+/// @param tw Borrowed Typewriter handle to query.
+/// @return Newly owned runtime string containing the visible prefix, or an
+///         owned empty string when no text is available.
 rt_string rt_typewriter_get_visible_text(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.GetVisibleText: expected Zanna.Game.Typewriter");
@@ -267,6 +330,9 @@ rt_string rt_typewriter_get_visible_text(void *tw) {
 }
 
 /// @brief Get the complete text that was loaded with say().
+/// @param tw Borrowed Typewriter handle to query.
+/// @return Newly owned runtime string containing the complete copied text, or
+///         an owned empty string when no text is available.
 rt_string rt_typewriter_get_full_text(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.GetFullText: expected Zanna.Game.Typewriter");
@@ -276,6 +342,8 @@ rt_string rt_typewriter_get_full_text(void *tw) {
 }
 
 /// @brief Check whether the typewriter is currently revealing text.
+/// @param tw Borrowed Typewriter handle to query.
+/// @return `1` while an incomplete nonempty text is active; otherwise `0`.
 int8_t rt_typewriter_is_active(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.IsActive: expected Zanna.Game.Typewriter");
@@ -283,6 +351,8 @@ int8_t rt_typewriter_is_active(void *tw) {
 }
 
 /// @brief Check whether all text has been fully revealed.
+/// @param tw Borrowed Typewriter handle to query.
+/// @return `1` after empty input, Skip, or natural completion; otherwise `0`.
 int8_t rt_typewriter_is_complete(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.IsComplete: expected Zanna.Game.Typewriter");
@@ -290,6 +360,11 @@ int8_t rt_typewriter_is_complete(void *tw) {
 }
 
 /// @brief Get the reveal progress as a percentage (0–100).
+/// @details Progress counts UTF-8 sequences rather than bytes and truncates
+///          fractional percentages. Completed empty text reports 100; an idle
+///          or reset object reports zero.
+/// @param tw Borrowed Typewriter handle to query.
+/// @return Reveal percentage in the inclusive range 0..100, or `0` for null.
 int64_t rt_typewriter_progress(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.Progress: expected Zanna.Game.Typewriter");
@@ -304,6 +379,8 @@ int64_t rt_typewriter_progress(void *tw) {
 }
 
 /// @brief Get the number of characters revealed so far.
+/// @param tw Borrowed Typewriter handle to query.
+/// @return Revealed UTF-8 sequence count, or `0` for null.
 int64_t rt_typewriter_char_count(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.CharCount: expected Zanna.Game.Typewriter");
@@ -311,6 +388,8 @@ int64_t rt_typewriter_char_count(void *tw) {
 }
 
 /// @brief Get the total number of characters in the loaded text.
+/// @param tw Borrowed Typewriter handle to query.
+/// @return Total UTF-8 sequence count, or `0` for null/unloaded text.
 int64_t rt_typewriter_total_chars(void *tw) {
     struct rt_typewriter_impl *t =
         checked_typewriter(tw, "Typewriter.TotalChars: expected Zanna.Game.Typewriter");

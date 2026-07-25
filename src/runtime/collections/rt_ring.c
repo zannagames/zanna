@@ -33,6 +33,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the fixed-capacity overwrite-on-full Ring collection.
+/// @details Logical order is always oldest to newest even when live elements
+///          wrap around the native pointer array. Rings default to retained
+///          ownership but may be configured as borrowing containers while
+///          empty; that mode controls GC traversal and element lifetime.
+
 #include "rt_ring.h"
 
 #include "rt_box.h"
@@ -46,6 +53,9 @@
 #include <string.h>
 
 /// @brief Ring buffer implementation structure.
+/// @details `head` names logical index zero. A logical index is translated by
+///          `(head + index) % capacity`; no separate tail field is needed
+///          because `count` determines the next write slot.
 typedef struct rt_ring_impl {
     void **vptr;          ///< Vtable pointer placeholder.
     void **items;         ///< Array of element pointers.
@@ -57,6 +67,9 @@ typedef struct rt_ring_impl {
 
 /// @brief Checked cast of an opaque handle to the RingBuffer implementation;
 ///        traps with @p what if @p obj is NULL or not a RingBuffer.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated Ring implementation, or `NULL` after trapping.
 static rt_ring_impl *as_ring(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_RING_CLASS_ID, sizeof(rt_ring_impl))) {
         rt_trap(what);
@@ -66,6 +79,7 @@ static rt_ring_impl *as_ring(void *obj, const char *what) {
 }
 
 /// @brief Drop one GC reference to a stored element and free it at zero.
+/// @param value Runtime object reference, or `NULL` for a no-op.
 static void ring_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
@@ -192,6 +206,7 @@ void *rt_ring_new(int64_t capacity) {
 }
 
 /// @brief Creates a new Ring with default capacity (16).
+/// @return New runtime-managed owning Ring with sixteen slots.
 void *rt_ring_new_default(void) {
     return rt_ring_new(16);
 }
@@ -296,6 +311,13 @@ int8_t rt_ring_is_full(void *obj) {
     return ring->count == ring->capacity;
 }
 
+/// @brief Select retained or borrowed element storage for an empty Ring.
+/// @details Mode changes are forbidden while elements are present because
+///          existing slots were inserted under the current retain contract.
+///          Null or invalid handles trap.
+/// @param obj Empty Ring to configure.
+/// @param owns Nonzero for retain/trace/release behavior; zero for raw
+///             borrowed pointers.
 void rt_ring_set_owns_elements(void *obj, int8_t owns) {
     rt_gc_mutator_enter();
     rt_ring_impl *ring = as_ring(obj, "Ring: invalid Ring object");
@@ -313,6 +335,9 @@ void rt_ring_set_owns_elements(void *obj, int8_t owns) {
     rt_gc_mutator_exit();
 }
 
+/// @brief Report whether a Ring retains and traces stored elements.
+/// @param obj Ring handle, or `NULL`.
+/// @return 1 in owning mode, otherwise 0; `NULL` reports 0.
 int8_t rt_ring_owns_elements(void *obj) {
     if (!obj)
         return 0;
@@ -350,7 +375,9 @@ int8_t rt_ring_owns_elements(void *obj) {
 /// @param elem The element pointer to add. May be NULL (NULL is a valid element).
 ///
 /// @note O(1) time complexity - no memory allocation or copying occurs.
-/// @note In owning mode, the Ring retains elem and releases an overwritten value.
+/// @note In owning mode, the Ring retains elem before releasing an overwritten
+///       value, so overwriting a slot with the same object is safe. Borrowing
+///       mode stores and discards raw pointers without lifetime operations.
 /// @note Thread safety: Not thread-safe. External synchronization required for
 ///       concurrent access.
 ///
@@ -483,8 +510,9 @@ void *rt_ring_pop(void *obj) {
 ///
 /// @note O(1) time complexity.
 /// @note The Ring retains ownership of the element. The returned pointer
-///       is only valid as long as the element remains in the Ring (i.e.,
-///       until it is popped, overwritten by push, or the Ring is cleared).
+///       receives no new retain and is only valid as long as its producer or
+///       the owning Ring keeps it alive (i.e., until it is popped, overwritten,
+///       cleared, or the Ring is collected).
 /// @note Thread safety: Not thread-safe. The returned pointer may become
 ///       invalid if another thread modifies the Ring.
 ///
@@ -539,7 +567,8 @@ void *rt_ring_peek(void *obj) {
 ///
 /// @note O(1) time complexity - direct array access with modular arithmetic.
 /// @note The Ring retains ownership of the element. The returned pointer
-///       is only valid as long as the element remains in the Ring.
+///       receives no new retain and is only valid as long as its producer or
+///       the owning Ring keeps it alive.
 /// @note Thread safety: Not thread-safe. Index validity may change if another
 ///       thread modifies the Ring.
 ///
@@ -619,6 +648,13 @@ void rt_ring_clear(void *obj) {
     rt_gc_mutator_exit();
 }
 
+/// @brief Check whether any live Ring element equals @p elem.
+/// @details Scans oldest to newest with `rt_box_equal`: boxed numeric/string
+///          values compare by content and ordinary runtime objects by identity.
+///          A null Ring reports absence.
+/// @param obj Ring handle, or `NULL`.
+/// @param elem Value to compare; may be `NULL`.
+/// @return 1 on the first match, otherwise 0.
 int8_t rt_ring_has(void *obj, void *elem) {
     if (!obj)
         return 0;
@@ -637,10 +673,19 @@ int8_t rt_ring_has(void *obj, void *elem) {
     return 0;
 }
 
+/// @brief Borrow the oldest Ring element.
+/// @details Equivalent to @ref rt_ring_peek; no element is removed or retained.
+/// @param obj Ring handle, or `NULL`.
+/// @return Borrowed oldest value, or `NULL` when empty/null/null-valued.
 void *rt_ring_first(void *obj) {
     return rt_ring_peek(obj);
 }
 
+/// @brief Borrow the newest Ring element.
+/// @details Computes logical index `count - 1` without modifying or retaining
+///          the stored value.
+/// @param obj Ring handle, or `NULL`.
+/// @return Borrowed newest value, or `NULL` when empty/null/null-valued.
 void *rt_ring_last(void *obj) {
     if (!obj)
         return NULL;
@@ -655,6 +700,11 @@ void *rt_ring_last(void *obj) {
     return ring->items[idx];
 }
 
+/// @brief Reverse the logical oldest-to-newest order in place.
+/// @details Swaps symmetric live slots through circular index translation.
+///          Capacity, head, count, ownership mode, and retain counts are
+///          unchanged. A null Ring or fewer than two values is a no-op.
+/// @param obj Ring to mutate, or `NULL`.
 void rt_ring_reverse(void *obj) {
     if (!obj)
         return;
@@ -681,6 +731,13 @@ void rt_ring_reverse(void *obj) {
     rt_gc_mutator_exit();
 }
 
+/// @brief Create a shallow Ring clone with independent storage.
+/// @details Preserves capacity, logical order, and ownership mode. An owning
+///          clone independently retains every value; a borrowing clone copies
+///          raw pointers. A null source produces an empty owning Ring of the
+///          minimum one-element capacity.
+/// @param obj Source Ring handle, or `NULL`.
+/// @return New runtime-managed Ring clone.
 void *rt_ring_clone(void *obj) {
     if (!obj)
         return rt_ring_new(1);

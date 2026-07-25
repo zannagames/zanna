@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_bits.c
+/// @file
+/// @brief Implements deterministic 64-bit scalar bit-manipulation operations.
+///
 // Purpose: Implements the Zanna.Bits namespace — low-level bit manipulation
 //          operations on 64-bit integers. Covers bitwise AND/OR/XOR/NOT,
 //          left/arithmetic-right/logical-right shifts, rotations, population

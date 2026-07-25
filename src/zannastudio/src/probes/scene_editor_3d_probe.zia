@@ -341,6 +341,29 @@ func main() {
              "transform shortcut escaped the focused node-name input");
         return;
     }
+    // The material group is presence-scoped, so give the node a default
+    // material through the Add-component path before focusing its picker;
+    // Undo restores the document after the focus-routing check.
+    var pickerChoice = 0;
+    var pickerChoiceFound = false;
+    while pickerChoice < editor.AddComponentChoiceCount()
+          and pickerChoiceFound == false {
+        if editor.AddComponentKindAt(pickerChoice)
+           == scene_editor_3d.ADD_COMPONENT_MATERIAL {
+            editor.addComponentDropdown.SetSelected(pickerChoice);
+            pickerChoiceFound = true;
+        } else {
+            pickerChoice = pickerChoice + 1;
+        }
+    }
+    if pickerChoiceFound == false
+       or editor.AddSelectedComponentChoice() == false
+       or editor.materialInspector.group.IsVisible() == false {
+        focusHarness.UnbindApp();
+        fail(shell, tempPath,
+             "Add component did not create a material for the picker check");
+        return;
+    }
     editor.materialInspector.colorPicker.Focus();
     focusHarness.SendKey("R", 0);
     focusHarness.DispatchPending();
@@ -361,6 +384,13 @@ func main() {
         focusHarness.UnbindApp();
         fail(shell, tempPath,
              "transform shortcut escaped the focused material map selector");
+        return;
+    }
+    // Restore the pre-material document now that the material-hosted focus
+    // checks are complete.
+    if editor.Undo() == false {
+        focusHarness.UnbindApp();
+        fail(shell, tempPath, "undoing the picker-check material failed");
         return;
     }
     editor.moveToolButton.Focus();
@@ -579,7 +609,7 @@ func main() {
        or editor.gizmoSnapEnabled
        or editor.CanUndo()
        or editor.compactInspectorShown
-       or near(editor.bodySplit.GetPosition(), 0.65) == false {
+       or near(editor.bodySplit.GetPosition(), 0.62) == false {
         fail(shell, tempPath,
              "new 3D tab inherited another scene's camera or history");
         return;
@@ -1762,7 +1792,8 @@ func main() {
     editor.Pump(sceneDoc);
     visibilityRevision = editor.GetRevision();
     editor.visibleCheck.SetChecked(true);
-    if editor.Pump(sceneDoc) == false
+    var visPumpChanged = editor.Pump(sceneDoc);
+    if visPumpChanged == false
        or editor.GetRevision() != visibilityRevision + 1
        or editor.flatNodes.get(0).Visible == false
        or editor.flatNodes.get(1).Visible == false
@@ -1771,7 +1802,12 @@ func main() {
        or editor.Undo() == false
        or sceneDoc.content != transformedContent {
         fail(shell, tempPath,
-             "3D mixed visibility did not resolve or undo atomically");
+             "3D mixed visibility did not resolve or undo atomically: "
+             + "pump=" + visPumpChanged
+             + " revision=" + editor.GetRevision() + "/"
+             + (visibilityRevision + 1)
+             + " v0=" + editor.flatNodes.get(0).Visible
+             + " v1=" + editor.flatNodes.get(1).Visible);
         return;
     }
     editor.SelectSceneNodes(groupSelection, 1);

@@ -34,6 +34,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime FIFO queue as a growable circular buffer.
+/// @details Queues start in borrowing mode and may be switched to
+///          retained-element ownership while empty. Both modes share FIFO
+///          indexing and growth; ownership mode controls GC traversal,
+///          retain/release work, and the lifetime of returned elements.
+
 #include "rt_collection_ids.h"
 
 #include "rt_box.h"
@@ -45,7 +52,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Number of pointer slots allocated for a new queue.
 #define QUEUE_DEFAULT_CAP 16
+/// @brief Multiplicative capacity increase applied to a full queue.
 #define QUEUE_GROWTH_FACTOR 2
 
 /// @brief Internal queue implementation structure (circular buffer).
@@ -84,11 +93,15 @@ typedef struct rt_queue_impl {
     int64_t head; ///< Index of first element (front of queue)
     int64_t tail; ///< Index where next element will be inserted (back of queue)
     void **items; ///< Circular buffer of element pointers
+    /// @brief Whether live slots retain, release, and participate in GC traversal.
     int8_t owns_elements;
 } rt_queue_impl;
 
 /// @brief Checked cast of an opaque handle to the Queue implementation;
 ///        traps with @p what if @p obj is NULL or not a Queue.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated queue implementation, or `NULL` after trapping.
 static rt_queue_impl *as_queue(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_QUEUE_CLASS_ID, sizeof(rt_queue_impl))) {
         rt_trap(what);
@@ -98,6 +111,7 @@ static rt_queue_impl *as_queue(void *obj, const char *what) {
 }
 
 /// @brief Drop one GC reference to a stored element and free it at zero.
+/// @param value Runtime object reference, or `NULL` for a no-op.
 static void queue_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
@@ -106,13 +120,13 @@ static void queue_release_value(void *value) {
 /// @brief Finalizer callback invoked when a Queue is garbage collected.
 ///
 /// This function is automatically called by Zanna's garbage collector when a
-/// Queue object becomes unreachable. It frees the internal items array to
-/// prevent memory leaks.
+/// Queue object becomes unreachable. In owning mode it releases every live
+/// circular-buffer slot before freeing the internal items array.
 ///
 /// @param obj Pointer to the Queue object being finalized. May be NULL (no-op).
 ///
-/// @note The Queue does NOT own the elements it contains. Elements are not
-///       freed during finalization - they must be managed separately.
+/// @note Borrowing queues never retain or release their elements. Owning
+///       queues release all still-enqueued values during finalization.
 /// @note This function is idempotent - safe to call on already-finalized queues.
 ///
 /// @see rt_queue_clear For removing elements without finalization
@@ -140,6 +154,9 @@ static void rt_queue_finalize(void *obj) {
 
 /// @brief GC traversal: visit every live element in the circular buffer
 ///        (only when the queue owns its elements).
+/// @param obj Queue whose live slots are to be traced.
+/// @param visitor Collector callback invoked in front-to-back order.
+/// @param ctx Opaque collector context forwarded unchanged.
 static void rt_queue_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -166,6 +183,8 @@ static void rt_queue_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// ```
 ///
 /// @param q Pointer to the queue implementation. Must not be NULL.
+/// @return 1 after publishing the doubled linear allocation, or 0 after
+///         trapping while leaving the old allocation intact.
 ///
 /// @note Capacity doubles each time (QUEUE_GROWTH_FACTOR = 2).
 /// @note Traps on memory allocation failure.
@@ -232,7 +251,9 @@ static int queue_grow(rt_queue_impl *q) {
 ///         return if memory allocation fails.
 ///
 /// @note Initial capacity is 16 elements (QUEUE_DEFAULT_CAP).
-/// @note The Queue does not own the elements stored in it.
+/// @note A new Queue starts in borrowing mode; call
+///       @ref rt_queue_set_owns_elements while it is empty to enable retained
+///       ownership.
 /// @note Thread safety: Not thread-safe. External synchronization required.
 ///
 /// @see rt_queue_push For adding elements
@@ -265,6 +286,12 @@ void *rt_queue_new(void) {
     return q;
 }
 
+/// @brief Select borrowing or retained-element ownership for an empty queue.
+/// @details Ownership cannot change while any value is enqueued because doing
+///          so would retroactively alter retain and traversal obligations. A
+///          null queue is a no-op.
+/// @param obj Queue to configure, or `NULL`.
+/// @param owns Nonzero to retain/trace/release elements; zero to borrow them.
 void rt_queue_set_owns_elements(void *obj, int8_t owns) {
     if (!obj)
         return;
@@ -284,6 +311,9 @@ void rt_queue_set_owns_elements(void *obj, int8_t owns) {
     rt_gc_mutator_exit();
 }
 
+/// @brief Report whether a queue retains and traces its elements.
+/// @param obj Queue handle, or `NULL`.
+/// @return 1 for retained-element ownership, otherwise 0; `NULL` reports 0.
 int8_t rt_queue_owns_elements(void *obj) {
     if (!obj)
         return 0;
@@ -353,7 +383,8 @@ int8_t rt_queue_is_empty(void *obj) {
 /// @param elem The element to add. May be NULL (NULL is a valid element).
 ///
 /// @note O(1) amortized time complexity. Occasional O(n) when resizing occurs.
-/// @note The Queue does not take ownership of elem.
+/// @note Borrowing queues store @p elem without retaining it. Owning queues
+///       retain non-null elements until pop, clear, or finalization.
 /// @note Traps with "Queue.Add: null queue" if obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -414,7 +445,9 @@ void rt_queue_push(void *obj, void *elem) {
 /// @return The element that was at the front of the Queue.
 ///
 /// @note O(1) time complexity.
-/// @note The Queue releases its reference - caller now owns the element.
+/// @note For an owning queue, the returned value carries a caller-owned retain.
+///       For a borrowing queue, it is the same raw borrowed pointer that was
+///       pushed and receives no lifetime extension.
 /// @note Traps if the Queue is empty or obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -477,8 +510,10 @@ void *rt_queue_pop(void *obj) {
 /// @return The element at the front of the Queue (not removed).
 ///
 /// @note O(1) time complexity.
-/// @note The Queue retains ownership - the returned pointer is only valid
-///       as long as the element remains in the Queue.
+/// @note No additional retain is created in either mode. In an owning queue,
+///       the queue's stored retain keeps the pointer valid only while the
+///       element remains enqueued; in borrowing mode the producer controls
+///       lifetime throughout.
 /// @note Traps if the Queue is empty or obj is NULL.
 /// @note Thread safety: Not thread-safe.
 ///
@@ -513,12 +548,12 @@ void *rt_queue_peek(void *obj) {
 /// - Head and tail reset to 0
 /// - is_empty returns true
 /// - Capacity unchanged (no reallocation)
-/// - All element references are forgotten (not freed)
+/// - Owning queues release all live elements; borrowing queues forget pointers
 ///
 /// @param obj Pointer to a Queue object. If NULL, this is a no-op.
 ///
-/// @note O(1) time complexity - just resets the indices.
-/// @note The Queue does NOT free the elements.
+/// @note O(1) for borrowing queues and O(n) for owning queues because owned
+///       references must be released.
 /// @note Thread safety: Not thread-safe.
 ///
 /// @see rt_queue_finalize For complete cleanup
@@ -549,9 +584,12 @@ void rt_queue_clear(void *obj) {
     rt_gc_mutator_exit();
 }
 
-/// @brief Check if the queue contains a given element (pointer equality).
-/// @param obj Opaque Queue object pointer.
-/// @param elem Element to search for.
+/// @brief Check whether any queued element equals @p elem.
+/// @details Scans front to back with `rt_box_equal`: boxed numeric/string
+///          values compare by content and ordinary object handles by identity.
+///          A null queue reports absence.
+/// @param obj Queue handle, or `NULL`.
+/// @param elem Value to compare; may be `NULL`.
 /// @return 1 if found, 0 otherwise.
 int8_t rt_queue_has(void *obj, void *elem) {
     if (!obj)
@@ -566,8 +604,11 @@ int8_t rt_queue_has(void *obj, void *elem) {
 }
 
 /// @brief Pop the front element, or return NULL if empty (no trap).
-/// @param obj Opaque Queue object pointer.
-/// @return The removed element, or NULL if empty.
+/// @details Result ownership matches @ref rt_queue_pop: owning queues return a
+///          caller-retained value, borrowing queues return the raw stored
+///          pointer. A stored `NULL` is ambiguous with an empty queue.
+/// @param obj Queue handle, or `NULL`.
+/// @return Removed front value, or `NULL` if empty/null/null-valued.
 void *rt_queue_try_pop(void *obj) {
     if (!obj)
         return NULL;
@@ -598,8 +639,9 @@ void *rt_queue_try_pop(void *obj) {
 ///          queue contains a literal NULL value, the result is `Some(NULL)`.
 ///          For owning queues, the temporary retained transfer from
 ///          @ref rt_queue_try_pop is released after the Option has retained it.
-/// @param obj Opaque Queue object pointer.
-/// @return `Some(value)` when an element is removed, otherwise `None`.
+/// @param obj Queue handle, or `NULL`.
+/// @return New runtime-managed `Some(value)` when an element is removed,
+///         otherwise `None`.
 void *rt_queue_try_pop_option(void *obj) {
     if (!obj)
         return rt_option_none();
@@ -620,9 +662,12 @@ void *rt_queue_try_pop_option(void *obj) {
 ///
 /// Allocates a new Queue and pushes all elements from the source in
 /// front-to-back order, preserving the original queue ordering.
+/// The clone preserves ownership mode: an owning clone independently retains
+/// every value, while a borrowing clone copies only raw pointers.
 ///
-/// @param obj Source Queue pointer (may be NULL).
-/// @return New Queue with the same elements, or empty queue if NULL.
+/// @param obj Source Queue handle, or `NULL`.
+/// @return New runtime-managed Queue with the same mode/order, or an empty
+///         borrowing queue for `NULL`.
 void *rt_queue_clone(void *obj) {
     void *result = rt_queue_new();
     if (!obj)

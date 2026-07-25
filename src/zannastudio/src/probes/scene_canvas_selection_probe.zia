@@ -251,6 +251,84 @@ func main() {
         return;
     }
 
+    // The canvas is a real focusable surface: clicks grant it keyboard
+    // focus, and a standalone Escape (no captured gesture on the same key
+    // edge) clears the selection workspace-only.
+    if editor.canvasImage.IsFocused() == false {
+        Fail(shell, harness, "canvas click did not grant surface focus");
+        return;
+    }
+    editor.SelectSceneObjects([0, 1], 1);
+    harness.SendKey("escape", 0);
+    harness.DispatchPending();
+    if editor.Pump(sceneDoc)
+       or editor.selectedObjects.count() != 0
+       or sceneDoc.content != canonical
+       or editor.GetRevision() != revision {
+        Fail(shell, harness,
+             "focused-canvas Escape did not clear selection workspace-only: "
+             + "selected=" + editor.selectedObjects.count());
+        return;
+    }
+
+    // Selection-scoped inspector: object fields appear only with selected
+    // objects while scene-scoped groups stay with the loaded scene. Scoping
+    // is pure presentation. Poll first so the consumed Escape edge above
+    // cannot re-clear the selection on the next pump.
+    shell.Poll();
+    if editor.objectFieldsLabel.IsVisible()
+       or editor.objectTypeInput.IsVisible()
+       or editor.tilesetInspector.group.IsVisible() == false
+       or editor.sceneProperties.group.IsVisible() == false {
+        Fail(shell, harness,
+             "empty selection did not scope the 2D inspector");
+        return;
+    }
+    editor.SelectSceneObjects([0], 0);
+    editor.Pump(sceneDoc);
+    if editor.objectFieldsLabel.IsVisible() == false
+       or editor.objectTypeInput.IsVisible() == false
+       or editor.objectPropertyList.IsVisible() == false
+       or sceneDoc.content != canonical
+       or editor.GetRevision() != revision {
+        Fail(shell, harness,
+             "object selection did not reveal 2D object fields");
+        return;
+    }
+
+    // Live position editing: a differing X value commits exactly one
+    // canonical transaction once the spinners are unfocused, and Undo
+    // restores the exact prior bytes. Echo values commit nothing.
+    editor.SelectSceneObjects([0], 0);
+    editor.Pump(sceneDoc);
+    var liveBaseline = sceneDoc.content;
+    var liveRevision = editor.GetRevision();
+    editor.objectXSpinner.SetValue(editor.objectXSpinner.Value);
+    if editor.Pump(sceneDoc)
+       or editor.GetRevision() != liveRevision {
+        Fail(shell, harness,
+             "an unchanged 2D spinner echo created a live-edit commit");
+        return;
+    }
+    var liveTargetX =
+        Convert.NumToInt(editor.objectXSpinner.Value) + 32;
+    editor.objectXSpinner.SetValue(liveTargetX);
+    if editor.Pump(sceneDoc) == false
+       or editor.GetRevision() != liveRevision + 1
+       or editor.scene.ObjectX(0) != liveTargetX
+       or sceneDoc.content == liveBaseline {
+        Fail(shell, harness,
+             "a differing 2D X value did not live-commit once: revision="
+             + editor.GetRevision() + "/" + (liveRevision + 1)
+             + " x=" + editor.scene.ObjectX(0) + "/" + liveTargetX);
+        return;
+    }
+    if editor.Undo() == false or sceneDoc.content != liveBaseline {
+        Fail(shell, harness,
+             "undoing the 2D live position edit did not restore exact bytes");
+        return;
+    }
+
     harness.UnbindApp();
     shell.Destroy();
     Terminal.Say("RESULT: ok");

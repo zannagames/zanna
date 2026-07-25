@@ -6,31 +6,32 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_string_ops.c
-// Purpose: Core string operations for the Zanna runtime. Contains memory
-//   management (alloc, refcount, retain/release), basic operations (concat,
-//   substr, left/right/mid), searching (index_of, instr), trimming, case
-//   conversion (ucase/lcase), and comparison operators. Extended operations
-//   live in rt_string_advanced.c and rt_string_specialized.c.
+// Purpose: Implements live-handle registration, allocation and atomic
+// reference counting, byte-string construction/slicing/search/trimming,
+// UTF-8-codepoint Mid operations, ASCII case conversion, and comparisons.
 //
 // Key invariants:
-//   - Runtime strings are reference-counted; literal and embedded (SSO) strings
-//     may have immortal refcounts (SIZE_MAX-1) and are never freed.
-//   - All intrinsics trap on NULL or invalid arguments rather than returning
-//     error codes, matching VM behaviour precisely.
-//   - Slice operations (Left/Mid/Right) produce new heap-backed strings; they
-//     never alias into the source string's storage.
+//   - Every live handle is present in a synchronized open-addressed registry
+//     before generic validation may recognize it.
+//   - Embedded/literal counts and heap-header counts are updated atomically;
+//     immortal sentinels do not change.
+//   - Null policy is operation-specific: strict BASIC slices trap, length treats
+//     null as empty, searches miss, and comparison operators define explicit
+//     boolean fallbacks.
+//   - String-returning slices never alias a partial source buffer. They allocate
+//     a copy, retain a full source, or return the immortal empty singleton.
 //   - Case conversion is byte-level ASCII; multi-byte UTF-8 sequences are passed
 //     through unchanged.
-//   - String lengths are reported in bytes, not Unicode code points.
-//   - rt_str_flip() is the sole codepoint-aware operation: it walks the string
-//     using utf8_char_len() (1-4 byte sequences) and reverses whole codepoints.
-//   - See rt_string.h "Encoding & indexing" for the full byte-indexing contract.
+//   - Stored lengths, Left/Right/Substr, and search indices are byte-based.
+//     Mid/MidLen convert one-based codepoint positions through strict UTF-8.
 //
 // Ownership/Lifetime:
-//   - Functions that return rt_string transfer a new reference to the caller;
-//     the caller must call rt_string_unref when finished.
-//   - Functions that accept rt_string borrow the reference; they do not retain
-//     or release the input.
+//   - Every returned rt_string transfers one owned claim, whether newly
+//     allocated, retained, reused, or immortal.
+//   - Inputs are borrowed except rt_str_concat, which normally consumes one
+//     ownership claim from each operand.
+//   - Final release clears weak references, unregisters the handle, and frees
+//     wrapper/payload storage according to its representation.
 //
 // Links: src/runtime/core/rt_string_internal.h (shared helpers),
 //        src/runtime/core/rt_string_advanced.c (extended operations),
@@ -38,6 +39,8 @@
 //        src/runtime/core/rt_string.h (rt_string type and ref-counting API)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Core runtime string registry, ownership, slicing, and comparison.
 
 #include "rt_gc.h"
 #include "rt_int_format.h"
@@ -85,6 +88,8 @@ static rt_string_registry_t g_string_registry_;
 // ---------------------------------------------------------------------------
 
 /// @brief Splittable-mix64 hash for a pointer-sized value (Stafford variant 13).
+/// @param p Pointer value to mix; may be NULL.
+/// @return Deterministic 64-bit hash of the pointer representation.
 static uint64_t rt_string_ptr_hash_(const void *p) {
     uint64_t v = (uint64_t)(uintptr_t)p;
     v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -93,6 +98,8 @@ static uint64_t rt_string_ptr_hash_(const void *p) {
 }
 
 /// @brief Acquire the registry spinlock; yields the OS thread on contention.
+/// @details Uses acquire ordering so subsequent registry reads observe all
+///          writes published before the previous release.
 static void rt_string_registry_lock_(void) {
     if (__atomic_test_and_set(&g_string_registry_.lock, __ATOMIC_ACQUIRE)) {
         do {
@@ -106,21 +113,26 @@ static void rt_string_registry_lock_(void) {
 }
 
 /// @brief Release the registry spinlock.
+/// @details Uses release ordering to publish completed registry mutations.
 static void rt_string_registry_unlock_(void) {
     __atomic_clear(&g_string_registry_.lock, __ATOMIC_RELEASE);
 }
 
 /// @brief Slot-state predicate — true unless the slot is empty or a tombstone.
+/// @param slot Registry slot value to classify.
+/// @return One only for a live string pointer.
 static int rt_string_registry_slot_is_live_(rt_string slot) {
     return slot != RT_STRING_REG_EMPTY && slot != RT_STRING_REG_TOMBSTONE;
 }
 
 /// @brief Reallocate the registry to at least `min_capacity` slots and rehash live entries.
-///
-/// Capacity is always a power of two so the modulo can be a bitwise
-/// AND. Rehashing during growth also drops tombstones, so the load
-/// factor stays bounded.
-/// @return 1 on success, 0 on alloc failure / size overflow.
+/// @details Starts at 256 or doubles current capacity, then keeps doubling to
+///          satisfy @p min_capacity. Capacity remains a power of two so probing
+///          uses a mask. Live pointers are rehashed and tombstones discarded;
+///          failure leaves the existing registry unchanged.
+/// @param min_capacity Minimum requested slot count.
+/// @return One on success, or zero on allocation/size overflow.
+/// @pre The caller holds the registry lock.
 static int rt_string_registry_grow_locked_(size_t min_capacity) {
     size_t new_capacity = 256;
     if (g_string_registry_.capacity) {
@@ -159,6 +171,10 @@ static int rt_string_registry_grow_locked_(size_t min_capacity) {
 }
 
 /// @brief Grow if needed to keep load factor < 5/8 (count + tombstones / capacity).
+/// @details Accounts for the pending insertion and initializes an absent table.
+/// @return One when an insertion slot can be sought, or zero on arithmetic,
+///         capacity, or allocation failure.
+/// @pre The caller holds the registry lock.
 static int rt_string_registry_ensure_capacity_locked_(void) {
     if (g_string_registry_.capacity == 0)
         return rt_string_registry_grow_locked_(256);
@@ -175,7 +191,12 @@ static int rt_string_registry_ensure_capacity_locked_(void) {
 }
 
 /// @brief Add `s` to the registry. Tracks the first tombstone so re-insertions reuse it.
-/// @return 1 on success (or already present), 0 on grow failure.
+/// @details Null and already-present handles succeed without mutation. Linear
+///          probing remembers the first tombstone but continues until an empty
+///          slot confirms the pointer was not already registered.
+/// @param s Live handle to add; may be NULL.
+/// @return One on success/already-present input, or zero on growth failure.
+/// @pre The caller holds the registry lock.
 static int rt_string_registry_insert_locked_(rt_string s) {
     if (!s)
         return 1;
@@ -205,6 +226,8 @@ static int rt_string_registry_insert_locked_(rt_string s) {
 
 /// @brief Replace `s`'s slot with a tombstone — preserves probe sequences without needing to
 /// rehash.
+/// @param s Handle to remove; null and absent values are ignored.
+/// @pre The caller holds the registry lock.
 static void rt_string_registry_remove_locked_(rt_string s) {
     if (!s || !g_string_registry_.slots || g_string_registry_.capacity == 0)
         return;
@@ -225,6 +248,9 @@ static void rt_string_registry_remove_locked_(rt_string s) {
 }
 
 /// @brief Probe the registry for `s`. Returns 1 if found, 0 otherwise.
+/// @param s Candidate handle pointer.
+/// @return One when the exact pointer occupies a live slot; otherwise zero.
+/// @pre The caller holds the registry lock.
 static int rt_string_registry_contains_locked_(const rt_string s) {
     if (!s || s == RT_STRING_REG_TOMBSTONE || !g_string_registry_.slots ||
         g_string_registry_.capacity == 0)
@@ -241,8 +267,11 @@ static int rt_string_registry_contains_locked_(const rt_string s) {
     }
 }
 
-/// @brief Public: register a managed string handle so `rt_string_is_handle` returns true for it.
-/// Traps if registry alloc fails — the runtime can't recover from this.
+/// @brief Register a managed handle for later safe type validation.
+/// @details Serializes insertion into the global pointer set. Null and duplicate
+///          handles are no-ops. Growth failure traps only after releasing the
+///          lock.
+/// @param s Live runtime string handle; may be NULL.
 void rt_string_register_handle(rt_string s) {
     if (!s)
         return;
@@ -253,7 +282,9 @@ void rt_string_register_handle(rt_string s) {
         rt_trap("rt_string_register_handle: registry alloc");
 }
 
-/// @brief Public: unregister a string handle when its memory is being freed.
+/// @brief Unregister a string handle before freeing its wrapper.
+/// @details Removes under the registry lock; null or absent handles are no-ops.
+/// @param s Handle being destroyed; may be NULL.
 void rt_string_unregister_handle(rt_string s) {
     if (!s)
         return;
@@ -263,7 +294,11 @@ void rt_string_unregister_handle(rt_string s) {
 }
 
 /// @brief Free the registry's backing storage at runtime shutdown.
-/// After this, `rt_string_is_handle` becomes effectively useless until re-init.
+/// @details Clears slots, live/tombstone counts, and capacity under the lock.
+///          Later registration can lazily allocate a new table, but existing
+///          live handles are not automatically re-registered.
+/// @warning Requires runtime-wide quiescence: no concurrent validation or
+///          registry mutation may race with shutdown.
 void rt_string_registry_shutdown(void) {
     rt_string_registry_lock_();
     free(g_string_registry_.slots);
@@ -279,8 +314,9 @@ void rt_string_registry_shutdown(void) {
 ///          Returns `NULL` for literal strings and embedded (SSO) strings that
 ///          are not backed by the shared heap. Corrupt heap-backed strings trap
 ///          and return NULL if the trap hook recovers.
-/// @param s Runtime string handle.
-/// @return Heap header describing the allocation, or `NULL` for literals/embedded.
+/// @param s Borrowed runtime string; may be NULL.
+/// @return Borrowed heap header for heap-backed storage, or `NULL` for null,
+///         literal, embedded, invalid, or corrupt input.
 static rt_heap_hdr_t *rt_string_header(rt_string s) {
     if (!s)
         return NULL;
@@ -301,9 +337,11 @@ static rt_heap_hdr_t *rt_string_header(rt_string s) {
 /// @details Handles literal strings, embedded (SSO) strings, and heap-backed
 ///          strings. Literal and embedded strings store the length in literal_len,
 ///          while heap-backed strings derive the length from the heap header.
-///          Null handles yield zero, allowing callers to treat them as empty.
-/// @param s Runtime string handle.
-/// @return Number of bytes in the string, excluding the terminator.
+///          Null yields zero. Invalid or corrupt handles trap before a fallback
+///          return if the configured trap mechanism permits recovery.
+/// @param s Borrowed runtime string; may be NULL.
+/// @return Stored byte count excluding the trailing terminator, or zero for
+///         null/returning-validation fallback.
 size_t rt_string_len_bytes(rt_string s) {
     if (!s)
         return 0;
@@ -322,8 +360,9 @@ size_t rt_string_len_bytes(rt_string s) {
 /// @brief Determine whether a heap-backed string should never be freed.
 /// @details Immortal strings use a sentinel reference count so they can be
 ///          shared globally without participating in retain/release bookkeeping.
-/// @param hdr Heap header describing the string allocation.
-/// @return Non-zero when the header marks an immortal allocation.
+/// @param hdr Borrowed heap header; may be NULL.
+/// @return One when its atomically loaded count is at least the immortal
+///         sentinel; otherwise zero.
 static int rt_string_is_immortal_hdr(const rt_heap_hdr_t *hdr) {
     if (!hdr)
         return 0;
@@ -336,9 +375,9 @@ static int rt_string_is_immortal_hdr(const rt_heap_hdr_t *hdr) {
 ///          - Reference count is exactly 1 (sole owner)
 ///          - String is not immortal
 ///          - Capacity is sufficient for the required length
-/// @param s Runtime string handle.
-/// @param required_len Total length required (including null terminator capacity).
-/// @return Non-zero if in-place append is possible.
+/// @param s Borrowed candidate left operand; may be NULL.
+/// @param required_len Required total capacity including terminator space.
+/// @return One only when safe in-place mutation is possible.
 static int rt_string_can_append_inplace(rt_string s, size_t required_len) {
     rt_heap_hdr_t *hdr = rt_string_header(s);
     if (!hdr)
@@ -357,10 +396,11 @@ static int rt_string_can_append_inplace(rt_string s, size_t required_len) {
 /// @brief Allocate a runtime string with embedded data storage.
 /// @details For small strings, this allocates the handle and string data in a
 ///          single allocation, with the data following immediately after the
-///          rt_string_impl struct. This eliminates one heap allocation compared
-///          to the traditional two-allocation approach.
+///          rt_string_impl struct. Initializes metadata, a mortal reference
+///          count of one, and the trailing NUL, then registers the handle.
+///          Payload bytes before @p len remain uninitialized.
 /// @param len Number of bytes in the string (must be <= RT_SSO_MAX_LEN).
-/// @return Newly allocated embedded string, or NULL on failure.
+/// @return Owned registered embedded string, or `NULL` after allocation failure.
 static rt_string rt_string_alloc_embedded(size_t len) {
     assert(len <= RT_SSO_MAX_LEN);
     // Allocate struct + string data + null terminator in one block
@@ -383,10 +423,11 @@ static rt_string rt_string_alloc_embedded(size_t len) {
 
 /// @brief Wrap a raw heap payload in a runtime string handle.
 /// @details Allocates the small @ref rt_string structure that tracks the payload
-///          pointer and associated metadata.  Callers must supply a payload
-///          produced by @ref rt_heap_alloc.
-/// @param payload Heap-allocated, null-terminated character buffer.
-/// @return Runtime string handle owning the payload, or `NULL` on error.
+///          pointer and associated metadata, then registers it. On wrapper
+///          allocation failure the function traps and releases @p payload.
+/// @param payload Owned string-kind allocation produced by @ref rt_heap_alloc;
+///        may be NULL.
+/// @return Owned registered wrapper, or `NULL` for null input or failure.
 static rt_string rt_string_wrap(char *payload) {
     if (!payload)
         return NULL;
@@ -412,11 +453,12 @@ static rt_string rt_string_wrap(char *payload) {
 /// @details Uses embedded allocation for small strings (len <= RT_SSO_MAX_LEN),
 ///          otherwise uses the shared heap allocator. Ensures the capacity
 ///          accounts for a trailing null terminator, and traps on overflow or
-///          allocation failure. The payload is zero-terminated before being
-///          wrapped.
-/// @param len Number of bytes initially considered part of the string.
-/// @param cap Requested capacity (bytes) excluding the implicit terminator.
-/// @return Newly allocated runtime string handle, or `NULL` on failure.
+///          allocation failure. Only `data[len]` is initialized; callers must
+///          fill the preceding payload bytes before exposing the result.
+/// @param len Initial stored byte length.
+/// @param cap Requested total capacity including terminator space; values below
+///        `len + 1` are normalized upward.
+/// @return Owned registered string handle, or `NULL` after failure.
 rt_string rt_string_alloc(size_t len, size_t cap) {
     if (len >= SIZE_MAX) {
         rt_trap("rt_string_alloc: length overflow");
@@ -440,9 +482,11 @@ rt_string rt_string_alloc(size_t len, size_t cap) {
 
 /// @brief Return a shared handle representing the empty string.
 /// @details Lazily initialises an immortal heap allocation so every caller
-///          receives the same handle.  The immortal reference count avoids
-///          ref-count churn and allows the handle to be cached globally.
-/// @return Runtime string handle that points at an empty immutable string.
+///          receives the same handle. Atomic compare/exchange publishes one
+///          candidate; a racing loser unregisters and releases its candidate.
+///          The immortal reference count makes later retain/release calls
+///          no-ops.
+/// @return Shared registered empty handle, or `NULL` after allocation failure.
 rt_string rt_empty_string(void) {
     static rt_string empty = NULL;
 #if RT_COMPILER_MSVC
@@ -503,12 +547,14 @@ rt_string rt_empty_string(void) {
 }
 
 /// @brief Allocate a runtime string from a byte span.
-/// @details Copies @p len bytes from @p bytes into a freshly allocated string
-///          and ensures the payload is null-terminated.  A null input pointer is
-///          treated as an empty span.
-/// @param bytes Pointer to the source data.
+/// @details Copies arbitrary bytes, including embedded NUL and malformed UTF-8,
+///          then writes a distinct trailing terminator. Null is accepted only
+///          for a zero-length span. Even zero length uses an ordinary mortal
+///          allocation rather than the shared empty singleton.
+/// @param bytes Borrowed source span; may be NULL only when @p len is zero.
 /// @param len Number of bytes to copy.
-/// @return Newly allocated runtime string containing the copied bytes.
+/// @return Newly allocated owned string, or `NULL` after validation,
+///         overflow, registry, or allocation failure.
 rt_string rt_string_from_bytes(const char *bytes, size_t len) {
     if (len >= SIZE_MAX) {
         rt_trap("rt_string_alloc: length overflow");
@@ -528,18 +574,22 @@ rt_string rt_string_from_bytes(const char *bytes, size_t len) {
 }
 
 /// @brief Create a runtime string from a string literal.
-/// @details Wrapper for rt_str_from_bytes for x86_64 codegen.
-/// @param bytes Pointer to the literal data.
-/// @param len Number of bytes in the literal.
-/// @return Runtime string containing the literal data.
+/// @details ABI wrapper around @ref rt_string_from_bytes used by generated
+///          code. Despite its name, it copies the span into an ordinary mortal
+///          string and does not retain a literal pointer.
+/// @param bytes Borrowed literal byte span.
+/// @param len Number of literal bytes to copy.
+/// @return Newly allocated owned copied string, or `NULL` on failure.
 rt_string rt_str_from_lit(const char *bytes, size_t len) {
     return rt_string_from_bytes(bytes, len);
 }
 
-/// @brief Public predicate: is `p` a registered managed-string pointer?
-///
-/// Used at language boundaries where a `void*` could be either a
-/// real string or a raw object — the registry lookup tells them apart.
+/// @brief Test whether @p p is a currently registered runtime string.
+/// @details Looks up the exact pointer under the registry lock and reads its
+///          magic only while protected. Null, the internal tombstone sentinel,
+///          absent pointers, and wrong-magic handles return false.
+/// @param p Candidate opaque pointer; may be NULL.
+/// @return One only for a registered handle with string magic.
 int8_t rt_string_is_handle(const void *p) {
     if (!p || p == (const void *)RT_STRING_REG_TOMBSTONE)
         return 0;
@@ -558,9 +608,12 @@ int8_t rt_string_is_handle(const void *p) {
 /// @details Literal and embedded (SSO) strings track a reference counter inside
 ///          the handle (literal_refs), while heap-backed strings delegate to
 ///          @ref rt_heap_retain. Immortal strings skip reference updates entirely.
-///          Uses atomic operations for thread-safe reference counting (RACE-003 fix).
-/// @param s Runtime string handle.
-/// @return The same handle for chaining.
+///          Mortal inline counters are atomically incremented without crossing
+///          the reserved immortal range. Invalid/released handles and count
+///          overflow trap.
+/// @param s Borrowed live handle to retain; may be NULL.
+/// @return The same handle with one additional owned reference, NULL for null
+///         input, or `NULL` after a returning retain trap.
 rt_string rt_string_ref(rt_string s) {
     if (!s)
         return NULL;
@@ -603,9 +656,12 @@ rt_string rt_string_ref(rt_string s) {
 ///          counts or calling @ref rt_heap_release for heap-backed strings. When
 ///          the final reference disappears the wrapper structure is freed. For
 ///          embedded (SSO) strings, this frees the combined handle+data allocation.
-///          Uses atomic operations for thread-safe reference counting (RACE-003 fix).
-/// @param s Runtime string handle to release.
-/// @return Reference count immediately after the decrement; SIZE_MAX for immortal strings.
+///          Final release uses acquire/release ordering, clears weak references,
+///          and unregisters before freeing. Immortal and null handles are
+///          unchanged.
+/// @param s Owned live reference to release; may be NULL.
+/// @return Count immediately after release, zero for null/final/already-zero
+///         state, or `SIZE_MAX` for immortal storage.
 size_t rt_string_unref_count(rt_string s) {
     if (!s)
         return 0;
@@ -665,14 +721,17 @@ size_t rt_string_unref_count(rt_string s) {
 }
 
 /// @brief Release a reference to a runtime string handle.
+/// @details Discards the post-release count from
+///          @ref rt_string_unref_count. Null and immortal handles are no-ops.
+/// @param s Owned live reference to release; may be NULL.
 void rt_string_unref(rt_string s) {
     (void)rt_string_unref_count(s);
 }
 
 /// @brief Convenience wrapper that releases a possibly-null string handle.
-/// @details Present to match historical runtime entry points.  Delegates to
+/// @details Present to match historical runtime entry points. Delegates to
 ///          @ref rt_string_unref.
-/// @param s Runtime string handle.
+/// @param s Owned live reference to release; may be NULL.
 void rt_str_release_maybe(rt_string s) {
     rt_string_unref(s);
 }
@@ -680,7 +739,7 @@ void rt_str_release_maybe(rt_string s) {
 /// @brief Convenience wrapper that retains a possibly-null string handle.
 /// @details Provides parity with `rt_str_release_maybe` and ignores null
 ///          handles while preserving the return value from @ref rt_string_ref.
-/// @param s Runtime string handle.
+/// @param s Borrowed live handle to retain; may be NULL.
 void rt_str_retain_maybe(rt_string s) {
     (void)rt_string_ref(s);
 }
@@ -688,16 +747,17 @@ void rt_str_retain_maybe(rt_string s) {
 /// @brief Obtain the shared empty string handle.
 /// @details Calls @ref rt_empty_string to lazily construct and cache the
 ///          immortal empty string instance.
-/// @return Runtime string handle representing "".
+/// @return Shared immortal empty handle, or `NULL` on initialization failure.
 rt_string rt_str_empty(void) {
     return rt_empty_string();
 }
 
 /// @brief Return the BASIC-visible length of a string.
 /// @details Delegates to the byte-count helper and exposes the value as a signed
-///          64-bit integer to match the runtime ABI.
-/// @param s Runtime string handle.
-/// @return Length in characters (bytes).
+///          64-bit integer to match the runtime ABI, saturating oversized
+///          `size_t` lengths at `INT64_MAX`. Null is empty.
+/// @param s Borrowed runtime string; may be NULL.
+/// @return Stored byte length clamped to `INT64_MAX`.
 int64_t rt_str_len(rt_string s) {
     size_t len = rt_string_len_bytes(s);
     if (len > (size_t)INT64_MAX)
@@ -707,8 +767,8 @@ int64_t rt_str_len(rt_string s) {
 
 /// @brief Return 1 when the runtime string is empty; 0 otherwise.
 /// @details Null handles are treated as empty to match rt_str_len semantics.
-/// @param s Runtime string handle.
-/// @return 1 if empty; 0 otherwise.
+/// @param s Borrowed runtime string; may be NULL.
+/// @return One when @ref rt_str_len returns zero; otherwise zero.
 int64_t rt_str_is_empty(rt_string s) {
     return rt_str_len(s) == 0 ? 1 : 0;
 }
@@ -717,25 +777,25 @@ int64_t rt_str_is_empty(rt_string s) {
 /// @details Used as a thin shim for Zanna.String.FromStr. The runtime string
 ///          return ABI transfers an owned reference to callers, so this helper
 ///          retains before returning even though the underlying handle is shared.
-/// @param s Runtime string handle.
-/// @return The same handle with an additional owned reference.
+/// @param s Borrowed live runtime string; may be NULL.
+/// @return The same handle with an additional owned reference, or NULL.
 rt_string rt_str_clone(rt_string s) {
     return rt_string_ref(s);
 }
 
 /// @brief Concatenate two runtime strings, consuming the inputs.
-/// @details Computes the combined length, allocates a new string, copies the
-///          payloads, and releases the input handles when non-null.  Traps on
-///          length overflow to maintain deterministic runtime behaviour.
+/// @details Treats null operands as zero bytes. A uniquely owned, mortal,
+///          heap-backed @p a with sufficient capacity is extended in place;
+///          otherwise a new string is allocated. Equal pointers take a separate
+///          copy path because two operand claims may refer to one handle.
 ///
-///          Optimization: When the left operand is uniquely owned (refcount == 1),
-///          heap-backed, and has sufficient capacity, the concatenation is performed
-///          in-place by appending to the existing buffer. This avoids allocation
-///          in common patterns like repeated string concatenation in loops.
-///
-/// @param a First operand; released after concatenation when non-null.
-/// @param b Second operand; released after concatenation when non-null.
-/// @return Newly allocated string containing `a + b`, or `a` reused in-place.
+///          After successful length validation, both input claims are consumed
+///          on success and allocation failure; reused @p a becomes the returned
+///          claim. Length overflow traps before either claim is consumed.
+/// @param a Owned left operand claim; may be NULL.
+/// @param b Owned right operand claim; may be NULL.
+/// @return Owned concatenation, possibly reused @p a, or `NULL` on overflow or
+///         allocation failure.
 rt_string rt_str_concat(rt_string a, rt_string b) {
     size_t len_a = rt_string_len_bytes(a);
     size_t len_b = rt_string_len_bytes(b);
@@ -808,14 +868,15 @@ rt_string rt_str_concat(rt_string a, rt_string b) {
 }
 
 /// @brief Extract a substring using zero-based start and length.
-/// @details Normalises negative parameters to zero, clamps the slice to the
-///          available length, and returns shared handles for trivial cases (such
-///          as the full string or the empty string).  The caller owns the
-///          returned handle.
-/// @param s Source string handle.
-/// @param start Zero-based starting index (negative values treated as zero).
-/// @param len Requested length (negative values treated as zero).
-/// @return Newly allocated substring or shared handles for empty/full slices.
+/// @details Operates on bytes. Negative values become zero and both range
+///          endpoints clamp to the stored length. An empty slice returns the
+///          immortal singleton, a complete slice retains @p s, and a partial
+///          slice copies bytes. Null input traps and uses the empty fallback.
+/// @param s Borrowed source string; must be non-null.
+/// @param start Zero-based byte offset; negative values become zero.
+/// @param len Requested byte count; negative values become zero.
+/// @return Owned slice, retained source, or empty singleton; possibly `NULL`
+///         after allocation/singleton failure.
 rt_string rt_str_substr(rt_string s, int64_t start, int64_t len) {
     if (!s) {
         rt_trap("rt_str_substr: null");
@@ -842,12 +903,13 @@ rt_string rt_str_substr(rt_string s, int64_t start, int64_t len) {
 }
 
 /// @brief Implement BASIC's `LEFT$` intrinsic.
-/// @details Validates the arguments, returning a shared empty string when
-///          `n == 0`, the original string when `n` exceeds the length, and
-///          otherwise delegates to @ref rt_str_substr.
-/// @param s Source string handle.
-/// @param n Number of characters to take from the left.
-/// @return Resulting string.
+/// @details Uses a byte count rather than Unicode codepoints. Zero returns the
+///          empty singleton, a count at least the source length retains the
+///          source, and an intermediate count copies a prefix. Null source or
+///          negative count traps with an empty fallback.
+/// @param s Borrowed source string; must be non-null.
+/// @param n Number of leading bytes to return.
+/// @return Owned prefix, retained source, or empty fallback.
 rt_string rt_str_left(rt_string s, int64_t n) {
     if (!s) {
         rt_trap("LEFT$: null string");
@@ -874,11 +936,11 @@ rt_string rt_str_left(rt_string s, int64_t n) {
 }
 
 /// @brief Implement BASIC's `RIGHT$` intrinsic.
-/// @details Mirrors @ref rt_str_left but slices from the end of the string.  Rejects
-///          negative lengths with a descriptive trap message.
-/// @param s Source string handle.
-/// @param n Number of characters to take from the right.
-/// @return Resulting string.
+/// @details Mirrors @ref rt_str_left byte-count validation and ownership, but
+///          computes the partial slice from the stored-byte end.
+/// @param s Borrowed source string; must be non-null.
+/// @param n Number of trailing bytes to return.
+/// @return Owned suffix, retained source, or empty fallback.
 rt_string rt_str_right(rt_string s, int64_t n) {
     if (!s) {
         rt_trap("RIGHT$: null string");
@@ -909,13 +971,13 @@ rt_string rt_str_right(rt_string s, int64_t n) {
 // utf8_char_to_byte_offset declared in rt_string_internal.h, defined in rt_string_advanced.c
 
 /// @brief Implement BASIC's two-argument `MID$` overload.
-/// @details Interprets @p start as one-based codepoint position.  Returns the
-///          original string when @p start == 1, and otherwise slices from the
-///          specified codepoint position to the end.  Negative or zero starts
-///          trigger traps with detailed messages.
-/// @param s Source string handle.
+/// @details Interprets @p start as a one-based UTF-8 codepoint position and
+///          strictly validates sequences traversed to locate it. Position one
+///          retains the source without traversal, and a position beyond the
+///          codepoint count returns empty. Null or non-positive input traps.
+/// @param s Borrowed source string; must be non-null.
 /// @param start One-based codepoint position.
-/// @return Resulting substring.
+/// @return Owned trailing byte slice, retained source, or empty fallback.
 rt_string rt_str_mid(rt_string s, int64_t start) {
     if (!s) {
         rt_trap("MID$: null string");
@@ -941,13 +1003,14 @@ rt_string rt_str_mid(rt_string s, int64_t start) {
 }
 
 /// @brief Implement BASIC's three-argument `MID$` overload.
-/// @details Applies the same one-based semantics as @ref rt_str_mid while
-///          respecting the requested length.  Negative lengths trigger traps and
-///          slices that extend beyond the source string are clamped.
-/// @param s Source string handle.
-/// @param start One-based starting position.
-/// @param len Requested substring length.
-/// @return Resulting substring.
+/// @details Converts both start and saturated end positions from one-based
+///          strict UTF-8 codepoint indices to byte offsets. Zero length or a
+///          start beyond the source returns empty; a complete range retains the
+///          source. Null, non-positive start, and negative length trap.
+/// @param s Borrowed source string; must be non-null.
+/// @param start One-based UTF-8 codepoint position.
+/// @param len Number of codepoints requested.
+/// @return Owned byte slice, retained source, or empty fallback.
 rt_string rt_str_mid_len(rt_string s, int64_t start, int64_t len) {
     if (!s) {
         rt_trap("MID$: null string");
@@ -992,12 +1055,13 @@ rt_string rt_str_mid_len(rt_string s, int64_t start, int64_t len) {
 }
 
 /// @brief Search for a substring using zero-based indexing.
-/// @details Implements the shared search logic for the INSTR family.  Handles
-///          null operands, clamps the starting position, and returns the
-///          one-based index mandated by BASIC (or zero when not found).
-/// @param hay Haystack string to scan.
-/// @param start Zero-based starting offset.
-/// @param needle Needle string to locate.
+/// @details Implements shared non-empty-needle search for the INSTR family.
+///          Clamps negative/oversized byte starts, uses `memchr` to locate the
+///          first needle byte, and verifies candidates with `memcmp`. Null
+///          operands miss.
+/// @param hay Borrowed haystack; may be NULL.
+/// @param start Zero-based starting byte offset.
+/// @param needle Borrowed non-empty byte sequence; may be NULL.
 /// @return One-based index of the first match, or zero when absent.
 static int64_t rt_find(rt_string hay, int64_t start, rt_string needle) {
     if (!hay || !needle)
@@ -1032,11 +1096,11 @@ static int64_t rt_find(rt_string hay, int64_t start, rt_string needle) {
 }
 
 /// @brief Implement BASIC's two-argument `INSTR` intrinsic.
-/// @details Delegates to @ref rt_find after handling the empty-needle case,
-///          which returns 1 per the language rules.
-/// @param hay Haystack string.
-/// @param needle Needle string.
-/// @return One-based index of the first match, or zero when absent.
+/// @details Searches stored bytes from the beginning. An empty non-null needle
+///          matches at one; a null operand returns zero.
+/// @param hay Borrowed haystack; may be NULL.
+/// @param needle Borrowed needle; may be NULL.
+/// @return One-based byte index of the first match, or zero when absent.
 int64_t rt_str_index_of(rt_string hay, rt_string needle) {
     if (!hay || !needle)
         return 0;
@@ -1047,13 +1111,14 @@ int64_t rt_str_index_of(rt_string hay, rt_string needle) {
 }
 
 /// @brief Implement BASIC's three-argument `INSTR` intrinsic.
-/// @details Accepts a one-based starting position, normalises it to zero-based
-///          for the internal search, and honours the empty-needle rule by
-///          returning @p start when the needle is empty.
-/// @param start One-based starting position supplied by the caller.
-/// @param hay Haystack string.
-/// @param needle Needle string.
-/// @return One-based index of the first match at or after @p start, or zero when absent.
+/// @details Converts the one-based byte start to a clamped zero-based offset.
+///          Values at/below one begin at byte zero; values beyond the source
+///          clamp to its end. An empty needle matches at the resulting
+///          one-based position. Null operands miss.
+/// @param start One-based starting byte position.
+/// @param hay Borrowed haystack; may be NULL.
+/// @param needle Borrowed needle; may be NULL.
+/// @return One-based byte index of the first match, or zero when absent.
 int64_t rt_str_instr3(int64_t start, rt_string hay, rt_string needle) {
     if (!hay || !needle)
         return 0;
@@ -1071,21 +1136,29 @@ int64_t rt_str_instr3(int64_t start, rt_string hay, rt_string needle) {
 /// @details This is the Zanna.String.IndexOfFrom ABI entry point.  It intentionally
 ///          preserves BASIC/INSTR semantics: @p start is one-based, successful
 ///          matches are one-based, and zero means "not found".
+/// @param hay Borrowed haystack; may be NULL.
+/// @param start One-based starting byte position.
+/// @param needle Borrowed needle; may be NULL.
+/// @return Result of @ref rt_str_instr3 with receiver-first argument order.
 int64_t rt_str_index_of_from(rt_string hay, int64_t start, rt_string needle) {
     return rt_str_instr3(start, hay, needle);
 }
 
 /// @brief Whitespace predicate for `rt_str_trim*` — matches space, tab, CR, LF, vertical tab, form
 /// feed.
+/// @param c Byte to classify.
+/// @return One for one of the six ASCII trim bytes; otherwise zero.
 static int is_trim_ws(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
 }
 
 /// @brief Trim leading ASCII whitespace from a string.
-/// @details Walks the leading whitespace and delegates to @ref rt_str_substr to
-///          materialise the trimmed view.
-/// @param s Source string.
-/// @return Trimmed string handle.
+/// @details Removes the maximal prefix recognized by @ref is_trim_ws and
+///          delegates byte slicing to @ref rt_str_substr. A fully untrimmed
+///          source is retained; a fully trimmed source yields the empty
+///          singleton. Null traps.
+/// @param s Borrowed source string; must be non-null.
+/// @return Owned trimmed slice, retained source, or empty fallback.
 rt_string rt_str_ltrim(rt_string s) {
     if (!s) {
         rt_trap("rt_str_ltrim: null");
@@ -1099,10 +1172,11 @@ rt_string rt_str_ltrim(rt_string s) {
 }
 
 /// @brief Trim trailing ASCII whitespace from a string.
-/// @details Scans from the end of the string and returns a substring covering
-///          the retained prefix.
-/// @param s Source string.
-/// @return Trimmed string handle.
+/// @details Removes the maximal suffix recognized by @ref is_trim_ws and
+///          applies the allocation/retention rules of @ref rt_str_substr. Null
+///          traps.
+/// @param s Borrowed source string; must be non-null.
+/// @return Owned trimmed slice, retained source, or empty fallback.
 rt_string rt_str_rtrim(rt_string s) {
     if (!s) {
         rt_trap("rt_str_rtrim: null");
@@ -1115,10 +1189,11 @@ rt_string rt_str_rtrim(rt_string s) {
 }
 
 /// @brief Trim both leading and trailing ASCII whitespace from a string.
-/// @details Calculates the slice indices in-place and delegates to
-///          @ref rt_str_substr to allocate the final result.
-/// @param s Source string.
-/// @return Trimmed string handle.
+/// @details Removes maximal prefixes/suffixes of space, tab, CR, LF, vertical
+///          tab, and form feed, then returns the corresponding byte slice.
+///          Null input traps.
+/// @param s Borrowed source string; must be non-null.
+/// @return Owned trimmed slice, retained source, or empty fallback.
 rt_string rt_str_trim(rt_string s) {
     if (!s) {
         rt_trap("rt_str_trim: null");
@@ -1135,8 +1210,8 @@ rt_string rt_str_trim(rt_string s) {
 }
 
 /// @brief Convert a single ASCII byte to uppercase.
-/// @details Multi-byte UTF-8 data is passed through by callers before this helper
-///          runs, so only ASCII a-z are case-mapped here.
+/// @details Maps only `a-z`; despite the legacy helper name, no Latin-1
+///          high-byte case mapping is performed.
 /// @param c Input byte.
 /// @return Uppercase equivalent or original byte.
 static unsigned char to_upper_latin1(unsigned char c) {
@@ -1147,10 +1222,12 @@ static unsigned char to_upper_latin1(unsigned char c) {
 }
 
 /// @brief Convert ASCII letters in a string to upper case.
-/// @details Allocates a new string, maps ASCII a-z, and leaves every non-ASCII
-///          byte unchanged; case mapping is ASCII-only by design.
-/// @param s Source string.
-/// @return Newly allocated uppercase string.
+/// @details Allocates an equal-length copy, maps ASCII `a-z`, and preserves all
+///          other bytes including embedded NUL and malformed/high-bit data.
+///          Null traps and falls back to the empty singleton.
+/// @param s Borrowed source string; must be non-null.
+/// @return Newly allocated owned uppercase byte string, empty fallback, or
+///         `NULL` on allocation failure.
 rt_string rt_str_ucase(rt_string s) {
     if (!s) {
         rt_trap("rt_str_ucase: null");
@@ -1175,8 +1252,8 @@ rt_string rt_str_ucase(rt_string s) {
 }
 
 /// @brief Convert a single ASCII byte to lowercase.
-/// @details Multi-byte UTF-8 data is passed through by callers before this helper
-///          runs, so only ASCII A-Z are case-mapped here.
+/// @details Maps only `A-Z`; despite the legacy helper name, no Latin-1
+///          high-byte case mapping is performed.
 /// @param c Input byte.
 /// @return Lowercase equivalent or original byte.
 static unsigned char to_lower_latin1(unsigned char c) {
@@ -1187,10 +1264,12 @@ static unsigned char to_lower_latin1(unsigned char c) {
 }
 
 /// @brief Convert ASCII letters in a string to lower case.
-/// @details Allocates a new string, maps ASCII A-Z, and leaves every non-ASCII
-///          byte unchanged; case mapping is ASCII-only by design.
-/// @param s Source string.
-/// @return Newly allocated lowercase string.
+/// @details Allocates an equal-length copy, maps ASCII `A-Z`, and preserves all
+///          other bytes including embedded NUL and malformed/high-bit data.
+///          Null traps and falls back to the empty singleton.
+/// @param s Borrowed source string; must be non-null.
+/// @return Newly allocated owned lowercase byte string, empty fallback, or
+///         `NULL` on allocation failure.
 rt_string rt_str_lcase(rt_string s) {
     if (!s) {
         rt_trap("rt_str_lcase: null");
@@ -1216,10 +1295,10 @@ rt_string rt_str_lcase(rt_string s) {
 
 /// @brief Compare two runtime strings for equality.
 /// @details Performs pointer short-circuiting, length comparison, and a byte
-///          wise comparison to determine equality.
-/// @param a First operand.
-/// @param b Second operand.
-/// @return 1 when equal, otherwise 0.
+///          comparison. Any null operand returns false, including two nulls.
+/// @param a Borrowed first operand; may be NULL.
+/// @param b Borrowed second operand; may be NULL.
+/// @return One for equal non-null byte strings; otherwise zero.
 int8_t rt_str_eq(rt_string a, rt_string b) {
     if (!a || !b)
         return 0;
@@ -1238,7 +1317,12 @@ int8_t rt_str_eq(rt_string a, rt_string b) {
 // the natural lexicographic ordering of UTF-8 strings.
 // ---------------------------------------------------------------------------
 
-/// @brief True (1) if `a` is lexicographically less than `b`. NULL strings sort before non-NULL.
+/// @brief Test whether @p a is lexicographically less than @p b.
+/// @details Uses unsigned-byte ordering from `memcmp`, then stored length for
+///          equal prefixes. Any null operand returns false.
+/// @param a Borrowed first operand; may be NULL.
+/// @param b Borrowed second operand; may be NULL.
+/// @return One only when both operands are non-null and @p a sorts first.
 int64_t rt_str_lt(rt_string a, rt_string b) {
     if (!a || !b)
         return 0;
@@ -1253,7 +1337,12 @@ int64_t rt_str_lt(rt_string a, rt_string b) {
     return alen < blen;
 }
 
-/// @brief True if `a <= b` lexicographically.
+/// @brief Test whether @p a is lexicographically less than or equal to @p b.
+/// @details Uses byte/length ordering. Two nulls compare true; exactly one null
+///          compares false.
+/// @param a Borrowed first operand; may be NULL.
+/// @param b Borrowed second operand; may be NULL.
+/// @return Boolean comparison result.
 int64_t rt_str_le(rt_string a, rt_string b) {
     if (!a || !b)
         return a == b;
@@ -1268,7 +1357,12 @@ int64_t rt_str_le(rt_string a, rt_string b) {
     return alen <= blen;
 }
 
-/// @brief True if `a > b` lexicographically.
+/// @brief Test whether @p a is lexicographically greater than @p b.
+/// @details Uses unsigned-byte and length ordering. Any null operand returns
+///          false.
+/// @param a Borrowed first operand; may be NULL.
+/// @param b Borrowed second operand; may be NULL.
+/// @return Boolean comparison result.
 int64_t rt_str_gt(rt_string a, rt_string b) {
     if (!a || !b)
         return 0;
@@ -1283,7 +1377,12 @@ int64_t rt_str_gt(rt_string a, rt_string b) {
     return alen > blen;
 }
 
-/// @brief True if `a >= b` lexicographically.
+/// @brief Test whether @p a is lexicographically greater than or equal to @p b.
+/// @details Uses byte/length ordering. Two nulls compare true; exactly one null
+///          compares false.
+/// @param a Borrowed first operand; may be NULL.
+/// @param b Borrowed second operand; may be NULL.
+/// @return Boolean comparison result.
 int64_t rt_str_ge(rt_string a, rt_string b) {
     if (!a || !b)
         return a == b;

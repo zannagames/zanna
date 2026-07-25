@@ -33,6 +33,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime insertion-ordered string map.
+/// @details Each entry participates in both a keyed-hash collision chain and a
+///          doubly linked first-insertion-order list. Keyed operations use the
+///          hash table, while snapshots and positional access walk the list so
+///          resizing never changes observable order.
+
 #include "rt_orderedmap.h"
 #include "rt_collection_ids.h"
 #include "rt_error.h"
@@ -50,6 +57,10 @@
 // Internal structure: doubly-linked list + hash table
 // ---------------------------------------------------------------------------
 
+/// @brief One entry shared by a hash bucket and the insertion-order list.
+/// @details `hash_next` is independent of `prev`/`next`. The copied key has a
+///          trailing NUL for convenience, but `key_len` defines identity and
+///          preserves embedded NUL bytes.
 typedef struct rt_om_entry {
     char *key;
     size_t key_len;
@@ -59,6 +70,9 @@ typedef struct rt_om_entry {
     struct rt_om_entry *next;      // Insertion order
 } rt_om_entry;
 
+/// @brief GC-managed OrderedMap payload.
+/// @details `head` and `tail` delimit first-insertion order; `buckets` provides
+///          average constant-time lookup over the same @p count entries.
 typedef struct {
     void *vptr;
     rt_om_entry **buckets;
@@ -71,6 +85,9 @@ typedef struct {
 /// @brief Checked cast of an opaque handle to the OrderedMap implementation.
 /// @details Raises a runtime-error trap with @p what if @p obj is NULL or
 ///          not an OrderedMap.
+/// @param obj Opaque runtime object to validate.
+/// @param what Diagnostic attached to the runtime-error trap on failure.
+/// @return Validated OrderedMap implementation, or `NULL` after trapping.
 static rt_orderedmap_impl *as_orderedmap(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_ORDEREDMAP_CLASS_ID, sizeof(rt_orderedmap_impl))) {
         rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR, Err_RuntimeError, -1, what);
@@ -84,11 +101,21 @@ static rt_orderedmap_impl *as_orderedmap(void *obj, const char *what) {
 // ---------------------------------------------------------------------------
 
 /// @brief Per-process keyed hash of @p len bytes of @p key.
+/// @details A null byte pointer is normalized to the empty string. The keyed
+///          hash protects bucket selection without affecting iteration order.
+/// @param key Borrowed key bytes.
+/// @param len Number of identity bytes to hash.
+/// @return Process-keyed 64-bit hash.
 static uint64_t om_hash(const char *key, size_t len) {
     return rt_keyed_hash_bytes(key ? key : "", len);
 }
 
-/// @brief Borrow the byte buffer + length of a key string (empty "" if null).
+/// @brief Borrow the complete byte representation of a runtime string key.
+/// @details Null, empty, or unreadable string handles normalize to the empty
+///          key. Returned storage remains owned by @p key.
+/// @param key Runtime string key; `NULL` denotes the empty key.
+/// @param out_len Receives the number of key-identity bytes.
+/// @return Borrowed key bytes, never `NULL`.
 static const char *om_key_data(rt_string key, size_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -109,12 +136,17 @@ static const char *om_key_data(rt_string key, size_t *out_len) {
 }
 
 /// @brief Drop one GC reference to a stored value and free it at zero.
+/// @param value Runtime object being released, or `NULL` for a no-op.
 static void om_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
 }
 
-/// @brief Hash-bucket lookup of @p key via the hash_next chain (NULL if absent).
+/// @brief Find an exact byte-string key through its collision chain.
+/// @param m OrderedMap with a live nonzero-capacity bucket array.
+/// @param key Borrowed key bytes.
+/// @param len Number of identity bytes in @p key.
+/// @return Borrowed matching entry, or `NULL` when absent.
 static rt_om_entry *om_find(rt_orderedmap_impl *m, const char *key, size_t len) {
     uint64_t idx = om_hash(key, len) % (uint64_t)m->capacity;
     rt_om_entry *e = m->buckets[idx];
@@ -132,6 +164,11 @@ static rt_om_entry *om_find(rt_orderedmap_impl *m, const char *key, size_t len) 
 
 /// @brief Double the bucket array and rehash entries, preserving insertion
 ///        order by re-linking via the head→next list. Traps on overflow/OOM.
+/// @details Allocation completes before publication, so allocation failure
+///          leaves the original buckets and links intact. Only `hash_next`
+///          links change; `prev`/`next`, `head`, and `tail` remain untouched.
+/// @param m OrderedMap whose bucket load reached the resize threshold.
+/// @return 1 after publishing the doubled table, or 0 after trapping.
 static int om_resize(rt_orderedmap_impl *m) {
     // Guard against integer overflow before doubling.
     if (m->capacity > INT64_MAX / 2) {
@@ -178,6 +215,7 @@ static int om_resize(rt_orderedmap_impl *m) {
 
 /// @brief GC finalizer: walk the insertion-order list freeing each entry
 ///        (key + released value), then free the bucket array.
+/// @param obj OrderedMap object being finalized; `NULL` is ignored.
 static void orderedmap_finalizer(void *obj) {
     if (!obj)
         return;
@@ -202,6 +240,11 @@ static void orderedmap_finalizer(void *obj) {
 }
 
 /// @brief GC traversal: visit every stored value in insertion order.
+/// @details Native entry nodes and copied key buffers are not runtime objects
+///          and therefore are not visited.
+/// @param obj OrderedMap whose retained values are to be traced.
+/// @param visitor Collector callback invoked for every stored value.
+/// @param ctx Opaque collector context forwarded unchanged.
 static void orderedmap_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -216,6 +259,10 @@ static void orderedmap_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 // Constructor
 // ---------------------------------------------------------------------------
 
+/// @brief Construct an empty insertion-ordered string map.
+/// @details Allocates sixteen initial buckets, installs the native finalizer,
+///          and registers stored-value traversal with the collector.
+/// @return New runtime-managed OrderedMap, or `NULL` after an allocation trap.
 void *rt_orderedmap_new(void) {
     rt_orderedmap_impl *m =
         (rt_orderedmap_impl *)rt_obj_new_i64(RT_ORDEREDMAP_CLASS_ID, sizeof(rt_orderedmap_impl));
@@ -249,6 +296,9 @@ void *rt_orderedmap_new(void) {
 // ---------------------------------------------------------------------------
 
 /// @brief Return the number of entries in the ordered map.
+/// @details A null map is treated as empty; an invalid non-null handle traps.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @return Number of distinct keys, or 0 for `NULL`.
 int64_t rt_orderedmap_len(void *map) {
     if (!map)
         return 0;
@@ -256,6 +306,8 @@ int64_t rt_orderedmap_len(void *map) {
 }
 
 /// @brief Check whether the ordered map has no entries.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @return 1 when no keys are stored, otherwise 0; `NULL` is empty.
 int8_t rt_orderedmap_is_empty(void *map) {
     if (!map)
         return 1;
@@ -268,7 +320,13 @@ int8_t rt_orderedmap_is_empty(void *map) {
 
 /// @brief Insert or update a key-value pair, preserving insertion order.
 /// @details New keys are appended to the end of the order. Updating an
-///          existing key replaces the value but keeps its position.
+///          existing key retains the replacement before releasing the old
+///          value, making self-replacement safe, and keeps the node in place.
+///          Null keys identify the empty byte string and null values are valid.
+///          A new key is copied before publication. A null map is a no-op.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @param key Runtime string key; `NULL` denotes the empty key.
+/// @param value Runtime object retained while stored; may be `NULL`.
 void rt_orderedmap_set(void *map, rt_string key, void *value) {
     if (!map)
         return;
@@ -359,6 +417,14 @@ void rt_orderedmap_set(void *map, rt_string key, void *value) {
 // Get / Has
 // ---------------------------------------------------------------------------
 
+/// @brief Borrow the value associated with an exact key.
+/// @details The map retains ownership; the pointer remains valid only while
+///          that association remains stored. Because `NULL` is a valid value,
+///          use @ref rt_orderedmap_has to distinguish a missing key. A null map
+///          returns `NULL`.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @param key Runtime string key; `NULL` denotes the empty key.
+/// @return Borrowed stored value, or `NULL` for absence/a stored null.
 void *rt_orderedmap_get(void *map, rt_string key) {
     if (!map)
         return NULL;
@@ -372,6 +438,9 @@ void *rt_orderedmap_get(void *map, rt_string key) {
 }
 
 /// @brief Check whether a key exists in the ordered map.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @param key Runtime string key; `NULL` denotes the empty key.
+/// @return 1 when the exact byte-string key exists, otherwise 0.
 int8_t rt_orderedmap_has(void *map, rt_string key) {
     if (!map)
         return 0;
@@ -389,7 +458,12 @@ int8_t rt_orderedmap_has(void *map, rt_string key) {
 
 /// @brief Remove a key-value pair from the ordered map.
 /// @details The entry is removed from both the hash table and the
-///          insertion-order linked list.
+///          insertion-order linked list. Its copied key is freed and its
+///          stored value is released. Surviving entries keep their relative
+///          order and the bucket allocation is retained.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @param key Runtime string key; `NULL` denotes the empty key.
+/// @return 1 when the key was removed, otherwise 0.
 int8_t rt_orderedmap_remove(void *map, rt_string key) {
     if (!map)
         return 0;
@@ -439,6 +513,12 @@ int8_t rt_orderedmap_remove(void *map, rt_string key) {
 // Keys / Values
 // ---------------------------------------------------------------------------
 
+/// @brief Snapshot every key in first-insertion order.
+/// @details Each key is copied by its complete byte length into a fresh
+///          runtime string retained by the owning result `Seq`. A null map
+///          returns an empty owning sequence.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @return New runtime-managed owning `Seq` of copied keys.
 void *rt_orderedmap_keys(void *map) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -456,6 +536,12 @@ void *rt_orderedmap_keys(void *map) {
     return seq;
 }
 
+/// @brief Snapshot every value in first-insertion order.
+/// @details The fresh owning `Seq` independently retains non-null values and
+///          preserves stored `NULL` entries. Mutating the snapshot does not
+///          change the map. A null map returns an empty sequence.
+/// @param map Opaque OrderedMap handle, or `NULL`.
+/// @return New runtime-managed owning `Seq` of stored values.
 void *rt_orderedmap_values(void *map) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -475,10 +561,12 @@ void *rt_orderedmap_values(void *map) {
 }
 
 /// @brief Return the key at the given insertion-order index.
-/// @details Walks the insertion-order linked list to the nth entry.
-/// @param map Ordered map object pointer; returns NULL if NULL.
+/// @details Walks the insertion-order linked list in O(index) time and copies
+///          the complete key bytes into a fresh runtime string.
+/// @param map Opaque OrderedMap handle, or `NULL`.
 /// @param index Zero-based position in insertion order.
-/// @return Key string at the given position, or NULL if out of range.
+/// @return New runtime-managed key string, or `NULL` when @p map is null or
+///         @p index is out of range.
 rt_string rt_orderedmap_key_at(void *map, int64_t index) {
     if (!map)
         return NULL;
@@ -500,7 +588,9 @@ rt_string rt_orderedmap_key_at(void *map, int64_t index) {
 
 /// @brief Remove all entries from the ordered map.
 /// @details Releases all retained references and resets both the hash
-///          table and the insertion-order list.
+///          table and the insertion-order list. The current bucket allocation
+///          is zeroed and retained for reuse. A null map is a no-op.
+/// @param map Opaque OrderedMap handle, or `NULL`.
 void rt_orderedmap_clear(void *map) {
     if (!map)
         return;

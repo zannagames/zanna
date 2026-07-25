@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/game/rt_tiled_import.cpp
+/// @file
+/// @brief Implements dependency-aware Tiled JSON/TMX import, canonical tile
+///        identity, SceneDocument conversion, and render-atlas composition.
 // Purpose: Dependency-aware import of bounded/infinite and projected Tiled
 //   JSON/TMX maps into SceneDocument and render-ready Tilemap runtime objects.
 //
@@ -61,27 +64,47 @@
 
 namespace {
 
+/// @brief Runtime class identifier for TiledMapLoader receiver validation.
 constexpr int64_t kTiledMapLoaderClassId = INT64_C(-0x620121);
+/// @brief Maximum byte size accepted for any root or dependency document.
 constexpr size_t kMaxDocumentBytes = 16u * 1024u * 1024u;
+/// @brief Maximum number of dependency reads in one import graph.
 constexpr size_t kMaxDependencyCount = 4096u;
+/// @brief Maximum decoded cells accepted for a single layer.
 constexpr size_t kMaxCellsPerLayer = 1024u * 1024u;
+/// @brief Maximum decoded cells accumulated across all layers.
 constexpr size_t kMaxTotalCells = 4u * 1024u * 1024u;
+/// @brief Maximum number of published scene layers.
 constexpr size_t kMaxLayers = 16u;
+/// @brief Maximum number of published scene objects.
 constexpr size_t kMaxObjects = 65536u;
+/// @brief Maximum number of properties accepted in a property collection.
 constexpr size_t kMaxProperties = 16384u;
+/// @brief Maximum byte length accepted for scalar strings.
 constexpr size_t kMaxStringBytes = 64u * 1024u;
+/// @brief Tiled GID flag for horizontal reflection.
 constexpr uint64_t kTiledHorizontalFlag = UINT64_C(0x80000000);
+/// @brief Tiled GID flag for vertical reflection.
 constexpr uint64_t kTiledVerticalFlag = UINT64_C(0x40000000);
+/// @brief Tiled GID flag for diagonal reflection or 60-degree hex rotation.
 constexpr uint64_t kTiledDiagonalOrHex60Flag = UINT64_C(0x20000000);
+/// @brief Tiled GID flag for 120-degree hex rotation.
 constexpr uint64_t kTiledHex120Flag = UINT64_C(0x10000000);
+/// @brief Mask containing every transform bit encoded in a Tiled GID.
 constexpr uint64_t kTiledTransformMask =
     kTiledHorizontalFlag | kTiledVerticalFlag | kTiledDiagonalOrHex60Flag | kTiledHex120Flag;
 
+/// @brief Release one owned runtime-object reference.
+/// @param object Owned object handle; null is ignored.
 void releaseObject(void *object) {
     if (object && rt_obj_release_check0(object))
         rt_obj_free(object);
 }
 
+/// @brief Release an owned parsed runtime value of any supported handle kind.
+/// @details Runtime strings use their string reference API; other parsed
+///          values use generic object release semantics.
+/// @param value Owned parsed value; null is ignored.
 void releaseParsedValue(void *value) {
     if (!value)
         return;
@@ -92,21 +115,31 @@ void releaseParsedValue(void *value) {
     releaseObject(value);
 }
 
+/// @brief Scope guard for a runtime parse-tree value.
 class OwnedObject {
   public:
+    /// @brief Adopt a parsed runtime value for automatic release.
+    /// @param value Owned value, optionally null.
     explicit OwnedObject(void *value = nullptr) : value_(value) {}
 
+    /// @brief Release the adopted value unless ownership was transferred.
     ~OwnedObject() {
         releaseParsedValue(value_);
     }
 
+    /// @brief Prevent copying an owning parse-tree guard.
     OwnedObject(const OwnedObject &) = delete;
+    /// @brief Prevent copy assignment of an owning parse-tree guard.
     OwnedObject &operator=(const OwnedObject &) = delete;
 
+    /// @brief Inspect the guarded value without transferring ownership.
+    /// @return Borrowed guarded handle.
     void *get() const {
         return value_;
     }
 
+    /// @brief Transfer the guarded value to the caller.
+    /// @return Owned handle formerly held by this guard.
     void *release() {
         void *value = value_;
         value_ = nullptr;
@@ -117,6 +150,9 @@ class OwnedObject {
     void *value_;
 };
 
+/// @brief Copy explicit runtime-string bytes into a C++ string.
+/// @param value Borrowed runtime string; null and invalid storage are accepted.
+/// @return Byte-preserving copy, or an empty string when unavailable.
 std::string toStd(rt_string value) {
     if (!value)
         return {};
@@ -127,18 +163,31 @@ std::string toStd(rt_string value) {
     return std::string(data, static_cast<size_t>(length));
 }
 
+/// @brief Allocate a runtime string from an explicit C++ byte sequence.
+/// @param value Source bytes.
+/// @return Owned runtime string.
 rt_string makeString(const std::string &value) {
     return rt_string_from_bytes(value.data(), value.size());
 }
 
+/// @brief Test whether a runtime handle is a Map object.
+/// @param value Borrowed candidate handle.
+/// @return `true` only for a non-null Map.
 bool isMap(void *value) {
     return value && rt_obj_class_id(value) == RT_MAP_CLASS_ID;
 }
 
+/// @brief Test whether a runtime handle is a Seq object.
+/// @param value Borrowed candidate handle.
+/// @return `true` only for a non-null Seq.
 bool isSeq(void *value) {
     return value && rt_obj_class_id(value) == RT_SEQ_CLASS_ID;
 }
 
+/// @brief Look up a C-string key in a runtime Map.
+/// @param map Borrowed candidate Map.
+/// @param key NUL-terminated key.
+/// @return Borrowed mapped value, or `nullptr` for a non-Map or absent key.
 void *mapGet(void *map, const char *key) {
     if (!isMap(map))
         return nullptr;
@@ -148,6 +197,10 @@ void *mapGet(void *map, const char *key) {
     return value;
 }
 
+/// @brief Test whether a runtime Map contains a C-string key.
+/// @param map Borrowed candidate Map.
+/// @param key NUL-terminated key.
+/// @return `true` when present.
 bool mapHas(void *map, const char *key) {
     if (!isMap(map))
         return false;
@@ -157,6 +210,10 @@ bool mapHas(void *map, const char *key) {
     return present;
 }
 
+/// @brief Decode a runtime value as a string.
+/// @param value Borrowed candidate runtime string.
+/// @param out Destination replaced on success.
+/// @return `true` when @p value is a runtime string.
 bool jsonStringValue(void *value, std::string &out) {
     if (!value || !rt_string_is_handle(value))
         return false;
@@ -164,10 +221,19 @@ bool jsonStringValue(void *value, std::string &out) {
     return true;
 }
 
+/// @brief Read a string member from a runtime JSON Map.
+/// @param map Borrowed Map.
+/// @param key Member name.
+/// @param out Destination replaced on success.
+/// @return `true` when the member exists and is a string.
 bool jsonString(void *map, const char *key, std::string &out) {
     return jsonStringValue(mapGet(map, key), out);
 }
 
+/// @brief Decode a finite runtime JSON number as double.
+/// @param value Borrowed boxed numeric value.
+/// @param out Destination replaced on success.
+/// @return `true` for finite boxed integers or floats.
 bool jsonNumberValue(void *value, double &out) {
     if (!value || rt_obj_class_id(value) != RT_BOX_CLASS_ID)
         return false;
@@ -182,6 +248,10 @@ bool jsonNumberValue(void *value, double &out) {
     return false;
 }
 
+/// @brief Decode a runtime JSON number as an exact signed integer.
+/// @param value Borrowed boxed numeric value.
+/// @param out Destination replaced on success.
+/// @return `true` for boxed integers or integral finite floats in int64 range.
 bool jsonIntValue(void *value, int64_t &out) {
     if (!value || rt_obj_class_id(value) != RT_BOX_CLASS_ID)
         return false;
@@ -200,10 +270,19 @@ bool jsonIntValue(void *value, int64_t &out) {
     return true;
 }
 
+/// @brief Read an exact integer member from a runtime JSON Map.
+/// @param map Borrowed Map.
+/// @param key Member name.
+/// @param out Destination replaced on success.
+/// @return `true` when the member is exactly integral and in range.
 bool jsonInt(void *map, const char *key, int64_t &out) {
     return jsonIntValue(mapGet(map, key), out);
 }
 
+/// @brief Decode a runtime JSON Boolean.
+/// @param value Borrowed boxed value.
+/// @param out Destination replaced on success.
+/// @return `true` only for a boxed Boolean.
 bool jsonBoolValue(void *value, bool &out) {
     if (!value || rt_obj_class_id(value) != RT_BOX_CLASS_ID || rt_box_type(value) != RT_BOX_I1)
         return false;
@@ -211,10 +290,18 @@ bool jsonBoolValue(void *value, bool &out) {
     return true;
 }
 
+/// @brief Read a Boolean member from a runtime JSON Map.
+/// @param map Borrowed Map.
+/// @param key Member name.
+/// @param out Destination replaced on success.
+/// @return `true` when the member is a Boolean.
 bool jsonBool(void *map, const char *key, bool &out) {
     return jsonBoolValue(mapGet(map, key), out);
 }
 
+/// @brief Encode arbitrary bytes as a quoted JSON string literal.
+/// @param value Bytes to escape.
+/// @return Complete quoted JSON literal.
 std::string jsonEscape(const std::string &value) {
     std::ostringstream out;
     out << '"';
@@ -255,12 +342,19 @@ std::string jsonEscape(const std::string &value) {
     return out.str();
 }
 
+/// @brief Format a finite double with round-trip-oriented precision.
+/// @param value Numeric value to format.
+/// @return Locale-sensitive stream representation using 17 significant digits.
 std::string jsonDouble(double value) {
     std::ostringstream out;
     out << std::setprecision(17) << value;
     return out.str();
 }
 
+/// @brief Round a finite double to the nearest integer with ties away from zero.
+/// @param value Candidate numeric value.
+/// @param out Destination replaced on success.
+/// @return `true` when the rounded result fits in int64.
 bool roundNearestTiesAway(double value, int64_t &out) {
     if (!std::isfinite(value))
         return false;
@@ -272,8 +366,10 @@ bool roundNearestTiesAway(double value, int64_t &out) {
     return true;
 }
 
+/// @brief Scalar kinds preserved across Tiled and SceneDocument properties.
 enum class ScalarKind { Null, Boolean, Integer, Float, String };
 
+/// @brief Tagged scalar property value.
 struct Scalar {
     ScalarKind kind{ScalarKind::Null};
     bool boolean{false};
@@ -282,12 +378,19 @@ struct Scalar {
     std::string string;
 };
 
+/// @brief Compare two scalar values including inactive payload fields.
+/// @param left First scalar.
+/// @param right Second scalar.
+/// @return `true` when kind and every stored payload field are equal.
 bool scalarEqual(const Scalar &left, const Scalar &right) {
     return left.kind == right.kind && left.boolean == right.boolean &&
            left.integer == right.integer && left.floating == right.floating &&
            left.string == right.string;
 }
 
+/// @brief Serialize one scalar as canonical compact JSON.
+/// @param value Scalar to encode.
+/// @return JSON literal for the active scalar kind.
 std::string scalarJson(const Scalar &value) {
     switch (value.kind) {
         case ScalarKind::Null:
@@ -304,6 +407,14 @@ std::string scalarJson(const Scalar &value) {
     return "null";
 }
 
+/// @brief Convert a runtime JSON scalar into importer property storage.
+/// @details Declared `int` and `object` values must be integral. Other numbers
+///          preserve integral representation when possible and otherwise use
+///          finite floating-point storage; strings obey the 64 KiB limit.
+/// @param value Borrowed parsed value; null represents JSON null.
+/// @param declaredType Optional Tiled property type.
+/// @param out Destination scalar replaced on success.
+/// @return `true` for a supported bounded scalar.
 bool scalarFromJson(void *value, const std::string &declaredType, Scalar &out) {
     if (!value) {
         out = Scalar{};
@@ -341,6 +452,10 @@ bool scalarFromJson(void *value, const std::string &declaredType, Scalar &out) {
     return true;
 }
 
+/// @brief Parse a complete decimal string as signed 64-bit integer.
+/// @param text Candidate text without surrounding whitespace.
+/// @param out Destination replaced on success.
+/// @return `true` when the entire string parses without range error.
 bool parseIntegerText(const std::string &text, int64_t &out) {
     if (text.empty())
         return false;
@@ -353,6 +468,10 @@ bool parseIntegerText(const std::string &text, int64_t &out) {
     return true;
 }
 
+/// @brief Parse a complete decimal string as a finite double.
+/// @param text Candidate text without surrounding whitespace.
+/// @param out Destination replaced on success.
+/// @return `true` when the entire string parses without range error.
 bool parseDoubleText(const std::string &text, double &out) {
     if (text.empty())
         return false;
@@ -365,6 +484,9 @@ bool parseDoubleText(const std::string &text, double &out) {
     return true;
 }
 
+/// @brief Lowercase ASCII letters without altering other bytes.
+/// @param value String to normalize in place.
+/// @return Normalized string.
 std::string lowerAscii(std::string value) {
     for (char &ch : value) {
         if (ch >= 'A' && ch <= 'Z')
@@ -373,6 +495,9 @@ std::string lowerAscii(std::string value) {
     return value;
 }
 
+/// @brief Decode one hexadecimal digit.
+/// @param ch Candidate ASCII character.
+/// @return Nibble value 0..15, or `-1` for a non-hex character.
 int hexDigit(char ch) {
     if (ch >= '0' && ch <= '9')
         return ch - '0';
@@ -383,6 +508,10 @@ int hexDigit(char ch) {
     return -1;
 }
 
+/// @brief Parse Tiled `#RRGGBB` or `#AARRGGBB` color text.
+/// @param text Tiled color literal.
+/// @param color Destination ARGB value; six-digit input receives opaque alpha.
+/// @return `true` when syntax and every digit are valid.
 bool parseTiledColor(const std::string &text, uint32_t &color) {
     if ((text.size() != 7u && text.size() != 9u) || text.front() != '#')
         return false;
@@ -399,6 +528,10 @@ bool parseTiledColor(const std::string &text, uint32_t &color) {
     return true;
 }
 
+/// @brief Component-multiply two 8-bit-per-channel ARGB colors.
+/// @param left First packed color.
+/// @param right Second packed color.
+/// @return Rounded per-channel product divided by 255.
 uint32_t multiplyTiledColors(uint32_t left, uint32_t right) {
     uint32_t result = 0u;
     for (unsigned int shift : {24u, 16u, 8u, 0u}) {
@@ -409,6 +542,9 @@ uint32_t multiplyTiledColors(uint32_t left, uint32_t right) {
     return result;
 }
 
+/// @brief Strip an optional UTF-8 BOM, leading whitespace, and XML declaration.
+/// @param text Raw TMX/TSX document bytes.
+/// @return XML content beginning at the first post-declaration byte.
 std::string normalizeTiledXmlInput(const std::string &text) {
     size_t position = 0;
     if (text.size() >= 3u && static_cast<unsigned char>(text[0]) == 0xEFu &&
@@ -426,6 +562,7 @@ std::string normalizeTiledXmlInput(const std::string &text) {
     return text.substr(position);
 }
 
+/// @brief Canonical animation rule emitted for one base tile.
 struct TileAnimation {
     int64_t baseTile{0};
     int64_t milliseconds{0};
@@ -433,6 +570,7 @@ struct TileAnimation {
     std::vector<int64_t> durations;
 };
 
+/// @brief Per-local-tile collision, property, and animation metadata.
 struct TileMetadata {
     bool solid{false};
     std::map<std::string, Scalar> properties;
@@ -440,6 +578,7 @@ struct TileMetadata {
     std::vector<int64_t> animationDurations;
 };
 
+/// @brief Image-collection source for one local tileset tile.
 struct TileImage {
     std::string path;
     int64_t width{0};
@@ -448,6 +587,7 @@ struct TileImage {
     bool hasTransparentColor{false};
 };
 
+/// @brief Parsed external or embedded Tiled tileset and artwork layout.
 struct Tileset {
     int64_t firstGid{1};
     std::string name;
@@ -469,6 +609,7 @@ struct Tileset {
     std::map<int64_t, TileMetadata> metadata;
 };
 
+/// @brief Normalized visible tile layer with rendering metadata.
 struct Layer {
     std::string name;
     bool visible{true};
@@ -481,6 +622,7 @@ struct Layer {
     uint32_t tint{UINT32_C(0xFFFFFFFF)};
 };
 
+/// @brief Canonical tile identity and render transform stored in scene cells.
 struct CanonicalTile {
     int64_t tileset{-1};
     int64_t localId{0};
@@ -490,6 +632,7 @@ struct CanonicalTile {
     bool reachable{false};
 };
 
+/// @brief Ordered deduplication key for canonical transformed tile variants.
 struct CanonicalTileKey {
     int64_t tileset{-1};
     int64_t localId{0};
@@ -497,6 +640,9 @@ struct CanonicalTileKey {
     uint32_t tint{UINT32_C(0xFFFFFFFF)};
     uint16_t opacity{UINT16_MAX};
 
+    /// @brief Establish lexicographic ordering for canonical-variant maps.
+    /// @param other Key to compare.
+    /// @return `true` when this key sorts before @p other.
     bool operator<(const CanonicalTileKey &other) const {
         if (tileset != other.tileset)
             return tileset < other.tileset;
@@ -510,6 +656,7 @@ struct CanonicalTileKey {
     }
 };
 
+/// @brief Flattened SceneDocument object produced from a Tiled object.
 struct SceneObject {
     std::string type;
     std::string id;
@@ -518,6 +665,7 @@ struct SceneObject {
     std::map<std::string, Scalar> properties;
 };
 
+/// @brief Complete normalized intermediate representation of one Tiled map.
 struct MapDocument {
     std::string name;
     std::string orientation{"orthogonal"};
@@ -553,16 +701,27 @@ struct MapDocument {
     size_t totalCells{0};
 };
 
+/// @brief SceneDocument import result plus render-construction metadata.
 struct ImportProduct {
     void *scene{nullptr};
     MapDocument document;
     std::string error;
 };
 
+/// @brief Reads bounded Tiled documents through filesystem or asset semantics.
 class SourceReader {
   public:
+    /// @brief Select the dependency namespace for this import.
+    /// @param assetMode `true` for logical asset paths, `false` for filesystem
+    ///        paths.
     explicit SourceReader(bool assetMode) : assetMode_(assetMode) {}
 
+    /// @brief Resolve and read the root Tiled document.
+    /// @param path Caller-supplied root path.
+    /// @param resolved Canonical logical or absolute path written on success.
+    /// @param text Complete bounded document bytes written on success.
+    /// @param error Human-readable failure detail.
+    /// @return `true` after a complete read.
     bool readRoot(const std::string &path,
                   std::string &resolved,
                   std::string &text,
@@ -588,6 +747,15 @@ class SourceReader {
         return readResolved(resolved, text, error);
     }
 
+    /// @brief Resolve and read one dependency relative to its owner.
+    /// @details Counts every request against the 4096-dependency budget and
+    ///          rejects absolute/URI references in portable filesystem mode.
+    /// @param owner Resolved path of the referencing document.
+    /// @param reference Relative dependency text.
+    /// @param resolved Resolved dependency path written on success.
+    /// @param text Complete bounded dependency bytes written on success.
+    /// @param error Human-readable failure detail.
+    /// @return `true` after a complete read.
     bool readDependency(const std::string &owner,
                         const std::string &reference,
                         std::string &resolved,
@@ -617,6 +785,12 @@ class SourceReader {
         return readResolved(resolved, text, error);
     }
 
+    /// @brief Resolve an image dependency without reading its bytes.
+    /// @param owner Resolved path of the referencing document.
+    /// @param reference Relative dependency text.
+    /// @param resolved Resolved dependency path written on success.
+    /// @param error Human-readable failure detail.
+    /// @return `true` for a portable path contained by the selected root.
     bool resolveDependencyPath(const std::string &owner,
                                const std::string &reference,
                                std::string &resolved,
@@ -638,11 +812,17 @@ class SourceReader {
         return true;
     }
 
+    /// @brief Report which dependency namespace this reader uses.
+    /// @return `true` for asset mode; `false` for filesystem mode.
     bool assetMode() const {
         return assetMode_;
     }
 
   private:
+    /// @brief Normalize and contain a caller-supplied logical asset root.
+    /// @param path Asset path, optionally prefixed with `asset://`.
+    /// @param error Human-readable rejection detail.
+    /// @return Root-relative normalized path, or empty on rejection.
     static std::string normalizeAssetRoot(std::string path, std::string &error) {
         if (path.rfind("asset://", 0) == 0)
             path.erase(0, 8);
@@ -660,6 +840,11 @@ class SourceReader {
         return result;
     }
 
+    /// @brief Resolve a logical asset reference relative to an owner.
+    /// @param owner Root-relative owner path.
+    /// @param reference Dependency path, optionally prefixed with `asset://`.
+    /// @param error Human-readable rejection detail.
+    /// @return Contained normalized asset path, or empty on rejection.
     static std::string resolveAsset(const std::string &owner,
                                     std::string reference,
                                     std::string &error) {
@@ -681,6 +866,11 @@ class SourceReader {
         return result;
     }
 
+    /// @brief Read one already-resolved path with the 16 MiB document limit.
+    /// @param resolved Absolute filesystem or logical asset path.
+    /// @param text Complete bytes written on success.
+    /// @param error Human-readable load or size failure.
+    /// @return `true` after a complete bounded read.
     bool readResolved(const std::string &resolved, std::string &text, std::string &error) const {
         if (assetMode_) {
             rt_string path = makeString(resolved);
@@ -726,6 +916,12 @@ class SourceReader {
     size_t dependencyCount_{0};
 };
 
+/// @brief Insert or replace one bounded scalar property.
+/// @param properties Ordered target property map.
+/// @param name Non-empty key of at most 128 bytes.
+/// @param value Scalar moved into the map.
+/// @param error Human-readable limit failure.
+/// @return `true` when stored; replacement remains allowed at capacity.
 bool setProperty(std::map<std::string, Scalar> &properties,
                  const std::string &name,
                  Scalar value,
@@ -742,6 +938,16 @@ bool setProperty(std::map<std::string, Scalar> &properties,
     return true;
 }
 
+/// @brief Parse Tiled JSON's property-array representation.
+/// @details Rejects class values, converts supported scalars, resolves `file`
+///          values when a reader is supplied, and enforces name/value/count
+///          limits before publication.
+/// @param value Borrowed property array; null means no properties.
+/// @param properties Target ordered property map.
+/// @param error Human-readable schema or limit failure.
+/// @param reader Optional dependency resolver for file properties.
+/// @param owner Resolved owner path used for relative file properties.
+/// @return `true` when every entry is valid.
 bool parseJsonProperties(void *value,
                          std::map<std::string, Scalar> &properties,
                          std::string &error,
@@ -789,6 +995,11 @@ bool parseJsonProperties(void *value,
     return true;
 }
 
+/// @brief Copy an optional XML attribute into a C++ string.
+/// @param node Borrowed XML element.
+/// @param attribute Attribute name.
+/// @param present Optional destination indicating whether the attribute exists.
+/// @return Attribute bytes, or empty when absent.
 std::string xmlString(void *node, const char *attribute, bool *present = nullptr) {
     rt_string key = rt_const_cstr(attribute);
     bool has = rt_xml_has_attr(node, key) != 0;
@@ -805,6 +1016,9 @@ std::string xmlString(void *node, const char *attribute, bool *present = nullptr
     return result;
 }
 
+/// @brief Copy an XML node's tag name.
+/// @param node Borrowed XML node.
+/// @return Tag-name bytes.
 std::string xmlTag(void *node) {
     rt_string value = rt_xml_tag(node);
     std::string result = toStd(value);
@@ -812,6 +1026,9 @@ std::string xmlTag(void *node) {
     return result;
 }
 
+/// @brief Copy the concatenated text content of an XML node.
+/// @param node Borrowed XML node.
+/// @return Text-content bytes.
 std::string xmlText(void *node) {
     rt_string value = rt_xml_text_content(node);
     std::string result = toStd(value);
@@ -819,6 +1036,13 @@ std::string xmlText(void *node) {
     return result;
 }
 
+/// @brief Parse an optional or required XML integer attribute.
+/// @param node Borrowed XML element.
+/// @param attribute Attribute name.
+/// @param out Destination replaced when present and valid.
+/// @param required Whether absence is an error.
+/// @param error Human-readable absence or syntax failure.
+/// @return `true` when valid or permissibly absent.
 bool xmlInt(void *node, const char *attribute, int64_t &out, bool required, std::string &error) {
     bool present = false;
     std::string text = xmlString(node, attribute, &present);
@@ -834,6 +1058,13 @@ bool xmlInt(void *node, const char *attribute, int64_t &out, bool required, std:
     return true;
 }
 
+/// @brief Parse an optional or required finite XML numeric attribute.
+/// @param node Borrowed XML element.
+/// @param attribute Attribute name.
+/// @param out Destination replaced when present and valid.
+/// @param required Whether absence is an error.
+/// @param error Human-readable absence or syntax failure.
+/// @return `true` when valid or permissibly absent.
 bool xmlDouble(void *node, const char *attribute, double &out, bool required, std::string &error) {
     bool present = false;
     std::string text = xmlString(node, attribute, &present);
@@ -849,6 +1080,10 @@ bool xmlDouble(void *node, const char *attribute, double &out, bool required, st
     return true;
 }
 
+/// @brief Find the first direct XML element child with a tag name.
+/// @param node Borrowed parent node.
+/// @param tag Exact tag name.
+/// @return Borrowed matching child, or `nullptr` when absent.
 void *firstXmlChild(void *node, const char *tag) {
     int64_t count = rt_xml_child_count(node);
     for (int64_t index = 0; index < count; ++index) {
@@ -859,6 +1094,16 @@ void *firstXmlChild(void *node, const char *tag) {
     return nullptr;
 }
 
+/// @brief Parse a TMX/TSX `<properties>` child.
+/// @details Supports Boolean, integer/object, float, string/file/color values;
+///          rejects class and unknown types; resolves file properties when a
+///          reader is available.
+/// @param parent Borrowed parent XML element.
+/// @param properties Target ordered property map.
+/// @param error Human-readable schema or limit failure.
+/// @param reader Optional dependency resolver for file properties.
+/// @param owner Resolved owner path used for relative file properties.
+/// @return `true` when the section is absent or every property is valid.
 bool parseXmlProperties(void *parent,
                         std::map<std::string, Scalar> &properties,
                         std::string &error,
@@ -927,6 +1172,13 @@ bool parseXmlProperties(void *parent,
     return true;
 }
 
+/// @brief Strictly decode whitespace-tolerant RFC 4648 Base64.
+/// @details Rejects non-alphabet bytes, misplaced padding, and nonzero unused
+///          bits instead of accepting ambiguous layer payloads.
+/// @param text Encoded layer text.
+/// @param output Decoded bytes replaced on success.
+/// @param error Human-readable syntax failure.
+/// @return `true` for a non-empty, correctly padded payload.
 bool decodeBase64(const std::string &text, std::vector<uint8_t> &output, std::string &error) {
     static constexpr signed char decode[256] = {
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -2, -2, -1, -1, -2, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -984,11 +1236,22 @@ bool decodeBase64(const std::string &text, std::vector<uint8_t> &output, std::st
     return true;
 }
 
+/// @brief Decode an unaligned little-endian 32-bit integer.
+/// @param data Pointer to at least four readable bytes.
+/// @return Decoded unsigned value.
 uint32_t readLe32(const uint8_t *data) {
     return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8u) |
            (static_cast<uint32_t>(data[2]) << 16u) | (static_cast<uint32_t>(data[3]) << 24u);
 }
 
+/// @brief Inflate a complete gzip member to an exact expected size.
+/// @details Validates method/reserved bits, optional header fields and checksum,
+///          raw DEFLATE output size, CRC32, and trailer length.
+/// @param input Complete gzip member bytes.
+/// @param expectedSize Required decoded byte count.
+/// @param output Decoded bytes replaced on success.
+/// @param error Human-readable header, inflate, or trailer failure.
+/// @return `true` only for a fully validated member.
 bool gunzipExact(const std::vector<uint8_t> &input,
                  size_t expectedSize,
                  std::vector<uint8_t> &output,
@@ -1068,6 +1331,15 @@ bool gunzipExact(const std::vector<uint8_t> &input,
     return true;
 }
 
+/// @brief Decode a Tiled layer byte stream to an exact expected size.
+/// @details Supports uncompressed, zlib, gzip, and zstd payloads; unknown
+///          compression names fail explicitly.
+/// @param encoded Encoded or compressed bytes.
+/// @param compression Tiled compression token.
+/// @param expectedSize Required decoded byte count.
+/// @param decoded Output bytes replaced on success.
+/// @param error Human-readable size, codec, or decompression failure.
+/// @return `true` when exactly @p expectedSize bytes are produced.
 bool decompressLayer(const std::vector<uint8_t> &encoded,
                      const std::string &compression,
                      size_t expectedSize,
@@ -1109,6 +1381,12 @@ bool decompressLayer(const std::vector<uint8_t> &encoded,
     return false;
 }
 
+/// @brief Parse comma-separated unsigned 32-bit Tiled GIDs.
+/// @param text CSV payload with optional ASCII whitespace.
+/// @param expectedCells Required number of values.
+/// @param gids Decoded values replaced on success.
+/// @param error Human-readable syntax, range, or count failure.
+/// @return `true` when exactly @p expectedCells valid GIDs are parsed.
 bool parseCsv(const std::string &text,
               size_t expectedCells,
               std::vector<int64_t> &gids,
@@ -1151,6 +1429,13 @@ bool parseCsv(const std::string &text,
     return true;
 }
 
+/// @brief Decode Base64/compressed little-endian Tiled GIDs.
+/// @param text Base64 payload.
+/// @param compression Empty, `zlib`, `gzip`, or `zstd`.
+/// @param expectedCells Required number of GIDs.
+/// @param gids Decoded GIDs replaced on success.
+/// @param error Human-readable decoding failure.
+/// @return `true` when the exact cell payload is decoded.
 bool decodeBase64Gids(const std::string &text,
                       const std::string &compression,
                       size_t expectedCells,
@@ -1172,6 +1457,15 @@ bool decodeBase64Gids(const std::string &text,
     return true;
 }
 
+/// @brief Interpret JSON tile collision as an unambiguous full-tile solid.
+/// @details Every collision object must be an axis-aligned rectangle covering
+///          the complete tile at origin; other shapes or tile objects fail.
+/// @param objectGroup Borrowed Tiled object-group Map, optionally null.
+/// @param tileWidth Expected rectangle width.
+/// @param tileHeight Expected rectangle height.
+/// @param solid Set when at least one valid full-tile rectangle exists.
+/// @param error Human-readable ambiguity or schema failure.
+/// @return `true` when the group is absent or fully representable.
 bool jsonCollisionIsSolid(
     void *objectGroup, int64_t tileWidth, int64_t tileHeight, bool &solid, std::string &error) {
     solid = false;
@@ -1204,6 +1498,15 @@ bool jsonCollisionIsSolid(
     return true;
 }
 
+/// @brief Interpret TMX tile collision as an unambiguous full-tile solid.
+/// @details Every `<object>` must cover the complete tile at origin and may
+///          contain only a `<properties>` child.
+/// @param objectGroup Borrowed `<objectgroup>`, optionally null.
+/// @param tileWidth Expected rectangle width.
+/// @param tileHeight Expected rectangle height.
+/// @param solid Set when at least one valid full-tile rectangle exists.
+/// @param error Human-readable ambiguity or schema failure.
+/// @return `true` when the group is absent or fully representable.
 bool xmlCollisionIsSolid(
     void *objectGroup, int64_t tileWidth, int64_t tileHeight, bool &solid, std::string &error) {
     solid = false;
@@ -1236,10 +1539,18 @@ bool xmlCollisionIsSolid(
     return true;
 }
 
+/// @brief Parses Tiled documents and dependencies into a normalized map model.
 class ImportParser {
   public:
+    /// @brief Select filesystem or logical-asset dependency semantics.
+    /// @param assetMode `true` for asset-backed reads.
     explicit ImportParser(bool assetMode) : reader_(assetMode) {}
 
+    /// @brief Read, parse, normalize, and finalize one Tiled root map.
+    /// @param path Caller-supplied root path.
+    /// @param document Destination intermediate document.
+    /// @param error Human-readable failure detail.
+    /// @return `true` only after complete final validation.
     bool parse(const std::string &path, MapDocument &document, std::string &error) {
         std::string owner;
         std::string text;
@@ -1252,6 +1563,10 @@ class ImportParser {
     }
 
   private:
+    /// @brief Enter a dependency document with depth and cycle checks.
+    /// @param owner Resolved document path.
+    /// @param error Human-readable depth or cycle failure.
+    /// @return `true` when newly active.
     bool enter(const std::string &owner, std::string &error) {
         if (active_.size() >= 16u) {
             error = "Tiled dependency depth exceeds 16 at: " + owner;
@@ -1264,10 +1579,18 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Remove a document from the active dependency stack.
+    /// @param owner Resolved document path.
     void leave(const std::string &owner) {
         active_.erase(owner);
     }
 
+    /// @brief Dispatch root-map bytes to JSON or TMX parsing.
+    /// @param owner Resolved root path used for dependencies.
+    /// @param text Complete root bytes.
+    /// @param document Destination map model.
+    /// @param error Human-readable parsing failure.
+    /// @return `true` when the selected parser succeeds.
     bool parseMapText(const std::string &owner,
                       const std::string &text,
                       MapDocument &document,
@@ -1285,6 +1608,10 @@ class ImportParser {
         return ok;
     }
 
+    /// @brief Validate finite-map and tile dimensions against cell limits.
+    /// @param document Map model to inspect.
+    /// @param error Human-readable dimension failure.
+    /// @return `true` for positive dimensions within one-layer capacity.
     bool validateMapDimensions(MapDocument &document, std::string &error) {
         if (document.width <= 0 || document.height <= 0 || document.tileWidth <= 0 ||
             document.tileHeight <= 0) {
@@ -1298,6 +1625,7 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Half-open aggregate tile bounds for infinite-map chunks.
     struct TileBounds {
         bool any{false};
         int64_t minimumX{0};
@@ -1306,6 +1634,14 @@ class ImportParser {
         int64_t maximumY{0};
     };
 
+    /// @brief Expand aggregate bounds to include one half-open chunk rectangle.
+    /// @param bounds Aggregate bounds to update.
+    /// @param x Chunk origin tile x.
+    /// @param y Chunk origin tile y.
+    /// @param width Positive chunk width.
+    /// @param height Positive chunk height.
+    /// @param error Human-readable invalid/overflow failure.
+    /// @return `true` when the rectangle is valid and incorporated.
     bool extendTileBounds(TileBounds &bounds,
                           int64_t x,
                           int64_t y,
@@ -1329,6 +1665,13 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Recursively accumulate chunk bounds from JSON infinite layers.
+    /// @param layers Borrowed layer sequence.
+    /// @param inheritedX Parent-group tile x offset.
+    /// @param inheritedY Parent-group tile y offset.
+    /// @param bounds Aggregate bounds to update.
+    /// @param error Human-readable schema or overflow failure.
+    /// @return `true` when every tile/group layer is structurally valid.
     bool scanJsonInfiniteLayers(void *layers,
                                 int64_t inheritedX,
                                 int64_t inheritedY,
@@ -1389,6 +1732,13 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Recursively accumulate chunk bounds from TMX infinite layers.
+    /// @param parent Borrowed map or group XML node.
+    /// @param inheritedX Parent-group tile x offset.
+    /// @param inheritedY Parent-group tile y offset.
+    /// @param bounds Aggregate bounds to update.
+    /// @param error Human-readable schema or overflow failure.
+    /// @return `true` when every tile/group layer is structurally valid.
     bool scanXmlInfiniteLayers(void *parent,
                                int64_t inheritedX,
                                int64_t inheritedY,
@@ -1449,6 +1799,14 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Convert aggregate infinite bounds into finite scene dimensions.
+    /// @details An infinite map with no chunks becomes a 1-by-1 scene at
+    ///          origin; nonempty bounds retain their minimum tile as the
+    ///          placement origin.
+    /// @param bounds Scanned half-open chunk bounds.
+    /// @param document Map model to update.
+    /// @param error Human-readable invalid/limit failure.
+    /// @return `true` when resulting dimensions pass normal validation.
     bool applyInfiniteBounds(const TileBounds &bounds, MapDocument &document, std::string &error) {
         if (!bounds.any) {
             document.originTileX = 0;
@@ -1468,6 +1826,10 @@ class ImportParser {
         return validateMapDimensions(document, error);
     }
 
+    /// @brief Validate orientation, render order, stagger, and hex geometry.
+    /// @param document Map model to inspect.
+    /// @param error Human-readable unsupported-value failure.
+    /// @return `true` when projection metadata is supported and consistent.
     bool validateOrientation(MapDocument &document, std::string &error) {
         if (document.orientation != "orthogonal" && document.orientation != "isometric" &&
             document.orientation != "staggered" && document.orientation != "hexagonal" &&
@@ -1502,6 +1864,13 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Establish canonical untransformed IDs for every tileset tile.
+    /// @details Derives missing tile counts when safe, verifies ordered
+    ///          nonoverlapping GID ranges below transform bits, enforces the
+    ///          canonical count budget, and reserves canonical ID zero as empty.
+    /// @param document Parsed map and tilesets to update.
+    /// @param error Human-readable range or derivation failure.
+    /// @return `true` when base canonical identities are complete.
     bool prepareCanonicalTiles(MapDocument &document, std::string &error) {
         document.canonicalTiles.clear();
         document.canonicalVariants.clear();
@@ -1566,6 +1935,15 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Parse a Tiled JSON root map into the intermediate document.
+    /// @details Validates root metadata and dimensions, resolves external or
+    ///          embedded tilesets, prepares canonical IDs, then recursively
+    ///          parses layers and objects before later finalization.
+    /// @param owner Resolved root path for relative dependencies.
+    /// @param text Complete JSON bytes.
+    /// @param document Destination map model.
+    /// @param error Human-readable parse/schema/limit failure.
+    /// @return `true` when all root content is representable.
     bool parseJsonMap(const std::string &owner,
                       const std::string &text,
                       MapDocument &document,
@@ -1724,6 +2102,12 @@ class ImportParser {
                                error);
     }
 
+    /// @brief Dispatch an external TSJ or TSX tileset dependency.
+    /// @param owner Resolved tileset path used for nested image references.
+    /// @param text Complete tileset bytes.
+    /// @param tileset Destination retaining the map-provided first GID.
+    /// @param error Human-readable parse/schema/dependency failure.
+    /// @return `true` when the dependency is valid and acyclic.
     bool parseTilesetText(const std::string &owner,
                           const std::string &text,
                           Tileset &tileset,
@@ -1768,6 +2152,15 @@ class ImportParser {
         return ok;
     }
 
+    /// @brief Parse embedded or external JSON tileset content.
+    /// @details Validates layout dimensions, resolves root/per-tile artwork,
+    ///          parses scalar/collision/animation metadata, rejects duplicate
+    ///          tile IDs, and requires at least one artwork source.
+    /// @param owner Resolved containing document path.
+    /// @param root Borrowed tileset Map.
+    /// @param tileset Destination tileset model.
+    /// @param error Human-readable schema or dependency failure.
+    /// @return `true` when all declared content is representable.
     bool parseJsonTileset(const std::string &owner,
                           void *root,
                           Tileset &tileset,
@@ -1912,6 +2305,14 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Parse embedded or external TMX/TSX tileset content.
+    /// @details Mirrors JSON tileset validation while reading XML attributes,
+    ///          child images, properties, collision groups, and animations.
+    /// @param owner Resolved containing document path.
+    /// @param root Borrowed `<tileset>` element.
+    /// @param tileset Destination tileset model.
+    /// @param error Human-readable schema or dependency failure.
+    /// @return `true` when all declared content is representable.
     bool parseXmlTileset(const std::string &owner,
                          void *root,
                          Tileset &tileset,
@@ -2038,6 +2439,17 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Rewrite raw Tiled GIDs to deduplicated canonical tile IDs.
+    /// @details Separates transform bits, locates the owning tileset, validates
+    ///          local range, incorporates inherited tint/opacity into the
+    ///          canonical key, creates bounded variants as needed, and marks
+    ///          referenced variants reachable.
+    /// @param gids Raw uint32-valued GIDs replaced in place.
+    /// @param document Map model containing tilesets and canonical tables.
+    /// @param tint Inherited combined ARGB layer tint.
+    /// @param opacity Inherited combined opacity in 0..65535.
+    /// @param error Human-readable range or capacity failure.
+    /// @return `true` when every nonempty GID maps unambiguously.
     bool normalizeGids(std::vector<int64_t> &gids,
                        MapDocument &document,
                        uint32_t tint,
@@ -2108,6 +2520,19 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Validate, normalize, and append one full-size scene tile layer.
+    /// @param name Authored name; empty names receive a deterministic fallback.
+    /// @param visible Effective inherited visibility.
+    /// @param gids Full-map raw GID cells moved into the layer.
+    /// @param offsetX Effective pixel x offset.
+    /// @param offsetY Effective pixel y offset.
+    /// @param opacity Effective opacity in 0..1.
+    /// @param parallaxX Effective horizontal parallax factor.
+    /// @param parallaxY Effective vertical parallax factor.
+    /// @param tint Effective ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable layer/cell/canonicalization failure.
+    /// @return `true` when appended within layer and total-cell limits.
     bool addLayer(std::string name,
                   bool visible,
                   std::vector<int64_t> gids,
@@ -2152,6 +2577,18 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Place a finite layer rectangle into full-map cell storage.
+    /// @details Nonempty source cells outside the finite map are rejected;
+    ///          out-of-bounds empty padding is tolerated.
+    /// @param source Source GIDs in row-major order.
+    /// @param sourceWidth Source width.
+    /// @param sourceHeight Source height.
+    /// @param offsetX Destination tile x offset.
+    /// @param offsetY Destination tile y offset.
+    /// @param document Destination map geometry.
+    /// @param placed Full-map row-major cells replaced on success.
+    /// @param error Human-readable dimension or placement failure.
+    /// @return `true` when all nonempty cells fit.
     bool placeLayerGids(const std::vector<int64_t> &source,
                         int64_t sourceWidth,
                         int64_t sourceHeight,
@@ -2186,6 +2623,20 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Compose JSON layer rendering attributes with inherited values.
+    /// @details Multiplies opacity/parallax/tint and accepts only the normal
+    ///          blend mode.
+    /// @param layer Borrowed layer Map.
+    /// @param inheritedOpacity Parent opacity.
+    /// @param inheritedParallaxX Parent horizontal parallax.
+    /// @param inheritedParallaxY Parent vertical parallax.
+    /// @param inheritedTint Parent ARGB tint.
+    /// @param opacity Effective opacity written on success.
+    /// @param parallaxX Effective horizontal parallax written on success.
+    /// @param parallaxY Effective vertical parallax written on success.
+    /// @param tint Effective tint written on success.
+    /// @param error Human-readable type/range/overflow failure.
+    /// @return `true` when all effective values are finite and supported.
     bool composeLayerRenderingJson(void *layer,
                                    double inheritedOpacity,
                                    double inheritedParallaxX,
@@ -2232,6 +2683,15 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Decode one JSON tile-layer or chunk data payload.
+    /// @details Supports direct integer arrays, CSV strings, and optionally
+    ///          compressed Base64 strings while enforcing the expected count.
+    /// @param payload Borrowed layer/chunk Map containing `data`.
+    /// @param encodingOwner Borrowed layer Map declaring encoding/compression.
+    /// @param cells Required GID count.
+    /// @param gids Decoded GIDs replaced on success.
+    /// @param error Human-readable encoding/schema/count failure.
+    /// @return `true` when exactly @p cells values are decoded.
     bool parseJsonGidPayload(void *payload,
                              void *encodingOwner,
                              size_t cells,
@@ -2278,6 +2738,22 @@ class ImportParser {
         return false;
     }
 
+    /// @brief Parse one finite or chunked JSON tile layer.
+    /// @details Composes offsets, decodes cells, detects overlapping infinite
+    ///          chunks, places all data into scanned map bounds, and appends a
+    ///          canonicalized scene layer.
+    /// @param layer Borrowed tile-layer Map.
+    /// @param name Effective hierarchical layer name.
+    /// @param visible Effective inherited visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param opacity Effective opacity.
+    /// @param parallaxX Effective horizontal parallax.
+    /// @param parallaxY Effective vertical parallax.
+    /// @param tint Effective ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable decoding or placement failure.
+    /// @return `true` when the layer is appended.
     bool parseJsonTileLayer(void *layer,
                             const std::string &name,
                             bool visible,
@@ -2400,6 +2876,12 @@ class ImportParser {
                         error);
     }
 
+    /// @brief Insert a generated property only when its reserved key is free.
+    /// @param properties Target property map.
+    /// @param name Reserved import key.
+    /// @param value Generated scalar value.
+    /// @param error Human-readable collision or capacity failure.
+    /// @return `true` when stored.
     bool addReservedProperty(std::map<std::string, Scalar> &properties,
                              const std::string &name,
                              Scalar value,
@@ -2411,6 +2893,13 @@ class ImportParser {
         return setProperty(properties, name, std::move(value), error);
     }
 
+    /// @brief Preserve JSON layer properties as namespaced scene properties.
+    /// @param owner Resolved containing document for file properties.
+    /// @param layer Borrowed layer Map.
+    /// @param layerName Effective hierarchical name.
+    /// @param document Scene property target.
+    /// @param error Human-readable parse, collision, or limit failure.
+    /// @return `true` when every property is preserved.
     bool preserveLayerPropertiesJson(const std::string &owner,
                                      void *layer,
                                      const std::string &layerName,
@@ -2431,6 +2920,13 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Preserve TMX layer properties as namespaced scene properties.
+    /// @param owner Resolved containing document for file properties.
+    /// @param layer Borrowed layer element.
+    /// @param layerName Effective hierarchical name.
+    /// @param document Scene property target.
+    /// @param error Human-readable parse, collision, or limit failure.
+    /// @return `true` when every property is preserved.
     bool preserveLayerPropertiesXml(const std::string &owner,
                                     void *layer,
                                     const std::string &layerName,
@@ -2451,6 +2947,9 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Construct an integer scalar.
+    /// @param value Integer payload.
+    /// @return Tagged scalar.
     Scalar integerScalar(int64_t value) const {
         Scalar scalar;
         scalar.kind = ScalarKind::Integer;
@@ -2458,6 +2957,9 @@ class ImportParser {
         return scalar;
     }
 
+    /// @brief Construct a floating-point scalar.
+    /// @param value Finite numeric payload.
+    /// @return Tagged scalar.
     Scalar floatScalar(double value) const {
         Scalar scalar;
         scalar.kind = ScalarKind::Float;
@@ -2465,6 +2967,9 @@ class ImportParser {
         return scalar;
     }
 
+    /// @brief Construct a Boolean scalar.
+    /// @param value Boolean payload.
+    /// @return Tagged scalar.
     Scalar boolScalar(bool value) const {
         Scalar scalar;
         scalar.kind = ScalarKind::Boolean;
@@ -2472,6 +2977,9 @@ class ImportParser {
         return scalar;
     }
 
+    /// @brief Construct a string scalar by moving its bytes.
+    /// @param value String payload.
+    /// @return Tagged scalar.
     Scalar stringScalar(std::string value) const {
         Scalar scalar;
         scalar.kind = ScalarKind::String;
@@ -2479,6 +2987,14 @@ class ImportParser {
         return scalar;
     }
 
+    /// @brief Choose and reserve a unique SceneDocument object ID.
+    /// @details Prefers a unique authored name, otherwise falls back to the
+    ///          numeric Tiled object ID.
+    /// @param authoredName Authored object name.
+    /// @param numericId Parsed Tiled numeric ID.
+    /// @param result Chosen ID written on success.
+    /// @param error Human-readable uniqueness failure.
+    /// @return `true` when a nonempty unique ID is reserved.
     bool chooseObjectId(const std::string &authoredName,
                         int64_t numericId,
                         std::string &result,
@@ -2493,6 +3009,12 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Preserve a runtime JSON value as bounded canonical JSON text.
+    /// @param value Borrowed parsed value.
+    /// @param properties Target object property map.
+    /// @param name Reserved property key.
+    /// @param error Human-readable formatting, size, or collision failure.
+    /// @return `true` when stored as a string scalar.
     bool canonicalJsonProperty(void *value,
                                std::map<std::string, Scalar> &properties,
                                const std::string &name,
@@ -2511,6 +3033,20 @@ class ImportParser {
         return addReservedProperty(properties, name, stringScalar(std::move(text)), error);
     }
 
+    /// @brief Merge and parse a JSON object-template instance.
+    /// @details Reads an acyclic JSON template, clones its base object, appends
+    ///          template then instance properties, overlays instance members,
+    ///          records the resolved template path, and parses the merged object.
+    /// @param owner Resolved instance document path.
+    /// @param instance Borrowed instance object Map.
+    /// @param templateReference Relative template path.
+    /// @param layerName Effective containing layer name.
+    /// @param layerVisible Effective containing visibility.
+    /// @param offsetX Effective containing x offset.
+    /// @param offsetY Effective containing y offset.
+    /// @param document Map model to update.
+    /// @param error Human-readable dependency, merge, or object failure.
+    /// @return `true` when the merged object is appended.
     bool parseJsonTemplateObject(const std::string &owner,
                                  void *instance,
                                  const std::string &templateReference,
@@ -2593,6 +3129,19 @@ class ImportParser {
         return ok;
     }
 
+    /// @brief Convert one JSON Tiled object into a SceneDocument object.
+    /// @details Resolves templates, composes/rounds coordinates, chooses a
+    ///          unique ID, preserves authored and generated metadata, normalizes
+    ///          tile-object GIDs, and serializes supported shape payloads.
+    /// @param owner Resolved containing document path.
+    /// @param object Borrowed object Map.
+    /// @param layerName Effective containing layer name.
+    /// @param layerVisible Effective containing visibility.
+    /// @param offsetX Effective containing x offset.
+    /// @param offsetY Effective containing y offset.
+    /// @param document Map model to update.
+    /// @param error Human-readable object/template/property failure.
+    /// @return `true` when exactly one object is appended.
     bool parseJsonObject(const std::string &owner,
                          void *object,
                          const std::string &layerName,
@@ -2725,6 +3274,20 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Parse a JSON object layer and attach effective render metadata.
+    /// @param owner Resolved containing document path.
+    /// @param layer Borrowed object-layer Map.
+    /// @param name Effective hierarchical layer name.
+    /// @param visible Effective visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param opacity Effective opacity.
+    /// @param parallaxX Effective horizontal parallax.
+    /// @param parallaxY Effective vertical parallax.
+    /// @param tint Effective ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable schema/object/property failure.
+    /// @return `true` when every source object produces one result.
     bool parseJsonObjectLayer(const std::string &owner,
                               void *layer,
                               const std::string &name,
@@ -2789,6 +3352,23 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Convert a JSON image layer into a metadata SceneDocument object.
+    /// @details Resolves artwork, composes/rounds offsets, preserves layer
+    ///          properties and repeat/render attributes, and appends an object
+    ///          of type `tiled.image-layer`.
+    /// @param owner Resolved containing document path.
+    /// @param layer Borrowed image-layer Map.
+    /// @param name Effective hierarchical layer name and object ID.
+    /// @param visible Effective visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param opacity Effective opacity.
+    /// @param parallaxX Effective horizontal parallax.
+    /// @param parallaxY Effective vertical parallax.
+    /// @param tint Effective ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable dependency or metadata failure.
+    /// @return `true` when the metadata object is appended.
     bool parseJsonImageLayer(const std::string &owner,
                              void *layer,
                              const std::string &name,
@@ -2862,6 +3442,23 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Recursively parse and flatten a JSON layer hierarchy.
+    /// @details Builds slash-separated names, composes visibility/rendering and
+    ///          group offsets, preserves layer properties, and dispatches tile,
+    ///          object, image, and group layers.
+    /// @param owner Resolved containing document path.
+    /// @param layers Borrowed layer sequence.
+    /// @param prefix Parent hierarchical name.
+    /// @param inheritedVisible Parent visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param inheritedOpacity Parent opacity.
+    /// @param inheritedParallaxX Parent horizontal parallax.
+    /// @param inheritedParallaxY Parent vertical parallax.
+    /// @param inheritedTint Parent ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable unsupported-layer or child failure.
+    /// @return `true` when every descendant is representable.
     bool parseJsonLayers(const std::string &owner,
                          void *layers,
                          const std::string &prefix,
@@ -2990,6 +3587,20 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Compose TMX layer rendering attributes with inherited values.
+    /// @details Multiplies opacity/parallax/tint and accepts only the normal
+    ///          blend mode.
+    /// @param layer Borrowed layer element.
+    /// @param inheritedOpacity Parent opacity.
+    /// @param inheritedParallaxX Parent horizontal parallax.
+    /// @param inheritedParallaxY Parent vertical parallax.
+    /// @param inheritedTint Parent ARGB tint.
+    /// @param opacity Effective opacity written on success.
+    /// @param parallaxX Effective horizontal parallax written on success.
+    /// @param parallaxY Effective vertical parallax written on success.
+    /// @param tint Effective tint written on success.
+    /// @param error Human-readable type/range/overflow failure.
+    /// @return `true` when all effective values are finite and supported.
     bool composeLayerRenderingXml(void *layer,
                                   double inheritedOpacity,
                                   double inheritedParallaxX,
@@ -3033,6 +3644,15 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Decode one TMX tile-layer or chunk data payload.
+    /// @details Supports child `<tile>` elements, CSV text, and optionally
+    ///          compressed Base64 text with an exact expected cell count.
+    /// @param payload Borrowed `<data>` or `<chunk>` element.
+    /// @param encodingOwner Borrowed `<data>` element declaring codecs.
+    /// @param cells Required GID count.
+    /// @param gids Decoded GIDs appended/replaced for the selected encoding.
+    /// @param error Human-readable encoding/schema/count failure.
+    /// @return `true` when exactly @p cells values are decoded.
     bool parseXmlGidPayload(void *payload,
                             void *encodingOwner,
                             size_t cells,
@@ -3074,6 +3694,21 @@ class ImportParser {
         return false;
     }
 
+    /// @brief Parse one finite or chunked TMX tile layer.
+    /// @details Mirrors JSON tile-layer placement, including composed offsets,
+    ///          overlap detection, scanned infinite bounds, and canonicalization.
+    /// @param layer Borrowed `<layer>` element.
+    /// @param name Effective hierarchical layer name.
+    /// @param visible Effective inherited visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param opacity Effective opacity.
+    /// @param parallaxX Effective horizontal parallax.
+    /// @param parallaxY Effective vertical parallax.
+    /// @param tint Effective ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable decoding or placement failure.
+    /// @return `true` when the layer is appended.
     bool parseXmlTileLayer(void *layer,
                            const std::string &name,
                            bool visible,
@@ -3193,6 +3828,12 @@ class ImportParser {
                         error);
     }
 
+    /// @brief Preserve an XML object-shape node as bounded formatted text.
+    /// @param shape Borrowed shape element.
+    /// @param properties Target object properties.
+    /// @param name Reserved destination key.
+    /// @param error Human-readable formatting, size, or collision failure.
+    /// @return `true` when stored as a string scalar.
     bool preserveXmlShape(void *shape,
                           std::map<std::string, Scalar> &properties,
                           const std::string &name,
@@ -3211,6 +3852,10 @@ class ImportParser {
         return addReservedProperty(properties, name, stringScalar(std::move(text)), error);
     }
 
+    /// @brief Copy all XML attributes between elements.
+    /// @param from Borrowed source element.
+    /// @param to Borrowed destination element.
+    /// @param skipTemplate Whether to omit the `template` attribute.
     void copyXmlAttributes(void *from, void *to, bool skipTemplate) {
         OwnedObject names(rt_xml_attr_names(from));
         int64_t count = names.get() ? rt_seq_len(names.get()) : 0;
@@ -3226,6 +3871,10 @@ class ImportParser {
         }
     }
 
+    /// @brief Deep-clone a supported XML node subtree.
+    /// @param node Borrowed element, text, comment, or CDATA node.
+    /// @return Owned cloned node, or `nullptr` on unsupported type/allocation
+    ///         failure.
     void *cloneXmlNode(void *node) {
         int64_t type = rt_xml_node_type(node);
         if (type == XML_NODE_ELEMENT) {
@@ -3259,6 +3908,9 @@ class ImportParser {
         return clone;
     }
 
+    /// @brief Clone property children from an object into a merged container.
+    /// @param object Borrowed template or instance object element.
+    /// @param mergedProperties Borrowed destination `<properties>` element.
     void appendXmlProperties(void *object, void *mergedProperties) {
         void *properties = firstXmlChild(object, "properties");
         if (!properties)
@@ -3276,6 +3928,20 @@ class ImportParser {
         }
     }
 
+    /// @brief Merge and parse a TMX object-template instance.
+    /// @details Reads an acyclic XML template, overlays instance attributes,
+    ///          concatenates template/instance properties and shape children,
+    ///          records the resolved template path, and parses the merged object.
+    /// @param owner Resolved instance document path.
+    /// @param instance Borrowed instance `<object>`.
+    /// @param templateReference Relative template path.
+    /// @param layerName Effective containing layer name.
+    /// @param layerVisible Effective containing visibility.
+    /// @param offsetX Effective containing x offset.
+    /// @param offsetY Effective containing y offset.
+    /// @param document Map model to update.
+    /// @param error Human-readable dependency, merge, or object failure.
+    /// @return `true` when the merged object is appended.
     bool parseXmlTemplateObject(const std::string &owner,
                                 void *instance,
                                 const std::string &templateReference,
@@ -3352,6 +4018,19 @@ class ImportParser {
         return ok;
     }
 
+    /// @brief Convert one TMX `<object>` into a SceneDocument object.
+    /// @details Mirrors JSON object conversion while resolving XML templates,
+    ///          properties, geometry, visibility, GIDs, and formatted shape
+    ///          child elements.
+    /// @param owner Resolved containing document path.
+    /// @param object Borrowed `<object>` element.
+    /// @param layerName Effective containing layer name.
+    /// @param layerVisible Effective containing visibility.
+    /// @param offsetX Effective containing x offset.
+    /// @param offsetY Effective containing y offset.
+    /// @param document Map model to update.
+    /// @param error Human-readable object/template/property failure.
+    /// @return `true` when exactly one object is appended.
     bool parseXmlObject(const std::string &owner,
                         void *object,
                         const std::string &layerName,
@@ -3477,6 +4156,20 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Parse a TMX object layer and attach effective render metadata.
+    /// @param owner Resolved containing document path.
+    /// @param layer Borrowed `<objectgroup>` element.
+    /// @param name Effective hierarchical layer name.
+    /// @param visible Effective visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param opacity Effective opacity.
+    /// @param parallaxX Effective horizontal parallax.
+    /// @param parallaxY Effective vertical parallax.
+    /// @param tint Effective ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable schema/object/property failure.
+    /// @return `true` when every source object produces one result.
     bool parseXmlObjectLayer(const std::string &owner,
                              void *layer,
                              const std::string &name,
@@ -3524,6 +4217,20 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Convert a TMX image layer into a metadata SceneDocument object.
+    /// @param owner Resolved containing document path.
+    /// @param layer Borrowed `<imagelayer>` element.
+    /// @param name Effective hierarchical layer name and object ID.
+    /// @param visible Effective visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param opacity Effective opacity.
+    /// @param parallaxX Effective horizontal parallax.
+    /// @param parallaxY Effective vertical parallax.
+    /// @param tint Effective ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable dependency or metadata failure.
+    /// @return `true` when the metadata object is appended.
     bool parseXmlImageLayer(const std::string &owner,
                             void *layer,
                             const std::string &name,
@@ -3589,6 +4296,23 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Recursively parse and flatten a TMX layer hierarchy.
+    /// @details Builds slash-separated names, composes visibility/rendering and
+    ///          group offsets, preserves layer properties, and dispatches tile,
+    ///          object, image, and group elements.
+    /// @param owner Resolved containing document path.
+    /// @param parent Borrowed map or group element.
+    /// @param prefix Parent hierarchical name.
+    /// @param inheritedVisible Parent visibility.
+    /// @param inheritedX Parent pixel x offset.
+    /// @param inheritedY Parent pixel y offset.
+    /// @param inheritedOpacity Parent opacity.
+    /// @param inheritedParallaxX Parent horizontal parallax.
+    /// @param inheritedParallaxY Parent vertical parallax.
+    /// @param inheritedTint Parent ARGB tint.
+    /// @param document Map model to update.
+    /// @param error Human-readable child parsing failure.
+    /// @return `true` when every descendant is representable.
     bool parseXmlLayers(const std::string &owner,
                         void *parent,
                         const std::string &prefix,
@@ -3702,6 +4426,15 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Parse a TMX root map into the intermediate document.
+    /// @details Normalizes XML prologue bytes, validates map geometry and
+    ///          projection metadata, resolves TSX/embedded tilesets, prepares
+    ///          canonical IDs, and recursively parses supported layers.
+    /// @param owner Resolved root path for relative dependencies.
+    /// @param text Complete TMX bytes.
+    /// @param document Destination map model.
+    /// @param error Human-readable parse/schema/limit failure.
+    /// @return `true` when all root content is representable.
     bool parseTmxMap(const std::string &owner,
                      const std::string &text,
                      MapDocument &document,
@@ -3810,6 +4543,14 @@ class ImportParser {
             owner, root, "", true, 0.0, 0.0, 1.0, 1.0, 1.0, UINT32_C(0xFFFFFFFF), document, error);
     }
 
+    /// @brief Merge local tile metadata into one canonical tile variant.
+    /// @details Accumulates solid IDs and scalar properties while rejecting
+    ///          conflicting values, and installs a validated animation rule.
+    /// @param document Map model to update.
+    /// @param canonicalTile Canonical tile ID receiving metadata.
+    /// @param metadata Parsed local-tile metadata.
+    /// @param error Human-readable conflict or animation failure.
+    /// @return `true` when metadata is absent or merges consistently.
     bool mergeMetadata(MapDocument &document,
                        int64_t canonicalTile,
                        const TileMetadata &metadata,
@@ -3852,6 +4593,12 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Derive a common atlas frame and draw offset from declared artwork.
+    /// @details Accounts for per-tile dimensions, tileset offsets, diagonal
+    ///          transforms, and hex rotations across all canonical variants.
+    /// @param document Map model receiving source frame size and draw offset.
+    /// @param error Human-readable unsafe-dimension or overflow failure.
+    /// @return `true` when bounded artwork extents are representable.
     bool computeDeclaredArtworkLayout(MapDocument &document, std::string &error) {
         long double minimumX = 0.0L;
         long double minimumY = 0.0L;
@@ -3949,6 +4696,14 @@ class ImportParser {
         return true;
     }
 
+    /// @brief Complete cross-tileset metadata and artwork normalization.
+    /// @details Creates a base layer when none exists, validates metadata and
+    ///          animation local IDs, materializes transformed animation-frame
+    ///          variants, propagates reachability, merges metadata, and derives
+    ///          the declared atlas frame.
+    /// @param document Parsed map model to finalize.
+    /// @param error Human-readable validation or capacity failure.
+    /// @return `true` when the model is ready for scene serialization/rendering.
     bool finalize(MapDocument &document, std::string &error) {
         if (document.layers.empty()) {
             std::vector<int64_t> empty(static_cast<size_t>(document.width * document.height), 0);
@@ -4032,6 +4787,9 @@ class ImportParser {
     std::set<std::string> objectIds_;
 };
 
+/// @brief Serialize an ordered scalar map as compact JSON.
+/// @param out Destination stream.
+/// @param properties Lexically ordered property map.
 void writeScalarMap(std::ostringstream &out, const std::map<std::string, Scalar> &properties) {
     out << '{';
     bool first = true;
@@ -4044,6 +4802,12 @@ void writeScalarMap(std::ostringstream &out, const std::map<std::string, Scalar>
     out << '}';
 }
 
+/// @brief Serialize the normalized map model as SceneDocument JSON.
+/// @details Emits editable layers/objects and typed collision/property/
+///          animation sections plus a preserved `tiledRuntime` section carrying
+///          projection, artwork, canonical-variant, and dependency metadata.
+/// @param document Finalized Tiled map model.
+/// @return Complete compact SceneDocument JSON.
 std::string toSceneJson(const MapDocument &document) {
     std::ostringstream out;
     out << '{';
@@ -4222,6 +4986,14 @@ std::string toSceneJson(const MapDocument &document) {
     return out.str();
 }
 
+/// @brief Import and validate a Tiled map as a SceneDocument product.
+/// @details Parses the source into an intermediate model, serializes it through
+///          the SceneDocument schema, and rejects any diagnostics produced by
+///          that second validation layer.
+/// @param path Filesystem or logical asset root path.
+/// @param assetMode Select logical asset resolution when true.
+/// @return Product containing an owned scene on success or error text on
+///         failure, plus the normalized model for render construction.
 ImportProduct importTiled(const std::string &path, bool assetMode) {
     ImportProduct product;
     ImportParser parser(assetMode);
@@ -4248,6 +5020,9 @@ ImportProduct importTiled(const std::string &path, bool assetMode) {
     return product;
 }
 
+/// @brief Create an owned error Result for a Tiled import failure.
+/// @param error Error text; empty input receives a generic fallback.
+/// @return Owned `Result.ErrStr`.
 void *makeErrorResult(const std::string &error) {
     rt_string message = makeString(error.empty() ? "Tiled import failed" : error);
     void *result = rt_result_err_str(message);
@@ -4255,12 +5030,16 @@ void *makeErrorResult(const std::string &error) {
     return result;
 }
 
+/// @brief Wrap an owned runtime object in a success Result.
+/// @param value Owned payload reference transferred into the Result.
+/// @return Owned `Result.Ok`.
 void *makeOkResult(void *value) {
     void *result = rt_result_ok(value);
     releaseObject(value);
     return result;
 }
 
+/// @brief Decoded source rectangle for one canonical tile.
 struct TiledSourceTile {
     void *pixels{nullptr};
     int64_t sourceX{0};
@@ -4271,12 +5050,14 @@ struct TiledSourceTile {
     bool hasTransparentColor{false};
 };
 
+/// @brief Root-image grid metadata for one tileset.
 struct TiledAtlasInfo {
     void *rootPixels{nullptr};
     int64_t columns{0};
     int64_t rows{0};
 };
 
+/// @brief Pixel atlas and layout values produced for a render Tilemap.
 struct ComposedTiledAtlas {
     void *pixels{nullptr};
     int64_t frameWidth{0};
@@ -4287,12 +5068,23 @@ struct ComposedTiledAtlas {
     int64_t tileCount{0};
 };
 
+/// @brief Release every owned Pixels value in an image cache.
+/// @param cache Cache to release and clear.
 void releasePixelCache(std::map<std::string, void *> &cache) {
     for (const auto &[_, pixels] : cache)
         releaseObject(pixels);
     cache.clear();
 }
 
+/// @brief Load and cache one bounded Tiled artwork image.
+/// @details Uses asset or filesystem Pixels loading, verifies dimensions, and
+///          charges decoded RGBA bytes against the 256 MiB source-image budget.
+/// @param path Resolved image path.
+/// @param assetMode Select asset loading when true.
+/// @param cache Owned cache updated on a first successful load.
+/// @param sourceBytes Aggregate decoded-byte counter updated on success.
+/// @param error Human-readable load, type, dimension, or budget failure.
+/// @return Borrowed cached Pixels handle, or `nullptr` on failure.
 void *loadTiledPixels(const std::string &path,
                       bool assetMode,
                       std::map<std::string, void *> &cache,
@@ -4327,6 +5119,14 @@ void *loadTiledPixels(const std::string &path,
     return pixels;
 }
 
+/// @brief Compute transformed artwork bounds for a canonical tile.
+/// @param tile Canonical transform flags.
+/// @param sourceWidth Source image width.
+/// @param sourceHeight Source image height.
+/// @param hexagonal Whether flags encode hex rotations instead of diagonal
+///        reflection.
+/// @param width Transformed width written on return.
+/// @param height Transformed height written on return.
 void transformedTileDimensions(const CanonicalTile &tile,
                                int64_t sourceWidth,
                                int64_t sourceHeight,
@@ -4360,6 +5160,17 @@ void transformedTileDimensions(const CanonicalTile &tile,
     }
 }
 
+/// @brief Position transformed tile artwork relative to its map cell.
+/// @param tileset Owning tileset offsets.
+/// @param mapTileHeight Map cell height.
+/// @param sourceWidth Source artwork width.
+/// @param sourceHeight Source artwork height.
+/// @param transformedWidth Transformed artwork width.
+/// @param transformedHeight Transformed artwork height.
+/// @param relativeX Relative x position written on success.
+/// @param relativeY Relative y position written on success.
+/// @param error Human-readable overflow failure.
+/// @return `true` when placement and far edges fit in int64.
 bool tileArtworkPosition(const Tileset &tileset,
                          int64_t mapTileHeight,
                          int64_t sourceWidth,
@@ -4385,6 +5196,11 @@ bool tileArtworkPosition(const Tileset &tileset,
     return true;
 }
 
+/// @brief Apply color-key transparency, ARGB tint, and layer opacity.
+/// @param pixel Source pixel in runtime 0xRRGGBBAA order.
+/// @param tile Canonical tint and 16-bit opacity.
+/// @param source Optional transparent-color metadata.
+/// @return Transformed 0xRRGGBBAA pixel, or zero for a color-key match.
 uint32_t applyCanonicalColor(uint32_t pixel,
                              const CanonicalTile &tile,
                              const TiledSourceTile &source) {
@@ -4403,6 +5219,18 @@ uint32_t applyCanonicalColor(uint32_t pixel,
     return (red << 24u) | (green << 16u) | (blue << 8u) | alpha;
 }
 
+/// @brief Rasterize one transformed canonical tile into the composed atlas.
+/// @details Orthogonal variants use exact reflections/diagonal mapping;
+///          hexagonal variants use inverse nearest-neighbor rotation plus
+///          optional reflections.
+/// @param atlas Borrowed destination Pixels.
+/// @param destinationX Atlas destination x.
+/// @param destinationY Atlas destination y.
+/// @param source Decoded source rectangle.
+/// @param tile Canonical transform/color metadata.
+/// @param hexagonal Select hex rotation semantics.
+/// @param transformedWidth Destination artwork width.
+/// @param transformedHeight Destination artwork height.
 void writeCanonicalTile(void *atlas,
                         int64_t destinationX,
                         int64_t destinationY,
@@ -4474,6 +5302,15 @@ void writeCanonicalTile(void *atlas,
     }
 }
 
+/// @brief Decode reachable artwork and compose a canonical runtime atlas.
+/// @details Loads only reachable root/per-tile images, validates declared
+///          dimensions, derives common frame extents, allocates a bounded
+///          near-square atlas, and rasterizes every available canonical variant.
+/// @param document Finalized map model.
+/// @param assetMode Select asset-backed image loading when true.
+/// @param result Atlas Pixels and layout values written on success.
+/// @param error Human-readable image, layout, allocation, or budget failure.
+/// @return `true` when the atlas is complete.
 bool composeTiledAtlas(const MapDocument &document,
                        bool assetMode,
                        ComposedTiledAtlas &result,
@@ -4716,6 +5553,14 @@ bool composeTiledAtlas(const MapDocument &document,
     return true;
 }
 
+/// @brief Build and configure a render-ready Tilemap from an import product.
+/// @details Creates the editable Tilemap, composes its atlas, maps projection
+///          and render-order enums, configures import layout/layers, transfers
+///          the tileset, and applies the canonical tile count.
+/// @param product Successful import product with owned SceneDocument.
+/// @param assetMode Select asset-backed image loading.
+/// @param error Human-readable construction/configuration failure.
+/// @return Owned Tilemap handle, or `nullptr` on failure.
 void *buildRenderTilemap(ImportProduct &product, bool assetMode, std::string &error) {
     if (!product.scene) {
         error =
@@ -4790,11 +5635,19 @@ void *buildRenderTilemap(ImportProduct &product, bool assetMode, std::string &er
     return tilemap;
 }
 
+/// @brief Import a path directly as a nullable SceneDocument.
+/// @param path Borrowed runtime path string.
+/// @param assetMode Select asset dependency semantics.
+/// @return Owned SceneDocument, or `nullptr` on import failure.
 void *sceneImportRaw(rt_string path, bool assetMode) {
     ImportProduct product = importTiled(toStd(path), assetMode);
     return product.scene;
 }
 
+/// @brief Import a path as a Result-wrapped SceneDocument.
+/// @param path Borrowed runtime path string.
+/// @param assetMode Select asset dependency semantics.
+/// @return Owned Result containing a SceneDocument or error string.
 void *sceneImportResult(rt_string path, bool assetMode) {
     ImportProduct product = importTiled(toStd(path), assetMode);
     if (!product.scene)
@@ -4802,6 +5655,12 @@ void *sceneImportResult(rt_string path, bool assetMode) {
     return makeOkResult(product.scene);
 }
 
+/// @brief Validate a loader receiver and import a render-ready Tilemap.
+/// @param loader Borrowed TiledMapLoader handle.
+/// @param path Borrowed runtime path string.
+/// @param assetMode Select asset dependency/image semantics.
+/// @return Owned Tilemap, or `nullptr` for an invalid receiver/import/build
+///         failure.
 void *loaderImportRaw(void *loader, rt_string path, bool assetMode) {
     if (!loader || rt_obj_class_id(loader) != kTiledMapLoaderClassId)
         return nullptr;
@@ -4815,6 +5674,11 @@ void *loaderImportRaw(void *loader, rt_string path, bool assetMode) {
     return tilemap;
 }
 
+/// @brief Validate a loader receiver and import a Result-wrapped Tilemap.
+/// @param loader Borrowed TiledMapLoader handle.
+/// @param path Borrowed runtime path string.
+/// @param assetMode Select asset dependency/image semantics.
+/// @return Owned Result containing a Tilemap or error string.
 void *loaderImportResult(void *loader, rt_string path, bool assetMode) {
     if (!loader || rt_obj_class_id(loader) != kTiledMapLoaderClassId)
         return makeErrorResult("TiledMapLoader.Load requires a TiledMapLoader receiver");
@@ -4834,6 +5698,9 @@ void *loaderImportResult(void *loader, rt_string path, bool assetMode) {
 
 extern "C" {
 
+/// @brief Import a filesystem Tiled JSON/TMX map as a SceneDocument.
+/// @param path Borrowed filesystem root path.
+/// @return Owned SceneDocument, or `nullptr` on any import failure.
 void *rt_game_scene_import_tiled(rt_string path) {
     try {
         return sceneImportRaw(path, false);
@@ -4842,6 +5709,9 @@ void *rt_game_scene_import_tiled(rt_string path) {
     }
 }
 
+/// @brief Import a filesystem Tiled map with Result semantics.
+/// @param path Borrowed filesystem root path.
+/// @return Owned Result containing a SceneDocument or error string.
 void *rt_game_scene_import_tiled_result(rt_string path) {
     try {
         return sceneImportResult(path, false);
@@ -4850,6 +5720,9 @@ void *rt_game_scene_import_tiled_result(rt_string path) {
     }
 }
 
+/// @brief Import an asset-backed Tiled JSON/TMX map as a SceneDocument.
+/// @param path Borrowed logical asset root path.
+/// @return Owned SceneDocument, or `nullptr` on any import failure.
 void *rt_game_scene_import_tiled_asset(rt_string path) {
     try {
         return sceneImportRaw(path, true);
@@ -4858,6 +5731,9 @@ void *rt_game_scene_import_tiled_asset(rt_string path) {
     }
 }
 
+/// @brief Import an asset-backed Tiled map with Result semantics.
+/// @param path Borrowed logical asset root path.
+/// @return Owned Result containing a SceneDocument or error string.
 void *rt_game_scene_import_tiled_asset_result(rt_string path) {
     try {
         return sceneImportResult(path, true);
@@ -4866,6 +5742,10 @@ void *rt_game_scene_import_tiled_asset_result(rt_string path) {
     }
 }
 
+/// @brief Load a filesystem Tiled map as a render-ready Tilemap.
+/// @param loader Borrowed TiledMapLoader receiver.
+/// @param path Borrowed filesystem root path.
+/// @return Owned Tilemap, or `nullptr` on receiver/import/render failure.
 void *rt_tiledmaploader_load(void *loader, rt_string path) {
     try {
         return loaderImportRaw(loader, path, false);
@@ -4874,6 +5754,10 @@ void *rt_tiledmaploader_load(void *loader, rt_string path) {
     }
 }
 
+/// @brief Load a filesystem Tiled map as a Result-wrapped Tilemap.
+/// @param loader Borrowed TiledMapLoader receiver.
+/// @param path Borrowed filesystem root path.
+/// @return Owned Result containing a Tilemap or error string.
 void *rt_tiledmaploader_load_result(void *loader, rt_string path) {
     try {
         return loaderImportResult(loader, path, false);
@@ -4882,6 +5766,10 @@ void *rt_tiledmaploader_load_result(void *loader, rt_string path) {
     }
 }
 
+/// @brief Load an asset-backed Tiled map as a render-ready Tilemap.
+/// @param loader Borrowed TiledMapLoader receiver.
+/// @param path Borrowed logical asset root path.
+/// @return Owned Tilemap, or `nullptr` on receiver/import/render failure.
 void *rt_tiledmaploader_load_asset(void *loader, rt_string path) {
     try {
         return loaderImportRaw(loader, path, true);
@@ -4890,6 +5778,10 @@ void *rt_tiledmaploader_load_asset(void *loader, rt_string path) {
     }
 }
 
+/// @brief Load an asset-backed Tiled map as a Result-wrapped Tilemap.
+/// @param loader Borrowed TiledMapLoader receiver.
+/// @param path Borrowed logical asset root path.
+/// @return Owned Result containing a Tilemap or error string.
 void *rt_tiledmaploader_load_asset_result(void *loader, rt_string path) {
     try {
         return loaderImportResult(loader, path, true);

@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_debug.h
+/// @file
+/// @brief Declares immediate line-oriented stdout diagnostic helpers.
+///
 // Purpose: Debug-oriented printing helpers providing deterministic, line-oriented output of i32 and
 // C-string values for IL golden tests and runtime diagnostics.
 //
@@ -30,10 +33,12 @@ extern "C" {
 
 /// @brief Print a signed 32-bit integer followed by a newline.
 /// @param value Value to print in decimal.
+/// @note Flushes stdout and ignores output/flush errors.
 void rt_println_i32(int32_t value);
 
 /// @brief Print a C string followed by a newline.
 /// @param text Null-terminated string; treated as empty when null.
+/// @note Flushes stdout; the byte encoding is not validated.
 void rt_println_str(const char *text);
 
 #ifdef __cplusplus

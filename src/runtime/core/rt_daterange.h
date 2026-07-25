@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_daterange.h
+/// @file
+/// @brief Declares the GC-managed closed DateRange timestamp interval API.
+///
 // Purpose: Date interval type representing a range between two Unix timestamps, with containment
 // testing, overlap detection, and duration queries.
 //
@@ -16,6 +19,8 @@
 // Ownership/Lifetime:
 //   - DateRange objects are GC-managed opaque pointers.
 //   - Callers must not free range objects directly.
+//   - Null receivers produce the documented zero/false/null sentinel; nonnull
+//     objects of another runtime class raise a trap.
 //
 // Links: src/runtime/core/rt_daterange.c (implementation), src/runtime/core/rt_string.h
 //
@@ -40,17 +45,19 @@ extern "C" {
 /// @brief Create a date range from start and end timestamps.
 /// @param start Start timestamp in seconds.
 /// @param end End timestamp in seconds.
-/// @return Date range object.
+/// @return New normalized DateRange, or `NULL` after an allocation trap.
 void *rt_daterange_new(int64_t start, int64_t end);
 
 /// @brief Get start timestamp.
 /// @param range Date range object.
 /// @return Start timestamp in seconds.
+/// @note Null returns zero, which is indistinguishable from the Unix epoch.
 int64_t rt_daterange_start(void *range);
 
 /// @brief Get end timestamp.
 /// @param range Date range object.
 /// @return End timestamp in seconds.
+/// @note Null returns zero, which is indistinguishable from the Unix epoch.
 int64_t rt_daterange_end(void *range);
 
 /// @brief Check if a timestamp falls within the range (inclusive).
@@ -69,10 +76,12 @@ int8_t rt_daterange_overlaps(void *range, void *other);
 /// @param range First date range.
 /// @param other Second date range.
 /// @return Intersection range, or NULL if no overlap.
+/// @note Touching endpoints produce a point range.
 void *rt_daterange_intersection(void *range, void *other);
 
 /// @brief Get the union of two ranges.
-/// @details Returns NULL if ranges are not contiguous or overlapping.
+/// @details Returns NULL if ranges are neither overlapping nor adjacent at
+///          consecutive integer-second timestamps.
 /// @param range First date range.
 /// @param other Second date range.
 /// @return Union range, or NULL if not contiguous.
@@ -80,12 +89,12 @@ void *rt_daterange_union_range(void *range, void *other);
 
 /// @brief Get the number of days in the range.
 /// @param range Date range object.
-/// @return Number of days (rounded down). Traps on signed 64-bit overflow.
+/// @return Whole elapsed 86400-second units. Traps on signed 64-bit overflow.
 int64_t rt_daterange_days(void *range);
 
 /// @brief Get the number of hours in the range.
 /// @param range Date range object.
-/// @return Number of hours (rounded down). Traps on signed 64-bit overflow.
+/// @return Whole elapsed 3600-second units. Traps on signed 64-bit overflow.
 int64_t rt_daterange_hours(void *range);
 
 /// @brief Get the duration of the range in seconds.
@@ -95,8 +104,9 @@ int64_t rt_daterange_duration(void *range);
 
 /// @brief Format range as a string.
 /// @param range Date range object.
-/// @return String like "2025-01-01 00:00 - 2025-01-31 23:59", or empty if an
-/// endpoint is not representable by platform time APIs.
+/// @return New UTC string like "2025-01-01 00:00 - 2025-01-31 23:59", or a
+///         new empty string if null/unrepresentable by platform time APIs.
+/// @note Extremely wide platform years may be truncated to the fixed buffer.
 rt_string rt_daterange_to_string(void *range);
 
 #ifdef __cplusplus

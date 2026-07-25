@@ -6,26 +6,28 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_numeric.c
-// Purpose: Locale-independent numeric parsing and formatting helpers for the
-//   BASIC runtime. Provides string-to-number (rt_parse_double, rt_parse_i64)
-//   and number-to-string (rt_format_double, rt_format_i64) routines that
-//   recognise BASIC-style tokens ("NaN", "INF", "#INF", "#NAN") and apply
-//   banker's rounding (round-half-to-even) for decimal formatting. Domain
-//   errors are reported via rt_trap so VM and native backends behave identically.
+// Purpose: Implements locale-independent VAL-style conversion and
+//   caller-buffer formatting for the BASIC runtime. Strict error-code-based
+//   parsers and arithmetic conversions live in rt_numeric_conv.c.
 //
 // Key invariants:
-//   - All conversions ignore the process locale; decimal point is always '.'.
-//   - "NaN", "#NAN", "INF", "#INF", "-INF" are recognised case-insensitively.
-//   - rt_parse_double returns NaN for unrecognised input (no trap).
-//   - rt_format_double applies banker's rounding (IEEE-754 round-half-to-even).
+//   - Decimal scanning and formatting use the C locale regardless of the
+//     process LC_NUMERIC setting.
+//   - VAL accepts only a strict decimal grammar after leading ASCII space.
+//   - NaN, Inf, and Infinity prefixes are recognised case-insensitively but
+//     deliberately report ok=false because they are not finite VAL results.
+//   - Formatting traps on invalid buffers, locale/format failures, or
+//     truncation; successful output is always NUL-terminated by snprintf.
 //   - All functions are exposed with C linkage (extern "C").
 //
 // Ownership/Lifetime:
-//   - No persistent heap allocation. Formatting uses caller-provided buffers
-//     or returns rt_string objects whose lifetime follows normal GC rules.
+//   - No pointer returned by this file owns storage.
+//   - Formatting writes only to caller-owned buffers. Temporary locale objects
+//     are created and destroyed within each conversion or formatting call.
 //
 // Links: src/runtime/core/rt_numeric.h (public API),
-//        src/runtime/core/rt_trap.h (rt_trap for domain errors)
+//        src/runtime/core/rt_numeric_conv.c (conversions and strict parsers),
+//        src/runtime/core/rt_error.h (trap and error definitions)
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,12 +59,17 @@ extern "C" {
 /// @details BASIC numeric parsing only accepts ASCII digits for integral
 ///          components.  This helper deliberately ignores locale-specific
 ///          digits so conversions remain deterministic across platforms.
+/// @param ch Character to classify.
+/// @return Non-zero for bytes `'0'` through `'9'`; otherwise zero.
 static int rt_is_digit_char(char ch) {
     return ch >= '0' && ch <= '9';
 }
 
 /// @brief Determine whether a byte is ASCII whitespace.
 /// @details Keeps numeric parsing independent of the active process locale.
+/// @param ch Byte to classify.
+/// @return Non-zero for space, tab, line feed, carriage return, form feed, or
+///         vertical tab; otherwise zero.
 static int rt_is_ascii_space(unsigned char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
 }
@@ -71,6 +78,9 @@ static int rt_is_ascii_space(unsigned char ch) {
 /// @details The runtime uses ASCII-only case folding when matching special
 ///          constants such as "INF".  Using a bespoke helper avoids linking
 ///          against locale facilities that could diverge between hosts.
+/// @param ch Byte value to fold.
+/// @return The lowercase ASCII code for an uppercase ASCII letter, or @p ch
+///         unchanged for every other value.
 static int rt_ascii_tolower(int ch) {
     if (ch >= 'A' && ch <= 'Z')
         return ch - 'A' + 'a';
@@ -81,6 +91,11 @@ static int rt_ascii_tolower(int ch) {
 /// @details Iterates over @p token and ensures each byte in @p start matches
 ///          after ASCII case folding.  When the token matches, @p out_end is
 ///          updated to point immediately past the consumed characters.
+/// @param start Candidate byte sequence; must be NUL-terminated when non-null.
+/// @param token Lowercase ASCII token to match; must be NUL-terminated.
+/// @param out_end Optional destination for the first byte following a match.
+/// @return `true` when the complete token matches; `false` for null arguments,
+///         an early terminator, or a differing byte.
 static bool rt_match_token_ci(const char *start, const char *token, const char **out_end) {
     if (!start || !token)
         return false;
@@ -100,11 +115,15 @@ static bool rt_match_token_ci(const char *start, const char *token, const char *
     return true;
 }
 
-/// @brief Parse textual "NaN"/"INF" constants accepted by BASIC.
-/// @details Handles optional sign prefixes and both the short and long
-///          infinity spellings.  When a token matches, the corresponding IEEE
-///          value is written to @p out_value and the consumed span returned
-///          through @p out_end.
+/// @brief Parse a textual non-finite constant prefix.
+/// @details Handles an optional sign and the case-insensitive spellings
+///          `nan`, `inf`, and `infinity`. This helper consumes only the matched
+///          prefix; it does not require the following byte to terminate the
+///          input. A leading `#` is not accepted.
+/// @param start Candidate NUL-terminated text.
+/// @param out_end Optional destination for the first unconsumed byte.
+/// @param out_value Destination for the corresponding IEEE NaN or infinity.
+/// @return `true` when a supported prefix was consumed; otherwise `false`.
 static bool rt_parse_special_constant(const char *start, char **out_end, double *out_value) {
     if (!start || !out_value)
         return false;
@@ -149,6 +168,11 @@ static bool rt_parse_special_constant(const char *start, char **out_end, double 
 /// @details Materialises a per-call `_locale_t`, calls `_strtod_l`, and then
 ///          tears the locale down. Per-call allocation avoids unsynchronised
 ///          lazy global state during first-use races.
+/// @param input NUL-terminated text to convert.
+/// @param out_end Optional destination for `_strtod_l`'s first unconsumed byte.
+/// @param out_value Destination for the converted value.
+/// @return `true` when a locale was created and at least one byte was
+///         consumed; otherwise `false`.
 static bool rt_strtod_c_locale(const char *input, char **out_end, double *out_value) {
     if (!input || !out_value)
         return false;
@@ -176,6 +200,11 @@ static bool rt_strtod_c_locale(const char *input, char **out_end, double *out_va
 ///          with @c uselocale for the duration of the conversion, and then
 ///          restores the previous locale.  Mirrors the Windows behaviour so
 ///          callers can rely on consistent locale-independent parsing.
+/// @param input NUL-terminated text to convert.
+/// @param out_end Optional destination for `strtod`'s first unconsumed byte.
+/// @param out_value Destination for the converted value.
+/// @return `true` when the locale operations succeeded and at least one byte
+///         was consumed; otherwise `false`.
 static bool rt_strtod_c_locale(const char *input, char **out_end, double *out_value) {
     if (!input || !out_value)
         return false;
@@ -208,6 +237,9 @@ static bool rt_strtod_c_locale(const char *input, char **out_end, double *out_va
 /// @brief Return the end of a strict decimal floating literal.
 /// @details Accepts `[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?`.
 ///          Hexadecimal C float syntax is intentionally rejected.
+/// @param cursor Start of a NUL-terminated byte sequence.
+/// @return The first byte after the literal, or `NULL` when @p cursor is null
+///         or does not begin with a complete literal.
 static const unsigned char *rt_scan_decimal_float(const unsigned char *cursor) {
     if (!cursor)
         return NULL;
@@ -250,13 +282,21 @@ static const unsigned char *rt_scan_decimal_float(const unsigned char *cursor) {
     return p;
 }
 
-/// @brief Convert a BASIC numeric literal into a double value.
-/// @details Skips leading whitespace, recognises special constants (INF/NAN)
-///          in a case-insensitive fashion, and validates that the remaining
-///          characters form a locale-independent floating literal.  The
-///          result is produced using the C locale so commas are rejected as
-///          decimal separators.  Failures set @p ok to false and return
-///          either zero or the offending special value.
+/// @brief Convert NUL-terminated text using the runtime's VAL-style grammar.
+/// @details Skips leading ASCII whitespace, scans a signed decimal literal,
+///          permits trailing ASCII whitespace, and requires no other trailing
+///          bytes. Conversion uses the C locale. Case-insensitive `nan`,
+///          `inf`, and `infinity` prefixes, including an optional sign, return
+///          their IEEE value with @p ok set to `false`; the special-token path
+///          does not validate bytes following the recognised prefix. Empty,
+///          malformed, partially consumed, overflowing, and other non-finite
+///          inputs also clear @p ok. A null input traps after clearing
+///          @p ok; a null @p ok pointer traps without dereferencing it.
+/// @param s NUL-terminated input text.
+/// @param ok Required destination for the finite-conversion status.
+/// @return The finite parsed value on success, the recognised or converted
+///         non-finite value for that failure class, or `0.0` for other
+///         failures. If a trap hook returns, the documented fallback is used.
 double rt_val_to_double(const char *s, bool *ok) {
     if (!ok) {
         rt_trap("rt_val_to_double: null ok");
@@ -319,12 +359,16 @@ double rt_val_to_double(const char *s, bool *ok) {
     return value;
 }
 
-/// @brief Locale-isolated `vsnprintf` that always uses the C locale's numeric formatting.
-/// @details Mirror of `rt_format_vsnprintf_c_locale` for the numeric-conversion path —
-///          guarantees deterministic decimal points and digit grouping regardless of the
-///          process's `LC_NUMERIC` setting. Win32 uses `_create_locale` + `_vsnprintf_l`;
-///          POSIX uses `newlocale` + `uselocale` + `vsnprintf`. Returns -1 on locale
-///          acquisition failure so callers can fall back to a deterministic default.
+/// @brief Run `vsnprintf` with the C numeric locale.
+/// @details Windows passes a transient `_locale_t` to `_vsnprintf_l`. POSIX
+///          temporarily installs a transient locale for the current thread,
+///          restores the previous locale, and then frees the temporary object.
+/// @param out Destination buffer forwarded to the platform formatter.
+/// @param cap Capacity of @p out in bytes.
+/// @param fmt `printf`-style format string.
+/// @param args Arguments corresponding to @p fmt.
+/// @return The platform formatter result, or `-1` when locale acquisition or
+///         installation fails.
 static int rt_vsnprintf_c_locale(char *out, size_t cap, const char *fmt, va_list args) {
 #if defined(_WIN32)
     _locale_t c_locale = _create_locale(LC_NUMERIC, "C");
@@ -361,8 +405,13 @@ static int rt_vsnprintf_c_locale(char *out, size_t cap, const char *fmt, va_list
 
 /// @brief Format a floating-point or integer value into a caller buffer.
 /// @details Invokes `vsnprintf` with the provided format string, trapping on
-///          null buffers, formatting failures, or truncation.  A dedicated
-///          helper keeps the exported formatting functions concise.
+///          a null/zero-capacity buffer, locale or formatting failure, or
+///          output that does not fit including its terminator. The buffer
+///          contents after a returning trap hook are unspecified.
+/// @param out Destination buffer.
+/// @param cap Capacity of @p out in bytes.
+/// @param fmt `printf`-style format string.
+/// @param ... Values corresponding to @p fmt.
 static void rt_format(char *out, size_t cap, const char *fmt, ...) {
     if (!out || cap == 0) {
         rt_trap("rt_format: invalid buffer");
@@ -391,20 +440,29 @@ static void rt_format(char *out, size_t cap, const char *fmt, ...) {
     }
 }
 
-/// @brief Serialise a double to text using BASIC's precision rules.
-/// @details Formats the value with 17 significant digits so that round-trips
-///          through text preserve 64-bit precision.  Any optional error slot
-///          receives the canonical success sentinel.
+/// @brief Serialize a double with 17 significant decimal digits.
+/// @details Uses the C locale and the `%.17g` conversion. After @ref rt_format
+///          returns, @p out_err receives `RT_ERROR_NONE` when supplied,
+///          including when an installed trap hook returned from a formatting
+///          failure.
+/// @param x Value to format, including supported non-finite values.
+/// @param out Caller-owned destination buffer.
+/// @param cap Capacity of @p out in bytes, including the terminator.
+/// @param out_err Optional destination overwritten with `RT_ERROR_NONE`.
 void rt_str_from_double(double x, char *out, size_t cap, RtError *out_err) {
     rt_format(out, cap, "%.17g", x);
     if (out_err)
         *out_err = RT_ERROR_NONE;
 }
 
-/// @brief Serialise a float to text using BASIC's precision rules.
-/// @details Casts to double and prints nine significant digits, matching the
-///          runtime's single-precision formatting expectations.  Signals
-///          success through @p out_err when provided.
+/// @brief Serialize a float with nine significant decimal digits.
+/// @details Promotes @p x to double and uses the C-locale `%.9g` conversion.
+///          After @ref rt_format returns, an optional @p out_err is overwritten
+///          with `RT_ERROR_NONE`.
+/// @param x Value to format, including supported non-finite values.
+/// @param out Caller-owned destination buffer.
+/// @param cap Capacity of @p out in bytes, including the terminator.
+/// @param out_err Optional destination overwritten with `RT_ERROR_NONE`.
 void rt_str_from_float(float x, char *out, size_t cap, RtError *out_err) {
     rt_format(out, cap, "%.9g", (double)x);
     if (out_err)
@@ -412,9 +470,13 @@ void rt_str_from_float(float x, char *out, size_t cap, RtError *out_err) {
 }
 
 /// @brief Format a 32-bit signed integer using the C locale.
-/// @details Delegates to @ref rt_format to trap on invalid buffers and
-///          writes the textual representation into @p out.  Consumers receive
-///          `RT_ERROR_NONE` when formatting succeeds.
+/// @details Uses `PRId32` without padding or an explicit sign. After
+///          @ref rt_format returns, an optional @p out_err is overwritten with
+///          `RT_ERROR_NONE`.
+/// @param x Value to format.
+/// @param out Caller-owned destination buffer.
+/// @param cap Capacity of @p out in bytes, including the terminator.
+/// @param out_err Optional destination overwritten with `RT_ERROR_NONE`.
 void rt_str_from_i32(int32_t x, char *out, size_t cap, RtError *out_err) {
     rt_format(out, cap, "%" PRId32, x);
     if (out_err)
@@ -422,8 +484,13 @@ void rt_str_from_i32(int32_t x, char *out, size_t cap, RtError *out_err) {
 }
 
 /// @brief Format a 16-bit signed integer into a caller buffer.
-/// @details Uses @ref rt_format to apply bounds checking and populate the
-///          provided buffer with a decimal representation.
+/// @details Uses `PRId16` without padding or an explicit sign. After
+///          @ref rt_format returns, an optional @p out_err is overwritten with
+///          `RT_ERROR_NONE`.
+/// @param x Value to format.
+/// @param out Caller-owned destination buffer.
+/// @param cap Capacity of @p out in bytes, including the terminator.
+/// @param out_err Optional destination overwritten with `RT_ERROR_NONE`.
 void rt_str_from_i16(int16_t x, char *out, size_t cap, RtError *out_err) {
     rt_format(out, cap, "%" PRId16, x);
     if (out_err)

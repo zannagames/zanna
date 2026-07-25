@@ -6,7 +6,16 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_config.c
+/// @file
+/// @brief Implements JSON-backed, dotted-path game configuration lookups.
+//
 // Purpose: Typed game config loader wrapping JSON parse + JsonPath getters.
+//
+// Ownership/Lifetime:
+//   - A Config owns the parsed JSON root stored inside it; its runtime-object
+//     finalizer releases that root.
+//   - Successful string queries return a new string reference. A failed string
+//     query returns the caller-supplied default pointer unchanged.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,17 +32,24 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Private payload stored in each runtime Config object.
 typedef struct {
     void *json_root;
 } config_impl;
 
-/// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @brief Release one runtime-object reference.
+/// @param obj Object reference to release; `NULL` is a no-op.
+/// @details Frees the object when the released reference was the last one,
+///          allowing any registered finalizer to run through rt_obj_free().
 static void config_release_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief GC finalizer: release the parsed JSON root when the Config is freed.
+/// @param obj Config payload being finalized; `NULL` is accepted.
+/// @details Clears the stored pointer after releasing it so repeated invocation
+///          cannot release the JSON root twice.
 static void config_finalizer(void *obj) {
     config_impl *cfg = (config_impl *)obj;
     if (!cfg || !cfg->json_root)
@@ -42,8 +58,12 @@ static void config_finalizer(void *obj) {
     cfg->json_root = NULL;
 }
 
-/// @brief Safe-cast a handle to the Config impl, trapping @p api on a class-id
-///        mismatch. @return The impl, or NULL if @p cfg is NULL.
+/// @brief Validate and cast an opaque Config handle.
+/// @param cfg Candidate Config handle; `NULL` is accepted.
+/// @param api Trap message used when @p cfg has the wrong runtime class ID.
+/// @return The private Config payload when valid; otherwise `NULL`.
+/// @details A non-null handle of another runtime class raises a runtime trap
+///          before this function returns `NULL`.
 static config_impl *checked_config(void *cfg, const char *api) {
     if (!cfg)
         return NULL;
@@ -55,8 +75,15 @@ static config_impl *checked_config(void *cfg, const char *api) {
 }
 
 /// @brief Load a JSON config file and return a queryable config handle.
+/// @param path Runtime string containing the file path.
+/// @return A newly allocated Config reference, or `NULL` when @p path is null,
+///         the file does not exist, the file is empty or unreadable, conversion
+///         to text yields no content, JSON parsing fails, or allocation fails.
 /// @details Reads the file, parses as JSON, and wraps the root node for typed
-///          key lookups via JsonPath queries (e.g., "player.speed").
+///          key lookups via JsonPath queries such as `player.speed`. The
+///          existence precheck makes a missing file a soft failure instead of
+///          invoking the file reader's missing-file trap. Temporary byte and
+///          string references are released on every path.
 void *rt_config_load(void *path) {
     if (!path)
         return NULL;
@@ -102,6 +129,11 @@ void *rt_config_load(void *path) {
 }
 
 /// @brief Create a config from a JSON string (no file I/O).
+/// @param json_str Runtime string containing a complete JSON document.
+/// @return A newly allocated Config reference, or `NULL` for a null input,
+///         invalid JSON, or allocation failure.
+/// @details On success, the Config takes ownership of the parsed root. The
+///          input string remains caller-owned.
 void *rt_config_from_string(void *json_str) {
     if (!json_str)
         return NULL;
@@ -122,6 +154,14 @@ void *rt_config_from_string(void *json_str) {
 }
 
 /// @brief Get an integer value at a JsonPath, or default_val if missing.
+/// @param cfg Config handle to query.
+/// @param path Runtime string containing a dotted JSON path.
+/// @param default_val Value returned when the lookup cannot produce an integer.
+/// @return The converted integer, or @p default_val when either pointer is
+///         null, the Config is invalid or empty, the path is absent, or its
+///         value is not integer-convertible.
+/// @details A non-null handle of another runtime class raises a runtime trap.
+///          The resolved JSON node is not retained.
 int64_t rt_config_get_int(void *cfg, void *path, int64_t default_val) {
     if (!cfg || !path)
         return default_val;
@@ -139,6 +179,15 @@ int64_t rt_config_get_int(void *cfg, void *path, int64_t default_val) {
 }
 
 /// @brief Get a string value at a JsonPath, or default_val if missing.
+/// @param cfg Config handle to query.
+/// @param path Runtime string containing a dotted JSON path.
+/// @param default_val Pointer returned unchanged when no string can be read.
+/// @return A fresh caller-owned runtime string on success; otherwise
+///         @p default_val without changing its ownership.
+/// @details Null arguments, an empty Config, an absent path, or a value that is
+///          not string-convertible select the default. A non-null Config handle
+///          of another runtime class raises a trap. The resolved JSON node is
+///          released internally.
 void *rt_config_get_str(void *cfg, void *path, void *default_val) {
     if (!cfg || !path)
         return default_val;
@@ -158,6 +207,14 @@ void *rt_config_get_str(void *cfg, void *path, void *default_val) {
 }
 
 /// @brief Get a boolean value at a JsonPath, or default_val if missing.
+/// @param cfg Config handle to query.
+/// @param path Runtime string containing a dotted JSON path.
+/// @param default_val Value returned when the lookup cannot produce an integer.
+/// @return `1` for a nonzero integer-convertible value, `0` for a converted
+///         zero, or @p default_val when lookup or conversion fails.
+/// @details A non-null handle of another runtime class raises a runtime trap.
+///          The function returns the supplied default verbatim, so it does not
+///          normalize a non-boolean default to zero or one.
 int8_t rt_config_get_bool(void *cfg, void *path, int8_t default_val) {
     if (!cfg || !path)
         return default_val;
@@ -176,6 +233,12 @@ int8_t rt_config_get_bool(void *cfg, void *path, int8_t default_val) {
 }
 
 /// @brief Check whether a JsonPath key exists in the config.
+/// @param cfg Config handle to query.
+/// @param path Runtime string containing a dotted JSON path.
+/// @return The JsonPath existence result, or `0` for null arguments, an empty
+///         Config, or an invalid handle.
+/// @details A non-null handle of another runtime class raises a runtime trap.
+///          The existence probe does not retain the resolved JSON node.
 int8_t rt_config_has(void *cfg, void *path) {
     if (!cfg || !path)
         return 0;
@@ -190,6 +253,12 @@ int8_t rt_config_has(void *cfg, void *path) {
 }
 
 /// @brief Return the borrowed parsed JSON root of a Config (internal/testing).
+/// @param cfg Config handle to inspect.
+/// @return The borrowed JSON root, or `NULL` for a null handle or a handle with
+///         the wrong runtime class ID.
+/// @details Unlike the public typed getters, this inspection helper does not
+///          raise a trap for a mismatched class. The returned pointer remains
+///          owned by @p cfg and is valid only while that Config is alive.
 void *rt_config_json_root(void *cfg) {
     if (!cfg)
         return NULL;

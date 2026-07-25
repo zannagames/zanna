@@ -19,13 +19,20 @@
 //
 // Ownership/Lifetime:
 //   - Tracked objects are owned by their reference counts; the GC only breaks cycles.
-//   - rt_gc_track retains a weak internal reference; it does not increment the object's refcount.
+//   - rt_gc_track records a borrowed address; it does not increment the object's refcount.
 //   - rt_obj_free untracks automatically; callers may still untrack explicitly
 //     when removing an object from cycle detection before it becomes unreachable.
 //
 // Links: src/runtime/core/rt_gc.c (implementation), src/runtime/oop/rt_object.h
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares cycle collection, weak references, and graph coordination.
+/// @details Reference counting remains the primary ownership mechanism. These
+///   APIs add synchronous trial-deletion for registered cyclic graphs and
+///   zeroing observers that never retain their target.
+
 #pragma once
 
 #include <stdint.h>
@@ -36,10 +43,16 @@ extern "C" {
 
 /// @brief Callback that enumerates every strong reference held by @p obj.
 /// @details For each reference, the callback must call @p visitor(child, ctx).
+/// @param child Borrowed strong child address, or NULL if the traversal chooses
+///   to report empty slots.
+/// @param ctx Opaque context originally passed to the traversal callback.
 typedef void (*rt_gc_visitor_t)(void *child, void *ctx);
 /// @brief Traversal function registered per tracked object type.
 /// @details Called during a collection pass to enumerate all strong child
 ///          references so the collector can adjust trial reference counts.
+/// @param obj Borrowed tracked payload whose current outgoing edges are stable.
+/// @param visitor Collector callback to invoke once for each strong child.
+/// @param ctx Opaque collector context to pass through unchanged.
 typedef void (*rt_gc_traverse_fn)(void *obj, rt_gc_visitor_t visitor, void *ctx);
 
 //=============================================================================
@@ -81,9 +94,14 @@ int8_t rt_gc_should_suppress_cycle_release(void *payload);
 //=============================================================================
 
 /// @brief Register an object or object-reference array for cycle collection.
+/// @details Registering an existing address updates its traversal callback.
+///   NULL arguments are accepted as a no-op. Invalid payloads, unsupported heap
+///   kinds, capacity overflow, and allocation failure raise a runtime trap.
 /// @param obj Heap object or RT_ELEM_OBJ/RT_ELEM_BOX array with a live RT_MAGIC header.
 /// @param traverse Function that enumerates @p obj's strong references
 ///                 by calling the visitor for each child.
+/// @note The collector borrows both the payload address and callback; it does
+///   not increment the payload's reference count.
 void rt_gc_track(void *obj, rt_gc_traverse_fn traverse);
 
 /// @brief Register a newly allocated object- or box-reference array transactionally.
@@ -92,11 +110,14 @@ void rt_gc_track(void *obj, rt_gc_traverse_fn traverse);
 ///          not-yet-published payload. Other runtime code should use
 ///          @ref rt_gc_track with a type-specific traversal callback.
 /// @param array Exact live `RT_ELEM_OBJ` or `RT_ELEM_BOX` array payload.
-/// @return 1 when the array is tracked, otherwise 0.
+/// @return 1 when registration succeeds, including the NULL no-op case;
+///   otherwise 0 so an unpublished allocation can be rolled back.
 /// @internal Heap/collector construction handshake; not a language ABI.
 int8_t rt_gc_track_reference_array(void *array);
 
 /// @brief Remove an object from cycle tracking.
+/// @details NULL and untracked addresses are no-ops. Removing bookkeeping does
+///   not release an object reference.
 /// @param obj The object to untrack (e.g. before manual free).
 void rt_gc_untrack(void *obj);
 
@@ -106,6 +127,7 @@ void rt_gc_untrack(void *obj);
 ///          from traversing either address.
 /// @param old_payload Retired payload address; it need not remain registered with the heap.
 /// @param new_payload Replacement live payload address.
+/// @note NULL, identical, or untracked addresses are accepted as no-ops.
 /// @internal Heap-resize coordination hook; not a language runtime-registry API.
 void rt_gc_relocate_payload(void *old_payload, void *new_payload);
 
@@ -119,7 +141,11 @@ int8_t rt_gc_is_tracked(void *obj);
 //=============================================================================
 
 /// @brief Run one cycle-collection pass over all tracked objects.
-/// @return Number of objects freed (cycle members that were reclaimed).
+/// @details Collection is synchronous and trap-safe. Calls from a mutator scope
+///   schedule a deferred pass; reentrant calls and unavailable exclusive graph
+///   access return without collecting.
+/// @return Number of reclaimed cycle members, or zero when nothing is freed or
+///   a returning trap path is taken.
 int64_t rt_gc_collect(void);
 
 /// @brief Get the total number of currently tracked objects.
@@ -134,36 +160,52 @@ int64_t rt_gc_tracked_count(void);
 /// @brief Opaque weak reference handle returned by rt_weakref_new().
 typedef struct rt_weakref rt_weakref;
 
+/// @brief Runtime class identifier assigned to managed weak-reference objects.
 #define RT_WEAKREF_CLASS_ID INT64_C(-0x57524546)
 
 /// @brief Create a zeroing weak reference to a managed target.
 /// @details The target's refcount is NOT incremented. When the target is
 ///          freed, the weak reference automatically becomes NULL. Targets may
-///          be runtime objects, arrays, or string handles.
-/// @param target The managed target to weakly reference.
-/// @return A new weak reference handle (caller owns; free with
-///         rt_weakref_free()).
+///          be live runtime objects, arrays, or string handles. Invalid targets
+///          and allocation failure raise a runtime trap.
+/// @param target Borrowed managed target to observe, or NULL for an empty handle.
+/// @return New caller-owned weak reference handle, or NULL if a returning trap
+///   hook permits failure to continue; release with @ref rt_weakref_free.
 rt_weakref *rt_weakref_new(void *target);
 
 /// @brief Dereference a weak reference and retain the live target.
-/// @param ref The weak reference handle.
+/// @details Promotion is synchronized with target destruction. Mortal targets
+///   gain one reference; immortal targets are returned without modifying their
+///   sentinel count. Invalid handles or refcount overflow raise a trap.
+/// @param ref Borrowed weak reference handle; NULL behaves as empty.
 /// @return The retained target, or NULL if the target has been freed.
 ///         Callers own the returned reference and must release it.
 void *rt_weakref_get(rt_weakref *ref);
 
 /// @brief Check if the weak reference's target is still alive.
-/// @param ref The weak reference handle.
+/// @details Reads target liveness without retaining it. Invalid non-NULL
+///   handles raise a runtime trap.
+/// @param ref Borrowed weak reference handle; NULL is not alive.
 /// @return 1 if the target is alive, 0 if it has been freed.
 int8_t rt_weakref_alive(rt_weakref *ref);
 
 /// @brief Destroy a weak reference handle (does NOT affect the target).
-/// @param ref The weak reference handle to free.
+/// @details Detaches and clears the weak observation, then releases the
+///   caller-owned handle reference. NULL is a no-op; invalid handles trap.
+/// @param ref Weak reference handle to release.
 void rt_weakref_free(rt_weakref *ref);
 
 /// @brief Return non-zero when @p candidate is a weak reference handle.
+/// @param candidate Opaque pointer to validate against live heap metadata.
+/// @return 1 for a live `RT_WEAKREF_CLASS_ID` object, otherwise 0.
 int8_t rt_weakref_is_handle(void *candidate);
 
 /// @brief Re-point a weak reference at a different target, or NULL to clear.
+/// @details Allocates the new target chain before detaching the old one, so
+///   allocation failure leaves the observation unchanged. Invalid handles or
+///   targets and allocation failure raise a runtime trap.
+/// @param ref Borrowed weak-reference handle; NULL is a no-op.
+/// @param target Borrowed replacement managed target, or NULL to clear.
 void rt_weakref_reset(rt_weakref *ref, void *target);
 
 /// @brief Clear all weak references pointing to a target being freed.
@@ -177,11 +219,14 @@ void rt_gc_clear_weak_refs(void *target);
 //=============================================================================
 
 /// @brief Get the total number of objects freed by the collector since startup.
-/// @return Cumulative count of objects reclaimed by cycle collection.
+/// @return Saturating cumulative count of objects reclaimed by cycle
+///   collection since startup or the last @ref rt_gc_shutdown.
 int64_t rt_gc_total_collected(void);
 
 /// @brief Get the number of collection passes run since startup.
-/// @return Cumulative count of rt_gc_collect() invocations.
+/// @return Count of recorded passes, including empty passes, since startup or
+///   the last @ref rt_gc_shutdown. Rejected, deferred, and early setup-failure
+///   calls are not counted.
 int64_t rt_gc_pass_count(void);
 
 //=============================================================================
@@ -193,7 +238,8 @@ int64_t rt_gc_pass_count(void);
 ///          publishes coalescing collection debt. A later managed-graph
 ///          boundary or @ref rt_gc_safepoint runs the pass outside the allocator
 ///          call stack. Set to 0 to disable auto-triggering (default).
-/// @param n Number of allocations between automatic collection passes.
+/// @param n Positive number of allocations between collection requests; zero
+///   or negative disables auto-triggering. Existing debt is cleared.
 void rt_gc_set_threshold(int64_t n);
 
 /// @brief Get the current auto-trigger allocation threshold.
@@ -240,7 +286,9 @@ void rt_gc_run_all_finalizers(void);
 /// @brief Release all GC internal state (tracking table, weak ref buckets).
 /// @details Should only be called during program shutdown after all tracked
 ///          objects have been freed or are about to be reclaimed by the OS.
-///          Typically called from an atexit handler.
+///          Typically called from an atexit handler. It zeroes registered weak
+///          handles, resets statistics and trigger state, and leaves the
+///          process-lifetime synchronization primitives reusable.
 /// @warning Calling this while tracked objects are still in use causes
 ///          undefined behavior.
 void rt_gc_shutdown(void);

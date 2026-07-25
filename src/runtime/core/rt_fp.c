@@ -15,7 +15,7 @@
 // Key invariants:
 //   - rt_pow_f64_chkdom rejects negative bases with fractional exponents by
 //     setting *ok=false and returning NaN; it does not trap.
-//   - rt_pow_f64_basic_native traps directly on domain errors or non-finite
+//   - rt_pow_f64 traps directly on domain errors or non-finite
 //     results using the standard BASIC diagnostic messages.
 //   - rt_math_pow is an unchecked pass-through to pow(); domain errors are
 //     the caller's responsibility.
@@ -33,6 +33,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements checked and unchecked double-precision power helpers.
+
 #include "rt_fp.h"
 #include "rt.hpp"
 
@@ -49,6 +52,13 @@ extern "C" {
 ///          the underlying `pow`.  On success @p ok is set to true; otherwise
 ///          the function returns the IEEE 754 result and marks @p ok false so
 ///          callers can convert the failure into a runtime error.
+/// @param base Base passed to the power operation.
+/// @param exp Exponent; only finite integral values are accepted with a
+///   negative base.
+/// @param ok Non-NULL borrowed output flag receiving the validity result.
+/// @return Finite result on success; NaN for a rejected domain or a NULL
+///   @p ok after a returning trap hook; otherwise the non-finite result
+///   produced by `pow`.
 double rt_pow_f64_chkdom(double base, double exp, bool *ok) {
     if (!ok) {
         rt_trap("rt_pow_f64_chkdom: null ok");
@@ -79,13 +89,22 @@ double rt_pow_f64_chkdom(double base, double exp, bool *ok) {
 /// @brief Simple 2-arg pow wrapper for IL calling convention.
 /// @details Calls the standard C pow() directly without domain checks.
 ///          Used by Zanna.Math.Pow which has signature f64(f64,f64).
+/// @param base Base passed directly to the C library.
+/// @param exponent Exponent passed directly to the C library.
+/// @return The platform `pow` result, including NaN or infinity.
 double rt_math_pow(double base, double exponent) {
     return pow(base, exponent);
 }
 
 /// @brief 2-arg pow with BASIC domain checking for native codegen.
 /// @details Wraps rt_pow_f64_chkdom, providing the ok pointer internally
-///          and trapping on domain/overflow errors. Used by BASIC ^ operator.
+///          and trapping on domain or non-finite results. A failing negative
+///          base uses the negative-base diagnostic; other failures use the
+///          exponentiation-overflow diagnostic. Used by the BASIC ^ operator.
+/// @param base Base passed to the checked power helper.
+/// @param exponent Exponent passed to the checked power helper.
+/// @return Finite power result on success. If trap dispatch returns locally,
+///   the non-finite failure result is returned.
 double rt_pow_f64(double base, double exponent) {
     bool ok;
     double result = rt_pow_f64_chkdom(base, exponent, &ok);

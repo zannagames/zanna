@@ -266,6 +266,18 @@ void rt_image_set_opacity(void *image, double opacity) {
     }
 }
 
+/// @brief Opt the image into keyboard focus (click-to-focus plus a focus ring).
+/// @details Interactive canvases (scene viewports) enable this so shortcut
+///          ownership follows the clicked surface; presentation images keep
+///          the default. Pair with the base widget's Focus/IsFocused.
+void rt_image_set_focusable(void *image, int8_t focusable) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_image_t *img = rt_image_checked(image);
+    if (img) {
+        vg_image_set_focusable(img, focusable != 0);
+    }
+}
+
 /// @brief Load an image file (PNG, BMP, JPEG, or GIF) into the image widget.
 /// @details Auto-detects format from file magic bytes, decodes using rt_pixels,
 ///          converts from packed 0xRRGGBBAA to byte RGBA, and sets the widget pixels.
@@ -514,6 +526,12 @@ int64_t rt_image_get_filter(void *image) {
 void rt_image_set_opacity(void *image, double opacity) {
     (void)image;
     (void)opacity;
+}
+
+/// @brief Stub: graphics disabled — no image can take focus.
+void rt_image_set_focusable(void *image, int8_t focusable) {
+    (void)image;
+    (void)focusable;
 }
 
 /// @brief Load image file stub (graphics disabled).

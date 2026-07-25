@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_leveldata.c
+/// @file
+/// @brief Implements JSON level loading into a TileMap and copied spawn metadata.
+//
 // Purpose: JSON level loader. Parses level file with tilemap data + objects.
 //
 // Level JSON format:
@@ -33,7 +36,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Safe integer extraction from JSON value (may be boxed as i64 or f64)
+/// @brief Convert a boxed JSON numeric value to an integer.
+/// @param val Candidate boxed value.
+/// @return Unboxed integer, saturating conversion of a boxed double, or zero
+///         for null/unsupported box tags.
 static int64_t json_val_to_i64(void *val) {
     if (!val)
         return 0;
@@ -48,18 +54,23 @@ static int64_t json_val_to_i64(void *val) {
 /// @brief True if @p o is a JSON array (rt_seq). Used to guard rt_seq_len /
 ///        rt_seq_get, which trap on a non-seq object — so a malformed level
 ///        file (e.g. "layers": 5) degrades to "skip" instead of crashing.
+/// @param o Candidate parsed JSON node.
+/// @return Nonzero only for a non-null RT_SEQ_CLASS_ID object.
 static int level_is_array(void *o) {
     return o && rt_obj_class_id(o) == RT_SEQ_CLASS_ID;
 }
 
+/// @brief Maximum copied spawn-object records per loaded level.
 #define LEVEL_MAX_OBJECTS 512
 
+/// @brief One fixed-capacity copied object/spawn record.
 typedef struct {
     char type[32];
     char id[32];
     int64_t x, y;
 } level_object_t;
 
+/// @brief Private TileMap, spawn metadata, and properties of LevelData.
 typedef struct {
     void *tilemap;
     level_object_t objects[LEVEL_MAX_OBJECTS];
@@ -69,8 +80,11 @@ typedef struct {
     char theme[32];
 } leveldata_impl;
 
-/// @brief Safe-cast a handle to the LevelData impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p level is NULL.
+/// @brief Validate and cast an opaque LevelData handle.
+/// @param level Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The LevelData payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static leveldata_impl *checked_leveldata(void *level, const char *api) {
     if (!level)
         return NULL;
@@ -82,12 +96,15 @@ static leveldata_impl *checked_leveldata(void *level, const char *api) {
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime object reference to release; `NULL` is a no-op.
 static void leveldata_release_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief GC finalizer: release the level's referenced tilemap.
+/// @param obj LevelData payload being finalized; `NULL` is accepted.
+/// @details Releases the owned TileMap reference and clears its slot.
 static void leveldata_finalizer(void *obj) {
     leveldata_impl *ld = (leveldata_impl *)obj;
     if (!ld || !ld->tilemap)
@@ -98,6 +115,9 @@ static void leveldata_finalizer(void *obj) {
 }
 
 /// @brief Copy @p src into a fixed-size field, truncating on a UTF-8 boundary.
+/// @param dest Destination byte buffer.
+/// @param dest_size Capacity including the NUL terminator.
+/// @param src NUL-terminated source, or `NULL` for empty output.
 /// @details The level model stores object type/id and the theme in 32-byte fields.
 ///          A plain byte truncation could split a multi-byte UTF-8 sequence and
 ///          emit an invalid trailing fragment (VDOC-239); this backs the cut off to
@@ -124,11 +144,19 @@ static void level_copy_field_utf8(char *dest, size_t dest_size, const char *src)
 }
 
 /// @brief Load a level from a JSON file, creating a tilemap and extracting objects.
+/// @param path Runtime string containing the level file path.
+/// @return A new LevelData reference, or `NULL` for null/missing/empty input,
+///         parse failure, invalid dimensions, size overflow, TileMap/object
+///         allocation failure, or other soft loading failure.
 /// @details Parses a JSON level file with "width", "height", "tileWidth", "tileHeight",
 ///          "layers" (tile data), "objects" (entity spawn points), and "properties"
 ///          (playerStartX/Y, theme). Creates a tilemap from tile layer data and stores
 ///          up to 512 named objects with type, id, and position. All tile layers
 ///          currently overwrite the same base Tilemap in input order (VDOC-239).
+///          Nonpositive tile dimensions default independently to 32. Malformed
+///          non-array layer/object nodes are skipped. Object strings are copied
+///          into 32-byte fields and excess objects are ignored. The returned
+///          object owns its TileMap; temporary root state is released.
 void *rt_leveldata_load(void *path) {
     if (!path)
         return NULL;
@@ -269,6 +297,9 @@ fail:
 }
 
 /// @brief Get the tilemap created from the level's tile layers.
+/// @param level LevelData to query.
+/// @return Borrowed TileMap owned by @p level, or `NULL` for null/invalid.
+/// @details A non-null invalid handle raises a runtime trap.
 void *rt_leveldata_get_tilemap(void *level) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.GetTilemap: expected Zanna.Game.LevelData");
@@ -276,6 +307,8 @@ void *rt_leveldata_get_tilemap(void *level) {
 }
 
 /// @brief Get the number of objects (entity spawn points) in the level.
+/// @param level LevelData to query.
+/// @return Copied object count in `[0, 512]`, or zero for null/invalid.
 int64_t rt_leveldata_object_count(void *level) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.ObjectCount: expected Zanna.Game.LevelData");
@@ -283,6 +316,10 @@ int64_t rt_leveldata_object_count(void *level) {
 }
 
 /// @brief Get the type string of an object at the given index (e.g., "enemy", "item").
+/// @param level LevelData to query.
+/// @param index Zero-based object index.
+/// @return Caller-owned copy of the type, immortal empty singleton for invalid
+///         input/empty field, or `NULL` on allocation failure.
 rt_string rt_leveldata_object_type(void *level, int64_t index) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.ObjectType: expected Zanna.Game.LevelData");
@@ -292,6 +329,10 @@ rt_string rt_leveldata_object_type(void *level, int64_t index) {
 }
 
 /// @brief Get the ID string of an object at the given index.
+/// @param level LevelData to query.
+/// @param index Zero-based object index.
+/// @return Caller-owned copy of the ID, immortal empty singleton for invalid
+///         input/empty field, or `NULL` on allocation failure.
 rt_string rt_leveldata_object_id(void *level, int64_t index) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.ObjectId: expected Zanna.Game.LevelData");
@@ -301,6 +342,9 @@ rt_string rt_leveldata_object_id(void *level, int64_t index) {
 }
 
 /// @brief Get the X position of an object at the given index.
+/// @param level LevelData to query.
+/// @param index Zero-based object index.
+/// @return Stored X coordinate, or zero for invalid input/index.
 int64_t rt_leveldata_object_x(void *level, int64_t index) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.ObjectX: expected Zanna.Game.LevelData");
@@ -310,6 +354,9 @@ int64_t rt_leveldata_object_x(void *level, int64_t index) {
 }
 
 /// @brief Get the Y position of an object at the given index.
+/// @param level LevelData to query.
+/// @param index Zero-based object index.
+/// @return Stored Y coordinate, or zero for invalid input/index.
 int64_t rt_leveldata_object_y(void *level, int64_t index) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.ObjectY: expected Zanna.Game.LevelData");
@@ -319,6 +366,8 @@ int64_t rt_leveldata_object_y(void *level, int64_t index) {
 }
 
 /// @brief Get the player's starting X position from the level properties.
+/// @param level LevelData to query.
+/// @return Stored property, defaulting to zero when absent/null/invalid.
 int64_t rt_leveldata_player_start_x(void *level) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.PlayerStartX: expected Zanna.Game.LevelData");
@@ -326,6 +375,8 @@ int64_t rt_leveldata_player_start_x(void *level) {
 }
 
 /// @brief Get the player's starting Y position from the level properties.
+/// @param level LevelData to query.
+/// @return Stored property, defaulting to zero when absent/null/invalid.
 int64_t rt_leveldata_player_start_y(void *level) {
     leveldata_impl *ld =
         checked_leveldata(level, "LevelData.PlayerStartY: expected Zanna.Game.LevelData");
@@ -333,6 +384,10 @@ int64_t rt_leveldata_player_start_y(void *level) {
 }
 
 /// @brief Get the theme name from the level properties (e.g., "forest", "cave").
+/// @param level LevelData to query.
+/// @return Caller-owned copy of the theme, immortal empty singleton when
+///         absent/null/invalid, or `NULL` on allocation failure.
+/// @details Every accessor above traps on a non-null wrong LevelData class.
 rt_string rt_leveldata_get_theme(void *level) {
     leveldata_impl *ld = checked_leveldata(level, "LevelData.Theme: expected Zanna.Game.LevelData");
     if (!ld)

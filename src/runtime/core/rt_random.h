@@ -5,26 +5,34 @@
 //
 // File: src/runtime/core/rt_random.h
 // Purpose: Deterministic pseudo-random number generator implementing BASIC's RND and RANDOMIZE
-// functions using a 64-bit LCG algorithm producing identical sequences across all platforms for a
-// given seed.
+// functions, unbiased integer ranges, probability distributions, shuffling,
+// and independently seeded Random objects using a fixed 64-bit LCG.
 //
 // Key invariants:
-//   - Uses the Knuth MMIX LCG multiplier/increment constants for good statistical properties.
+//   - Uses the MMIX LCG multiplier 6364136223846793005 with increment 1.
 //   - Floating-point output uses the high 53 bits of state for maximum double precision.
-//   - Generator state is stored per runtime context, with the legacy context used as fallback.
+//   - Static generator state is stored and locked per effective runtime context,
+//     with the legacy context used for unbound threads.
+//   - Random object methods mutate independent inline state without locking.
 //   - rt_rand_range normalizes inverted bounds and samples the inclusive range uniformly.
 //
 // Ownership/Lifetime:
 //   - Static generator state is held by the active RtContext.
 //   - Random instances store their own independent RNG state in a GC-managed object.
+//   - Shuffle borrows its Seq handle and transfers no element ownership.
 //
-// Links: src/runtime/core/rt_random.c (implementation)
+// Links: src/runtime/core/rt_random.c (implementation),
+//        src/runtime/core/rt_context_internal.h (effective-context state locking),
+//        src/runtime/collections/rt_seq.h (shuffle target API)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Deterministic context and object random-number API.
 #pragma once
 
 #include <stdint.h>
 
+/// @brief Stable heap class ID stamped on Random instances.
 #define RT_RANDOM_CLASS_ID INT64_C(-0x430601)
 
 #ifdef __cplusplus
@@ -32,23 +40,30 @@ extern "C" {
 #endif
 
 /// @brief Seed the random number generator with an unsigned 64-bit value.
-/// @param seed New seed value used to initialize the internal state.
+/// @details Replaces the effective context's state while holding its RNG lock.
+///          A context-acquisition failure leaves state unchanged.
+/// @param seed Exact new state; the generator is not advanced during seeding.
 void rt_randomize_u64(uint64_t seed);
 
 /// @brief Seed the random number generator with a signed 64-bit value.
-/// @param seed New seed value cast to unsigned and stored as internal state.
+/// @details Converts the value modulo 2^64 and delegates to
+///          @ref rt_randomize_u64.
+/// @param seed Signed value whose bit pattern initializes the state.
 void rt_randomize_i64(long long seed);
 
 /// @brief Generate the next deterministic pseudo-random number.
-/// @return A double in the half-open interval [0, 1).
 /// @details Advances a 64-bit linear congruential generator and maps the
-/// resulting bits to a double in the range [0,1) with 53 bits of precision.
+///          high 53 bits to a multiple of 2^-53. Resolution and mutation of the
+///          effective context are serialized by its RNG lock.
+/// @return A double in `[0, 1)`, or `0.0` without advancing if context
+///         acquisition fails.
 double rt_rnd(void);
 
 /// @brief Generate a random integer in the range [0, max).
-/// @param max Upper bound (exclusive). Must be positive.
-/// @return A random integer in [0, max).
-/// @details Uses the same LCG as rt_rnd() to ensure deterministic sequences.
+/// @details Uses rejection sampling rather than biased modulo reduction.
+///          Non-positive bounds return zero without advancing.
+/// @param max Exclusive upper bound.
+/// @return Uniform integer in `[0, max)` for a positive bound; otherwise zero.
 long long rt_rand_int(long long max);
 
 //=========================================================================
@@ -60,65 +75,95 @@ long long rt_rand_int(long long max);
 /// @param max Upper bound (inclusive).
 /// @return A random integer in the normalized inclusive range.
 /// @details If min > max, the bounds are swapped automatically. The full
-///          signed 64-bit range is supported and advances the generator once.
+///          signed 64-bit range is supported and advances the generator once;
+///          other widths use rejection sampling.
 long long rt_rand_range(long long min, long long max);
 
 /// @brief Generate a random number from a Gaussian (normal) distribution.
 /// @param mean The mean (center) of the distribution.
-/// @param stddev The standard deviation (spread). Must be non-negative.
-/// @return A random double drawn from N(mean, stddev^2).
 /// @details Uses the Box-Muller transform for generating normally
-///          distributed values. When stddev is 0, returns mean.
+///          distributed values. A non-positive standard deviation returns the
+///          mean without advancing; NaN consumes samples and propagates.
+///          The two context samples are locked separately and may interleave
+///          with other threads sharing that context.
+/// @param mean Location parameter.
+/// @param stddev Scale parameter.
+/// @return A transformed normal sample, or @p mean for non-positive @p stddev.
 double rt_rand_gaussian(double mean, double stddev);
 
 /// @brief Generate a random number from an exponential distribution.
-/// @param lambda The rate parameter (1/mean). Must be positive.
-/// @return A random double drawn from Exp(lambda).
 /// @details Uses inverse transform sampling: -ln(1-U)/lambda.
-///          When lambda <= 0, returns 0.
+///          A non-positive rate returns zero without advancing; NaN consumes a
+///          sample and propagates.
+/// @param lambda Rate parameter.
+/// @return Transformed exponential sample, or zero for a non-positive rate.
 double rt_rand_exponential(double lambda);
 
 /// @brief Simulate a dice roll (1 to sides inclusive).
-/// @param sides Number of sides on the die. Must be positive.
-/// @return A random integer in [1, sides].
 /// @details Convenience function for game programming. Returns 1 if
-///          sides <= 0.
+///          sides is non-positive without advancing the generator.
+/// @param sides Inclusive positive upper face.
+/// @return Uniform integer in `[1, sides]`, or one for a non-positive count.
 long long rt_rand_dice(long long sides);
 
 /// @brief Generate a random boolean with given probability.
-/// @param probability Probability of returning true (0.0 to 1.0).
-/// @return 1 (true) with probability p, 0 (false) with probability 1-p.
-/// @details Clamped to [0, 1]. Returns 0 if p <= 0, 1 if p >= 1.
+/// @details Values at or below zero return zero and values at or above one
+///          return one without advancing. Interior values consume one sample.
+///          NaN consumes a sample and returns zero.
+/// @param probability Threshold compared with a uniform unit sample.
+/// @return One when the sampled value is below @p probability; otherwise zero.
 long long rt_rand_chance(double probability);
 
 /// @brief Generate a random boolean value with the given probability.
 /// @details This is the boolean-returning public wrapper for
 ///          `Zanna.Math.Random.Chance`. It shares the exact sampling behavior of
 ///          `rt_rand_chance` and returns an `i1`-compatible value.
-/// @param probability Probability of returning true, clamped to [0.0, 1.0].
+/// @param probability Threshold forwarded to @ref rt_rand_chance.
 /// @return 1 when the chance succeeds, otherwise 0.
 int8_t rt_rand_chance_bool(double probability);
 
 /// @brief Shuffle elements in a Seq randomly.
-/// @param seq A Zanna.Collections.Seq object.
 /// @details Performs Fisher-Yates shuffle using the current RNG state.
-///          Deterministic when the RNG is seeded.
+///          Null and fewer-than-two-element sequences are unchanged without
+///          advancing. Swaps preserve Seq element ownership by retaining the
+///          displaced element across the first replacement.
+/// @param seq Borrowed mutable Zanna.Collections.Seq handle, or `NULL`.
 void rt_rand_shuffle(void *seq);
 
 /// @brief Create a Random object with independent state.
-/// @param seed Seed value for this Random instance.
-/// @return A GC-managed Random object.
+/// @details Allocation failure traps and returns `NULL` if the trap hook returns.
+/// @param seed Initial state converted modulo 2^64.
+/// @return New GC-managed Random object, or `NULL` on allocation failure.
 void *rt_random_new(long long seed);
 
 // Instance methods operate on the receiver's independent RNG state.
 /// @brief Instance variant of rt_rnd(): next double in [0, 1) for @p self.
+/// @details Validates the receiver and mutates its state without internal
+///          locking; callers must serialize shared-instance access.
+/// @param self Runtime-managed Random handle.
+/// @return Unit sample, or `0.0` after a returning invalid-receiver trap.
 double rt_rnd_method(void *self);
 /// @brief Instance variant of rt_rand_int(): random integer in [0, @p max).
+/// @details A non-positive bound returns zero before receiver validation.
+///          Positive bounds validate and mutate @p self without locking.
+/// @param self Runtime-managed Random handle.
+/// @param max Exclusive upper bound.
+/// @return Uniform bounded sample, or zero for a non-positive bound or after a
+///         returning invalid-receiver trap.
 long long rt_rand_int_method(void *self, long long max);
 /// @brief Instance variant of rt_rand_range(): random integer in
 ///        [@p min, @p max] (bounds swapped if inverted).
+/// @details Validates and mutates @p self without internal locking.
+/// @param self Runtime-managed Random handle.
+/// @param min First inclusive bound.
+/// @param max Second inclusive bound.
+/// @return Uniform sample in the normalized range, or zero after a returning
+///         invalid-receiver trap.
 long long rt_rand_range_method(void *self, long long min, long long max);
 /// @brief Re-seed @p self's independent RNG state with @p seed.
+/// @details Validates and mutates @p self without internal locking.
+/// @param self Runtime-managed Random handle.
+/// @param seed New state converted modulo 2^64.
 void rt_randomize_i64_method(void *self, long long seed);
 
 #ifdef __cplusplus

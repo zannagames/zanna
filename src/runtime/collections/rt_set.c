@@ -33,6 +33,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime heterogeneous mutable hash Set.
+/// @details Hashing and equality delegate to the shared boxed-value helpers so
+///          boxed scalars/strings use value semantics and ordinary objects use
+///          identity semantics. Each unique stored value is retained and
+///          visited by the collector.
+
 #include "rt_set.h"
 
 #include "rt_box.h"
@@ -68,6 +75,9 @@ typedef struct rt_set_impl {
 
 /// @brief Checked cast of an opaque handle to the Set implementation;
 ///        traps with @p what if @p obj is NULL or not a Set.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated Set implementation, or `NULL` after trapping.
 static rt_set_impl *as_set(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_SET_CLASS_ID, sizeof(rt_set_impl))) {
         rt_trap(what);
@@ -77,6 +87,9 @@ static rt_set_impl *as_set(void *obj, const char *what) {
 }
 
 /// @brief Find an entry in a bucket's collision chain using content equality.
+/// @param head First collision-chain node, or `NULL`.
+/// @param elem Candidate value; may be `NULL`.
+/// @return Borrowed matching entry, or `NULL` when absent.
 static rt_set_entry *find_entry(rt_set_entry *head, void *elem) {
     for (rt_set_entry *e = head; e; e = e->next) {
         if (rt_box_equal(e->elem, elem))
@@ -86,6 +99,9 @@ static rt_set_entry *find_entry(rt_set_entry *head, void *elem) {
 }
 
 /// @brief GC traversal: visit every stored element across all bucket chains.
+/// @param obj Set whose retained values are to be traced.
+/// @param visitor Collector callback invoked once per entry.
+/// @param ctx Opaque collector context forwarded unchanged.
 static void rt_set_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -99,6 +115,10 @@ static void rt_set_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 }
 
 /// @brief Resize the hash table when load factor is exceeded.
+/// @details Allocates a doubled bucket array before relinking entries and
+///          publishing it. Entry/value ownership and count do not change.
+/// @param set Set whose live bucket array has reached the load threshold.
+/// @return 1 after publication, or 0 after an overflow/allocation trap.
 static int resize_set(rt_set_impl *set) {
     if (set->capacity > SIZE_MAX / 2) {
         rt_trap("Set: capacity overflow");
@@ -134,6 +154,9 @@ static int resize_set(rt_set_impl *set) {
 }
 
 /// @brief Finalizer callback invoked when a Set is garbage collected.
+/// @details Clears every retained element/entry, frees the bucket allocation,
+///          and marks the implementation as finalized.
+/// @param obj Set object being finalized; `NULL` is ignored.
 static void rt_set_finalize(void *obj) {
     if (!obj)
         return;
@@ -152,6 +175,7 @@ static void rt_set_finalize(void *obj) {
 /// @brief Construct an empty mutable set. Internal storage is hashed buckets
 /// with separate chaining;
 /// resizes when load factor exceeds 0.75. Elements are reference-counted via Box hash/equality.
+/// @return New runtime-managed Set, or `NULL` on allocation failure.
 void *rt_set_new(void) {
     rt_set_impl *set = (rt_set_impl *)rt_obj_new_i64(RT_SET_CLASS_ID, (int64_t)sizeof(rt_set_impl));
     if (!set)
@@ -174,6 +198,8 @@ void *rt_set_new(void) {
 }
 
 /// @brief Number of elements currently in the set.
+/// @param obj Set handle, or `NULL`.
+/// @return Unique-element count, or 0 for `NULL`.
 int64_t rt_set_len(void *obj) {
     if (!obj)
         return 0;
@@ -182,6 +208,8 @@ int64_t rt_set_len(void *obj) {
 }
 
 /// @brief Returns 1 if the set has no elements (or for a NULL handle).
+/// @param obj Set handle, or `NULL`.
+/// @return 1 when empty, otherwise 0.
 int8_t rt_set_is_empty(void *obj) {
     if (!obj)
         return 1;
@@ -191,6 +219,12 @@ int8_t rt_set_is_empty(void *obj) {
 
 /// @brief Insert `elem` into the set. Element is retained on success. Returns 1 if newly added,
 /// 0 if already present (the existing entry keeps its retain count). Triggers resize at high load.
+/// @details Shared boxed hashing/equality makes equal boxed values idempotent
+///          even when their pointers differ. `NULL` is a valid set element. A
+///          null Set handle reports no insertion.
+/// @param obj Set to mutate, or `NULL`.
+/// @param elem Value to retain if not already equal to a stored element.
+/// @return 1 when a new entry is published, otherwise 0.
 int8_t rt_set_add(void *obj, void *elem) {
     if (!obj)
         return 0;
@@ -246,6 +280,11 @@ int8_t rt_set_add(void *obj, void *elem) {
 }
 
 /// @brief Remove `elem`. Releases the element. Returns 1 if removed, 0 if not present.
+/// @details Removes the equal stored entry, which need not be pointer-identical
+///          to @p elem when it is a boxed value.
+/// @param obj Set to mutate, or `NULL`.
+/// @param elem Value used for shared hash/equality lookup.
+/// @return 1 if an entry was removed, otherwise 0.
 int8_t rt_set_remove(void *obj, void *elem) {
     if (!obj)
         return 0;
@@ -282,6 +321,9 @@ int8_t rt_set_remove(void *obj, void *elem) {
 }
 
 /// @brief Returns 1 if `elem` is in the set, 0 otherwise. O(1) average.
+/// @param obj Set handle, or `NULL`.
+/// @param elem Value used for shared hash/equality lookup.
+/// @return 1 if an equal element is stored, otherwise 0.
 int8_t rt_set_has(void *obj, void *elem) {
     if (!obj)
         return 0;
@@ -294,6 +336,7 @@ int8_t rt_set_has(void *obj, void *elem) {
 }
 
 /// @brief Remove every element (releases each). Bucket array is preserved for re-use.
+/// @param obj Set to clear, or `NULL` for a no-op.
 void rt_set_clear(void *obj) {
     if (!obj)
         return;
@@ -320,6 +363,11 @@ void rt_set_clear(void *obj) {
 }
 
 /// @brief Return a Seq containing all elements in bucket-iteration order (not insertion order).
+/// @details The fresh owning `Seq` independently retains every element.
+///          Ordering may change after resize and is not a stable API contract.
+///          A null Set returns an empty owning sequence.
+/// @param obj Set handle, or `NULL`.
+/// @return New runtime-managed owning Seq.
 void *rt_set_items(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -338,6 +386,11 @@ void *rt_set_items(void *obj) {
 }
 
 /// @brief Return a fresh set containing every element from either operand. Result is mutable.
+/// @details Null operands are treated as empty. The result independently
+///          retains each unique element under shared equality.
+/// @param obj First Set operand, or `NULL`.
+/// @param other Second Set operand, or `NULL`.
+/// @return New runtime-managed Set, or `NULL` on allocation failure.
 void *rt_set_union(void *obj, void *other) {
     void *result = rt_set_new();
     if (!result)
@@ -367,6 +420,11 @@ void *rt_set_union(void *obj, void *other) {
 }
 
 /// @brief Return a fresh set containing only elements present in both operands.
+/// @details A null operand denotes the empty set. Membership uses shared
+///          boxed-value equality and retained result entries are independent.
+/// @param obj First Set operand, or `NULL`.
+/// @param other Second Set operand, or `NULL`.
+/// @return New runtime-managed intersection Set.
 void *rt_set_intersect(void *obj, void *other) {
     void *result = rt_set_new();
     if (!result)
@@ -389,6 +447,11 @@ void *rt_set_intersect(void *obj, void *other) {
 }
 
 /// @brief Return a fresh set containing elements in `obj` but not in `other`.
+/// @details A null first operand denotes empty; a null second operand causes a
+///          retained shallow copy of the first.
+/// @param obj Minuend Set, or `NULL`.
+/// @param other Subtrahend Set, or `NULL`.
+/// @return New runtime-managed difference Set.
 void *rt_set_diff(void *obj, void *other) {
     void *result = rt_set_new();
     if (!result)
@@ -412,6 +475,10 @@ void *rt_set_diff(void *obj, void *other) {
 }
 
 /// @brief Returns 1 if every element of `obj` is also in `other`. Empty set is subset of anything.
+/// @details Null handles represent empty operands for this relation.
+/// @param obj Candidate subset Set, or `NULL`.
+/// @param other Candidate superset Set, or `NULL`.
+/// @return 1 when the subset relation holds, otherwise 0.
 int8_t rt_set_is_subset(void *obj, void *other) {
     if (!obj)
         return 1; // Empty set is subset of everything
@@ -432,11 +499,19 @@ int8_t rt_set_is_subset(void *obj, void *other) {
 }
 
 /// @brief Returns 1 if every element of `other` is also in `obj`. Inverse of `_is_subset`.
+/// @param obj Candidate superset Set, or `NULL`.
+/// @param other Candidate subset Set, or `NULL`.
+/// @return 1 when the superset relation holds, otherwise 0.
 int8_t rt_set_is_superset(void *obj, void *other) {
     return rt_set_is_subset(other, obj);
 }
 
 /// @brief Returns 1 if the two sets share no elements (intersection is empty).
+/// @details A null operand represents an empty Set and is disjoint from every
+///          valid Set.
+/// @param obj First Set, or `NULL`.
+/// @param other Second Set, or `NULL`.
+/// @return 1 when there is no shared equal element, otherwise 0.
 int8_t rt_set_is_disjoint(void *obj, void *other) {
     if (!obj || !other)
         return 1; // Empty sets are disjoint
@@ -459,7 +534,8 @@ int8_t rt_set_is_disjoint(void *obj, void *other) {
 ///
 /// @param obj Source Set pointer (may be NULL).
 /// @return New Set containing the same elements, or empty set if NULL.
-/// @brief Deep-copy the set's bucket structure (each element is retained, not deep-cloned).
+/// @details The bucket/entry structure is independent and every element is
+///          retained again, but element objects themselves are not cloned.
 void *rt_set_clone(void *obj) {
     void *result = rt_set_new();
     if (!obj)

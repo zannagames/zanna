@@ -6,25 +6,36 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_string_advanced.c
-// Purpose: Extended string operations for the Zanna runtime. Contains replace,
-//   starts_with/ends_with/has/count, padding, split/join, repeat, UTF-8 string
-//   reversal, and lexicographic comparison functions.
+// Purpose: Implements extended byte-string search, replacement, padding,
+//   splitting/joining, repetition, character classification, strict UTF-8
+//   traversal, reversal, and three-way comparison for the runtime.
 //
 // Key invariants:
-//   - All functions returning rt_string allocate new strings (no mutation).
-//   - Split returns a Seq of string pointers; join consumes a Seq.
-//   - UTF-8 reversal (rt_str_flip) is codepoint-aware (handles 1-4 byte sequences).
-//   - Comparison functions (cmp, cmp_nocase) return negative/zero/positive.
+//   - General search, replacement, padding, splitting, and comparison operate
+//     on stored byte lengths and therefore preserve embedded NUL bytes.
+//   - Returned strings own one reference but may be a retained input or the
+//     immortal empty singleton instead of a fresh allocation.
+//   - Split/Lines return owned-element Seq objects. Join only borrows its Seq,
+//     separator, and element handles.
+//   - UTF-8-aware helpers reject overlong encodings, surrogate code points,
+//     truncated sequences, and scalars above U+10FFFF.
+//   - Three-way comparisons return exactly -1, 0, or 1 and order NULL before
+//     every non-null string.
 //
 // Ownership/Lifetime:
-//   - Returned strings are heap-allocated with reference counting.
-//   - Caller must unref when done.
+//   - Every returned rt_string transfers one owned reference to the caller.
+//   - String and Seq inputs are borrowed unless a function explicitly retains
+//     an input for its returned result.
+//   - Sequence containers returned by Split/Lines own references to their
+//     string elements and must be released through the Seq API.
 //
 // Links: src/runtime/core/rt_string_internal.h (shared helpers),
 //        src/runtime/core/rt_string_ops.c (core operations),
 //        src/runtime/core/rt_string.h (public API)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Extended runtime byte-string and strict UTF-8 operations.
 
 #include "rt_internal.h"
 #include "rt_seq.h"
@@ -44,11 +55,17 @@
 // Extended String Functions (Zanna.String expansion)
 //===----------------------------------------------------------------------===//
 
-/// @brief Replace all occurrences of needle with replacement.
-/// @param haystack Source string.
-/// @param needle String to find.
-/// @param replacement String to substitute.
-/// @return Newly allocated string with replacements.
+/// @brief Replace every non-overlapping occurrence of @p needle.
+/// @details Scans the stored bytes once, using the first needle byte to locate
+///          candidates before verifying the complete match. A null haystack
+///          returns the empty singleton. A null replacement, null/empty needle,
+///          overlong needle, or absence of matches retains the original
+///          haystack instead of allocating a copy.
+/// @param haystack Borrowed source byte string; may be NULL.
+/// @param needle Borrowed non-empty byte sequence to find; may be NULL.
+/// @param replacement Borrowed replacement bytes; may be NULL.
+/// @return Owned transformed string, retained haystack, empty singleton, or
+///         `NULL` after a builder/allocation trap.
 rt_string rt_str_replace(rt_string haystack, rt_string needle, rt_string replacement) {
     if (!haystack)
         return rt_empty_string();
@@ -138,10 +155,12 @@ rt_string rt_str_replace(rt_string haystack, rt_string needle, rt_string replace
     return result;
 }
 
-/// @brief Check if string starts with prefix.
-/// @param str Source string.
-/// @param prefix Prefix to check.
-/// @return 1 if str starts with prefix, 0 otherwise.
+/// @brief Test whether @p str begins with @p prefix.
+/// @details Compares stored bytes, so embedded NULs are significant. An empty
+///          prefix matches every non-null string.
+/// @param str Borrowed source string; NULL never matches.
+/// @param prefix Borrowed prefix; NULL never matches.
+/// @return One when the complete prefix matches; otherwise zero.
 int64_t rt_str_starts_with(rt_string str, rt_string prefix) {
     if (!str || !prefix)
         return 0;
@@ -157,10 +176,12 @@ int64_t rt_str_starts_with(rt_string str, rt_string prefix) {
     return memcmp(str->data, prefix->data, prefix_len) == 0;
 }
 
-/// @brief Check if string ends with suffix.
-/// @param str Source string.
-/// @param suffix Suffix to check.
-/// @return 1 if str ends with suffix, 0 otherwise.
+/// @brief Test whether @p str ends with @p suffix.
+/// @details Compares stored bytes, so embedded NULs are significant. An empty
+///          suffix matches every non-null string.
+/// @param str Borrowed source string; NULL never matches.
+/// @param suffix Borrowed suffix; NULL never matches.
+/// @return One when the complete suffix matches; otherwise zero.
 int64_t rt_str_ends_with(rt_string str, rt_string suffix) {
     if (!str || !suffix)
         return 0;
@@ -176,10 +197,12 @@ int64_t rt_str_ends_with(rt_string str, rt_string suffix) {
     return memcmp(str->data + str_len - suffix_len, suffix->data, suffix_len) == 0;
 }
 
-/// @brief Check if string contains needle.
-/// @param str Source string.
-/// @param needle Substring to find.
-/// @return 1 if str contains needle, 0 otherwise.
+/// @brief Test whether @p str contains @p needle.
+/// @details Performs a byte-wise substring search. An empty needle matches
+///          every non-null source, including an empty source.
+/// @param str Borrowed source string; NULL never matches.
+/// @param needle Borrowed byte sequence; NULL never matches.
+/// @return One when a match exists; otherwise zero.
 int64_t rt_str_has(rt_string str, rt_string needle) {
     if (!str || !needle)
         return 0;
@@ -200,10 +223,14 @@ int64_t rt_str_has(rt_string str, rt_string needle) {
     return 0;
 }
 
-/// @brief Count non-overlapping occurrences of needle in str.
-/// @param str Source string.
-/// @param needle Substring to count.
-/// @return Number of non-overlapping occurrences.
+/// @brief Count non-overlapping byte occurrences of @p needle in @p str.
+/// @details Advances by the complete needle length after a match and by one
+///          byte after a miss. Null operands and an empty or overlong needle
+///          yield zero. Result overflow traps before returning `INT64_MAX` if
+///          the trap handler returns.
+/// @param str Borrowed source string; may be NULL.
+/// @param needle Borrowed byte sequence; may be NULL.
+/// @return Number of non-overlapping matches, or zero for invalid/no matches.
 int64_t rt_str_count(rt_string str, rt_string needle) {
     if (!str || !needle)
         return 0;
@@ -236,11 +263,17 @@ int64_t rt_str_count(rt_string str, rt_string needle) {
     return count;
 }
 
-/// @brief Pad string on the left to reach specified width.
-/// @param str Source string.
-/// @param width Target width.
-/// @param pad_str Padding byte (must be exactly one byte).
-/// @return Newly allocated padded string.
+/// @brief Pad @p str on the left to the requested byte width.
+/// @details The padding string must contain exactly one byte when padding is
+///          required; this prevents repetition of part of a multibyte UTF-8
+///          sequence. Null input returns the empty singleton. Non-positive or
+///          already-satisfied widths and null/empty padding retain @p str.
+///          Invalid or unrepresentable widths trap.
+/// @param str Borrowed source string; may be NULL.
+/// @param width Target stored-byte length.
+/// @param pad_str Borrowed string supplying the single padding byte.
+/// @return Owned padded string, retained source, empty singleton, or `NULL`
+///         after validation/allocation failure.
 rt_string rt_str_pad_left(rt_string str, int64_t width, rt_string pad_str) {
     if (!str)
         return rt_empty_string();
@@ -279,11 +312,15 @@ rt_string rt_str_pad_left(rt_string str, int64_t width, rt_string pad_str) {
     return result;
 }
 
-/// @brief Pad string on the right to reach specified width.
-/// @param str Source string.
-/// @param width Target width.
-/// @param pad_str Padding byte (must be exactly one byte).
-/// @return Newly allocated padded string.
+/// @brief Pad @p str on the right to the requested byte width.
+/// @details Applies the same byte-width, single-byte-padding, null, overflow,
+///          and ownership rules as @ref rt_str_pad_left, but appends padding
+///          after the original bytes.
+/// @param str Borrowed source string; may be NULL.
+/// @param width Target stored-byte length.
+/// @param pad_str Borrowed string supplying the single padding byte.
+/// @return Owned padded string, retained source, empty singleton, or `NULL`
+///         after validation/allocation failure.
 rt_string rt_str_pad_right(rt_string str, int64_t width, rt_string pad_str) {
     if (!str)
         return rt_empty_string();
@@ -319,10 +356,17 @@ rt_string rt_str_pad_right(rt_string str, int64_t width, rt_string pad_str) {
     return result;
 }
 
-/// @brief Split string by delimiter into a sequence.
-/// @param str Source string.
-/// @param delim Delimiter string.
-/// @return Seq containing string parts.
+/// @brief Split @p str at non-overlapping occurrences of @p delim.
+/// @details Uses stored-byte matching and preserves leading, adjacent, and
+///          trailing empty segments. A null source yields one empty element.
+///          A null/empty delimiter or a delimiter longer than the source yields
+///          one element containing the complete source. The result Seq owns
+///          its element references.
+/// @param str Borrowed source string; may be NULL.
+/// @param delim Borrowed delimiter byte string; may be NULL.
+/// @return Newly allocated owned-element Seq containing the segments, or
+///         `NULL` after a result-size trap; allocation behavior otherwise
+///         follows the Seq and string constructors.
 void *rt_str_split(rt_string str, rt_string delim) {
     if (!str) {
         // Push empty string for null input
@@ -400,14 +444,15 @@ void *rt_str_split(rt_string str, rt_string delim) {
     return result;
 }
 
-/// @brief Split a string into logical lines, normalizing CRLF to LF.
-/// @details Splits on "\n" and drops a single trailing "\r" from each segment,
-///          so CRLF and LF inputs yield identical logical lines. The segment
-///          count is identical to @ref rt_str_split with a "\n" delimiter, which
-///          makes this a drop-in replacement for the common
-///          "split on newline, then strip the carriage return" idiom.
-/// @param str Source string (null yields one empty line).
-/// @return Seq of line strings with no trailing carriage returns.
+/// @brief Split @p str into logical lines and normalize CRLF boundaries.
+/// @details Splits at each LF byte, preserves empty segments including a final
+///          one after trailing LF, and removes at most one CR immediately
+///          before each LF or end of input. A null source yields one empty
+///          line. The returned Seq owns its line-string references.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned-element Seq of normalized line strings, or
+///         `NULL` after a result-size trap; allocation behavior otherwise
+///         follows the Seq and string constructors.
 void *rt_str_lines(rt_string str) {
     if (!str) {
         // Mirror rt_str_split: a null source yields a single empty segment.
@@ -454,18 +499,26 @@ void *rt_str_lines(rt_string str) {
 // Zanna.Text.Char — ASCII character classification (identifier rules)
 //=============================================================================
 
-/// @brief True for an ASCII letter a-z or A-Z.
+/// @brief Test whether a byte is an ASCII alphabetic character.
+/// @param c Unsigned byte value to classify.
+/// @return Nonzero for `A-Z` or `a-z`; otherwise zero.
 static int rt_char_is_ascii_alpha(unsigned char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
-/// @brief True for an ASCII digit 0-9.
+/// @brief Test whether a byte is an ASCII decimal digit.
+/// @param c Unsigned byte value to classify.
+/// @return Nonzero for `0-9`; otherwise zero.
 static int rt_char_is_ascii_digit(unsigned char c) {
     return c >= '0' && c <= '9';
 }
 
-/// @brief First byte of @p s, or -1 when empty/NULL. (Identifier rules are ASCII, so a
-///        multibyte UTF-8 leading byte (>= 0x80) is correctly treated as a non-identifier char.)
+/// @brief Read the first stored byte for ASCII character classification.
+/// @details The caller intentionally classifies bytes rather than Unicode
+///          codepoints, so a UTF-8 leading byte does not qualify as an ASCII
+///          identifier character.
+/// @param s Borrowed source string; may be NULL or empty.
+/// @return First byte promoted as an unsigned value, or -1 for no byte.
 static int rt_char_first_byte(rt_string s) {
     if (!s)
         return -1;
@@ -476,7 +529,9 @@ static int rt_char_first_byte(rt_string s) {
     return (unsigned char)d[0];
 }
 
-/// @brief 1 if the first character of @p s may start an identifier (ASCII letter or '_').
+/// @brief Test whether the first byte may start an ASCII identifier.
+/// @param s Borrowed source string; may be NULL or empty.
+/// @return One for an ASCII letter or underscore; otherwise zero.
 int8_t rt_text_char_is_identifier_start(rt_string s) {
     int c = rt_char_first_byte(s);
     if (c < 0)
@@ -484,7 +539,9 @@ int8_t rt_text_char_is_identifier_start(rt_string s) {
     return (rt_char_is_ascii_alpha((unsigned char)c) || c == '_') ? 1 : 0;
 }
 
-/// @brief 1 if the first character of @p s may continue an identifier (ASCII letter, digit, '_').
+/// @brief Test whether the first byte may continue an ASCII identifier.
+/// @param s Borrowed source string; may be NULL or empty.
+/// @return One for an ASCII letter, digit, or underscore; otherwise zero.
 int8_t rt_text_char_is_identifier_part(rt_string s) {
     int c = rt_char_first_byte(s);
     if (c < 0)
@@ -493,7 +550,9 @@ int8_t rt_text_char_is_identifier_part(rt_string s) {
     return (rt_char_is_ascii_alpha(ch) || rt_char_is_ascii_digit(ch) || c == '_') ? 1 : 0;
 }
 
-/// @brief 1 if the first character of @p s is ASCII alphanumeric (letter or digit).
+/// @brief Test whether the first byte is ASCII alphanumeric.
+/// @param s Borrowed source string; may be NULL or empty.
+/// @return One for an ASCII letter or digit; otherwise zero.
 int8_t rt_text_char_is_alnum(rt_string s) {
     int c = rt_char_first_byte(s);
     if (c < 0)
@@ -502,10 +561,15 @@ int8_t rt_text_char_is_alnum(rt_string s) {
     return (rt_char_is_ascii_alpha(ch) || rt_char_is_ascii_digit(ch)) ? 1 : 0;
 }
 
-/// @brief Join sequence of strings with separator.
-/// @param sep Separator string.
-/// @param seq Sequence of strings to join.
-/// @return Newly allocated joined string.
+/// @brief Join the string elements of @p seq with @p sep between them.
+/// @details Borrows the sequence and every element. Null elements and a null
+///          separator contribute zero bytes, although separator positions
+///          still correspond to element boundaries. A null or empty sequence
+///          returns the empty singleton. Total-length overflow traps.
+/// @param sep Borrowed separator string; NULL means empty.
+/// @param seq Borrowed Seq of runtime string handles; may be NULL.
+/// @return Owned joined string or empty singleton, or `NULL` on overflow or
+///         allocation failure.
 rt_string rt_str_join(rt_string sep, void *seq) {
     if (!seq)
         return rt_empty_string();
@@ -558,10 +622,14 @@ rt_string rt_str_join(rt_string sep, void *seq) {
     return result;
 }
 
-/// @brief Repeat string count times.
-/// @param str Source string.
+/// @brief Repeat the stored bytes of @p str @p count times.
+/// @details Null/empty input and non-positive counts return the empty
+///          singleton. The multiplication is checked against `SIZE_MAX`
+///          before allocating the result.
+/// @param str Borrowed source string; may be NULL.
 /// @param count Number of repetitions.
-/// @return Newly allocated repeated string.
+/// @return Owned repeated string or empty singleton, or `NULL` after an
+///         overflow trap or allocation failure.
 rt_string rt_str_repeat(rt_string str, int64_t count) {
     if (!str || count <= 0)
         return rt_empty_string();
@@ -591,15 +659,15 @@ rt_string rt_str_repeat(rt_string str, int64_t count) {
     return result;
 }
 
-/// @brief Strictly measure the UTF-8 codepoint starting at @p data.
-/// @details Shared validator for codepoint-aware String operations
-///          (VDOC-166): rejects invalid lead bytes, missing/invalid
-///          continuation bytes, overlong encodings, UTF-16 surrogates, and
-///          code points above U+10FFFF. Non-trapping so each caller can
-///          raise its own contextual trap.
-/// @param data Pointer to the current byte (may be NULL only if remaining==0).
-/// @param remaining Bytes available from @p data.
-/// @return Sequence length in bytes (1-4), or 0 when the sequence is invalid.
+/// @brief Validate and measure one strict UTF-8 codepoint.
+/// @details Accepts ASCII and canonical two-, three-, or four-byte sequences.
+///          Rejects invalid lead/continuation bytes, truncation, overlong
+///          encodings, UTF-16 surrogates, and values above U+10FFFF. This
+///          helper does not trap so its caller can provide operation-specific
+///          diagnostics.
+/// @param data Pointer to the candidate leading byte; may be NULL.
+/// @param remaining Number of readable bytes beginning at @p data.
+/// @return Valid sequence length from one through four, or zero if invalid.
 size_t rt_utf8_strict_step(const char *data, size_t remaining) {
     if (!data || remaining == 0)
         return 0;
@@ -634,12 +702,15 @@ size_t rt_utf8_strict_step(const char *data, size_t remaining) {
     return extra + 1;
 }
 
-/// @brief Convert a 1-based codepoint offset to a byte offset in a UTF-8 string.
-/// @param data Pointer to the string data.
-/// @param byte_len Total byte length of the string.
-/// @param char_pos 1-based codepoint position (1 = first character).
-/// @return Byte offset corresponding to the start of the codepoint, or byte_len
-///         if char_pos is past the end.
+/// @brief Convert a one-based UTF-8 codepoint position to a byte offset.
+/// @details Strictly validates every traversed codepoint. Null data or
+///          positions at/below one map to byte zero. A position beyond the
+///          available codepoints maps to @p byte_len. Invalid UTF-8 traps and
+///          returns @p byte_len if the trap handler returns.
+/// @param data Borrowed byte span containing UTF-8 data; may be NULL.
+/// @param byte_len Number of available bytes.
+/// @param char_pos One-based codepoint position.
+/// @return Zero-based byte offset, clamped to @p byte_len.
 size_t utf8_char_to_byte_offset(const char *data, size_t byte_len, int64_t char_pos) {
     if (!data || char_pos <= 1)
         return 0;
@@ -659,9 +730,13 @@ size_t utf8_char_to_byte_offset(const char *data, size_t byte_len, int64_t char_
     return byte_off;
 }
 
-/// @brief Get UTF-8 character byte length from leading byte.
-/// @param c First byte of UTF-8 sequence.
-/// @return Number of bytes in the character (1-4), or 1 for invalid.
+/// @brief Infer an expected UTF-8 sequence width from one leading byte.
+/// @details This compatibility helper examines only the lead-bit pattern; it
+///          does not validate continuation bytes, overlong forms, surrogates,
+///          or the Unicode maximum. An invalid leading pattern traps.
+/// @param c Candidate leading byte.
+/// @return Expected width from one through four, or zero after a returning
+///         invalid-lead trap.
 size_t utf8_char_len(unsigned char c) {
     if ((c & 0x80) == 0)
         return 1; // ASCII: 0xxxxxxx
@@ -675,13 +750,14 @@ size_t utf8_char_len(unsigned char c) {
     return 0;
 }
 
-/// @brief Reverse string characters (UTF-8 aware).
-/// @details Reverses the sequence of Unicode codepoints, not bytes.
-///          For ASCII-only strings, this is equivalent to byte reversal.
-///          For UTF-8 strings with multi-byte characters, this preserves
-///          character integrity (e.g., "Hello, 世界!" becomes "!界世 ,olleH").
-/// @param str Source string.
-/// @return Newly allocated reversed string.
+/// @brief Reverse @p str by strict UTF-8 codepoint.
+/// @details Validates the complete input, records every codepoint boundary,
+///          then copies the original byte sequences in reverse order without
+///          changing bytes within a sequence. Null/empty input returns the
+///          empty singleton. Malformed UTF-8, offset-array overflow, or
+///          allocation failure traps.
+/// @param str Borrowed UTF-8 source string; may be NULL.
+/// @return Owned reversed string or empty singleton, or `NULL` after failure.
 rt_string rt_str_flip(rt_string str) {
     if (!str)
         return rt_empty_string();
@@ -755,10 +831,12 @@ rt_string rt_str_flip(rt_string str) {
     return result;
 }
 
-/// @brief Compare two strings, returning -1, 0, or 1.
-/// @param a First string.
-/// @param b Second string.
-/// @return -1 if a < b, 0 if a == b, 1 if a > b.
+/// @brief Compare two strings using unsigned-byte lexicographic order.
+/// @details Null sorts before every non-null string, and two null handles are
+///          equal. Equal prefixes are ordered by stored byte length.
+/// @param a Borrowed first string; may be NULL.
+/// @param b Borrowed second string; may be NULL.
+/// @return Exactly -1, 0, or 1 according to the total ordering.
 int64_t rt_str_cmp(rt_string a, rt_string b) {
     if (!a && !b)
         return 0;
@@ -782,10 +860,13 @@ int64_t rt_str_cmp(rt_string a, rt_string b) {
     return 0;
 }
 
-/// @brief Case-insensitive string comparison, returning -1, 0, or 1.
-/// @param a First string.
-/// @param b Second string.
-/// @return -1 if a < b, 0 if a == b, 1 if a > b (case-insensitive).
+/// @brief Compare two strings after ASCII-only case folding.
+/// @details Lowercases `A-Z` byte-by-byte, leaves all other bytes unchanged,
+///          and otherwise uses the null and length ordering of
+///          @ref rt_str_cmp.
+/// @param a Borrowed first string; may be NULL.
+/// @param b Borrowed second string; may be NULL.
+/// @return Exactly -1, 0, or 1 according to ASCII-folded byte ordering.
 int64_t rt_str_cmp_nocase(rt_string a, rt_string b) {
     if (!a && !b)
         return 0;
@@ -814,7 +895,13 @@ int64_t rt_str_cmp_nocase(rt_string a, rt_string b) {
     return 0;
 }
 
-/// @brief Validate that a byte span is well-formed UTF-8 (see header contract).
+/// @brief Validate an entire byte span as strict UTF-8.
+/// @details Applies the same scalar constraints as @ref rt_utf8_strict_step to
+///          every codepoint. A null pointer is valid only for an empty span.
+///          This predicate never traps.
+/// @param data Borrowed byte span; may be NULL only when @p len is zero.
+/// @param len Number of bytes to validate.
+/// @return One when the whole span is valid UTF-8; otherwise zero.
 int rt_utf8_span_valid(const char *data, size_t len) {
     if (!data)
         return len == 0;

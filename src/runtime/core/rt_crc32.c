@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_crc32.c
+/// @file
+/// @brief Implements thread-safe table-driven IEEE CRC-32 checksums.
+///
 // Purpose: Implements the CRC32 checksum (IEEE 802.3 / Ethernet polynomial
 //          0xEDB88320) shared by the Zanna runtime's hash, compress, and
 //          archive modules. Compatible with ZIP, PNG, GZIP, and other standard
@@ -52,6 +55,8 @@ static int crc32_init_state = 0;
 ///          rounds of the IEEE polynomial, then transitions to state=2.
 ///          Concurrent callers spin until the table is ready. After init, the
 ///          table is read-only and subsequent calls return immediately.
+/// @note The losing first-use callers busy-wait on the atomic state; callers
+///       never need to invoke this function explicitly before computing a CRC.
 void rt_crc32_init(void) {
     if (__atomic_load_n(&crc32_init_state, __ATOMIC_ACQUIRE) == 2)
         return;
@@ -89,6 +94,8 @@ void rt_crc32_init(void) {
 /// @param data Pointer to the input buffer (may be NULL when len is 0).
 /// @param len Number of bytes to checksum.
 /// @return 32-bit CRC matching zlib crc32() output for the same input.
+/// @pre @p data is nonnull whenever @p len is nonzero.
+/// @note The checksum of an empty span is zero.
 uint32_t rt_crc32_compute(const uint8_t *data, size_t len) {
     rt_crc32_init();
 

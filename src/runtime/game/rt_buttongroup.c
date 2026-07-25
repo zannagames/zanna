@@ -34,6 +34,8 @@
 //        docs/zannalib/game.md (ButtonGroup section — RT_BUTTONGROUP_MAX note)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Fixed-capacity exclusive button-ID selection and navigation.
 
 #include "rt_buttongroup.h"
 #include "rt_internal.h"
@@ -41,7 +43,7 @@
 
 #include <stdlib.h>
 
-/// Internal structure for ButtonGroup.
+/// @brief Inline storage and selection flags for one ButtonGroup object.
 struct rt_buttongroup_impl {
     int64_t buttons[RT_BUTTONGROUP_MAX]; ///< Button IDs.
     int64_t count;                       ///< Number of buttons.
@@ -51,7 +53,10 @@ struct rt_buttongroup_impl {
 };
 
 /// @brief Safe-cast a handle to the ButtonGroup impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p group is NULL.
+///        class-id mismatch.
+/// @param group Borrowed candidate handle; may be NULL.
+/// @param api Borrowed mismatch diagnostic.
+/// @return Valid implementation pointer, or NULL for null/mismatch.
 static struct rt_buttongroup_impl *checked_group(rt_buttongroup group, const char *api) {
     if (!group)
         return NULL;
@@ -63,6 +68,10 @@ static struct rt_buttongroup_impl *checked_group(rt_buttongroup group, const cha
 }
 
 /// @brief Create a new buttongroup object.
+/// @details Initializes an empty list, no active selection, and a clear
+///          changed flag. The stored -1 sentinel is not meaningful until
+///          @ref rt_buttongroup_has_selection returns true.
+/// @return Owned ButtonGroup object, or NULL on allocation failure.
 rt_buttongroup rt_buttongroup_new(void) {
     struct rt_buttongroup_impl *group =
         rt_obj_new_i64(RT_BUTTONGROUP_CLASS_ID, sizeof(struct rt_buttongroup_impl));
@@ -78,6 +87,9 @@ rt_buttongroup rt_buttongroup_new(void) {
 }
 
 /// @brief Release resources and destroy the buttongroup.
+/// @details Validates the runtime class, releases one object reference, and
+///          frees only when reference count reaches zero. Null is a no-op.
+/// @param group Owned ButtonGroup reference; may be NULL.
 void rt_buttongroup_destroy(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.Destroy: expected Zanna.Game.ButtonGroup");
     if (group && rt_obj_release_check0(group)) {
@@ -85,8 +97,10 @@ void rt_buttongroup_destroy(rt_buttongroup group) {
     }
 }
 
-/// Find the index of a button in the group.
-/// Returns -1 if not found.
+/// @brief Find a registered button ID by insertion-order index.
+/// @param group Borrowed valid group.
+/// @param button_id Arbitrary signed ID.
+/// @return Zero-based index, or -1 when absent.
 static int64_t find_button_index(rt_buttongroup group, int64_t button_id) {
     for (int64_t i = 0; i < group->count; i++) {
         if (group->buttons[i] == button_id)
@@ -96,6 +110,13 @@ static int64_t find_button_index(rt_buttongroup group, int64_t button_id) {
 }
 
 /// @brief Add an element to the buttongroup.
+/// @details Preserves insertion order and uniqueness. Duplicate detection runs
+///          before the capacity check, so re-adding an existing ID to a full
+///          group returns zero rather than trapping. A genuinely new 257th ID
+///          traps and is not added.
+/// @param group Borrowed ButtonGroup.
+/// @param button_id Arbitrary signed ID, including -1.
+/// @return One when inserted; otherwise zero.
 int8_t rt_buttongroup_add(rt_buttongroup group, int64_t button_id) {
     group = checked_group(group, "ButtonGroup.Add: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -118,6 +139,12 @@ int8_t rt_buttongroup_add(rt_buttongroup group, int64_t button_id) {
 }
 
 /// @brief Remove an entry from the buttongroup.
+/// @details Compacts later IDs while preserving order. Removing the selected
+///          ID clears selection and sets the changed flag; other removals do
+///          not change selection state.
+/// @param group Borrowed ButtonGroup.
+/// @param button_id ID to remove.
+/// @return One when removed; zero when absent/invalid.
 int8_t rt_buttongroup_remove(rt_buttongroup group, int64_t button_id) {
     group = checked_group(group, "ButtonGroup.Remove: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -144,6 +171,9 @@ int8_t rt_buttongroup_remove(rt_buttongroup group, int64_t button_id) {
 }
 
 /// @brief Check whether a key/element exists in the buttongroup.
+/// @param group Borrowed ButtonGroup.
+/// @param button_id ID to locate.
+/// @return One when registered; otherwise zero.
 int8_t rt_buttongroup_has(rt_buttongroup group, int64_t button_id) {
     group = checked_group(group, "ButtonGroup.Has: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -152,6 +182,8 @@ int8_t rt_buttongroup_has(rt_buttongroup group, int64_t button_id) {
 }
 
 /// @brief Return the count of elements in the buttongroup.
+/// @param group Borrowed ButtonGroup.
+/// @return Count from zero through 256, or zero on invalid input.
 int64_t rt_buttongroup_count(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.Count: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -160,6 +192,12 @@ int64_t rt_buttongroup_count(rt_buttongroup group) {
 }
 
 /// @brief Select the buttongroup.
+/// @details Only registered IDs may be selected. Selecting a different ID (or
+///          selecting while empty) sets the changed flag. Reselecting the
+///          current ID succeeds without changing the flag.
+/// @param group Borrowed ButtonGroup.
+/// @param button_id Registered ID to select.
+/// @return One for a valid registered selection; otherwise zero.
 int8_t rt_buttongroup_select(rt_buttongroup group, int64_t button_id) {
     group = checked_group(group, "ButtonGroup.Select: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -176,6 +214,8 @@ int8_t rt_buttongroup_select(rt_buttongroup group, int64_t button_id) {
 }
 
 /// @brief Deselect the currently selected button (sets selection to -1).
+/// @details Sets the changed flag only when a selection was active.
+/// @param group Borrowed ButtonGroup.
 void rt_buttongroup_clear_selection(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.ClearSelection: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -188,6 +228,8 @@ void rt_buttongroup_clear_selection(rt_buttongroup group) {
 }
 
 /// @brief Return the button ID of the currently selected button, or -1 if none.
+/// @param group Borrowed ButtonGroup.
+/// @return Selected signed ID, or -1 for no selection/invalid group.
 int64_t rt_buttongroup_selected(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.Selected: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -196,6 +238,9 @@ int64_t rt_buttongroup_selected(rt_buttongroup group) {
 }
 
 /// @brief Check whether a specific button ID is the currently selected one.
+/// @param group Borrowed ButtonGroup.
+/// @param button_id Candidate signed ID.
+/// @return One only when a selection is active and IDs match.
 int8_t rt_buttongroup_is_selected(rt_buttongroup group, int64_t button_id) {
     group = checked_group(group, "ButtonGroup.IsSelected: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -204,6 +249,8 @@ int8_t rt_buttongroup_is_selected(rt_buttongroup group, int64_t button_id) {
 }
 
 /// @brief Check whether any button is currently selected.
+/// @param group Borrowed ButtonGroup.
+/// @return One when selected storage is meaningful; otherwise zero.
 int8_t rt_buttongroup_has_selection(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.HasSelection: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -212,6 +259,9 @@ int8_t rt_buttongroup_has_selection(rt_buttongroup group) {
 }
 
 /// @brief Check whether the selection changed since the last clear_changed_flag call.
+/// @details Reading does not consume the latch.
+/// @param group Borrowed ButtonGroup.
+/// @return Current changed latch, or zero on invalid input.
 int8_t rt_buttongroup_selection_changed(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.SelectionChanged: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -220,6 +270,7 @@ int8_t rt_buttongroup_selection_changed(rt_buttongroup group) {
 }
 
 /// @brief Clear the changed flag of the buttongroup.
+/// @param group Borrowed ButtonGroup.
 void rt_buttongroup_clear_changed_flag(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.ClearChangedFlag: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -228,6 +279,9 @@ void rt_buttongroup_clear_changed_flag(rt_buttongroup group) {
 }
 
 /// @brief Return the button ID at a given index in the group's button list.
+/// @param group Borrowed ButtonGroup.
+/// @param index Zero-based insertion-order index.
+/// @return Stored signed ID, or -1 for invalid input/index.
 int64_t rt_buttongroup_get_at(rt_buttongroup group, int64_t index) {
     group = checked_group(group, "ButtonGroup.GetAt: expected Zanna.Game.ButtonGroup");
     if (!group)
@@ -238,6 +292,10 @@ int64_t rt_buttongroup_get_at(rt_buttongroup group, int64_t index) {
 }
 
 /// @brief Move selection to the next button in the group, wrapping at the end.
+/// @details With no active selection, chooses the first registered ID. A changed
+///          destination sets the latch; a one-element reselect does not.
+/// @param group Borrowed ButtonGroup.
+/// @return Newly/currently selected ID, or -1 for empty/invalid group.
 int64_t rt_buttongroup_select_next(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.SelectNext: expected Zanna.Game.ButtonGroup");
     if (!group || group->count == 0)
@@ -261,6 +319,10 @@ int64_t rt_buttongroup_select_next(rt_buttongroup group) {
 }
 
 /// @brief Move selection to the previous button in the group, wrapping at the start.
+/// @details With no active selection, chooses the last registered ID. Selection
+///          changes latch the changed flag.
+/// @param group Borrowed ButtonGroup.
+/// @return Newly/currently selected ID, or -1 for empty/invalid group.
 int64_t rt_buttongroup_select_prev(rt_buttongroup group) {
     group = checked_group(group, "ButtonGroup.SelectPrevious: expected Zanna.Game.ButtonGroup");
     if (!group || group->count == 0)

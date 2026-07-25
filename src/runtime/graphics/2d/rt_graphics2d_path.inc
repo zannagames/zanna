@@ -11,7 +11,9 @@
 ///
 /// @details This include fragment is consumed only by rt_graphics2d.c and
 /// isolates the path-vector data structure and its public runtime surface from
-/// unrelated 2D rendering subsystems.
+/// unrelated 2D rendering subsystems. Paths retain signed 64-bit coordinates
+/// and subpath markers in a growable native buffer, then rasterize their
+/// straight-line segments through the Pixels drawing API.
 ///
 // File: src/runtime/graphics/2d/rt_graphics2d_path.inc
 // Purpose: Path2D dynamic path-storage and path rasterization entry points.
@@ -35,10 +37,16 @@
 // Path2D
 //=============================================================================
 // Dynamic sequence of `(x, y, move)` points. `move == 1` marks a pen-up
-// break — `MoveTo` followed by `LineTo` forms a subpath. `DrawToPixels`
-// walks the list and renders a line between every consecutive non-move pair.
+// destination and therefore the start of a new subpath. A later `LineTo`
+// connects that start point to its destination. `DrawToPixels` renders every
+// segment whose destination is a line point and skips segments whose
+// destination is a move point.
 
 /// @brief GC finalizer — frees the points buffer.
+/// @details Runtime object storage is released by the object system after this
+///          callback; this function owns only the separately allocated point
+///          array. Invalid or already mistyped handles are ignored.
+/// @param obj Opaque finalizing object expected to be a Path2D instance.
 static void path2d_finalize(void *obj) {
     if (!rt2d_has_class(obj, RT2D_PATH_CLASS_ID))
         return;
@@ -47,8 +55,14 @@ static void path2d_finalize(void *obj) {
 }
 
 /// @brief Allocate a Path2D with the given initial point capacity.
-/// @details Capacity is clamped by `rt2d_initial_capacity`. On allocation failure
-///          the impl is torn down cleanly and NULL is returned.
+/// @details A nonpositive request selects the default capacity, positive
+///          requests up to 1,048,576 are preserved, and larger initial
+///          requests are capped at that value. The path initially contains no
+///          points. On point-buffer allocation failure, the partially created
+///          runtime object is released.
+/// @param capacity Requested number of point slots to allocate initially.
+/// @return A new empty Path2D handle, or `NULL` if object or point-buffer
+///         allocation fails.
 void *rt_path2d_new(int64_t capacity) {
     rt_path2d_impl *path =
         (rt_path2d_impl *)rt_obj_new_i64(RT2D_PATH_CLASS_ID, (int64_t)sizeof(rt_path2d_impl));
@@ -69,6 +83,10 @@ void *rt_path2d_new(int64_t capacity) {
 /// @details Standard doubling-growth with element-count and byte-count overflow
 ///          guards. Tail is zero-initialized so a failed-mid-append sequence
 ///          doesn't leave stale data in unused slots.
+/// @param path Mutable Path2D implementation whose buffer may be reallocated.
+/// @param needed Minimum number of point slots required by the caller.
+/// @return Nonzero if the existing or enlarged buffer can hold @p needed
+///         entries; zero for a null path, overflow, or allocation failure.
 static int32_t path2d_reserve(rt_path2d_impl *path, int64_t needed) {
     if (!path || needed <= path->capacity)
         return 1;
@@ -91,7 +109,14 @@ static int32_t path2d_reserve(rt_path2d_impl *path, int64_t needed) {
 }
 
 /// @brief Append a point to the path, growing the backing buffer as needed.
-/// @param move  1 for a pen-up move (new subpath start); 0 for a pen-down line segment.
+/// @details Invalid path handles are ignored. A reserve failure raises a
+///          `Path2D: capacity overflow` runtime trap and leaves the point count
+///          unchanged.
+/// @param path Opaque Path2D handle to append to.
+/// @param x Signed X coordinate stored without normalization.
+/// @param y Signed Y coordinate stored without normalization.
+/// @param move Nonzero for a pen-up move and zero for a pen-down line
+///             destination; public callers pass only `1` or `0`.
 static void path2d_add(void *path, int64_t x, int64_t y, int32_t move) {
     rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
     if (!impl)
@@ -107,30 +132,46 @@ static void path2d_add(void *path, int64_t x, int64_t y, int32_t move) {
 }
 
 /// @brief Reset the path to empty without freeing the backing buffer.
+/// @details Existing point contents remain inaccessible and may be overwritten
+///          by subsequent appends. Invalid handles are ignored.
+/// @param path Opaque Path2D handle to clear.
 void rt_path2d_clear(void *path) {
     if (rt2d_has_class(path, RT2D_PATH_CLASS_ID))
         ((rt_path2d_impl *)path)->count = 0;
 }
 
 /// @brief Append a pen-up move point — starts a new subpath at `(x, y)`.
-/// @details No line is drawn from the previous point to this one; `DrawToPixels`
-///          skips across move-flagged points when iterating.
+/// @details No line is drawn from the previous point to this one. A later line
+///          point can begin a segment at this stored position.
+/// @param path Opaque Path2D handle to append to; invalid handles are ignored.
+/// @param x X coordinate of the new subpath start.
+/// @param y Y coordinate of the new subpath start.
 void rt_path2d_move_to(void *path, int64_t x, int64_t y) {
     path2d_add(path, x, y, 1);
 }
 
 /// @brief Append a pen-down line point — a line will be drawn from the previous
 ///        point to `(x, y)` during `DrawToPixels`.
+/// @details If this is the first point, drawing still emits no segment because
+///          a segment requires a predecessor.
+/// @param path Opaque Path2D handle to append to; invalid handles are ignored.
+/// @param x X coordinate of the segment destination.
+/// @param y Y coordinate of the segment destination.
 void rt_path2d_line_to(void *path, int64_t x, int64_t y) {
     path2d_add(path, x, y, 0);
 }
 
 /// @brief Return the number of points (both move and line) in the path.
+/// @param path Opaque Path2D handle to query.
+/// @return The number of stored points, or `0` when @p path is invalid.
 int64_t rt_path2d_count(void *path) {
     return rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? ((rt_path2d_impl *)path)->count : 0;
 }
 
 /// @brief Return the X coordinate of the point at `index`, or 0 if out of range.
+/// @param path Opaque Path2D handle to query.
+/// @param index Zero-based point index.
+/// @return The stored X coordinate, or `0` for an invalid handle or index.
 int64_t rt_path2d_get_x(void *path, int64_t index) {
     rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
     if (!impl || index < 0 || index >= impl->count)
@@ -139,6 +180,9 @@ int64_t rt_path2d_get_x(void *path, int64_t index) {
 }
 
 /// @brief Return the Y coordinate of the point at `index`, or 0 if out of range.
+/// @param path Opaque Path2D handle to query.
+/// @param index Zero-based point index.
+/// @return The stored Y coordinate, or `0` for an invalid handle or index.
 int64_t rt_path2d_get_y(void *path, int64_t index) {
     rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
     if (!impl || index < 0 || index >= impl->count)
@@ -151,7 +195,13 @@ int64_t rt_path2d_get_y(void *path, int64_t index) {
 ///          The first point is always treated as a move (no line drawn to it);
 ///          subsequent move points introduce pen-up breaks so you can emit
 ///          multiple disconnected subpaths from the same Path2D. Colors accept
-///          either `0xRRGGBBAA` or `0x00RRGGBB` form via `rt2d_draw_rgb`.
+///          raw `0x00RRGGBB`, raw `0xRRGGBBAA`, or explicitly tagged Color
+///          values via `rt2d_draw_rgb`; alpha is discarded by this RGB-only
+///          line primitive.
+/// @param path Opaque Path2D handle containing the point sequence.
+/// @param pixels Borrowed destination Pixels handle modified in place.
+/// @param rgba Packed or tagged source color normalized to opaque
+///             `0x00RRGGBB`.
 void rt_path2d_draw_to_pixels(void *path, void *pixels, int64_t rgba) {
     rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
     if (!impl || !pixels || impl->count < 2)

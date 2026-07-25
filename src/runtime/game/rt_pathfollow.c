@@ -6,6 +6,10 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_pathfollow.c
+/// @file
+/// @brief Implements fixed-point waypoint traversal with once, loop, and
+///        ping-pong modes.
+//
 // Purpose: Waypoint-based path follower for Zanna games. Stores an ordered list
 //   of 2D waypoints and advances an entity along the path at a configurable
 //   speed. The follower interpolates linearly between consecutive waypoints,
@@ -48,13 +52,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// Waypoint structure.
+/// @brief One inline fixed-point waypoint.
 struct waypoint {
     int64_t x;
     int64_t y;
 };
 
-/// Internal path follower structure.
+/// @brief Private traversal state, waypoint storage, and lazy length cache.
 struct rt_pathfollow_impl {
     struct waypoint points[RT_PATHFOLLOW_MAX_POINTS];
     int64_t point_count;       ///< Number of waypoints.
@@ -74,8 +78,11 @@ struct rt_pathfollow_impl {
     int8_t lengths_dirty;      ///< 1 if the length cache must be rebuilt before use.
 };
 
-/// @brief Safe-cast a handle to the PathFollow impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p path is NULL.
+/// @brief Validate and cast an opaque PathFollower handle.
+/// @param path Candidate handle; `NULL` is accepted.
+/// @param api Trap message for a non-null class mismatch.
+/// @return @p path when valid, or `NULL` for null or invalid input.
+/// @details A class mismatch raises a runtime trap before returning `NULL`.
 static rt_pathfollow checked_pathfollow(rt_pathfollow path, const char *api) {
     if (!path)
         return NULL;
@@ -86,7 +93,10 @@ static rt_pathfollow checked_pathfollow(rt_pathfollow path, const char *api) {
     return path;
 }
 
-/// @brief Saturating int64 addition (clamps to INT64_MIN/MAX on overflow).
+/// @brief Add two signed integers without overflow.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return Exact sum when representable, otherwise the nearest int64 endpoint.
 static int64_t pathfollow_saturating_add(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -97,6 +107,11 @@ static int64_t pathfollow_saturating_add(int64_t a, int64_t b) {
 
 /// @brief Compute (value*scale)/divisor in long double, saturating to int64;
 ///        0 when @p divisor is 0.
+/// @param value Multiplicand.
+/// @param scale Scale factor.
+/// @param divisor Divisor.
+/// @return Truncated scaled quotient, a saturated endpoint, or zero for a
+///         zero divisor.
 static int64_t pathfollow_scaled(int64_t value, int64_t scale, int64_t divisor) {
     if (divisor == 0)
         return 0;
@@ -110,6 +125,10 @@ static int64_t pathfollow_scaled(int64_t value, int64_t scale, int64_t divisor) 
 
 /// @brief Linear interpolation between @p a and @p b by @p per_mille / 1000
 ///        (0..1000), saturating to int64.
+/// @param a Segment start coordinate.
+/// @param b Segment end coordinate.
+/// @param per_mille Interpolation fraction in thousandths.
+/// @return Truncated interpolated coordinate, saturated to the int64 range.
 static int64_t pathfollow_lerp(int64_t a, int64_t b, int64_t per_mille) {
     long double value =
         (long double)a + ((long double)b - (long double)a) * ((long double)per_mille / 1000.0L);
@@ -121,6 +140,12 @@ static int64_t pathfollow_lerp(int64_t a, int64_t b, int64_t per_mille) {
 }
 
 /// @brief Euclidean distance between two fixed-point points.
+/// @param x1 First point X.
+/// @param y1 First point Y.
+/// @param x2 Second point X.
+/// @param y2 Second point Y.
+/// @return Distance rounded to the nearest fixed-point integer and saturated
+///         at INT64_MAX.
 /// Uses long-double arithmetic so very short segments remain non-zero while
 /// still avoiding overflow for large coordinates.
 static int64_t distance(int64_t x1, int64_t y1, int64_t x2, int64_t y2) {
@@ -132,7 +157,10 @@ static int64_t distance(int64_t x1, int64_t y1, int64_t x2, int64_t y2) {
     return (int64_t)(len + 0.5L);
 }
 
-/// @brief Reset the follower to the first path point (segment 0, forward).
+/// @brief Reset traversal position and fractional state to the first waypoint.
+/// @param path Follower to rewind; `NULL` is a no-op.
+/// @details Direction becomes forward and both carried remainders are cleared.
+///          An empty follower rewinds to coordinate `(0,0)`.
 static void rt_pathfollow_rewind(rt_pathfollow path) {
     if (!path)
         return;
@@ -154,6 +182,10 @@ static void rt_pathfollow_rewind(rt_pathfollow path) {
 
 /// @brief Step to the next/previous path segment when progress reaches an end,
 ///        applying loop / ping-pong (reverse) / clamp end behavior.
+/// @param path Active follower positioned at a segment boundary.
+/// @details A mode transition may advance the segment, wrap, reverse direction,
+///          or mark an ONCE traversal finished and inactive. Progress remainder
+///          is cleared because it was measured against the old segment length.
 static void rt_pathfollow_advance_segment_boundary(rt_pathfollow path) {
     int64_t seg = path->segment;
 
@@ -197,6 +229,7 @@ static void rt_pathfollow_advance_segment_boundary(rt_pathfollow path) {
 }
 
 /// @brief Rebuild the cached `segment_lengths` array and `total_length` from the waypoint list.
+/// @param path Follower whose cache is rebuilt.
 /// Called lazily by ensure_lengths() after one or more points are added. Frees and re-mallocs the
 /// array (no in-place realloc). For paths with fewer than 2 points the cache is cleared.
 /// @return 1 on success (cache is current), 0 if the array could not be allocated — in which case
@@ -233,6 +266,7 @@ static int8_t recalculate_lengths(rt_pathfollow path) {
 }
 
 /// @brief Rebuild the length cache only if a point was added since the last build.
+/// @param path Follower whose dirty cache may be rebuilt; `NULL` is a no-op.
 /// @details Lazy recomputation turns N incremental add_point calls from O(n^2) (a
 ///          full rebuild on every add) into O(n) (one rebuild on the first query
 ///          after the adds). Must be called by every reader of segment_lengths /
@@ -247,7 +281,9 @@ static void ensure_lengths(rt_pathfollow path) {
     }
 }
 
-/// @brief GC finalizer: frees the malloc'd segment-length cache. The waypoint array is inline.
+/// @brief Free the lazily allocated segment-length cache during finalization.
+/// @param obj PathFollower object supplied by the runtime finalizer system.
+/// @details Waypoints are inline and need no separate teardown.
 static void pathfollow_finalize(void *obj) {
     struct rt_pathfollow_impl *path = (struct rt_pathfollow_impl *)obj;
     if (path && path->segment_lengths)
@@ -257,6 +293,9 @@ static void pathfollow_finalize(void *obj) {
 /// @brief Construct an empty PathFollower with no waypoints, ONCE mode, and a default speed of
 /// 100 world units / second (i.e. 100000 in fixed-point). Caller adds points via `add_point`.
 /// Returns a GC-managed handle wired to `pathfollow_finalize`; NULL on allocation failure.
+/// @return A new runtime-managed PathFollower reference, or `NULL` on
+///         allocation failure.
+/// @details The follower begins inactive at `(0,0)` with no cached lengths.
 rt_pathfollow rt_pathfollow_new(void) {
     struct rt_pathfollow_impl *path = (struct rt_pathfollow_impl *)rt_obj_new_i64(
         RT_PATHFOLLOW_CLASS_ID, (int64_t)sizeof(struct rt_pathfollow_impl));
@@ -272,6 +311,8 @@ rt_pathfollow rt_pathfollow_new(void) {
 
 /// @brief Release the PathFollower; frees the segment-length cache via the finalizer when the
 /// reference count reaches zero.
+/// @param path Handle to release; `NULL` is a no-op.
+/// @details A non-null handle of another runtime class raises a trap.
 void rt_pathfollow_destroy(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Destroy: expected Zanna.Game.PathFollower");
     if (!path)
@@ -283,6 +324,10 @@ void rt_pathfollow_destroy(rt_pathfollow path) {
 
 /// @brief Reset the follower to a blank slate: no waypoints, no progress, inactive, freed cache.
 /// Useful for re-using a PathFollower handle across multiple level loads.
+/// @param path Follower to clear; `NULL` is a no-op.
+/// @details Mode and speed are preserved. Current position becomes `(0,0)`;
+///          active, finished, and reverse state are cleared. A non-null
+///          wrong-class handle raises a runtime trap.
 void rt_pathfollow_clear(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Clear: expected Zanna.Game.PathFollower");
     if (!path)
@@ -309,6 +354,12 @@ void rt_pathfollow_clear(rt_pathfollow path) {
 /// @brief Append a waypoint at fixed-point world coords (x, y). The first added point also becomes
 /// the follower's starting position. Returns 0 if the cap (`RT_PATHFOLLOW_MAX_POINTS`) is hit.
 /// Marks the segment cache dirty; the next length-dependent operation rebuilds it in O(n).
+/// @param path Follower to modify.
+/// @param x Fixed-point X coordinate where 1000 equals one world unit.
+/// @param y Fixed-point Y coordinate where 1000 equals one world unit.
+/// @return `1` when appended, or `0` for a null/full follower.
+/// @details Existing traversal state is otherwise preserved. A non-null
+///          wrong-class handle raises a runtime trap.
 int8_t rt_pathfollow_add_point(rt_pathfollow path, int64_t x, int64_t y) {
     path = checked_pathfollow(path, "PathFollower.AddPoint: expected Zanna.Game.PathFollower");
     if (!path)
@@ -332,7 +383,10 @@ int8_t rt_pathfollow_add_point(rt_pathfollow path, int64_t x, int64_t y) {
     return 1;
 }
 
-/// @brief Number of waypoints currently in the path (0 to RT_PATHFOLLOW_MAX_POINTS).
+/// @brief Count stored waypoints.
+/// @param path Follower to query.
+/// @return Count in `[0, RT_PATHFOLLOW_MAX_POINTS]`, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_point_count(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.PointCount: expected Zanna.Game.PathFollower");
     return path ? path->point_count : 0;
@@ -340,6 +394,10 @@ int64_t rt_pathfollow_point_count(rt_pathfollow path) {
 
 /// @brief Select traversal mode: ONCE (stops at end), LOOP (wraps to start), PINGPONG (reverses).
 /// Out-of-range values are silently ignored (mode is preserved).
+/// @param path Follower to modify; `NULL` is a no-op.
+/// @param mode One of rt_pathfollow_mode_t's integer values.
+/// @details Changing mode does not rewind or change current active/finished
+///          state. A non-null wrong-class handle raises a runtime trap.
 void rt_pathfollow_set_mode(rt_pathfollow path, int64_t mode) {
     path = checked_pathfollow(path, "PathFollower.SetMode: expected Zanna.Game.PathFollower");
     if (!path)
@@ -348,7 +406,10 @@ void rt_pathfollow_set_mode(rt_pathfollow path, int64_t mode) {
         path->mode = (rt_pathfollow_mode_t)mode;
 }
 
-/// @brief Read the current traversal mode (ONCE/LOOP/PINGPONG as integer constants).
+/// @brief Read the current traversal mode.
+/// @param path Follower to query.
+/// @return An rt_pathfollow_mode_t integer, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_mode(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Mode: expected Zanna.Game.PathFollower");
     return path ? path->mode : 0;
@@ -356,13 +417,21 @@ int64_t rt_pathfollow_get_mode(rt_pathfollow path) {
 
 /// @brief Set traversal speed in fixed-point world-units/second (×1000). Non-positive ignored.
 /// Per-frame movement is computed as `(speed * dt_ms) / 1000`.
+/// @param path Follower to modify.
+/// @param speed Positive fixed-point units per second; nonpositive input is
+///        ignored.
+/// @details One world unit per second is represented by 1000. A non-null
+///          wrong-class handle raises a runtime trap.
 void rt_pathfollow_set_speed(rt_pathfollow path, int64_t speed) {
     path = checked_pathfollow(path, "PathFollower.SetSpeed: expected Zanna.Game.PathFollower");
     if (path && speed > 0)
         path->speed = speed;
 }
 
-/// @brief Read the current speed in fixed-point world-units/second.
+/// @brief Read the configured traversal speed.
+/// @param path Follower to query.
+/// @return Fixed-point units per second, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_speed(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Speed: expected Zanna.Game.PathFollower");
     return path ? path->speed : 0;
@@ -370,6 +439,10 @@ int64_t rt_pathfollow_get_speed(rt_pathfollow path) {
 
 /// @brief Begin (or resume) following the path. Requires at least 2 waypoints; otherwise no-op.
 /// Clears the `finished` flag so a previously completed ONCE path can be replayed.
+/// @param path Follower to start.
+/// @details A finished follower rewinds before restarting; a paused follower
+///          resumes at its current state. Null or fewer-than-two-point paths
+///          are no-ops. A non-null wrong-class handle raises a runtime trap.
 void rt_pathfollow_start(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Start: expected Zanna.Game.PathFollower");
     if (!path || path->point_count < 2)
@@ -382,7 +455,10 @@ void rt_pathfollow_start(rt_pathfollow path) {
     path->finished = 0;
 }
 
-/// @brief Suspend updates while preserving segment + progress; resume with `start()`.
+/// @brief Suspend traversal without changing position or progress.
+/// @param path Follower to pause; `NULL` is a no-op.
+/// @details Resume with rt_pathfollow_start(). A non-null wrong-class handle
+///          raises a runtime trap.
 void rt_pathfollow_pause(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Pause: expected Zanna.Game.PathFollower");
     if (path)
@@ -391,6 +467,9 @@ void rt_pathfollow_pause(rt_pathfollow path) {
 
 /// @brief Stop and rewind to the first waypoint (segment=0, progress=0). Waypoints are preserved.
 /// Differs from `pause()` (which keeps current position) and `clear()` (which discards waypoints).
+/// @param path Follower to stop; `NULL` is a no-op.
+/// @details Finished/reverse state and fractional remainders are cleared. A
+///          non-null wrong-class handle raises a runtime trap.
 void rt_pathfollow_stop(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Stop: expected Zanna.Game.PathFollower");
     if (!path)
@@ -401,7 +480,10 @@ void rt_pathfollow_stop(rt_pathfollow path) {
     rt_pathfollow_rewind(path);
 }
 
-/// @brief Returns 1 while the follower is actively advancing each `update()` tick.
+/// @brief Test whether traversal updates are currently enabled.
+/// @param path Follower to query.
+/// @return `1` when active, or `0` when paused, stopped, finished, or null.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int8_t rt_pathfollow_is_active(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.IsActive: expected Zanna.Game.PathFollower");
     return path ? path->active : 0;
@@ -409,6 +491,10 @@ int8_t rt_pathfollow_is_active(rt_pathfollow path) {
 
 /// @brief Returns 1 once a ONCE-mode path has reached its final waypoint. Always 0 for
 /// LOOP/PINGPONG.
+/// @param path Follower to query.
+/// @return Stored finished flag, or zero for `NULL`.
+/// @details Stop, clear, and restart clear the flag. A non-null wrong-class
+///          handle raises a runtime trap.
 int8_t rt_pathfollow_is_finished(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.IsFinished: expected Zanna.Game.PathFollower");
     return path ? path->finished : 0;
@@ -420,6 +506,15 @@ int8_t rt_pathfollow_is_finished(rt_pathfollow path) {
 /// → flip `reverse` flag and walk back. Recomputes `current_x/y` once at the end via linear interp
 /// of
 /// `(segment, segment_progress)`. Inactive/finished/empty paths early-out.
+/// @param path Follower to advance.
+/// @param dt Elapsed milliseconds; nonpositive values do nothing.
+/// @details Fixed-point distance and per-segment per-mille fractions carry
+///          remainders across calls. Movement may cross multiple segments,
+///          skips zero-length segments with a cycle guard, and saturates an
+///          overflowing distance numerator. A fully degenerate path becomes
+///          inactive; ONCE also becomes finished. Length-cache allocation
+///          failure leaves traversal active for a later retry. A non-null
+///          wrong-class handle raises a runtime trap.
 void rt_pathfollow_update(rt_pathfollow path, int64_t dt) {
     path = checked_pathfollow(path, "PathFollower.Update: expected Zanna.Game.PathFollower");
     if (!path || !path->active || path->finished || path->point_count < 2)
@@ -536,12 +631,18 @@ void rt_pathfollow_update(rt_pathfollow path, int64_t dt) {
 
 /// @brief Read the follower's current world X position (fixed-point ×1000). Caller divides by
 /// 1000 to recover pixel coordinates.
+/// @param path Follower to query.
+/// @return Current interpolated X, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_x(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.X: expected Zanna.Game.PathFollower");
     return path ? path->current_x : 0;
 }
 
 /// @brief Read the follower's current world Y position (fixed-point ×1000).
+/// @param path Follower to query.
+/// @return Current interpolated Y, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_y(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Y: expected Zanna.Game.PathFollower");
     return path ? path->current_y : 0;
@@ -550,6 +651,12 @@ int64_t rt_pathfollow_get_y(rt_pathfollow path) {
 /// @brief Compute total path progress as a 0–1000 fraction (per mille). Sums fully-traversed
 /// segment lengths plus the partial distance into the current segment, divides by `total_length`.
 /// Returns 0 for empty/unbuilt paths.
+/// @param path Follower to query.
+/// @return Positional distance from the first waypoint divided by total path
+///         length, in `[0,1000]`, or zero when unavailable.
+/// @details For ping-pong motion this value decreases while traveling in
+///          reverse; for loops it resets after wrapping. The cache is rebuilt
+///          lazily. A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_progress(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Progress: expected Zanna.Game.PathFollower");
     if (!path || path->point_count < 2)
@@ -573,6 +680,12 @@ int64_t rt_pathfollow_get_progress(rt_pathfollow path) {
 /// @brief Teleport the follower to a fractional path position (0–1000 per mille). Walks the
 /// segment cache until the accumulated distance covers `target_dist`, then sets segment +
 /// progress and updates `current_x/y`. Useful for cinematic seeks or save-state restoration.
+/// @param path Follower to reposition.
+/// @param progress Requested path-distance fraction, clamped to `[0,1000]`.
+/// @details Movement/progress remainders are cleared. Active, finished, mode,
+///          and reverse state are preserved. Null, fewer-than-two-point, and
+///          zero-total-length paths are no-ops. A non-null wrong-class handle
+///          raises a runtime trap.
 void rt_pathfollow_set_progress(rt_pathfollow path, int64_t progress) {
     path = checked_pathfollow(path, "PathFollower.SetProgress: expected Zanna.Game.PathFollower");
     if (!path || path->point_count < 2)
@@ -615,15 +728,24 @@ void rt_pathfollow_set_progress(rt_pathfollow path, int64_t progress) {
     path->current_y = pathfollow_lerp(path->points[seg].y, path->points[seg + 1].y, p);
 }
 
-/// @brief Read the index of the segment the follower is currently traversing (0..point_count-2).
+/// @brief Read the current segment index.
+/// @param path Follower to query.
+/// @return Index connecting `point[i]` to `point[i+1]`, or zero for `NULL`.
+/// @details A non-null wrong-class handle raises a runtime trap.
 int64_t rt_pathfollow_get_segment(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Segment: expected Zanna.Game.PathFollower");
     return path ? path->segment : 0;
 }
 
 /// @brief Get the approximate direction angle of the current path segment.
+/// @param path Follower to query.
+/// @return One of `0, 45000, ..., 315000` fixed-point degrees, or zero when
+///         unavailable or the segment has coincident endpoints.
 /// @note Returns one of 8 cardinal/ordinal directions (0, 45, 90, ..., 315 degrees).
 ///       For smoother rotation, use atan2 on consecutive positions instead.
+/// @details Screen-space positive Y points down, so 90000 means down. Reverse
+///          traversal flips the direction. A non-null wrong-class handle
+///          raises a runtime trap.
 int64_t rt_pathfollow_get_angle(rt_pathfollow path) {
     path = checked_pathfollow(path, "PathFollower.Angle: expected Zanna.Game.PathFollower");
     if (!path || path->point_count < 2)

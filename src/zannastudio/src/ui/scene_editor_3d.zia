@@ -184,6 +184,7 @@ final GIZMO_RING_INVALID_DISTANCE: Number = 1000000000.0;
 final GIZMO_PLANE_INNER_FRACTION: Number = 0.25;
 final GIZMO_PLANE_OUTER_FRACTION: Number = 0.55;
 final COMPACT_SCENE_3D_WIDTH: Number = 700.0;
+final HIERARCHY_PANE_MIN_WIDTH: Number = 1000.0;
 final VIEWPORT_CLEAR_RED: Number = 0.08627450980392157;
 final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
 final VIEWPORT_CLEAR_BLUE: Number = 0.13333333333333333;
@@ -222,6 +223,11 @@ final PRIMITIVE_EMPTY: Integer = 0;
 final PRIMITIVE_BOX: Integer = 1;
 final PRIMITIVE_SPHERE: Integer = 2;
 final PRIMITIVE_PLANE: Integer = 3;
+
+final ADD_COMPONENT_LIGHT: Integer = 0;
+final ADD_COMPONENT_MATERIAL: Integer = 1;
+final ADD_COMPONENT_CAMERA: Integer = 2;
+final ADD_COMPONENT_COLLIDER: Integer = 3;
 final PARENT_TARGET_MIXED: Integer = -2;
 
 /// @brief Return whether a handle names one single-axis transform.
@@ -639,7 +645,35 @@ class SceneEditor3D {
     expose GUI.Button inspectorButton;
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
+    expose GUI.SplitPane hierarchySplit;
     expose GUI.SplitPane bodySplit;
+    expose GUI.GroupBox importGroup;
+    expose GUI.Label nameLabel;
+    expose GUI.Label positionLabel;
+    expose GUI.HBox positionRow;
+    expose GUI.Label rotationLabel;
+    expose GUI.HBox rotationRow;
+    expose GUI.Label scaleLabel;
+    expose GUI.HBox scaleRow;
+    expose GUI.GroupBox componentAssetHost;
+    expose GUI.Button objectTabButton;
+    expose GUI.Button sceneTabButton;
+    expose Boolean inspectorSceneTab;
+    hide Boolean inspectorAutoFollowHadSelection;
+    expose GUI.HBox addComponentRow;
+    expose GUI.Dropdown addComponentDropdown;
+    expose GUI.Button addComponentButton;
+    hide List[Integer] addComponentKinds;
+    hide Boolean transformDraftActive;
+    hide Number draftOriginPX;
+    hide Number draftOriginPY;
+    hide Number draftOriginPZ;
+    hide Number draftOriginRX;
+    hide Number draftOriginRY;
+    hide Number draftOriginRZ;
+    hide Number draftOriginSX;
+    hide Number draftOriginSY;
+    hide Number draftOriginSZ;
     expose GUI.ScrollView viewportScroll;
     expose GUI.Image viewportImage;
     expose GUI.ScrollView inspectorScroll;
@@ -759,6 +793,7 @@ class SceneEditor3D {
     expose Number viewTargetZ;
     expose Boolean hierarchyClipped;
     expose Boolean compactLayout;
+    hide Number lastHostWidth;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
     expose List[String] undoStack;
@@ -892,7 +927,36 @@ class SceneEditor3D {
         inspectorButton = null;
         toolbarStatus = null;
         viewStatusLabel = null;
+        hierarchySplit = null;
         bodySplit = null;
+        importGroup = null;
+        nameLabel = null;
+        positionLabel = null;
+        positionRow = null;
+        rotationLabel = null;
+        rotationRow = null;
+        scaleLabel = null;
+        scaleRow = null;
+        componentAssetHost = null;
+        objectTabButton = null;
+        sceneTabButton = null;
+        inspectorSceneTab = true;
+        inspectorAutoFollowHadSelection = false;
+        addComponentRow = null;
+        addComponentDropdown = null;
+        addComponentButton = null;
+        addComponentKinds = [];
+        transformDraftActive = false;
+        draftOriginPX = 0.0;
+        draftOriginPY = 0.0;
+        draftOriginPZ = 0.0;
+        draftOriginRX = 0.0;
+        draftOriginRY = 0.0;
+        draftOriginRZ = 0.0;
+        draftOriginSX = 1.0;
+        draftOriginSY = 1.0;
+        draftOriginSZ = 1.0;
+        lastHostWidth = 0.0;
         viewportScroll = null;
         viewportImage = null;
         inspectorScroll = null;
@@ -1216,9 +1280,24 @@ class SceneEditor3D {
             0.001, 10.0, 0.05, 0.1, "Scale snap increment");
         viewOptionsRow.SetVisible(false);
 
-        bodySplit = GUI.SplitPane.New(root, 1);
+        // Three-pane workbench: Hierarchy | Viewport | Inspector. The outer
+        // split owns the hierarchy pane; the inner split keeps its historical
+        // name so persisted fractions and probes stay stable.
+        hierarchySplit = GUI.SplitPane.New(root, 1);
+        hierarchySplit.SetFlex(1.0);
+        hierarchySplit.SetPosition(0.22);
+        hierarchySplit.SetMinFirst(220.0);
+        hierarchySplit.SetMinSecond(540.0);
+
+        var hierarchyPane = GUI.VBox.New();
+        hierarchyPane.SetSpacing(6.0);
+        hierarchyPane.SetPadding(8.0);
+        hierarchyPane.SetFlex(1.0);
+        hierarchySplit.First.AddChild(hierarchyPane);
+
+        bodySplit = GUI.SplitPane.New(hierarchySplit.Second, 1);
         bodySplit.SetFlex(1.0);
-        bodySplit.SetPosition(0.65);
+        bodySplit.SetPosition(0.62);
         bodySplit.SetMinFirst(320.0);
         bodySplit.SetMinSecond(320.0);
 
@@ -1229,10 +1308,16 @@ class SceneEditor3D {
         viewportImage.SetFilter(0);
         viewportImage.SetName("scene-3d-viewport");
         viewportImage.SetAccessibleName("3D scene viewport");
+        // The viewport is a real focusable surface: clicking it takes
+        // keyboard focus, so W/E/R/F, Escape, Delete, and Duplicate belong
+        // to the viewport the user is actually working in.
+        viewportImage.SetFocusable(true);
         viewportImage.SetTooltip(
             "Click visible meshes to select; Shift adds and Ctrl/Cmd toggles. "
             + "Drag colored transform handles. Middle/right-drag to orbit, "
-            + "or add Shift to pan. Use the wheel to zoom.");
+            + "or add Shift to pan. Use the wheel to zoom. W/E/R switch "
+            + "tools, F frames, and Escape clears the selection while the "
+            + "viewport owns focus.");
 
         inspectorScroll = GUI.ScrollView.New(bodySplit.Second);
         inspectorScroll.SetFlex(1.0);
@@ -1241,10 +1326,25 @@ class SceneEditor3D {
         inspector.SetPadding(8.0);
         inspectorScroll.AddChild(inspector);
 
-        GUI.Label.New(inspector, "Scene hierarchy");
+        // Object | Scene inspector tabs: node groups live on the Object tab
+        // and scene-wide groups (imports, bake, environment, material
+        // library) on the Scene tab. Selection changes auto-follow, and a
+        // manual choice holds until the next selection change.
+        var inspectorTabRow = GUI.HBox.New();
+        inspectorTabRow.SetSpacing(4.0);
+        inspector.AddChild(inspectorTabRow);
+        objectTabButton = GUI.Button.New(inspectorTabRow, "Object");
+        objectTabButton.SetTooltip(
+            "Inspect the selected nodes' components");
+        sceneTabButton = GUI.Button.New(inspectorTabRow, "Scene");
+        sceneTabButton.SetTooltip(
+            "Author scene-wide imports, bake, environment, and the "
+            + "material library");
+
+        GUI.Label.New(hierarchyPane, "Scene hierarchy");
         var hierarchySearchRow = GUI.HBox.New();
         hierarchySearchRow.SetSpacing(4.0);
-        inspector.AddChild(hierarchySearchRow);
+        hierarchyPane.AddChild(hierarchySearchRow);
         hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);
         hierarchySearchInput.SetFlex(1.0);
         hierarchySearchInput.SetPlaceholder("Find node name");
@@ -1265,11 +1365,13 @@ class SceneEditor3D {
         hierarchySearchNextButton.SetTooltip(
             "Select and reveal the next matching node");
         hierarchySearchStatus = GUI.Label.New(
-            inspector, "Find by node name");
+            hierarchyPane, "Find by node name");
         hierarchySearchStatus.SetWordWrap(true);
-        hierarchyTree = GUI.TreeView.New(inspector);
+        hierarchyTree = GUI.TreeView.New(hierarchyPane);
         hierarchyTree.SetAccessibleName("3D scene hierarchy");
-        hierarchyTree.SetPreferredSize(0.0, 220.0);
+        // The dedicated pane gives the tree the full remaining height
+        // instead of a fixed inspector slot.
+        hierarchyTree.SetFlex(1.0);
         hierarchyTree.SetMultiSelect(true);
         hierarchyTree.SetDragDropMode(2);
         hierarchyTree.SetTooltip(
@@ -1278,7 +1380,7 @@ class SceneEditor3D {
             + "to reorder or reparent one undoable selection.");
         var parentRow = GUI.HBox.New();
         parentRow.SetSpacing(4.0);
-        inspector.AddChild(parentRow);
+        hierarchyPane.AddChild(parentRow);
         GUI.Label.New(parentRow, "Parent");
         parentDropdown = GUI.Dropdown.New(parentRow);
         parentDropdown.SetFlex(1.0);
@@ -1289,7 +1391,7 @@ class SceneEditor3D {
         reparentButton.SetTooltip(
             "Move selected hierarchy roots beneath this parent as one undoable edit");
         preserveWorldReparentCheck =
-            GUI.Checkbox.New(inspector, "Keep world transform");
+            GUI.Checkbox.New(hierarchyPane, "Keep world transform");
         preserveWorldReparentCheck.SetAccessibleName(
             "Preserve world transform while reparenting");
         preserveWorldReparentCheck.SetTooltip(
@@ -1298,7 +1400,7 @@ class SceneEditor3D {
         preserveWorldReparentCheck.SetChecked(true);
         var siblingOrderRow = GUI.HBox.New();
         siblingOrderRow.SetSpacing(4.0);
-        inspector.AddChild(siblingOrderRow);
+        hierarchyPane.AddChild(siblingOrderRow);
         GUI.Label.New(siblingOrderRow, "Sibling order");
         moveSiblingEarlierButton =
             GUI.Button.New(siblingOrderRow, "Earlier");
@@ -1312,13 +1414,13 @@ class SceneEditor3D {
             "Move selected 3D scene nodes later");
         moveSiblingLaterButton.SetTooltip(
             "Move one contiguous sibling selection one position later");
-        var importGroup = GUI.GroupBox.New(inspector, "Project 3D imports");
+        importGroup = GUI.GroupBox.New(inspector, "Project 3D imports");
         importAssetBrowser.Setup(
             importGroup,
             "Import Project 3D Asset...",
             ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl",
             "Import Asset");
-        GUI.Label.New(inspector, "Name");
+        nameLabel = GUI.Label.New(inspector, "Name");
         nameInput = GUI.TextInput.New(inspector);
         nameInput.SetPlaceholder("Node name");
         visibleCheck = GUI.Checkbox.New(inspector, "Visible");
@@ -1327,24 +1429,24 @@ class SceneEditor3D {
             "Static nodes participate in lightmap and probe bakes");
         staticCheck.SetChecked(false);
 
-        GUI.Label.New(inspector, "Position");
-        var positionRow = GUI.HBox.New();
+        positionLabel = GUI.Label.New(inspector, "Position");
+        positionRow = GUI.HBox.New();
         positionRow.SetSpacing(4.0);
         inspector.AddChild(positionRow);
         positionX = AddTransformSpinner(positionRow, "X", 0.0);
         positionY = AddTransformSpinner(positionRow, "Y", 0.0);
         positionZ = AddTransformSpinner(positionRow, "Z", 0.0);
 
-        GUI.Label.New(inspector, "Rotation (degrees)");
-        var rotationRow = GUI.HBox.New();
+        rotationLabel = GUI.Label.New(inspector, "Rotation (degrees)");
+        rotationRow = GUI.HBox.New();
         rotationRow.SetSpacing(4.0);
         inspector.AddChild(rotationRow);
         rotationX = AddRotationSpinner(rotationRow, "X");
         rotationY = AddRotationSpinner(rotationRow, "Y");
         rotationZ = AddRotationSpinner(rotationRow, "Z");
 
-        GUI.Label.New(inspector, "Scale");
-        var scaleRow = GUI.HBox.New();
+        scaleLabel = GUI.Label.New(inspector, "Scale");
+        scaleRow = GUI.HBox.New();
         scaleRow.SetSpacing(4.0);
         inspector.AddChild(scaleRow);
         scaleX = AddTransformSpinner(scaleRow, "X", 1.0);
@@ -1354,12 +1456,25 @@ class SceneEditor3D {
         applyTransformButton.SetTooltip(
             "Apply the visible local transform fields to the current selection");
 
+        addComponentRow = GUI.HBox.New();
+        addComponentRow.SetSpacing(4.0);
+        inspector.AddChild(addComponentRow);
+        GUI.Label.New(addComponentRow, "Add component");
+        addComponentDropdown = GUI.Dropdown.New(addComponentRow);
+        addComponentDropdown.SetFlex(1.0);
+        addComponentDropdown.SetAccessibleName(
+            "Component to add to the selection");
+        addComponentButton = GUI.Button.New(addComponentRow, "Add");
+        addComponentButton.SetTooltip(
+            "Create the chosen component with defaults on the selection as "
+            + "one undoable edit");
+
         metadataInspector.Setup(inspector);
         componentPalette.Setup(
             inspector,
             "Project components",
             "3D node component template");
-        var componentAssetHost =
+        componentAssetHost =
             GUI.GroupBox.New(inspector, "Component asset field");
         componentAssetBrowser.Setup(
             componentAssetHost,
@@ -1629,8 +1744,17 @@ class SceneEditor3D {
 
         RefreshResponsiveLayout();
         if inspectorButton.WasClicked() { ToggleInspectorPane(); }
+        if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
+        if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
 
         var changed = false;
+        // Commit or cancel a pending live transform edit before selection
+        // and document handlers can observe uncommitted live-node state.
+        changed = PumpTransformDraft() or changed;
+        if addComponentButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = AddSelectedComponentChoice() or changed;
+        }
         if newSceneButton.WasClicked() {
             scene = SceneGraph.New();
             loadError = "";
@@ -1992,6 +2116,11 @@ class SceneEditor3D {
         // before capturing state so compact mode cannot silently reopen both
         // panes for one or more frames.
         ApplyInspectorLayout();
+        // User input only arrives between frames, so any transform-spinner
+        // change edges still set here came from this pump's programmatic
+        // refreshes; drain them so the live-edit path never mistakes them
+        // for user edits.
+        DrainTransformSpinnerEdges();
         CaptureWorkspaceState();
         return changed;
     }
@@ -2133,6 +2262,10 @@ class SceneEditor3D {
             state.splitPosition = ClampNumber3D(
                 bodySplit.GetPosition(), 0.20, 0.85);
         }
+        if hierarchySplit != null {
+            state.hierarchySplitPosition = ClampNumber3D(
+                hierarchySplit.GetPosition(), 0.10, 0.45);
+        }
         if inspectorScroll != null {
             state.inspectorScrollY = ClampNumber3D(
                 LogicalScrollY(inspectorScroll), 0.0, 1000000.0);
@@ -2180,7 +2313,8 @@ class SceneEditor3D {
                 scene_transform_3d.DEFAULT_SCALE_SNAP_INCREMENT;
             flyActive = false;
             flyLastMs = -1;
-            if bodySplit != null { bodySplit.SetPosition(0.65); }
+            if bodySplit != null { bodySplit.SetPosition(0.62); }
+            if hierarchySplit != null { hierarchySplit.SetPosition(0.22); }
             pendingInspectorScrollY = 0.0;
             inspectorRequestedVisible = true;
             compactInspectorShown = false;
@@ -2234,6 +2368,10 @@ class SceneEditor3D {
             bodySplit.SetPosition(ClampNumber3D(
                 state.splitPosition, 0.20, 0.85));
         }
+        if hierarchySplit != null {
+            hierarchySplit.SetPosition(ClampNumber3D(
+                state.hierarchySplitPosition, 0.10, 0.45));
+        }
         pendingInspectorScrollY = ClampNumber3D(
             state.inspectorScrollY, 0.0, 1000000.0);
         inspectorRequestedVisible = state.inspectorRequestedVisible;
@@ -2269,6 +2407,7 @@ class SceneEditor3D {
             }
         }
         if width <= 0.0 { return; }
+        lastHostWidth = width;
         var nextCompact = UsesCompactLayout(width);
         if nextCompact != compactLayout {
             compactLayout = nextCompact;
@@ -2328,9 +2467,31 @@ class SceneEditor3D {
         UpdateInspectorButton();
     }
 
-    /// @brief Apply wide split or compact one-pane-at-a-time presentation.
+    /// @brief Apply wide three-pane or compact one-pane-at-a-time layout.
+    /// @details The hierarchy pane needs real width to be useful, so it
+    ///          collapses on hosts narrower than HIERARCHY_PANE_MIN_WIDTH
+    ///          (graduated responsiveness, not just the compact threshold);
+    ///          hierarchy access then remains through Find and selection
+    ///          commands. Compact windows keep the established
+    ///          viewport/inspector cycling.
     hide func ApplyInspectorLayout() {
         if bodySplit == null { return; }
+        if hierarchySplit != null {
+            var wantHierarchyPane =
+                compactLayout == false
+                and lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH;
+            var hierarchyCollapsed =
+                hierarchySplit.GetCollapsedSide() == 1;
+            if wantHierarchyPane {
+                if hierarchyCollapsed {
+                    hierarchySplit.Restore();
+                    renderDirty = true;
+                }
+            } else if hierarchyCollapsed == false {
+                hierarchySplit.CollapseFirst();
+                renderDirty = true;
+            }
+        }
         var desiredSide = 0;
         if compactLayout {
             desiredSide = 2;
@@ -6831,6 +6992,7 @@ class SceneEditor3D {
         UpdateCameraControls(enabled);
         UpdateColliderControls(enabled);
         UpdateMaterialControls(enabled);
+        UpdateInspectorScope();
     }
 
     /// @brief Refresh typed metadata without rebuilding hierarchy identity.
@@ -7702,11 +7864,354 @@ class SceneEditor3D {
             + " contiguous sibling node(s) one position later");
     }
 
+    /// @brief Show only inspector groups relevant to the current selection.
+    /// @details Node groups appear with a selection; single-selection groups
+    ///          (metadata, camera, collider, prefab instance, probe grid,
+    ///          component asset field) need exactly one node, and the prefab
+    ///          group additionally needs an instance. Scene-scoped groups
+    ///          (imports, bake, environment, material library) stay visible
+    ///          with any loaded scene until the Object/Scene inspector tabs
+    ///          give them their own surface. Pure presentation: no canonical
+    ///          bytes, history, or selection state changes here.
+    hide func UpdateInspectorScope() {
+        if nameLabel == null { return; }
+        var hasScene = scene != null;
+        var hasSelection = hasScene and selectedIndices.count() > 0;
+        var single = hasScene and selectedIndices.count() == 1;
+        var objectTab = hasScene and inspectorSceneTab == false;
+        var sceneTab = hasScene and inspectorSceneTab;
+        var selectedIsInstance = false;
+        if single {
+            var scopeNode = SelectedNode();
+            selectedIsInstance =
+                scopeNode != null and scopeNode.PrefabPath != "";
+        }
+        var nodeScope = objectTab and hasSelection;
+        var singleScope = objectTab and single;
+        var selectionHasLight = SelectionHasLight();
+        var selectionHasMaterial = SelectionHasMaterial();
+        var singleHasCamera = false;
+        var singleHasCollider = false;
+        if single {
+            var presenceNode = SelectedNode();
+            if presenceNode != null {
+                singleHasCamera = presenceNode.Camera != null;
+                singleHasCollider =
+                    presenceNode.MetadataHas("collider.kind");
+            }
+        }
+        objectTabButton.SetVisible(hasScene);
+        sceneTabButton.SetVisible(hasScene);
+        objectTabButton.SetStyle(0);
+        sceneTabButton.SetStyle(0);
+        if sceneTab { sceneTabButton.SetStyle(1); }
+        if objectTab { objectTabButton.SetStyle(1); }
+        nameLabel.SetVisible(nodeScope);
+        nameInput.SetVisible(nodeScope);
+        visibleCheck.SetVisible(nodeScope);
+        staticCheck.SetVisible(nodeScope);
+        positionLabel.SetVisible(nodeScope);
+        positionRow.SetVisible(nodeScope);
+        rotationLabel.SetVisible(nodeScope);
+        rotationRow.SetVisible(nodeScope);
+        scaleLabel.SetVisible(nodeScope);
+        scaleRow.SetVisible(nodeScope);
+        // Single-node transforms commit live from the spinners; the explicit
+        // relative Apply remains for deliberate multi-node batches.
+        applyTransformButton.SetVisible(
+            nodeScope and selectedIndices.count() > 1);
+        metadataInspector.group.SetVisible(singleScope);
+        componentPalette.group.SetVisible(nodeScope);
+        componentAssetHost.SetVisible(singleScope);
+        // Component groups appear only when the component is present; the
+        // Add-component row covers creation for the absent ones.
+        lightInspector.group.SetVisible(nodeScope and selectionHasLight);
+        cameraInspector.group.SetVisible(singleScope and singleHasCamera);
+        colliderInspector.group.SetVisible(
+            singleScope and singleHasCollider);
+        instanceGroup.SetVisible(objectTab and selectedIsInstance);
+        materialInspector.group.SetVisible(
+            nodeScope and selectionHasMaterial);
+        probeGroup.SetVisible(singleScope);
+        addComponentRow.SetVisible(
+            nodeScope and addComponentKinds.count() > 0);
+        importGroup.SetVisible(sceneTab);
+        bakeGroup.SetVisible(sceneTab);
+        envGroup.SetVisible(sceneTab);
+        materialLibraryGroup.SetVisible(sceneTab);
+        // Programmatic visibility toggles advance widget revisions; re-baseline
+        // the write-through checkbox trackers so scoping can never masquerade
+        // as a user resolving the Visible or Static state onto the selection.
+        visibleRevision = visibleCheck.GetRevision();
+        staticRevision = staticCheck.GetRevision();
+    }
+
+    /// @brief Choose the Object or Scene inspector tab (workspace-only).
+    /// @details Selection changes auto-follow: selecting nodes returns to
+    ///          Object, clearing the selection returns to Scene.
+    expose func SetInspectorSceneTab(sceneTab: Boolean) {
+        if inspectorSceneTab == sceneTab { return; }
+        inspectorSceneTab = sceneTab;
+        UpdateInspectorScope();
+    }
+
+    /// @brief Return whether any selected node carries a Light component.
+    hide func SelectionHasLight() -> Boolean {
+        var index = 0;
+        while index < selectedIndices.count() {
+            var flat = selectedIndices.get(index);
+            if flat >= 0 and flat < flatNodes.count()
+               and flatNodes.get(flat).Light != null {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Return whether any selected node carries a Material component.
+    hide func SelectionHasMaterial() -> Boolean {
+        var index = 0;
+        while index < selectedIndices.count() {
+            var flat = selectedIndices.get(index);
+            if flat >= 0 and flat < flatNodes.count()
+               and flatNodes.get(flat).Material != null {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Rebuild the addable built-in component choices for the selection.
+    /// @details Light and Material are addable when at least one selected node
+    ///          lacks them; Camera and Collider need exactly one node without
+    ///          the component. Project schema components keep their own group.
+    hide func RefreshAddComponentChoices() {
+        if addComponentDropdown == null { return; }
+        addComponentKinds = [];
+        addComponentDropdown.Clear();
+        if scene == null or selectedIndices.count() == 0 { return; }
+        var single = selectedIndices.count() == 1;
+        var singleNode = SelectedNode();
+        var lacksLight = false;
+        var lacksMaterial = false;
+        var index = 0;
+        while index < selectedIndices.count() {
+            var flat = selectedIndices.get(index);
+            if flat >= 0 and flat < flatNodes.count() {
+                if flatNodes.get(flat).Light == null { lacksLight = true; }
+                if flatNodes.get(flat).Material == null {
+                    lacksMaterial = true;
+                }
+            }
+            index = index + 1;
+        }
+        if lacksLight {
+            addComponentDropdown.AddItem("Light");
+            addComponentKinds.add(ADD_COMPONENT_LIGHT);
+        }
+        if lacksMaterial {
+            addComponentDropdown.AddItem("Material");
+            addComponentKinds.add(ADD_COMPONENT_MATERIAL);
+        }
+        if single and singleNode != null and singleNode.Camera == null {
+            addComponentDropdown.AddItem("Camera");
+            addComponentKinds.add(ADD_COMPONENT_CAMERA);
+        }
+        if single and singleNode != null
+           and singleNode.MetadataHas("collider.kind") == false {
+            addComponentDropdown.AddItem("Collider");
+            addComponentKinds.add(ADD_COMPONENT_COLLIDER);
+        }
+        if addComponentKinds.count() > 0 {
+            addComponentDropdown.SetSelected(0);
+        }
+    }
+
+    /// @brief Return whether a spinner value differs beyond display noise.
+    hide func TransformValueDiffers(spinnerValue: Number,
+                                    nodeValue: Number,
+                                    epsilon: Number) -> Boolean {
+        var delta = spinnerValue - nodeValue;
+        if delta < 0.0 { delta = 0.0 - delta; }
+        return delta > epsilon;
+    }
+
+    /// @brief Consume stale transform-spinner change edges after programmatic
+    ///        SetValue refreshes so they cannot masquerade as user edits.
+    hide func DrainTransformSpinnerEdges() {
+        if positionX == null { return; }
+        positionX.WasChanged();
+        positionY.WasChanged();
+        positionZ.WasChanged();
+        rotationX.WasChanged();
+        rotationY.WasChanged();
+        rotationZ.WasChanged();
+        scaleX.WasChanged();
+        scaleY.WasChanged();
+        scaleZ.WasChanged();
+    }
+
+    /// @brief Live single-node transform editing with one commit per gesture.
+    /// @details Spinner changes mutate the live node immediately, matching
+    ///          the gizmo-drag preview model; the edit serializes exactly
+    ///          once when the transform spinners lose keyboard focus, and
+    ///          Escape while editing restores the captured values without
+    ///          creating history. Multi-selections keep the explicit
+    ///          relative Apply button, whose semantics are deliberate.
+    /// @return True when one canonical transaction committed this frame.
+    hide func PumpTransformDraft() -> Boolean {
+        if gizmoDragAxis != GIZMO_AXIS_NONE or flyActive {
+            return false;
+        }
+        if scene == null or selectedIndices.count() != 1 {
+            transformDraftActive = false;
+            return false;
+        }
+        var node = SelectedNode();
+        if node == null {
+            transformDraftActive = false;
+            return false;
+        }
+        var edited = positionX.WasChanged() or positionY.WasChanged()
+            or positionZ.WasChanged() or rotationX.WasChanged()
+            or rotationY.WasChanged() or rotationZ.WasChanged()
+            or scaleX.WasChanged() or scaleY.WasChanged()
+            or scaleZ.WasChanged();
+        if edited {
+            // Only value changes that actually differ from the live node are
+            // user edits, and only differing groups re-apply: re-applying an
+            // untouched rotation would silently perturb the quaternion
+            // through the lossy euler round trip and fold that drift into
+            // the next unrelated commit.
+            var positionNow = node.Position;
+            var eulerNow = QuaternionToEulerDegrees(node.Rotation);
+            var scaleNow = node.Scale;
+            var positionEdited =
+                TransformValueDiffers(positionX.Value, positionNow.X, 0.0005)
+                or TransformValueDiffers(
+                    positionY.Value, positionNow.Y, 0.0005)
+                or TransformValueDiffers(
+                    positionZ.Value, positionNow.Z, 0.0005);
+            var rotationEdited =
+                TransformValueDiffers(rotationX.Value, eulerNow.X, 0.01)
+                or TransformValueDiffers(rotationY.Value, eulerNow.Y, 0.01)
+                or TransformValueDiffers(rotationZ.Value, eulerNow.Z, 0.01);
+            var scaleEdited =
+                TransformValueDiffers(scaleX.Value, scaleNow.X, 0.0005)
+                or TransformValueDiffers(scaleY.Value, scaleNow.Y, 0.0005)
+                or TransformValueDiffers(scaleZ.Value, scaleNow.Z, 0.0005);
+            if positionEdited or rotationEdited or scaleEdited {
+                if transformDraftActive == false {
+                    transformDraftActive = true;
+                    draftOriginPX = positionNow.X;
+                    draftOriginPY = positionNow.Y;
+                    draftOriginPZ = positionNow.Z;
+                    draftOriginRX = eulerNow.X;
+                    draftOriginRY = eulerNow.Y;
+                    draftOriginRZ = eulerNow.Z;
+                    draftOriginSX = scaleNow.X;
+                    draftOriginSY = scaleNow.Y;
+                    draftOriginSZ = scaleNow.Z;
+                }
+                if positionEdited {
+                    ApplyNodeTransformValues(
+                        node, GIZMO_MODE_MOVE,
+                        positionX.Value, positionY.Value, positionZ.Value);
+                }
+                if rotationEdited {
+                    ApplyNodeTransformValues(
+                        node, GIZMO_MODE_ROTATE,
+                        rotationX.Value, rotationY.Value, rotationZ.Value);
+                }
+                if scaleEdited {
+                    ApplyNodeTransformValues(
+                        node, GIZMO_MODE_SCALE,
+                        scaleX.Value, scaleY.Value, scaleZ.Value);
+                }
+                renderDirty = true;
+            }
+        }
+        if transformDraftActive == false { return false; }
+        var editingFocused = positionX.IsFocused()
+            or positionY.IsFocused() or positionZ.IsFocused()
+            or rotationX.IsFocused() or rotationY.IsFocused()
+            or rotationZ.IsFocused() or scaleX.IsFocused()
+            or scaleY.IsFocused() or scaleZ.IsFocused();
+        if editingFocused
+           and Input.Keyboard.WasPressed(Input.Key.Escape) {
+            ApplyNodeTransformValues(
+                node, GIZMO_MODE_MOVE,
+                draftOriginPX, draftOriginPY, draftOriginPZ);
+            ApplyNodeTransformValues(
+                node, GIZMO_MODE_ROTATE,
+                draftOriginRX, draftOriginRY, draftOriginRZ);
+            ApplyNodeTransformValues(
+                node, GIZMO_MODE_SCALE,
+                draftOriginSX, draftOriginSY, draftOriginSZ);
+            transformDraftActive = false;
+            RefreshSelectedFields();
+            renderDirty = true;
+            toolbarStatus.SetText("Transform edit canceled");
+            return false;
+        }
+        if editingFocused { return false; }
+        transformDraftActive = false;
+        return CommitScene("Edited node transform");
+    }
+
+    /// @brief The number of addable built-in component choices (probe surface).
+    expose func AddComponentChoiceCount() -> Integer {
+        return addComponentKinds.count();
+    }
+
+    /// @brief The ADD_COMPONENT_* kind at one dropdown row (probe surface).
+    expose func AddComponentKindAt(index: Integer) -> Integer {
+        if index < 0 or index >= addComponentKinds.count() { return -1; }
+        return addComponentKinds.get(index);
+    }
+
+    /// @brief Create the chosen built-in component with defaults.
+    /// @return True when one canonical transaction committed.
+    expose func AddSelectedComponentChoice() -> Boolean {
+        var choice = addComponentDropdown.Selected;
+        if choice < 0 or choice >= addComponentKinds.count() {
+            return false;
+        }
+        var kind = addComponentKinds.get(choice);
+        var changed = false;
+        if kind == ADD_COMPONENT_LIGHT {
+            changed = CreateLightsOnSelection(
+                new scene_light_3d.LightState3D());
+        } else if kind == ADD_COMPONENT_MATERIAL {
+            changed = ApplySelectedMaterialFromControls();
+        } else if kind == ADD_COMPONENT_CAMERA {
+            changed = ApplyNodeCamera(
+                selectedIndex, new scene_camera_3d.CameraState3D());
+        } else if kind == ADD_COMPONENT_COLLIDER {
+            var colliderState = new scene_collider_3d.ColliderState3D();
+            colliderState.kind = scene_collider_3d.COLLIDER_BOX;
+            changed = ApplyNodeCollider(selectedIndex, colliderState);
+        }
+        if changed { RefreshSelectedFields(); }
+        return changed;
+    }
+
     hide func RefreshSelectedFields() {
         var node = SelectedNode();
+        // Auto-follow the Object/Scene tab on selection-presence changes
+        // only, so a manual tab choice survives ordinary refreshes.
+        var scopeHasSelection = selectedIndices.count() > 0;
+        if scopeHasSelection != inspectorAutoFollowHadSelection {
+            inspectorAutoFollowHadSelection = scopeHasSelection;
+            inspectorSceneTab = scopeHasSelection == false;
+        }
         RefreshParentTargets();
         UpdateSiblingControlAvailability();
         RefreshComponentPalette();
+        RefreshAddComponentChoices();
+        UpdateInspectorScope();
         if node == null {
             nameInput.SetText("");
             visibleCheck.SetIndeterminate(false);
@@ -7757,6 +8262,29 @@ class SceneEditor3D {
                 "Set visibility for all "
                 + selectedIndices.count() + " selected nodes");
             visibleRevision = visibleCheck.GetRevision();
+            var allStatic = true;
+            var allDynamic = true;
+            var staticIndex = 0;
+            while staticIndex < selectedIndices.count() {
+                if flatNodes.get(
+                       selectedIndices.get(staticIndex)).GetStatic() {
+                    allDynamic = false;
+                } else {
+                    allStatic = false;
+                }
+                staticIndex = staticIndex + 1;
+            }
+            if allStatic {
+                staticCheck.SetChecked(true);
+            } else if allDynamic {
+                staticCheck.SetChecked(false);
+            } else {
+                staticCheck.SetIndeterminate(true);
+            }
+            staticCheck.SetTooltip(
+                "Mark all " + selectedIndices.count()
+                + " selected nodes as bake participants");
+            staticRevision = staticCheck.GetRevision();
             positionX.SetValue(0.0);
             positionY.SetValue(0.0);
             positionZ.SetValue(0.0);
@@ -8861,22 +9389,32 @@ class SceneEditor3D {
         } else if Input.Keyboard.WasPressed(Input.Key.R) {
             SetGizmoMode(GIZMO_MODE_SCALE);
         }
-    }
-
-    /// @brief Use the active focusable tool button as the viewport key proxy.
-    hide func FocusActiveGizmoButton() {
-        if gizmoMode == GIZMO_MODE_ROTATE {
-            rotateToolButton.Focus();
-        } else if gizmoMode == GIZMO_MODE_SCALE {
-            scaleToolButton.Focus();
-        } else {
-            moveToolButton.Focus();
+        if Input.Keyboard.WasPressed(Input.Key.Escape)
+           and selectedIndices.count() > 0 {
+            // Workspace-only: clearing selection never touches VSCN bytes,
+            // history, or dirty state. Drag and fly Escapes are consumed
+            // before this pump runs.
+            SelectSceneNodes([], -1);
+            renderDirty = true;
         }
     }
 
+    /// @brief Give the viewport surface keyboard focus for its shortcuts.
+    /// @details The viewport Image is a real focusable widget; clicking it
+    ///          already focuses it through the GUI's click-to-focus path, and
+    ///          navigation gestures route here so shortcut ownership follows
+    ///          the surface rather than a toolbar-button proxy.
+    hide func FocusActiveGizmoButton() {
+        if viewportImage != null { viewportImage.Focus(); }
+    }
+
     /// @brief Return whether W/E/R belong to this scene viewport this frame.
+    /// @details The focused viewport surface is the primary owner; the
+    ///          transform tool buttons remain accepted so keyboard-driven
+    ///          toolbar workflows keep their shortcuts.
     hide func GizmoControlsOwnFocus() -> Boolean {
-        return (moveToolButton != null and moveToolButton.IsFocused())
+        return (viewportImage != null and viewportImage.IsFocused())
+            or (moveToolButton != null and moveToolButton.IsFocused())
             or (rotateToolButton != null and rotateToolButton.IsFocused())
             or (scaleToolButton != null and scaleToolButton.IsFocused())
             or (transformSpaceButton != null
@@ -8887,6 +9425,7 @@ class SceneEditor3D {
     /// @details Text, numeric, color, and material inputs remain outside this
     ///          focus set even while their node stays selected.
     expose func SceneSelectionCommandsOwnFocus() -> Boolean {
+        // GizmoControlsOwnFocus covers the focused viewport surface.
         return (hierarchyTree != null and hierarchyTree.IsFocused())
             or GizmoControlsOwnFocus()
             or (duplicateNodeButton != null

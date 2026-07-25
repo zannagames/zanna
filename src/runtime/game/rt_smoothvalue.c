@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_smoothvalue.c
+/// @file
+/// @brief Implements a finite, clamped exponential scalar smoother with
+///        convergence snapping and per-update velocity.
 // Purpose: Exponential-smoothing scalar for Zanna games. A SmoothValue glides
 //   its current value toward a target each frame using the classic
 //   "exponential moving average" formula:
@@ -46,10 +49,10 @@
 #include <math.h>
 #include <stdlib.h>
 
-/// Default epsilon for "at target" detection.
+/// @brief Absolute convergence threshold used for snapping and target tests.
 #define SMOOTH_EPSILON 0.001
 
-/// Internal structure for SmoothValue.
+/// @brief Mutable state owned by a SmoothValue runtime object.
 struct rt_smoothvalue_impl {
     double current;   ///< Current interpolated value.
     double target;    ///< Target value to approach.
@@ -58,7 +61,10 @@ struct rt_smoothvalue_impl {
 };
 
 /// @brief Safe-cast a handle to the SmoothValue impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p sv is NULL.
+///        class-id mismatch.
+/// @param sv Borrowed candidate SmoothValue handle.
+/// @param api Trap message identifying the calling API.
+/// @return Borrowed implementation pointer, or `NULL` when @p sv is `NULL`.
 static rt_smoothvalue checked_smoothvalue(rt_smoothvalue sv, const char *api) {
     if (!sv)
         return NULL;
@@ -70,6 +76,9 @@ static rt_smoothvalue checked_smoothvalue(rt_smoothvalue sv, const char *api) {
 }
 
 /// @brief Return @p value if finite, else @p fallback (NaN/Inf sanitizer).
+/// @param value Candidate floating-point value.
+/// @param fallback Replacement used for NaN or either infinity.
+/// @return @p value when finite; otherwise @p fallback.
 static double smooth_finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
@@ -77,6 +86,8 @@ static double smooth_finite_or(double value, double fallback) {
 /// @brief Clamp a smoothing factor to [0.0, 0.999] (non-finite -> 0.0).
 /// @details The 0.999 ceiling keeps the exponential smoother from freezing
 ///          (a factor of 1.0 would never converge toward the target).
+/// @param smoothing Candidate exponential old-value weight.
+/// @return Finite clamped factor.
 static double smooth_clamp_smoothing(double smoothing) {
     if (!isfinite(smoothing))
         return 0.0;
@@ -88,6 +99,9 @@ static double smooth_clamp_smoothing(double smoothing) {
 }
 
 /// @brief Round-half-away-from-zero to int64, saturating; 0 for non-finite.
+/// @param value Floating-point value to convert.
+/// @return Nearest signed integer with ties away from zero, saturated at the
+///         signed 64-bit bounds.
 static int64_t smooth_round_to_i64(double value) {
     if (!isfinite(value))
         return 0;
@@ -98,7 +112,11 @@ static int64_t smooth_round_to_i64(double value) {
     return (int64_t)(value + (value >= 0 ? 0.5 : -0.5));
 }
 
-/// @brief Create a new smoothvalue object.
+/// @brief Create a SmoothValue initialized at its target.
+/// @param initial Initial current and target value; non-finite input becomes
+///        zero.
+/// @param smoothing Exponential old-value weight clamped to [0.0, 0.999].
+/// @return Owned SmoothValue handle, or `NULL` if allocation fails.
 rt_smoothvalue rt_smoothvalue_new(double initial, double smoothing) {
     struct rt_smoothvalue_impl *sv = (struct rt_smoothvalue_impl *)rt_obj_new_i64(
         RT_SMOOTHVALUE_CLASS_ID, (int64_t)sizeof(struct rt_smoothvalue_impl));
@@ -115,7 +133,8 @@ rt_smoothvalue rt_smoothvalue_new(double initial, double smoothing) {
     return sv;
 }
 
-/// @brief Release resources and destroy the smoothvalue.
+/// @brief Release one owned SmoothValue reference.
+/// @param sv Owned handle to release; `NULL` is ignored.
 void rt_smoothvalue_destroy(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.Destroy: expected Zanna.Game.SmoothValue");
     if (sv && rt_obj_release_check0(sv))
@@ -123,6 +142,8 @@ void rt_smoothvalue_destroy(rt_smoothvalue sv) {
 }
 
 /// @brief Get the current smoothed value.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Current finite value, or `0.0` for a null handle.
 double rt_smoothvalue_get(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.Value: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -131,6 +152,8 @@ double rt_smoothvalue_get(rt_smoothvalue sv) {
 }
 
 /// @brief Return the current smoothed value rounded to the nearest integer.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Saturating round-half-away-from-zero result, or `0` for null.
 int64_t rt_smoothvalue_get_i64(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.ValueI64: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -139,6 +162,8 @@ int64_t rt_smoothvalue_get_i64(rt_smoothvalue sv) {
 }
 
 /// @brief Get the target value that the smooth value is converging toward.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Current finite target, or `0.0` for a null handle.
 double rt_smoothvalue_target(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.Target: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -147,6 +172,10 @@ double rt_smoothvalue_target(rt_smoothvalue sv) {
 }
 
 /// @brief Set a new target value for the smooth interpolation to converge toward.
+/// @details Non-finite inputs are ignored so the existing target remains
+///          usable.
+/// @param sv Borrowed SmoothValue handle.
+/// @param target New finite target.
 void rt_smoothvalue_set_target(rt_smoothvalue sv, double target) {
     sv = checked_smoothvalue(sv, "SmoothValue.Target.set: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -155,6 +184,9 @@ void rt_smoothvalue_set_target(rt_smoothvalue sv, double target) {
 }
 
 /// @brief Snap both current and target to a value instantly (no interpolation).
+/// @details Also clears velocity; non-finite input is normalized to zero.
+/// @param sv Borrowed SmoothValue handle.
+/// @param value Finite value assigned to both endpoints.
 void rt_smoothvalue_set_immediate(rt_smoothvalue sv, double value) {
     sv = checked_smoothvalue(sv, "SmoothValue.SetImmediate: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -166,6 +198,8 @@ void rt_smoothvalue_set_immediate(rt_smoothvalue sv, double value) {
 }
 
 /// @brief Return the current smoothing factor.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Old-value weight in [0.0, 0.999], or `0.0` for null.
 double rt_smoothvalue_smoothing(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.Smoothing: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -174,6 +208,9 @@ double rt_smoothvalue_smoothing(rt_smoothvalue sv) {
 }
 
 /// @brief Set the smoothing factor [0.0, 0.999]; higher = slower interpolation.
+/// @param sv Borrowed SmoothValue handle.
+/// @param smoothing Candidate factor; non-finite input becomes zero and
+///        out-of-range input is clamped.
 void rt_smoothvalue_set_smoothing(rt_smoothvalue sv, double smoothing) {
     sv = checked_smoothvalue(sv, "SmoothValue.Smoothing.set: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -182,6 +219,11 @@ void rt_smoothvalue_set_smoothing(rt_smoothvalue sv, double smoothing) {
 }
 
 /// @brief Update the smoothvalue state (called per frame/tick).
+/// @details Applies one exponential step independent of elapsed wall time,
+///          records the step delta as velocity, and snaps within
+///          @ref SMOOTH_EPSILON. A non-finite arithmetic result falls back to
+///          the target.
+/// @param sv Borrowed SmoothValue handle.
 void rt_smoothvalue_update(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.Update: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -205,6 +247,9 @@ void rt_smoothvalue_update(rt_smoothvalue sv) {
 }
 
 /// @brief Check whether the current value has converged to the target (within epsilon).
+/// @param sv Borrowed SmoothValue handle.
+/// @return `1` when the absolute difference is below
+///         @ref SMOOTH_EPSILON; a null handle is treated as converged.
 int8_t rt_smoothvalue_at_target(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.AtTarget: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -213,6 +258,8 @@ int8_t rt_smoothvalue_at_target(rt_smoothvalue sv) {
 }
 
 /// @brief Get the per-frame velocity (change in value since last update).
+/// @param sv Borrowed SmoothValue handle.
+/// @return Delta produced by the latest update, or `0.0` for null.
 double rt_smoothvalue_velocity(rt_smoothvalue sv) {
     sv = checked_smoothvalue(sv, "SmoothValue.Velocity: expected Zanna.Game.SmoothValue");
     if (!sv)
@@ -221,6 +268,11 @@ double rt_smoothvalue_velocity(rt_smoothvalue sv) {
 }
 
 /// @brief Apply an instant offset to the current value (bypasses smoothing).
+/// @details Leaves the target unchanged so later updates relax the displaced
+///          value back toward it. Non-finite impulses are ignored; overflowed
+///          results reset to the target.
+/// @param sv Borrowed SmoothValue handle.
+/// @param impulse Finite offset added directly to the current value.
 void rt_smoothvalue_impulse(rt_smoothvalue sv, double impulse) {
     sv = checked_smoothvalue(sv, "SmoothValue.Impulse: expected Zanna.Game.SmoothValue");
     if (!sv)

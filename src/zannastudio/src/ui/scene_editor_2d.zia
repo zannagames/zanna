@@ -138,6 +138,7 @@ final MAX_OBJECT_TREE_ROWS: Integer = 4096;
 final MAX_OBJECT_HIERARCHY_DEPTH: Integer = 256;
 final OBJECT_PARENT_TARGET_MIXED: Integer = -2;
 final COMPACT_SCENE_2D_WIDTH: Number = 640.0;
+final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1000.0;
 final CANVAS_MARQUEE_COLOR: Integer = 0x70BEFF;
 final TILE_RECTANGLE_COLOR: Integer = 0xFFC86B;
 
@@ -239,7 +240,22 @@ class SceneEditor2D {
     expose GUI.Button inspectorButton;
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
+    expose GUI.SplitPane hierarchySplit;
     expose GUI.SplitPane bodySplit;
+    expose GUI.SplitPane canvasSplit;
+    expose GUI.Label objectFieldsLabel;
+    expose GUI.HBox objectPositionRow;
+    expose GUI.HBox objectArrangeRow;
+    expose GUI.Label objectPropertyLabel;
+    expose GUI.HBox objectPropertyValueRow;
+    expose GUI.HBox objectPropertyButtons;
+    expose GUI.GroupBox componentAssetHost;
+    expose GUI.Button objectTabButton;
+    expose GUI.Button sceneTabButton;
+    expose GUI.VBox objectTabHost;
+    expose GUI.VBox sceneTabHost;
+    expose Boolean inspectorSceneTab;
+    hide Boolean inspectorAutoFollowHadSelection;
     expose GUI.ScrollView canvasScroll;
     expose GUI.VBox canvasStage;
     expose GUI.Image canvasImage;
@@ -331,6 +347,7 @@ class SceneEditor2D {
     expose Boolean showGrid;
     expose Integer revision;
     expose Boolean compactLayout;
+    hide Number lastHostWidth;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
     expose List[String] undoStack;
@@ -361,6 +378,10 @@ class SceneEditor2D {
     hide Integer objectDragLastY;
     hide Boolean canvasMarqueeAdditive;
     hide Boolean canvasMarqueeToggle;
+    hide Boolean gestureEscapeConsumed;
+    hide Boolean objectTransformDraftActive;
+    hide Integer objectDraftOriginX;
+    hide Integer objectDraftOriginY;
     hide Integer lastCanvasViewportWidth;
     hide Integer lastCanvasViewportHeight;
     hide Integer centerPadX;
@@ -410,7 +431,22 @@ class SceneEditor2D {
         inspectorButton = null;
         toolbarStatus = null;
         viewStatusLabel = null;
+        hierarchySplit = null;
         bodySplit = null;
+        canvasSplit = null;
+        objectFieldsLabel = null;
+        objectPositionRow = null;
+        objectArrangeRow = null;
+        objectPropertyLabel = null;
+        objectPropertyValueRow = null;
+        objectPropertyButtons = null;
+        componentAssetHost = null;
+        objectTabButton = null;
+        sceneTabButton = null;
+        objectTabHost = null;
+        sceneTabHost = null;
+        inspectorSceneTab = true;
+        inspectorAutoFollowHadSelection = false;
         canvasScroll = null;
         canvasStage = null;
         canvasImage = null;
@@ -542,8 +578,13 @@ class SceneEditor2D {
         objectDragLastY = 0;
         canvasMarqueeAdditive = false;
         canvasMarqueeToggle = false;
+        gestureEscapeConsumed = false;
+        objectTransformDraftActive = false;
+        objectDraftOriginX = 0;
+        objectDraftOriginY = 0;
         lastCanvasViewportWidth = 0;
         lastCanvasViewportHeight = 0;
+        lastHostWidth = 0.0;
         centerPadX = 0;
         centerPadY = 0;
         restoreScrollPending = false;
@@ -652,13 +693,36 @@ class SceneEditor2D {
         viewStatusLabel.SetFlex(1.0);
         UpdateModeButtons();
 
-        bodySplit = GUI.SplitPane.New(root, 1);
+        // Three-pane workbench: Objects | Canvas+Palette | Inspector. The
+        // outer split owns the object hierarchy pane; the inner split keeps
+        // its historical name so persisted fractions and probes stay stable,
+        // and a vertical split gives the tile palette a real strip under the
+        // canvas instead of an inspector slot.
+        hierarchySplit = GUI.SplitPane.New(root, 1);
+        hierarchySplit.SetFlex(1.0);
+        hierarchySplit.SetPosition(0.20);
+        hierarchySplit.SetMinFirst(220.0);
+        hierarchySplit.SetMinSecond(520.0);
+
+        var objectPane = GUI.VBox.New();
+        objectPane.SetSpacing(6.0);
+        objectPane.SetPadding(8.0);
+        objectPane.SetFlex(1.0);
+        hierarchySplit.First.AddChild(objectPane);
+
+        bodySplit = GUI.SplitPane.New(hierarchySplit.Second, 1);
         bodySplit.SetFlex(1.0);
-        bodySplit.SetPosition(0.68);
+        bodySplit.SetPosition(0.66);
         bodySplit.SetMinFirst(280.0);
         bodySplit.SetMinSecond(300.0);
 
-        canvasScroll = GUI.ScrollView.New(bodySplit.First);
+        canvasSplit = GUI.SplitPane.New(bodySplit.First, 0);
+        canvasSplit.SetFlex(1.0);
+        canvasSplit.SetPosition(0.72);
+        canvasSplit.SetMinFirst(220.0);
+        canvasSplit.SetMinSecond(140.0);
+
+        canvasScroll = GUI.ScrollView.New(canvasSplit.First);
         canvasScroll.SetFlex(1.0);
         // The stage carries the full-scene logical extent for the scrollbars
         // while the image renders only the visible window. Start alignment
@@ -672,12 +736,22 @@ class SceneEditor2D {
         canvasImage.SetFilter(0);
         canvasImage.SetName("scene-2d-canvas");
         canvasImage.SetAccessibleName("2D scene canvas");
+        // The canvas is a real focusable surface: clicking it takes keyboard
+        // focus, so arrow nudges, Delete, Duplicate, and Escape belong to
+        // the canvas the user is actually working in.
+        canvasImage.SetFocusable(true);
         canvasImage.SetTooltip(
             "Paint or erase freehand, drag Rectangle, click Fill or Pick; "
             + "Escape cancels captured tile gestures. In Select mode click or "
             + "drag a box, Shift adds, Control/Command toggles, and object "
             + "drags move the selection. The wheel zooms around the pointer "
             + "and middle-drag pans.");
+
+        var paletteStrip = GUI.VBox.New();
+        paletteStrip.SetSpacing(4.0);
+        paletteStrip.SetPadding(6.0);
+        paletteStrip.SetFlex(1.0);
+        canvasSplit.Second.AddChild(paletteStrip);
 
         inspectorScroll = GUI.ScrollView.New(bodySplit.Second);
         inspectorScroll.SetFlex(1.0);
@@ -686,10 +760,31 @@ class SceneEditor2D {
         inspector.SetPadding(8.0);
         inspectorScroll.AddChild(inspector);
 
-        GUI.Label.New(inspector, "New scene setup");
+        // Object | Scene inspector tabs: object fields and component groups
+        // live on the Object tab; scene-wide groups (setup, imports, scene
+        // properties, camera/lighting, layers, tile behavior) on the Scene
+        // tab. Selection changes auto-follow, and a manual choice holds
+        // until the next selection change.
+        var inspectorTabRow = GUI.HBox.New();
+        inspectorTabRow.SetSpacing(4.0);
+        inspector.AddChild(inspectorTabRow);
+        objectTabButton = GUI.Button.New(inspectorTabRow, "Object");
+        objectTabButton.SetTooltip("Inspect the selected objects");
+        sceneTabButton = GUI.Button.New(inspectorTabRow, "Scene");
+        sceneTabButton.SetTooltip(
+            "Author scene setup, imports, properties, camera/lighting, "
+            + "layers, and tile behavior");
+        objectTabHost = GUI.VBox.New();
+        objectTabHost.SetSpacing(6.0);
+        inspector.AddChild(objectTabHost);
+        sceneTabHost = GUI.VBox.New();
+        sceneTabHost.SetSpacing(6.0);
+        inspector.AddChild(sceneTabHost);
+
+        GUI.Label.New(sceneTabHost, "New scene setup");
         var sceneSizeRow = GUI.HBox.New();
         sceneSizeRow.SetSpacing(4.0);
-        inspector.AddChild(sceneSizeRow);
+        sceneTabHost.AddChild(sceneSizeRow);
         GUI.Label.New(sceneSizeRow, "W");
         sceneWidthSpinner = GUI.Spinner.New(sceneSizeRow);
         ConfigureSceneSpinner(sceneWidthSpinner, DEFAULT_SCENE_WIDTH, 256);
@@ -698,50 +793,53 @@ class SceneEditor2D {
         ConfigureSceneSpinner(sceneHeightSpinner, DEFAULT_SCENE_HEIGHT, 256);
         var tileSizeRow = GUI.HBox.New();
         tileSizeRow.SetSpacing(4.0);
-        inspector.AddChild(tileSizeRow);
+        sceneTabHost.AddChild(tileSizeRow);
         GUI.Label.New(tileSizeRow, "Tile size");
         sceneTileSizeSpinner = GUI.Spinner.New(tileSizeRow);
         ConfigureSceneSpinner(sceneTileSizeSpinner, DEFAULT_TILE_SIZE, 512);
-        var importGroup = GUI.GroupBox.New(inspector, "Project map imports");
+        var importGroup = GUI.GroupBox.New(sceneTabHost, "Project map imports");
         tiledAssetBrowser.Setup(
             importGroup,
             "Import Project Tiled Map...",
             ".tmj,.json,.tmx",
             "Import Map");
 
-        sceneInfoLabel = GUI.Label.New(inspector, "No scene loaded");
+        sceneInfoLabel = GUI.Label.New(sceneTabHost, "No scene loaded");
         sceneInfoLabel.SetWordWrap(true);
 
-        sceneProperties.Setup(inspector);
-        cameraLighting.Setup(inspector);
+        sceneProperties.Setup(sceneTabHost);
+        cameraLighting.Setup(sceneTabHost);
 
-        GUI.Label.New(inspector, "Layers");
-        layerList = GUI.ListBox.New(inspector);
+        GUI.Label.New(sceneTabHost, "Layers");
+        layerList = GUI.ListBox.New(sceneTabHost);
         layerList.SetAccessibleName("Scene layers");
         layerList.SetPreferredSize(0.0, 132.0);
         var layerButtons = GUI.HBox.New();
         layerButtons.SetSpacing(4.0);
-        inspector.AddChild(layerButtons);
+        sceneTabHost.AddChild(layerButtons);
         addLayerButton = GUI.Button.New(layerButtons, "Add");
         removeLayerButton = GUI.Button.New(layerButtons, "Remove");
         layerUpButton = GUI.Button.New(layerButtons, "Up");
         layerDownButton = GUI.Button.New(layerButtons, "Down");
-        layerVisibleCheck = GUI.Checkbox.New(inspector, "Layer visible");
-        layerNameInput = GUI.TextInput.New(inspector);
+        layerVisibleCheck = GUI.Checkbox.New(sceneTabHost, "Layer visible");
+        layerNameInput = GUI.TextInput.New(sceneTabHost);
         layerNameInput.SetPlaceholder("Layer name");
-        layerAssetInput = GUI.TextInput.New(inspector);
+        layerAssetInput = GUI.TextInput.New(sceneTabHost);
         layerAssetInput.SetPlaceholder("Layer asset path");
-        chooseLayerAssetButton = GUI.Button.New(inspector, "Choose Layer Image...");
+        chooseLayerAssetButton =
+            GUI.Button.New(sceneTabHost, "Choose Layer Image...");
         chooseLayerAssetButton.SetTooltip(
             "Reference a PNG, JPEG, BMP, or GIF tileset for this layer");
 
-        tilesetInspector.Setup(inspector, guiApp);
-        tileBehavior.Setup(inspector);
+        // The tile palette lives in the strip under the canvas where painting
+        // happens; per-tile behavior authoring stays on the Scene tab.
+        tilesetInspector.Setup(paletteStrip, guiApp);
+        tileBehavior.Setup(sceneTabHost);
 
-        GUI.Label.New(inspector, "Objects");
+        GUI.Label.New(objectPane, "Objects");
         var hierarchySearchRow = GUI.HBox.New();
         hierarchySearchRow.SetSpacing(4.0);
-        inspector.AddChild(hierarchySearchRow);
+        objectPane.AddChild(hierarchySearchRow);
         hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);
         hierarchySearchInput.SetFlex(1.0);
         hierarchySearchInput.SetPlaceholder("Find object id or type");
@@ -762,21 +860,23 @@ class SceneEditor2D {
         hierarchySearchNextButton.SetTooltip(
             "Select and reveal the next matching object");
         hierarchySearchStatus = GUI.Label.New(
-            inspector, "Find by object id or type");
+            objectPane, "Find by object id or type");
         hierarchySearchStatus.SetWordWrap(true);
-        objectTree = GUI.TreeView.New(inspector);
+        objectTree = GUI.TreeView.New(objectPane);
         objectTree.SetAccessibleName("Scene object hierarchy");
-        objectTree.SetPreferredSize(0.0, 190.0);
+        // The dedicated pane gives the tree the full remaining height
+        // instead of a fixed inspector slot.
+        objectTree.SetFlex(1.0);
         objectTree.SetMultiSelect(true);
         objectTree.SetDragDropMode(2);
         objectTree.SetTooltip(
             "Expand object groups; Ctrl/Command-click or Shift-click selects "
             + "several rows; drag before, into, or after another row");
-        objectHierarchyStatus = GUI.Label.New(inspector, "");
+        objectHierarchyStatus = GUI.Label.New(objectPane, "");
         objectHierarchyStatus.SetWordWrap(true);
         var objectParentRow = GUI.HBox.New();
         objectParentRow.SetSpacing(4.0);
-        inspector.AddChild(objectParentRow);
+        objectPane.AddChild(objectParentRow);
         GUI.Label.New(objectParentRow, "Parent");
         objectParentDropdown = GUI.Dropdown.New(objectParentRow);
         objectParentDropdown.SetFlex(1.0);
@@ -788,13 +888,41 @@ class SceneEditor2D {
             GUI.Button.New(objectParentRow, "Reparent");
         reparentObjectButton.SetTooltip(
             "Move selected object subtrees beneath this parent as one undoable edit");
-        objectTypeInput = GUI.TextInput.New(inspector);
+        // Creation, duplication, removal, and ordering act on the hierarchy
+        // and live in its pane; identity and position editing stay with the
+        // inspector's selected-object fields.
+        var objectButtons = GUI.HBox.New();
+        objectButtons.SetSpacing(4.0);
+        objectPane.AddChild(objectButtons);
+        addObjectButton = GUI.Button.New(objectButtons, "Add Root");
+        addObjectButton.SetTooltip(
+            "Create a new root object at the selected canvas cell");
+        addChildObjectButton =
+            GUI.Button.New(objectButtons, "Add Child");
+        addChildObjectButton.SetTooltip(
+            "Create one child beneath the selected object in a single undo step");
+        var objectOrderButtons = GUI.HBox.New();
+        objectOrderButtons.SetSpacing(4.0);
+        objectPane.AddChild(objectOrderButtons);
+        duplicateObjectButton = GUI.Button.New(objectOrderButtons, "Duplicate");
+        duplicateObjectButton.SetTooltip(
+            "Duplicate the selected object and all of its typed properties");
+        removeObjectButton = GUI.Button.New(objectOrderButtons, "Remove");
+        objectUpButton = GUI.Button.New(objectOrderButtons, "Up");
+        objectUpButton.SetTooltip(
+            "Move the selected object subtree before its previous sibling");
+        objectDownButton = GUI.Button.New(objectOrderButtons, "Down");
+        objectDownButton.SetTooltip(
+            "Move the selected object subtree after its next sibling");
+
+        objectFieldsLabel = GUI.Label.New(objectTabHost, "Selected object");
+        objectTypeInput = GUI.TextInput.New(objectTabHost);
         objectTypeInput.SetPlaceholder("Object type");
-        objectIdInput = GUI.TextInput.New(inspector);
+        objectIdInput = GUI.TextInput.New(objectTabHost);
         objectIdInput.SetPlaceholder("Object id");
-        var objectPositionRow = GUI.HBox.New();
+        objectPositionRow = GUI.HBox.New();
         objectPositionRow.SetSpacing(4.0);
-        inspector.AddChild(objectPositionRow);
+        objectTabHost.AddChild(objectPositionRow);
         GUI.Label.New(objectPositionRow, "X");
         objectXSpinner = GUI.Spinner.New(objectPositionRow);
         objectXSpinner.SetRange(-1000000.0, 1000000.0);
@@ -805,33 +933,10 @@ class SceneEditor2D {
         objectYSpinner.SetRange(-1000000.0, 1000000.0);
         objectYSpinner.SetStep(1.0);
         objectYSpinner.SetDecimals(0);
-        var objectButtons = GUI.HBox.New();
-        objectButtons.SetSpacing(4.0);
-        inspector.AddChild(objectButtons);
-        addObjectButton = GUI.Button.New(objectButtons, "Add Root");
-        addObjectButton.SetTooltip(
-            "Create a new root object at the selected canvas cell");
-        addChildObjectButton =
-            GUI.Button.New(objectButtons, "Add Child");
-        addChildObjectButton.SetTooltip(
-            "Create one child beneath the selected object in a single undo step");
-        applyObjectButton = GUI.Button.New(objectButtons, "Apply");
-        removeObjectButton = GUI.Button.New(objectButtons, "Remove");
-        var objectOrderButtons = GUI.HBox.New();
-        objectOrderButtons.SetSpacing(4.0);
-        inspector.AddChild(objectOrderButtons);
-        duplicateObjectButton = GUI.Button.New(objectOrderButtons, "Duplicate");
-        duplicateObjectButton.SetTooltip(
-            "Duplicate the selected object and all of its typed properties");
-        objectUpButton = GUI.Button.New(objectOrderButtons, "Up");
-        objectUpButton.SetTooltip(
-            "Move the selected object subtree before its previous sibling");
-        objectDownButton = GUI.Button.New(objectOrderButtons, "Down");
-        objectDownButton.SetTooltip(
-            "Move the selected object subtree after its next sibling");
-        var objectArrangeRow = GUI.HBox.New();
+        applyObjectButton = GUI.Button.New(objectPositionRow, "Apply");
+        objectArrangeRow = GUI.HBox.New();
         objectArrangeRow.SetSpacing(4.0);
-        inspector.AddChild(objectArrangeRow);
+        objectTabHost.AddChild(objectArrangeRow);
         objectArrangeDropdown = GUI.Dropdown.New(objectArrangeRow);
         objectArrangeDropdown.AddItem(
             scene_layout_2d.OperationLabel(ARRANGE_ALIGN_X));
@@ -849,15 +954,16 @@ class SceneEditor2D {
         arrangeObjectButton.SetTooltip(
             "Apply one undoable layout operation to the selected objects");
 
-        GUI.Label.New(inspector, "Object properties");
-        objectPropertyList = GUI.ListBox.New(inspector);
+        objectPropertyLabel =
+            GUI.Label.New(objectTabHost, "Object properties");
+        objectPropertyList = GUI.ListBox.New(objectTabHost);
         objectPropertyList.SetAccessibleName("Selected object properties");
         objectPropertyList.SetPreferredSize(0.0, 112.0);
-        objectPropertyKeyInput = GUI.TextInput.New(inspector);
+        objectPropertyKeyInput = GUI.TextInput.New(objectTabHost);
         objectPropertyKeyInput.SetPlaceholder("Property key");
-        var objectPropertyValueRow = GUI.HBox.New();
+        objectPropertyValueRow = GUI.HBox.New();
         objectPropertyValueRow.SetSpacing(4.0);
-        inspector.AddChild(objectPropertyValueRow);
+        objectTabHost.AddChild(objectPropertyValueRow);
         objectPropertyTypeDropdown = GUI.Dropdown.New(objectPropertyValueRow);
         objectPropertyTypeDropdown.AddItem("String");
         objectPropertyTypeDropdown.AddItem("Integer");
@@ -868,9 +974,9 @@ class SceneEditor2D {
         objectPropertyValueInput = GUI.TextInput.New(objectPropertyValueRow);
         objectPropertyValueInput.SetPlaceholder("Property value");
         objectPropertyValueInput.SetFlex(1.0);
-        var objectPropertyButtons = GUI.HBox.New();
+        objectPropertyButtons = GUI.HBox.New();
         objectPropertyButtons.SetSpacing(4.0);
-        inspector.AddChild(objectPropertyButtons);
+        objectTabHost.AddChild(objectPropertyButtons);
         newObjectPropertyButton = GUI.Button.New(objectPropertyButtons, "New");
         newObjectPropertyButton.SetTooltip("Clear the fields to add a property");
         setObjectPropertyButton = GUI.Button.New(objectPropertyButtons, "Set");
@@ -881,11 +987,11 @@ class SceneEditor2D {
             "Remove this property from the current selection");
 
         componentPalette.Setup(
-            inspector,
+            objectTabHost,
             "Project components",
             "2D object component template");
-        var componentAssetHost =
-            GUI.GroupBox.New(inspector, "Component asset field");
+        componentAssetHost =
+            GUI.GroupBox.New(objectTabHost, "Component asset field");
         componentAssetBrowser.Setup(
             componentAssetHost,
             "Browse Asset Field...",
@@ -962,8 +1068,14 @@ class SceneEditor2D {
 
         RefreshResponsiveLayout();
         if inspectorButton.WasClicked() { ToggleInspectorPane(); }
+        if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
+        if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
 
         var changed = false;
+        gestureEscapeConsumed = false;
+        // Commit or cancel a pending live position edit before selection and
+        // document handlers can observe uncommitted document state.
+        changed = PumpObjectTransformDraft() or changed;
         if newSceneButton.WasClicked() {
             changed = ReplaceScene(
                 Convert.NumToInt(sceneWidthSpinner.Value),
@@ -1064,6 +1176,11 @@ class SceneEditor2D {
 
         if renderDirty { RenderScene(); }
         ApplyPendingWorkspaceScroll();
+        // User input only arrives between frames, so any object-spinner
+        // change edges still set here came from this pump's programmatic
+        // refreshes; drain them so the live-edit path never mistakes them
+        // for user edits.
+        DrainObjectSpinnerEdges();
         CaptureWorkspaceState();
         return changed;
     }
@@ -1200,6 +1317,14 @@ class SceneEditor2D {
             state.splitPosition = ClampNumber2D(
                 bodySplit.GetPosition(), 0.20, 0.85);
         }
+        if hierarchySplit != null {
+            state.hierarchySplitPosition = ClampNumber2D(
+                hierarchySplit.GetPosition(), 0.10, 0.45);
+        }
+        if canvasSplit != null {
+            state.canvasSplitPosition = ClampNumber2D(
+                canvasSplit.GetPosition(), 0.40, 0.92);
+        }
         if canvasScroll != null {
             state.canvasScrollX = ClampNumber2D(
                 LogicalScrollX(canvasScroll), 0.0, 1000000.0);
@@ -1234,7 +1359,9 @@ class SceneEditor2D {
             selectedCellX = -1;
             selectedCellY = -1;
             if tileSpinner != null { tileSpinner.SetValue(1.0); }
-            if bodySplit != null { bodySplit.SetPosition(0.68); }
+            if bodySplit != null { bodySplit.SetPosition(0.66); }
+            if hierarchySplit != null { hierarchySplit.SetPosition(0.20); }
+            if canvasSplit != null { canvasSplit.SetPosition(0.72); }
             pendingCanvasScrollX = 0.0;
             pendingCanvasScrollY = 0.0;
             pendingInspectorScrollY = 0.0;
@@ -1269,6 +1396,14 @@ class SceneEditor2D {
             bodySplit.SetPosition(ClampNumber2D(
                 state.splitPosition, 0.20, 0.85));
         }
+        if hierarchySplit != null {
+            hierarchySplit.SetPosition(ClampNumber2D(
+                state.hierarchySplitPosition, 0.10, 0.45));
+        }
+        if canvasSplit != null {
+            canvasSplit.SetPosition(ClampNumber2D(
+                state.canvasSplitPosition, 0.40, 0.92));
+        }
         pendingCanvasScrollX = ClampNumber2D(
             state.canvasScrollX, 0.0, 1000000.0);
         pendingCanvasScrollY = ClampNumber2D(
@@ -1302,6 +1437,7 @@ class SceneEditor2D {
         if root == null or bodySplit == null { return; }
         var width = root.GetLogicalWidth();
         if width <= 0.0 { return; }
+        lastHostWidth = width;
         var nextCompact = UsesCompactLayout(width);
         if nextCompact != compactLayout {
             compactLayout = nextCompact;
@@ -1340,6 +1476,25 @@ class SceneEditor2D {
     /// @brief Apply wide split or compact one-pane-at-a-time presentation.
     hide func ApplyInspectorLayout() {
         if bodySplit == null { return; }
+        if hierarchySplit != null {
+            // The object pane needs real width to be useful, so it collapses
+            // on hosts narrower than HIERARCHY_PANE_MIN_WIDTH_2D; Find and
+            // the canvas selection vocabulary remain available.
+            var wantHierarchyPane =
+                compactLayout == false
+                and lastHostWidth >= HIERARCHY_PANE_MIN_WIDTH_2D;
+            var hierarchyCollapsed =
+                hierarchySplit.GetCollapsedSide() == 1;
+            if wantHierarchyPane {
+                if hierarchyCollapsed {
+                    hierarchySplit.Restore();
+                    renderDirty = true;
+                }
+            } else if hierarchyCollapsed == false {
+                hierarchySplit.CollapseFirst();
+                renderDirty = true;
+            }
+        }
         var desiredSide = 0;
         if compactLayout {
             desiredSide = 2;
@@ -4720,10 +4875,122 @@ class SceneEditor2D {
         objectXSpinner.SetEnabled(enabled);
         objectYSpinner.SetEnabled(enabled);
         UpdateHierarchySearchControls();
+        UpdateInspectorScope();
     }
 
     /// @brief Rebuild bounded inspector rows from the active model.
+    /// @brief Live single-object X/Y editing with one commit per gesture.
+    /// @details Spinner changes move the object in the document immediately
+    ///          (matching the canvas-drag preview model); the edit serializes
+    ///          exactly once when both spinners are unfocused, and Escape
+    ///          while editing restores the captured position without
+    ///          creating history. Canvas gestures own their own drafts.
+    /// @return True when one canonical transaction committed this frame.
+    hide func PumpObjectTransformDraft() -> Boolean {
+        if objectDragActive or paintStrokeActive or canvasMarqueeActive {
+            return false;
+        }
+        if scene == null or selectedObjects.count() != 1
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            objectTransformDraftActive = false;
+            return false;
+        }
+        var edited = objectXSpinner.WasChanged()
+            or objectYSpinner.WasChanged();
+        if edited {
+            var nextX = Convert.NumToInt(objectXSpinner.Value);
+            var nextY = Convert.NumToInt(objectYSpinner.Value);
+            var currentX = scene.ObjectX(selectedObject);
+            var currentY = scene.ObjectY(selectedObject);
+            // Echo values equal to the object are refresh noise, not edits.
+            if nextX != currentX or nextY != currentY {
+                if objectTransformDraftActive == false {
+                    objectTransformDraftActive = true;
+                    objectDraftOriginX = currentX;
+                    objectDraftOriginY = currentY;
+                }
+                scene.SetObjectPosition(selectedObject, nextX, nextY);
+                renderDirty = true;
+            }
+        }
+        if objectTransformDraftActive == false { return false; }
+        var editingFocused = objectXSpinner.IsFocused()
+            or objectYSpinner.IsFocused();
+        if editingFocused
+           and Input.Keyboard.WasPressed(Input.Key.Escape) {
+            scene.SetObjectPosition(
+                selectedObject, objectDraftOriginX, objectDraftOriginY);
+            objectTransformDraftActive = false;
+            gestureEscapeConsumed = true;
+            RefreshObjectFields();
+            renderDirty = true;
+            toolbarStatus.SetText("Position edit canceled");
+            return false;
+        }
+        if editingFocused { return false; }
+        objectTransformDraftActive = false;
+        return CommitScene("Moved object");
+    }
+
+    /// @brief Consume stale object-spinner change edges after programmatic
+    ///        SetValue refreshes so they cannot masquerade as user edits.
+    hide func DrainObjectSpinnerEdges() {
+        if objectXSpinner == null { return; }
+        objectXSpinner.WasChanged();
+        objectYSpinner.WasChanged();
+    }
+
+    /// @brief Show only inspector groups relevant to the current selection.
+    /// @details Object-scoped fields and groups appear with selected objects;
+    ///          scene-scoped groups (setup, imports, scene properties,
+    ///          camera/lighting, layers, tile behavior, and the palette
+    ///          strip) stay with the loaded scene. Pure presentation: no
+    ///          canonical bytes, history, or selection state changes here.
+    hide func UpdateInspectorScope() {
+        if objectFieldsLabel == null { return; }
+        var hasScene = scene != null;
+        var hasSelection = hasScene and selectedObjects.count() > 0;
+        var objectTab = hasScene and inspectorSceneTab == false;
+        var sceneTab = hasScene and inspectorSceneTab;
+        var objectScope = objectTab and hasSelection;
+        objectTabButton.SetVisible(hasScene);
+        sceneTabButton.SetVisible(hasScene);
+        objectTabButton.SetStyle(0);
+        sceneTabButton.SetStyle(0);
+        if sceneTab { sceneTabButton.SetStyle(1); }
+        if objectTab { objectTabButton.SetStyle(1); }
+        objectTabHost.SetVisible(objectTab);
+        sceneTabHost.SetVisible(sceneTab);
+        objectFieldsLabel.SetVisible(objectScope);
+        objectTypeInput.SetVisible(objectScope);
+        objectIdInput.SetVisible(objectScope);
+        objectPositionRow.SetVisible(objectScope);
+        objectArrangeRow.SetVisible(objectScope);
+        objectPropertyLabel.SetVisible(objectScope);
+        objectPropertyList.SetVisible(objectScope);
+        objectPropertyKeyInput.SetVisible(objectScope);
+        objectPropertyValueRow.SetVisible(objectScope);
+        objectPropertyButtons.SetVisible(objectScope);
+        // X/Y edits commit live and the id/type fields commit on Enter, so
+        // the explicit Apply is retired from the visible surface.
+        applyObjectButton.SetVisible(false);
+        componentPalette.group.SetVisible(objectScope);
+        componentAssetHost.SetVisible(objectScope);
+        tilesetInspector.group.SetVisible(hasScene);
+    }
+
+    /// @brief Choose the Object or Scene inspector tab (workspace-only).
+    /// @details Selection changes auto-follow: selecting objects returns to
+    ///          Object, clearing the selection returns to Scene.
+    expose func SetInspectorSceneTab(sceneTab: Boolean) {
+        if inspectorSceneTab == sceneTab { return; }
+        inspectorSceneTab = sceneTab;
+        UpdateInspectorScope();
+    }
+
     hide func RefreshInspector() {
+        UpdateInspectorScope();
         layerList.Clear();
         sceneProperties.Refresh(
             scene, editorControlsEnabled, selectedSceneProperty);
@@ -5317,6 +5584,14 @@ class SceneEditor2D {
         if scene != null { objectCount = scene.ObjectCount(); }
         selectedObjects = scene_selection.Normalize(
             selectedObjects, objectCount, selectedObject);
+        // Auto-follow the Object/Scene tab on selection-presence changes
+        // only, so a manual tab choice survives ordinary refreshes.
+        var scopeHasSelection = selectedObjects.count() > 0;
+        if scopeHasSelection != inspectorAutoFollowHadSelection {
+            inspectorAutoFollowHadSelection = scopeHasSelection;
+            inspectorSceneTab = scopeHasSelection == false;
+        }
+        UpdateInspectorScope();
         var hasSelection = scene != null and selectedObject >= 0
             and selectedObject < objectCount
             and selectedObjects.count() > 0;
@@ -6123,6 +6398,7 @@ class SceneEditor2D {
     hide func CancelCanvasMarquee() {
         if canvasMarqueeActive == false { return; }
         ResetCanvasMarquee(true);
+        gestureEscapeConsumed = true;
         toolbarStatus.SetText("Box selection canceled");
     }
 
@@ -6219,6 +6495,7 @@ class SceneEditor2D {
     hide func CancelTileRectangle() {
         if tileRectangleActive == false { return; }
         ResetTileRectangle(true);
+        gestureEscapeConsumed = true;
         toolbarStatus.SetText("Tile rectangle canceled");
     }
 
@@ -6254,6 +6531,7 @@ class SceneEditor2D {
         var snapshot = paintStrokeSnapshot;
         var changed = paintStrokeChanged;
         ResetPaintStroke(true);
+        gestureEscapeConsumed = true;
         if changed and snapshot != "" {
             RestoreSceneSnapshot(snapshot);
         }
@@ -6489,17 +6767,31 @@ class SceneEditor2D {
         return false;
     }
 
-    /// @brief Apply focus-safe pixel/grid nudges from the Select canvas proxy.
+    /// @brief Apply focus-safe pixel/grid nudges from the Select surface.
     /// @details Object-list arrows retain native selection navigation and every
     ///          inspector input retains native editing. Shift uses one authored
     ///          tile on each axis; a diagonal key frame still commits once.
+    ///          The focused canvas surface and the Select button both qualify.
     hide func PumpCanvasKeyboard() -> Boolean {
         if scene == null or mode != MODE_SELECT
-           or selectButton == null or selectButton.IsFocused() == false
            or objectDragActive or paintStrokeActive
-           or selectedObjects.count() == 0 {
+           or canvasMarqueeActive {
             return false;
         }
+        var surfaceFocused =
+            (canvasImage != null and canvasImage.IsFocused())
+            or (selectButton != null and selectButton.IsFocused());
+        if surfaceFocused == false { return false; }
+        if Input.Keyboard.WasPressed(Input.Key.Escape)
+           and gestureEscapeConsumed == false
+           and selectedObjects.count() > 0 {
+            // Workspace-only: clearing selection never enters scene JSON,
+            // history, or dirty state. A gesture canceled by this same key
+            // edge sets gestureEscapeConsumed, preserving the selection.
+            SelectSceneObjects([], -1);
+            return false;
+        }
+        if selectedObjects.count() == 0 { return false; }
         var deltaX = 0;
         var deltaY = 0;
         if Input.Keyboard.WasPressed(Input.Key.Left) {
@@ -6534,10 +6826,11 @@ class SceneEditor2D {
 
     /// @brief Return whether scene selection shortcuts belong to this surface.
     /// @details Inspector text/value controls intentionally do not qualify.
-    ///          Canvas clicks focus the active mode button because Image is a
-    ///          non-focusable presentation widget.
+    ///          The focused canvas surface is the primary owner; tool and
+    ///          hierarchy controls remain accepted for keyboard workflows.
     expose func SceneSelectionCommandsOwnFocus() -> Boolean {
-        return (objectTree != null and objectTree.IsFocused())
+        return (canvasImage != null and canvasImage.IsFocused())
+            or (objectTree != null and objectTree.IsFocused())
             or (selectButton != null and selectButton.IsFocused())
             or (paintButton != null and paintButton.IsFocused())
             or (eraseButton != null and eraseButton.IsFocused())
@@ -6550,23 +6843,13 @@ class SceneEditor2D {
             or (objectDownButton != null and objectDownButton.IsFocused());
     }
 
-    /// @brief Use the active focusable mode control as the canvas key proxy.
+    /// @brief Give the canvas surface keyboard focus for its shortcuts.
+    /// @details The canvas Image is a real focusable widget; clicking it
+    ///          already focuses it through the GUI's click-to-focus path, so
+    ///          shortcut ownership follows the surface rather than a
+    ///          mode-button proxy.
     hide func FocusActiveModeButton() {
-        if mode == MODE_PAINT {
-            paintButton.Focus();
-        } else if mode == MODE_ERASE {
-            eraseButton.Focus();
-        } else if mode == MODE_RECTANGLE {
-            rectangleButton.Focus();
-        } else if mode == MODE_FILL {
-            fillButton.Focus();
-        } else if mode == MODE_PICKER {
-            pickerButton.Focus();
-        } else if mode == MODE_OBJECT {
-            objectButton.Focus();
-        } else {
-            selectButton.Focus();
-        }
+        if canvasImage != null { canvasImage.Focus(); }
     }
 
     /// @brief Mutate one cell inside the current uncommitted paint stroke.

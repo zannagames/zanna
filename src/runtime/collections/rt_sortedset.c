@@ -32,6 +32,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the runtime length-aware lexicographic string SortedSet.
+/// @details The Set owns independent string copies in a sorted dynamic array.
+///          Binary search supplies lookup/rank boundaries, while insertion and
+///          removal shift suffixes to preserve order. Ordered snapshots copy
+///          strings again so future mutations cannot affect callers.
+
 #include "rt_sortedset.h"
 #include "rt_collection_ids.h"
 #include "rt_internal.h"
@@ -44,17 +51,23 @@
 
 #include "rt_trap.h"
 
+/// @brief Install a non-local trap recovery target for the current thread.
+/// @param buf Jump buffer that receives control when a runtime trap occurs.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's non-local trap recovery target.
 void rt_trap_clear_recovery(void);
+/// @brief Borrow the current thread's most recent trap diagnostic.
+/// @return NUL-terminated diagnostic text, or `NULL` when unavailable.
 const char *rt_trap_get_error(void);
 
-/// Internal structure for SortedSet.
+/// @brief Native sorted-array payload embedded in the GC-managed object.
 struct rt_sortedset_impl {
     rt_string *data; // Sorted array of strings
     int64_t len;     // Number of elements
     int64_t cap;     // Capacity
 };
 
+/// @brief Internal typed alias for the opaque public SortedSet handle.
 typedef struct rt_sortedset_impl *rt_sortedset;
 
 //=============================================================================
@@ -63,6 +76,9 @@ typedef struct rt_sortedset_impl *rt_sortedset;
 
 /// @brief Checked cast of an opaque handle to the SortedSet implementation;
 ///        traps with @p what if @p obj is NULL or not a SortedSet.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated SortedSet implementation, or `NULL` after trapping.
 static rt_sortedset as_sortedset(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_SORTEDSET_CLASS_ID, sizeof(struct rt_sortedset_impl))) {
         rt_trap(what);
@@ -71,7 +87,10 @@ static rt_sortedset as_sortedset(void *obj, const char *what) {
     return (rt_sortedset)obj;
 }
 
-/// Copy an rt_string by creating a new string from its bytes.
+/// @brief Copy a runtime string by its complete length-aware byte sequence.
+/// @details Null and unreadable/empty handles normalize to the empty string.
+/// @param s Source runtime string, or `NULL`.
+/// @return New independent string handle representing the same key.
 static rt_string copy_string(rt_string s) {
     if (!s)
         return rt_const_cstr("");
@@ -84,6 +103,8 @@ static rt_string copy_string(rt_string s) {
 
 /// @brief Add one reference to @p s and return it (empty const for NULL);
 ///        used when handing a stored string back to the caller.
+/// @param s Stored string handle, or `NULL`.
+/// @return Caller-retained string, or the shared empty-string sentinel.
 static rt_string retain_result_string(rt_string s) {
     if (!s)
         return rt_const_cstr("");
@@ -91,11 +112,17 @@ static rt_string retain_result_string(rt_string s) {
     return s;
 }
 
+/// @brief Release a temporary runtime object and free it at zero references.
+/// @param obj Runtime-managed object, or `NULL` for a no-op.
 static void sortedset_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Save active trap text before clearing a local recovery frame.
+/// @param buffer Destination for a bounded NUL-terminated diagnostic.
+/// @param buffer_size Size of @p buffer in bytes.
+/// @param fallback Text used when the trap subsystem has no non-empty message.
 static void sortedset_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
@@ -103,6 +130,11 @@ static void sortedset_save_trap_error(char *buffer, size_t buffer_size, const ch
 
 /// @brief Push an independent copy of @p s onto @p seq (balances the copy's
 ///        reference so the seq holds the only owning ref).
+/// @details String allocation and Seq growth are trap-protected. Failure
+///          releases both the temporary string and the complete partial
+///          snapshot before propagating the saved diagnostic.
+/// @param seq Owning snapshot Seq under construction.
+/// @param s Stored source string to copy.
 static void seq_push_string_copy(void *seq, rt_string s) {
     rt_string volatile copy = NULL;
     jmp_buf recovery;
@@ -133,6 +165,12 @@ static void seq_push_string_copy(void *seq, rt_string s) {
 
 /// @brief Lexicographic byte comparison of two strings (NULL treated as "");
 ///        returns <0, 0, >0 — the SortedSet ordering primitive.
+/// @details Compares the common byte prefix with `memcmp`, then places the
+///          shorter string first when one is a prefix of the other. Embedded
+///          NUL bytes participate normally.
+/// @param a First runtime string, or `NULL` as empty.
+/// @param b Second runtime string, or `NULL` as empty.
+/// @return Negative, zero, or positive according to ascending byte order.
 static int compare_strings(rt_string a, rt_string b) {
     const char *sa = a ? rt_string_cstr(a) : "";
     const char *sb = b ? rt_string_cstr(b) : "";
@@ -151,8 +189,12 @@ static int compare_strings(rt_string a, rt_string b) {
     return 0;
 }
 
-/// Binary search for insertion point or element.
-/// Returns index where element is or should be inserted.
+/// @brief Find an existing string or its lower-bound insertion position.
+/// @param set SortedSet to search.
+/// @param str Query string; `NULL` denotes the empty string.
+/// @param found Optional output set to 1 for exact equality and 0 otherwise.
+/// @return Existing index when found, otherwise the first valid insertion
+///         index in `[0, set->len]`.
 static int64_t binary_search(rt_sortedset set, rt_string str, int8_t *found) {
     if (!set || set->len == 0) {
         if (found)
@@ -185,6 +227,9 @@ static int64_t binary_search(rt_sortedset set, rt_string str, int8_t *found) {
 
 /// @brief Grow the sorted-element array to hold at least @p needed entries
 ///        (geometric growth; traps on overflow/OOM).
+/// @param set SortedSet whose capacity may grow.
+/// @param needed Minimum required string slots.
+/// @return 1 when capacity is sufficient, or 0 after trapping.
 static int ensure_capacity(rt_sortedset set, int64_t needed) {
     if (set->cap >= needed)
         return 1;
@@ -217,6 +262,7 @@ static int ensure_capacity(rt_sortedset set, int64_t needed) {
 //=============================================================================
 
 /// @brief GC finalizer: release every stored string and free the element array.
+/// @param obj SortedSet object being finalized; `NULL` is ignored.
 static void sortedset_finalizer(void *obj) {
     if (!obj)
         return;
@@ -234,6 +280,7 @@ static void sortedset_finalizer(void *obj) {
 /// @brief Construct an empty sorted set. Internally a sorted dynamic array — `_add` is O(log n)
 /// search + O(n) shift; `_has` is O(log n). Use FrozenSet for read-only sets, regular Set for
 /// hash-based unordered storage.
+/// @return New runtime-managed SortedSet, or `NULL` on allocation failure.
 void *rt_sortedset_new(void) {
     rt_sortedset set = (rt_sortedset)rt_obj_new_i64(RT_SORTEDSET_CLASS_ID,
                                                     (int64_t)sizeof(struct rt_sortedset_impl));
@@ -243,6 +290,8 @@ void *rt_sortedset_new(void) {
 }
 
 /// @brief Return the number of elements in the sorted set.
+/// @param obj SortedSet handle, or `NULL`.
+/// @return Unique-string count, or 0 for `NULL`.
 int64_t rt_sortedset_len(void *obj) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Len: invalid SortedSet object") : NULL;
     return set ? set->len : 0;
@@ -250,6 +299,8 @@ int64_t rt_sortedset_len(void *obj) {
 
 /// @brief Check whether the sorted set is empty.
 /// @details Equivalent to checking if the sorted array has no elements.
+/// @param obj SortedSet handle, or `NULL`.
+/// @return 1 when empty, otherwise 0.
 int8_t rt_sortedset_is_empty(void *obj) {
     return rt_sortedset_len(obj) == 0 ? 1 : 0;
 }
@@ -262,7 +313,11 @@ int8_t rt_sortedset_is_empty(void *obj) {
 /// @details Performs a binary search to locate the insertion point, then shifts
 ///          subsequent elements right to open a gap. Duplicates (where the binary
 ///          search finds an exact match) are silently ignored. O(log n) search
-///          plus O(n) shift for the insertion.
+///          plus O(n) shift for the insertion. Null input denotes the empty
+///          string and the inserted key is copied before publication.
+/// @param obj SortedSet to mutate, or `NULL`.
+/// @param str String value to copy; `NULL` denotes empty.
+/// @return 1 when inserted, otherwise 0 for duplicate/null Set.
 int8_t rt_sortedset_add(void *obj, rt_string str) {
     if (!obj)
         return 0;
@@ -299,6 +354,9 @@ int8_t rt_sortedset_add(void *obj, rt_string str) {
 /// @details Performs a binary search to find the element, releases its string
 ///          reference, then shifts subsequent elements left to close the gap.
 ///          O(log n) search plus O(n) shift for the removal.
+/// @param obj SortedSet to mutate, or `NULL`.
+/// @param str Equal string to remove; `NULL` denotes empty.
+/// @return 1 when removed, otherwise 0.
 int8_t rt_sortedset_remove(void *obj, rt_string str) {
     if (!obj)
         return 0;
@@ -328,6 +386,9 @@ int8_t rt_sortedset_remove(void *obj, rt_string str) {
 
 /// @brief Check whether an element exists in the sorted set.
 /// @details Uses binary search over the sorted array for O(log n) lookup.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param str Query string; `NULL` denotes empty.
+/// @return 1 when present, otherwise 0.
 int8_t rt_sortedset_has(void *obj, rt_string str) {
     if (!obj)
         return 0;
@@ -343,6 +404,7 @@ int8_t rt_sortedset_has(void *obj, rt_string str) {
 /// @brief Remove all elements from the sorted set.
 /// @details Releases all retained string references and resets the length to
 ///          zero. The backing array capacity is preserved for potential reuse.
+/// @param obj SortedSet to clear, or `NULL` for a no-op.
 void rt_sortedset_clear(void *obj) {
     if (!obj)
         return;
@@ -363,6 +425,9 @@ void rt_sortedset_clear(void *obj) {
 
 /// @brief Return the smallest element in the sorted set.
 /// @details Returns data[0] since the backing array is always sorted ascending.
+/// @param obj SortedSet handle, or `NULL`.
+/// @return Caller-retained smallest string, or an empty-string sentinel when
+///         no element exists.
 rt_string rt_sortedset_first(void *obj) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.First: invalid SortedSet object") : NULL;
     if (!set || set->len == 0)
@@ -372,6 +437,8 @@ rt_string rt_sortedset_first(void *obj) {
 
 /// @brief Return the largest element in the sorted set.
 /// @details Returns data[len-1] since the backing array is always sorted ascending.
+/// @param obj SortedSet handle, or `NULL`.
+/// @return Caller-retained largest string, or an empty-string sentinel.
 rt_string rt_sortedset_last(void *obj) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Last: invalid SortedSet object") : NULL;
     if (!set || set->len == 0)
@@ -383,6 +450,10 @@ rt_string rt_sortedset_last(void *obj) {
 /// @details Uses binary search to find the insertion point; if an exact match
 ///          exists it is returned, otherwise the element just before the
 ///          insertion point is the floor.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param str Inclusive upper-bound query; `NULL` denotes empty.
+/// @return Caller-retained floor string, or an empty-string sentinel when none
+///         exists.
 rt_string rt_sortedset_floor(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Floor: invalid SortedSet object") : NULL;
     if (!set || set->len == 0)
@@ -402,6 +473,9 @@ rt_string rt_sortedset_floor(void *obj, rt_string str) {
 /// @details Uses binary search to find the insertion point; if an exact match
 ///          exists it is returned, otherwise the element at the insertion point
 ///          (the first element greater than the value) is the ceiling.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param str Inclusive lower-bound query; `NULL` denotes empty.
+/// @return Caller-retained ceiling string, or an empty-string sentinel.
 rt_string rt_sortedset_ceil(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Ceil: invalid SortedSet object") : NULL;
     if (!set || set->len == 0)
@@ -419,6 +493,9 @@ rt_string rt_sortedset_ceil(void *obj, rt_string str) {
 
 /// @brief Return the greatest element strictly less than the given value.
 /// @details Similar to floor but excludes exact matches.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param str Exclusive upper-bound query; `NULL` denotes empty.
+/// @return Caller-retained lower string, or an empty-string sentinel.
 rt_string rt_sortedset_lower(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Lower: invalid SortedSet object") : NULL;
     if (!set || set->len == 0)
@@ -438,6 +515,9 @@ rt_string rt_sortedset_lower(void *obj, rt_string str) {
 
 /// @brief Return the smallest element strictly greater than the given value.
 /// @details Similar to ceil but excludes exact matches.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param str Exclusive lower-bound query; `NULL` denotes empty.
+/// @return Caller-retained higher string, or an empty-string sentinel.
 rt_string rt_sortedset_higher(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Higher: invalid SortedSet object") : NULL;
     if (!set || set->len == 0)
@@ -457,6 +537,9 @@ rt_string rt_sortedset_higher(void *obj, rt_string str) {
 
 /// @brief Return the element at the given rank (0-based index in sorted order).
 /// @details Direct array access: data[index]. O(1) since the array is sorted.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param index Zero-based sorted rank.
+/// @return Caller-retained string at @p index, or an empty-string sentinel.
 rt_string rt_sortedset_at(void *obj, int64_t index) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.At: invalid SortedSet object") : NULL;
     if (!set || index < 0 || index >= set->len)
@@ -466,6 +549,9 @@ rt_string rt_sortedset_at(void *obj, int64_t index) {
 
 /// @brief Return the 0-based rank of an element in sorted order.
 /// @details Returns -1 if the element is not in the set.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param str Query string; `NULL` denotes empty.
+/// @return Sorted rank, or -1 when absent.
 int64_t rt_sortedset_index_of(void *obj, rt_string str) {
     if (!obj)
         return -1;
@@ -484,6 +570,12 @@ int64_t rt_sortedset_index_of(void *obj, rt_string str) {
 
 /// @brief Return the slice of elements with `from ≤ x ≤ to` as a Seq. Both endpoints inclusive;
 /// either may be NULL to mean "open end". Useful for range queries on ordered keys.
+/// @details Every selected string is copied into an owning snapshot. If the
+///          lower bound sorts after the upper bound, the result is empty.
+/// @param obj SortedSet handle, or `NULL`.
+/// @param from Inclusive lower bound, or `NULL` for no lower bound.
+/// @param to Inclusive upper bound, or `NULL` for no upper bound.
+/// @return New runtime-managed owning Seq of copied strings.
 void *rt_sortedset_range(void *obj, rt_string from, rt_string to) {
     void *seq = rt_seq_new();
     if (!seq)
@@ -509,6 +601,8 @@ void *rt_sortedset_range(void *obj, rt_string from, rt_string to) {
 
 /// @brief Return a Seq of every element in sorted ascending order. Snapshot — independent of
 /// future mutations.
+/// @param obj SortedSet handle, or `NULL`.
+/// @return New runtime-managed owning Seq of independent string copies.
 void *rt_sortedset_items(void *obj) {
     void *seq = rt_seq_new();
     if (!seq)
@@ -528,6 +622,9 @@ void *rt_sortedset_items(void *obj) {
 }
 
 /// @brief Return a Seq of the first `n` elements in sorted order (the smallest values).
+/// @param obj SortedSet handle, or `NULL`.
+/// @param n Maximum number of leading elements; nonpositive values select none.
+/// @return New runtime-managed owning Seq of independent string copies.
 void *rt_sortedset_take(void *obj, int64_t n) {
     void *seq = rt_seq_new();
     if (!seq)
@@ -548,6 +645,9 @@ void *rt_sortedset_take(void *obj, int64_t n) {
 }
 
 /// @brief Return a Seq containing all but the first `n` elements (in sorted order).
+/// @param obj SortedSet handle, or `NULL`.
+/// @param n Number of elements to skip; negative values skip zero.
+/// @return New runtime-managed owning Seq of independent string copies.
 void *rt_sortedset_skip(void *obj, int64_t n) {
     void *seq = rt_seq_new();
     if (!seq)
@@ -574,6 +674,11 @@ void *rt_sortedset_skip(void *obj, int64_t n) {
 //=============================================================================
 
 /// @brief Return a fresh sorted set containing every element from either operand.
+/// @details Null operands denote empty sets. Every result string is copied
+///          independently through ordinary SortedSet insertion.
+/// @param obj First SortedSet, or `NULL`.
+/// @param other Second SortedSet, or `NULL`.
+/// @return New runtime-managed union.
 void *rt_sortedset_union(void *obj, void *other) {
     void *result = rt_sortedset_new();
     if (!result)
@@ -599,6 +704,9 @@ void *rt_sortedset_union(void *obj, void *other) {
 
 /// @brief Return a fresh sorted set containing only elements present in both operands. Uses a
 /// merge-style two-pointer walk over the sorted arrays for O(|a| + |b|) time.
+/// @param obj First SortedSet, or `NULL` as empty.
+/// @param other Second SortedSet, or `NULL` as empty.
+/// @return New runtime-managed intersection containing independent copies.
 void *rt_sortedset_intersect(void *obj, void *other) {
     void *result = rt_sortedset_new();
     if (!result)
@@ -630,6 +738,9 @@ void *rt_sortedset_intersect(void *obj, void *other) {
 }
 
 /// @brief Return a fresh sorted set containing elements present in `obj` but not in `other`.
+/// @param obj Minuend SortedSet, or `NULL` as empty.
+/// @param other Subtrahend SortedSet, or `NULL` as empty.
+/// @return New runtime-managed difference containing independent copies.
 void *rt_sortedset_diff(void *obj, void *other) {
     void *result = rt_sortedset_new();
     if (!result)
@@ -672,6 +783,10 @@ void *rt_sortedset_diff(void *obj, void *other) {
 
 /// @brief Check whether this set is a subset of another sorted set.
 /// @details Every element in this set must also be present in the other set.
+///          Null handles denote empty operands.
+/// @param obj Candidate subset, or `NULL`.
+/// @param other Candidate superset, or `NULL`.
+/// @return 1 when the subset relation holds, otherwise 0.
 int8_t rt_sortedset_is_subset(void *obj, void *other) {
     if (!obj)
         return 1; // Empty is subset of everything

@@ -6,13 +6,16 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_gameui.c
+/// @file
+/// @brief Implements core lightweight game UI widgets and shared helpers.
+//
 // Purpose: Lightweight in-game UI widgets that draw directly to a Canvas.
 //   Provides Label, Bar, Panel, NineSlice, MenuList, and GameButton — the
 //   building blocks for game HUDs, menus, and overlays without the overhead of
 //   the desktop ZannaGUI widget system.
 //
 // Key invariants:
-//   - All widgets are GC-managed via rt_obj_new_i64 (no manual free).
+//   - All widgets use runtime-object reference counting.
 //   - Draw functions are no-ops when canvas or widget is NULL.
 //   - UIBar values are clamped: value in [0, max], max >= 1.
 //   - UIMenuList selection wraps: MoveUp at 0 → last item, MoveDown at last → 0.
@@ -20,7 +23,8 @@
 //   - Fixed-size text buffers are truncated on UTF-8 codepoint boundaries.
 //
 // Ownership/Lifetime:
-//   - Widgets are GC-managed.
+//   - Widget-owned references are released by registered finalizers where
+//     required; widgets with only inline state need no finalizer.
 //   - UILabel and GameButton copy text into widget-owned buffers.
 //   - UIMenuList stores item text in fixed widget-owned buffers.
 //   - UILabel/UIMenuList retain assigned BitmapFont handles.
@@ -46,9 +50,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Largest accepted width or height for bounded UI dimensions.
 #define UI_MAX_DIM INT64_C(16384)
 
 /// @brief Clamp a widget dimension to [1, UI_MAX_DIM] (rejects non-positive).
+/// @param value Candidate dimension.
+/// @return @p value clamped to the inclusive range `[1, 16384]`.
 int64_t ui_clamp_dim(int64_t value) {
     if (value <= 0)
         return 1;
@@ -56,6 +63,8 @@ int64_t ui_clamp_dim(int64_t value) {
 }
 
 /// @brief Clamp an integer UI scale factor to [1, 16].
+/// @param scale Candidate scale.
+/// @return @p scale clamped to the inclusive range `[1, 16]`.
 static int64_t ui_clamp_scale(int64_t scale) {
     if (scale < 1)
         return 1;
@@ -65,6 +74,10 @@ static int64_t ui_clamp_scale(int64_t scale) {
 }
 
 /// @brief Saturating int64 addition (clamps to INT64_MIN/MAX on overflow).
+/// @param a First addend.
+/// @param b Second addend.
+/// @return The exact sum when representable, otherwise the nearest `int64_t`
+///         endpoint.
 int64_t ui_add_sat_i64(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -73,6 +86,13 @@ int64_t ui_add_sat_i64(int64_t a, int64_t b) {
     return a + b;
 }
 
+/// @brief Multiply two signed integers with saturation.
+/// @param a First factor.
+/// @param b Second factor.
+/// @return The exact product when representable, otherwise `INT64_MIN` or
+///         `INT64_MAX` according to its sign.
+/// @details Uses a 128-bit intermediate when available and a long-double
+///          intermediate on other platforms.
 int64_t ui_mul_sat_i64(int64_t a, int64_t b) {
     if (a == 0 || b == 0)
         return 0;
@@ -95,6 +115,12 @@ int64_t ui_mul_sat_i64(int64_t a, int64_t b) {
 
 /// @brief Convert a long double to int64, saturating to the int64 range
 ///        (non-finite -> 0; backs the bound off on short-mantissa platforms).
+/// @param value Floating-point value to convert.
+/// @return Zero for NaN or infinity, the appropriate `int64_t` endpoint near
+///         or beyond its range, or @p value truncated toward zero.
+/// @details Platforms whose `long double` has fewer than 64 mantissa bits use a
+///          conservative 4096-unit boundary to avoid an out-of-range cast
+///          after rounding.
 int64_t ui_ld_to_i64_sat(long double value) {
     if (!isfinite(value))
         return 0;
@@ -114,6 +140,11 @@ int64_t ui_ld_to_i64_sat(long double value) {
 
 /// @brief True if @p point lies in the half-open span [start, start+extent)
 ///        (overflow-safe via unsigned offset).
+/// @param start Inclusive span origin.
+/// @param extent Span length; nonpositive values describe an empty span.
+/// @param point Coordinate to test.
+/// @return `1` when the nonnegative unsigned offset is less than @p extent;
+///         otherwise `0`.
 int8_t ui_coord_inside(int64_t start, int64_t extent, int64_t point) {
     if (extent <= 0 || point < start)
         return 0;
@@ -123,6 +154,11 @@ int8_t ui_coord_inside(int64_t start, int64_t extent, int64_t point) {
 
 /// @brief Offset of @p point from @p start, clamped to [0, extent]
 ///        (for mapping a click coordinate into a widget-local position).
+/// @param start Coordinate origin.
+/// @param extent Maximum returned offset; nonpositive values return zero.
+/// @param point Coordinate to map.
+/// @return Zero at or before @p start, @p extent at or beyond the far edge, or
+///         the exact nonnegative offset between them.
 int64_t ui_coord_offset_clamped(int64_t start, int64_t extent, int64_t point) {
     if (extent <= 0 || point <= start)
         return 0;
@@ -133,17 +169,25 @@ int64_t ui_coord_offset_clamped(int64_t start, int64_t extent, int64_t point) {
 }
 
 /// @brief True if @p obj is a BitmapFont instance.
+/// @param obj Candidate runtime object.
+/// @return `1` for a non-null object with RT_BITMAPFONT_CLASS_ID; otherwise
+///         `0`.
 static int8_t ui_is_bitmapfont(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_BITMAPFONT_CLASS_ID;
 }
 
 /// @brief True if @p obj is a Pixels instance.
+/// @param obj Candidate runtime object.
+/// @return `1` for a non-null object with RT_PIXELS_CLASS_ID; otherwise `0`.
 static int8_t ui_is_pixels(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_PIXELS_CLASS_ID;
 }
 
 /// @brief Validate an optional BitmapFont argument: NULL is allowed (returns
-///        1); a wrong-type handle traps @p api. @return 1 if usable, 0 if trapped.
+///        1); a wrong-type handle traps @p api.
+/// @param font Candidate BitmapFont or `NULL` for default-font behavior.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return `1` when @p font is null or valid; `0` after a mismatch trap.
 int8_t ui_validate_bitmapfont(void *font, const char *api) {
     if (!font)
         return 1;
@@ -155,7 +199,10 @@ int8_t ui_validate_bitmapfont(void *font, const char *api) {
 }
 
 /// @brief Validate a required Pixels argument; traps @p api on a wrong-type
-///        handle. @return 1 if a valid Pixels, 0 if NULL or trapped.
+///        handle.
+/// @param pixels Candidate Pixels handle.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return `1` for a valid Pixels; `0` for null or after a mismatch trap.
 static int8_t ui_validate_pixels(void *pixels, const char *api) {
     if (!pixels)
         return 0;
@@ -167,7 +214,10 @@ static int8_t ui_validate_pixels(void *pixels, const char *api) {
 }
 
 /// @brief Validate a required Canvas argument; traps @p api on a non-Canvas
-///        handle. @return 1 if a valid Canvas, 0 if NULL or trapped.
+///        handle.
+/// @param canvas Candidate 2D Canvas handle.
+/// @param api Trap message used for a non-null type mismatch.
+/// @return `1` for a valid 2D Canvas; `0` for null or after a mismatch trap.
 int8_t ui_validate_canvas(void *canvas, const char *api) {
     if (!canvas)
         return 0;
@@ -179,9 +229,14 @@ int8_t ui_validate_canvas(void *canvas, const char *api) {
 }
 
 /// @brief Resolve a Draw-call canvas (2D Canvas or Canvas3D) into a draw-ops table.
+/// @param canvas Candidate 2D Canvas or registered Canvas3D handle.
+/// @param api Trap message used when a non-null handle cannot be resolved.
+/// @param ops Required output table populated on success.
+/// @return `1` when draw operations were resolved; otherwise `0`.
 /// @details ADR 0065: widgets are canvas-polymorphic — the same widget draws on the
 ///          2D Canvas and on Canvas3D via the ops table Canvas3D registers at init.
-///          Unknown handles trap with @p api exactly like `ui_validate_canvas`.
+///          Null arguments return zero without trapping. Unknown non-null
+///          handles trap with @p api exactly like `ui_validate_canvas`.
 int8_t ui_resolve_draw_ops(void *canvas, const char *api, rt_gameui_draw_ops_t *ops) {
     if (!canvas || !ops)
         return 0;
@@ -193,6 +248,9 @@ int8_t ui_resolve_draw_ops(void *canvas, const char *api, rt_gameui_draw_ops_t *
 }
 
 /// @brief Length of @p s up to the first NUL or @p max_len bytes.
+/// @param s Byte sequence to scan; `NULL` returns zero.
+/// @param max_len Maximum readable byte count.
+/// @return Visible prefix length, excluding the first NUL.
 size_t ui_visible_len(const char *s, size_t max_len) {
     size_t len = 0;
     if (!s)
@@ -203,11 +261,18 @@ size_t ui_visible_len(const char *s, size_t max_len) {
 }
 
 /// @brief True if @p c is a UTF-8 continuation byte (10xxxxxx).
+/// @param c Byte to classify.
+/// @return Nonzero when the two high bits are `10`; otherwise zero.
 static int ui_is_continuation(unsigned char c) {
     return (c & 0xC0u) == 0x80u;
 }
 
 /// @brief Byte length (1–4) of the well-formed UTF-8 codepoint at @p pos.
+/// @param s Byte sequence to inspect.
+/// @param len Number of readable bytes in @p s.
+/// @param pos Candidate lead-byte index.
+/// @return Zero when @p s is null or @p pos is out of range; otherwise the
+///         validated sequence length, with malformed input treated as one byte.
 /// @details Validates continuation bytes and rejects overlong/surrogate/
 ///          out-of-range sequences (returns 1 for any malformed lead byte so
 ///          callers always make forward progress).
@@ -245,6 +310,11 @@ size_t ui_utf8_cp_len(const char *s, size_t len, size_t pos) {
 
 /// @brief Largest byte length <= @p max_bytes that ends on a UTF-8 character
 ///        boundary (so truncation never splits a multibyte codepoint).
+/// @param s Byte sequence to scan; must be non-null when @p len is nonzero.
+/// @param len Number of readable bytes.
+/// @param max_bytes Maximum prefix size.
+/// @return The largest prefix not exceeding either limit and ending after a
+///         validated or single-byte-malformed UTF-8 unit.
 size_t ui_utf8_trunc_len(const char *s, size_t len, size_t max_bytes) {
     size_t pos = 0;
     size_t last = 0;
@@ -259,6 +329,10 @@ size_t ui_utf8_trunc_len(const char *s, size_t len, size_t max_bytes) {
 }
 
 /// @brief Byte length of the first @p max_codepoints UTF-8 characters of @p s.
+/// @param s Byte sequence to scan; `NULL` returns zero.
+/// @param len Number of readable bytes.
+/// @param max_codepoints Maximum validated or malformed single-byte units.
+/// @return Prefix size containing at most @p max_codepoints units.
 size_t ui_utf8_trunc_codepoints(const char *s, size_t len, size_t max_codepoints) {
     size_t pos = 0;
     size_t count = 0;
@@ -276,6 +350,12 @@ size_t ui_utf8_trunc_codepoints(const char *s, size_t len, size_t max_codepoints
 
 /// @brief Copy a runtime string into a fixed @p cap buffer, NUL-terminated and
 ///        truncated on a UTF-8 character boundary. Empty on NULL @p text.
+/// @param dst Destination buffer.
+/// @param cap Capacity of @p dst including the NUL terminator.
+/// @param text Runtime string to copy; no reference is retained.
+/// @details A null destination or zero capacity is a no-op. Otherwise the
+///          destination is always terminated. Copying stops at an embedded NUL
+///          and never splits a validated multibyte sequence.
 void ui_copy_text(char *dst, size_t cap, rt_string text) {
     if (!dst || cap == 0)
         return;
@@ -293,6 +373,7 @@ void ui_copy_text(char *dst, size_t cap, rt_string text) {
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime object reference to release; `NULL` is a no-op.
 void ui_release_obj(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -300,6 +381,9 @@ void ui_release_obj(void *obj) {
 
 /// @brief Retain @p value, release the old occupant of @p *slot, and store
 ///        @p value (a GC-safe reference-replacing setter; no-op if unchanged).
+/// @param slot Address of the owned reference slot; `NULL` is a no-op.
+/// @param value New reference, or `NULL` to clear the slot.
+/// @details Retains the replacement before releasing the old value.
 void ui_replace_ref(void **slot, void *value) {
     if (!slot || *slot == value)
         return;
@@ -311,6 +395,18 @@ void ui_replace_ref(void **slot, void *value) {
 
 /// @brief Draw a rounded-rect with alpha: opaque fast-path delegates to
 ///        rt_canvas_round_box; otherwise alpha-composites the rounded fill.
+/// @param ops Resolved drawing operations and target canvas.
+/// @param x Left coordinate.
+/// @param y Top coordinate.
+/// @param w Width; nonpositive values are ignored.
+/// @param h Height; nonpositive values are ignored.
+/// @param radius Requested corner radius, clamped to half the smaller extent.
+/// @param color Packed fill color.
+/// @param alpha Opacity; nonpositive values are ignored and values at least 255
+///        select the opaque fast path.
+/// @details A translucent square falls back to one box-alpha call. A
+///          translucent rounded box is rasterized as one alpha-blended
+///          horizontal row per output pixel.
 static void ui_round_box_alpha(const rt_gameui_draw_ops_t *ops,
                                int64_t x,
                                int64_t y,
@@ -365,9 +461,10 @@ static void ui_round_box_alpha(const rt_gameui_draw_ops_t *ops,
 // UILabel
 //=============================================================================
 
-/// Maximum label text length (bytes).
+/// @brief Label text-buffer capacity in bytes, including its NUL terminator.
 #define LABEL_MAX_TEXT 512
 
+/// @brief Private state stored in a runtime UILabel object.
 typedef struct {
     void *vptr;
     int64_t x, y;
@@ -378,8 +475,11 @@ typedef struct {
     int8_t visible;
 } rt_uilabel_impl;
 
-/// @brief Safe-cast a handle to the UILabel impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UILabel handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UILabel payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uilabel_impl *checked_label(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -391,6 +491,8 @@ static rt_uilabel_impl *checked_label(void *ptr, const char *api) {
 }
 
 /// @brief GC finalizer: release the label's referenced font.
+/// @param obj UILabel payload being finalized; `NULL` is accepted.
+/// @details Clears the owned font slot after releasing its reference.
 static void uilabel_finalizer(void *obj) {
     rt_uilabel_impl *label = (rt_uilabel_impl *)obj;
     if (!label)
@@ -399,6 +501,14 @@ static void uilabel_finalizer(void *obj) {
     label->font = NULL;
 }
 
+/// @brief Create a visible text label using the default canvas font.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param text Initial runtime string copied into the 512-byte label buffer.
+/// @param color Initial packed text color.
+/// @return A new UILabel reference, or `NULL` if allocation fails.
+/// @details The input text is not retained, scale begins at one, and a
+///          finalizer is registered for a subsequently assigned font.
 void *rt_uilabel_new(int64_t x, int64_t y, rt_string text, int64_t color) {
     rt_uilabel_impl *label =
         (rt_uilabel_impl *)rt_obj_new_i64(RT_UILABEL_CLASS_ID, (int64_t)sizeof(rt_uilabel_impl));
@@ -418,6 +528,11 @@ void *rt_uilabel_new(int64_t x, int64_t y, rt_string text, int64_t color) {
 }
 
 /// @brief Replace the label's displayed text, truncating to 511 bytes if needed.
+/// @param ptr UILabel to mutate; `NULL` is a no-op.
+/// @param text Runtime string to copy, or `NULL` to clear the label.
+/// @details Truncation preserves validated UTF-8 sequence boundaries, embedded
+///          NUL ends the visible copy, and no input reference is retained. A
+///          non-null invalid label handle raises a runtime trap.
 void rt_uilabel_set_text(void *ptr, rt_string text) {
     rt_uilabel_impl *label = checked_label(ptr, "UILabel.SetText: expected Zanna.Game.UI.HudLabel");
     if (!label)
@@ -426,6 +541,10 @@ void rt_uilabel_set_text(void *ptr, rt_string text) {
 }
 
 /// @brief Reposition the label to screen coordinates (x, y).
+/// @param ptr UILabel to mutate; `NULL` is a no-op.
+/// @param x New left coordinate.
+/// @param y New top coordinate.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uilabel_set_pos(void *ptr, int64_t x, int64_t y) {
     rt_uilabel_impl *label = checked_label(ptr, "UILabel.SetPos: expected Zanna.Game.UI.HudLabel");
     if (!label)
@@ -435,6 +554,9 @@ void rt_uilabel_set_pos(void *ptr, int64_t x, int64_t y) {
 }
 
 /// @brief Set the label's text color (RGBA packed integer).
+/// @param ptr UILabel to mutate; `NULL` is a no-op.
+/// @param color Packed value stored verbatim.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uilabel_set_color(void *ptr, int64_t color) {
     rt_uilabel_impl *label =
         checked_label(ptr, "UILabel.SetColor: expected Zanna.Game.UI.HudLabel");
@@ -443,6 +565,10 @@ void rt_uilabel_set_color(void *ptr, int64_t color) {
 }
 
 /// @brief Assign a BitmapFont for rendering; NULL uses the built-in 8x8 font.
+/// @param ptr UILabel to mutate; `NULL` is a no-op.
+/// @param font Optional BitmapFont reference.
+/// @details A valid replacement is retained before the old font is released.
+///          A wrong font class or non-null invalid label raises a runtime trap.
 void rt_uilabel_set_font(void *ptr, void *font) {
     rt_uilabel_impl *label = checked_label(ptr, "UILabel.SetFont: expected Zanna.Game.UI.HudLabel");
     if (!label)
@@ -453,6 +579,9 @@ void rt_uilabel_set_font(void *ptr, void *font) {
 }
 
 /// @brief Set the integer pixel scale for text rendering (minimum 1).
+/// @param ptr UILabel to mutate; `NULL` is a no-op.
+/// @param scale Requested scale, clamped to `[1, 16]`.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uilabel_set_scale(void *ptr, int64_t scale) {
     rt_uilabel_impl *label =
         checked_label(ptr, "UILabel.SetScale: expected Zanna.Game.UI.HudLabel");
@@ -461,6 +590,9 @@ void rt_uilabel_set_scale(void *ptr, int64_t scale) {
 }
 
 /// @brief Show or hide the label; hidden labels are skipped during draw.
+/// @param ptr UILabel to mutate; `NULL` is a no-op.
+/// @param visible Zero hides the label; any nonzero value shows it.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uilabel_set_visible(void *ptr, int8_t visible) {
     rt_uilabel_impl *label =
         checked_label(ptr, "UILabel.SetVisible: expected Zanna.Game.UI.HudLabel");
@@ -469,21 +601,30 @@ void rt_uilabel_set_visible(void *ptr, int8_t visible) {
 }
 
 /// @brief Return the label's current X position in screen coordinates.
+/// @param ptr UILabel to query.
+/// @return Stored X coordinate, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_uilabel_get_x(void *ptr) {
     rt_uilabel_impl *label = checked_label(ptr, "UILabel.X: expected Zanna.Game.UI.HudLabel");
     return label ? label->x : 0;
 }
 
 /// @brief Return the label's current Y position in screen coordinates.
+/// @param ptr UILabel to query.
+/// @return Stored Y coordinate, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_uilabel_get_y(void *ptr) {
     rt_uilabel_impl *label = checked_label(ptr, "UILabel.Y: expected Zanna.Game.UI.HudLabel");
     return label ? label->y : 0;
 }
 
 /// @brief Render the label onto the canvas using its font, scale, and color.
+/// @param ptr UILabel to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
 /// @details Skips rendering if the label is hidden or has empty text. Uses
 ///          the assigned BitmapFont when set, otherwise falls back to the
-///          built-in 8x8 pixel font.
+///          built-in 8x8 pixel font. Null arguments are no-ops; invalid non-null
+///          label or canvas handles raise runtime traps.
 void rt_uilabel_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     if (!ptr || !canvas)
@@ -514,12 +655,16 @@ void rt_uilabel_draw(void *ptr, void *canvas) {
 // UIBar
 //=============================================================================
 
-/// Bar fill direction constants.
+/// @brief Fill from the left edge toward the right.
 #define BAR_DIR_LEFT_TO_RIGHT 0
+/// @brief Fill from the right edge toward the left.
 #define BAR_DIR_RIGHT_TO_LEFT 1
+/// @brief Fill from the bottom edge toward the top.
 #define BAR_DIR_BOTTOM_TO_TOP 2
+/// @brief Fill from the top edge toward the bottom.
 #define BAR_DIR_TOP_TO_BOTTOM 3
 
+/// @brief Private state stored in a runtime UIBar object.
 typedef struct {
     void *vptr;
     int64_t x, y, w, h;
@@ -530,8 +675,11 @@ typedef struct {
     int8_t visible;
 } rt_uibar_impl;
 
-/// @brief Safe-cast a handle to the UIBar impl, trapping @p api on a class-id
-///        mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UIBar handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UIBar payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uibar_impl *checked_bar(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -542,6 +690,15 @@ static rt_uibar_impl *checked_bar(void *ptr, const char *api) {
     return (rt_uibar_impl *)ptr;
 }
 
+/// @brief Create a visible left-to-right progress bar.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @param fg_color Initial filled-region color.
+/// @param bg_color Initial empty-region color.
+/// @return A new UIBar reference, or `NULL` if allocation fails.
+/// @details The initial value is zero of 100 and the border is disabled.
 void *rt_uibar_new(int64_t x, int64_t y, int64_t w, int64_t h, int64_t fg_color, int64_t bg_color) {
     rt_uibar_impl *bar =
         (rt_uibar_impl *)rt_obj_new_i64(RT_UIBAR_CLASS_ID, (int64_t)sizeof(rt_uibar_impl));
@@ -565,8 +722,13 @@ void *rt_uibar_new(int64_t x, int64_t y, int64_t w, int64_t h, int64_t fg_color,
 }
 
 /// @brief Set the bar's current and maximum values, clamping to [0, max].
+/// @param ptr UIBar to mutate; `NULL` is a no-op.
+/// @param value Requested current value.
+/// @param max_value Requested denominator; values below one become one.
 /// @details max_value is forced to at least 1 to prevent division by zero
-///          during fill-ratio computation in the draw function.
+///          during fill-ratio computation. Current value then clamps to the
+///          inclusive range `[0, max_value]`. A non-null invalid handle raises
+///          a runtime trap.
 void rt_uibar_set_value(void *ptr, int64_t value, int64_t max_value) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.SetValue: expected Zanna.Game.UI.Bar");
     if (!bar)
@@ -582,6 +744,10 @@ void rt_uibar_set_value(void *ptr, int64_t value, int64_t max_value) {
 }
 
 /// @brief Reposition the bar to screen coordinates (x, y).
+/// @param ptr UIBar to mutate; `NULL` is a no-op.
+/// @param x New left coordinate.
+/// @param y New top coordinate.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uibar_set_pos(void *ptr, int64_t x, int64_t y) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.SetPos: expected Zanna.Game.UI.Bar");
     if (!bar)
@@ -591,6 +757,10 @@ void rt_uibar_set_pos(void *ptr, int64_t x, int64_t y) {
 }
 
 /// @brief Set the bar's width and height in pixels (minimum 1 each).
+/// @param ptr UIBar to mutate; `NULL` is a no-op.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uibar_set_size(void *ptr, int64_t w, int64_t h) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.SetSize: expected Zanna.Game.UI.Bar");
     if (!bar)
@@ -600,6 +770,10 @@ void rt_uibar_set_size(void *ptr, int64_t w, int64_t h) {
 }
 
 /// @brief Set the foreground (filled portion) and background colors of the bar.
+/// @param ptr UIBar to mutate; `NULL` is a no-op.
+/// @param fg Packed foreground value stored verbatim.
+/// @param bg Packed background value stored verbatim.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uibar_set_colors(void *ptr, int64_t fg, int64_t bg) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.SetColors: expected Zanna.Game.UI.Bar");
     if (!bar)
@@ -609,6 +783,9 @@ void rt_uibar_set_colors(void *ptr, int64_t fg, int64_t bg) {
 }
 
 /// @brief Set the bar's border color; 0 disables the border outline.
+/// @param ptr UIBar to mutate; `NULL` is a no-op.
+/// @param color Packed border value, or zero to disable.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uibar_set_border(void *ptr, int64_t color) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.SetBorder: expected Zanna.Game.UI.Bar");
     if (bar)
@@ -616,6 +793,9 @@ void rt_uibar_set_border(void *ptr, int64_t color) {
 }
 
 /// @brief Set the bar's fill direction (0=L→R, 1=R→L, 2=B→T, 3=T→B).
+/// @param ptr UIBar to mutate; `NULL` is a no-op.
+/// @param dir Direction constant; values outside `[0, 3]` select left-to-right.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uibar_set_direction(void *ptr, int64_t dir) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.SetDirection: expected Zanna.Game.UI.Bar");
     if (!bar)
@@ -626,6 +806,9 @@ void rt_uibar_set_direction(void *ptr, int64_t dir) {
 }
 
 /// @brief Show or hide the bar; hidden bars are skipped during draw.
+/// @param ptr UIBar to mutate; `NULL` is a no-op.
+/// @param visible Zero hides the bar; any nonzero value shows it.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uibar_set_visible(void *ptr, int8_t visible) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.SetVisible: expected Zanna.Game.UI.Bar");
     if (bar)
@@ -633,12 +816,18 @@ void rt_uibar_set_visible(void *ptr, int8_t visible) {
 }
 
 /// @brief Return the bar's current fill value.
+/// @param ptr UIBar to query.
+/// @return Current value, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_uibar_get_value(void *ptr) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.Value: expected Zanna.Game.UI.Bar");
     return bar ? bar->value : 0;
 }
 
 /// @brief Return the bar's maximum value (the denominator for fill ratio).
+/// @param ptr UIBar to query.
+/// @return Positive maximum value, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_uibar_get_max(void *ptr) {
     rt_uibar_impl *bar = checked_bar(ptr, "UIBar.Max: expected Zanna.Game.UI.Bar");
     return bar ? bar->max_value : 0;
@@ -646,6 +835,11 @@ int64_t rt_uibar_get_max(void *ptr) {
 
 /// @brief Map @p value in [0, max_value] proportionally onto a pixel @p extent
 ///        (e.g. progress-bar fill width), clamped to [0, extent].
+/// @param value Current value.
+/// @param extent Available pixel width or height.
+/// @param max_value Positive denominator.
+/// @return Zero for nonpositive arguments; otherwise the ceiling of the
+///         proportional fill clamped to `[1, extent]`.
 static int64_t ui_scaled_fill(int64_t value, int64_t extent, int64_t max_value) {
     if (value <= 0 || extent <= 0 || max_value <= 0)
         return 0;
@@ -660,7 +854,13 @@ static int64_t ui_scaled_fill(int64_t value, int64_t extent, int64_t max_value) 
     return pixels > extent ? extent : pixels;
 }
 
-/// @brief Draw the uibar.
+/// @brief Draw a UIBar background, directional fill, and optional border.
+/// @param ptr UIBar to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Null arguments and hidden bars are no-ops. Positive values use a
+///          ceiling-rounded fill, so any nonzero fraction occupies at least one
+///          pixel. Invalid non-null widget or canvas handles raise runtime
+///          traps.
 void rt_uibar_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     if (!ptr || !canvas)
@@ -706,6 +906,7 @@ void rt_uibar_draw(void *ptr, void *canvas) {
 // UIPanel
 //=============================================================================
 
+/// @brief Private state stored in a runtime UIPanel object.
 typedef struct {
     void *vptr;
     int64_t x, y, w, h;
@@ -717,8 +918,11 @@ typedef struct {
     int8_t visible;
 } rt_uipanel_impl;
 
-/// @brief Safe-cast a handle to the UIPanel impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UIPanel handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UIPanel payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uipanel_impl *checked_panel(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -729,6 +933,14 @@ static rt_uipanel_impl *checked_panel(void *ptr, const char *api) {
     return (rt_uipanel_impl *)ptr;
 }
 
+/// @brief Create a visible filled panel with sharp corners and no border.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @param bg_color Initial packed fill color.
+/// @param alpha Initial opacity clamped to `[0, 255]`.
+/// @return A new UIPanel reference, or `NULL` if allocation fails.
 void *rt_uipanel_new(int64_t x, int64_t y, int64_t w, int64_t h, int64_t bg_color, int64_t alpha) {
     rt_uipanel_impl *panel =
         (rt_uipanel_impl *)rt_obj_new_i64(RT_UIPANEL_CLASS_ID, (int64_t)sizeof(rt_uipanel_impl));
@@ -751,6 +963,10 @@ void *rt_uipanel_new(int64_t x, int64_t y, int64_t w, int64_t h, int64_t bg_colo
 }
 
 /// @brief Reposition the panel to screen coordinates (x, y).
+/// @param ptr UIPanel to mutate; `NULL` is a no-op.
+/// @param x New left coordinate.
+/// @param y New top coordinate.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uipanel_set_pos(void *ptr, int64_t x, int64_t y) {
     rt_uipanel_impl *panel = checked_panel(ptr, "UIPanel.SetPos: expected Zanna.Game.UI.Panel");
     if (!panel)
@@ -760,6 +976,10 @@ void rt_uipanel_set_pos(void *ptr, int64_t x, int64_t y) {
 }
 
 /// @brief Set the panel's width and height in pixels (minimum 1 each).
+/// @param ptr UIPanel to mutate; `NULL` is a no-op.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uipanel_set_size(void *ptr, int64_t w, int64_t h) {
     rt_uipanel_impl *panel = checked_panel(ptr, "UIPanel.SetSize: expected Zanna.Game.UI.Panel");
     if (!panel)
@@ -769,6 +989,10 @@ void rt_uipanel_set_size(void *ptr, int64_t w, int64_t h) {
 }
 
 /// @brief Set the panel's background color and alpha (opacity 0-255).
+/// @param ptr UIPanel to mutate; `NULL` is a no-op.
+/// @param bg_color Packed fill value stored verbatim.
+/// @param alpha Opacity clamped to `[0, 255]`.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uipanel_set_color(void *ptr, int64_t bg_color, int64_t alpha) {
     rt_uipanel_impl *panel = checked_panel(ptr, "UIPanel.SetColor: expected Zanna.Game.UI.Panel");
     if (!panel)
@@ -779,6 +1003,12 @@ void rt_uipanel_set_color(void *ptr, int64_t bg_color, int64_t alpha) {
 
 /// @brief Set the panel's border color and thickness. Color 0 or thickness <= 0 disables the
 /// border.
+/// @param ptr UIPanel to mutate; `NULL` is a no-op.
+/// @param color Packed border color, with zero disabling the border.
+/// @param thickness Requested pixel thickness. Positive enabled values clamp
+///        to at most 16384 and are further limited to half the smaller panel
+///        dimension while drawing.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uipanel_set_border(void *ptr, int64_t color, int64_t thickness) {
     rt_uipanel_impl *panel = checked_panel(ptr, "UIPanel.SetBorder: expected Zanna.Game.UI.Panel");
     if (!panel)
@@ -793,6 +1023,10 @@ void rt_uipanel_set_border(void *ptr, int64_t color, int64_t thickness) {
 }
 
 /// @brief Set the corner radius for rounded-rectangle drawing (0 = sharp).
+/// @param ptr UIPanel to mutate; `NULL` is a no-op.
+/// @param radius Requested radius; negative values become zero. Drawing clamps
+///        it to half the current smaller dimension.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uipanel_set_corner_radius(void *ptr, int64_t radius) {
     rt_uipanel_impl *panel =
         checked_panel(ptr, "UIPanel.SetCornerRadius: expected Zanna.Game.UI.Panel");
@@ -801,6 +1035,9 @@ void rt_uipanel_set_corner_radius(void *ptr, int64_t radius) {
 }
 
 /// @brief Show or hide the panel; hidden panels are skipped during draw.
+/// @param ptr UIPanel to mutate; `NULL` is a no-op.
+/// @param visible Zero hides the panel; any nonzero value shows it.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uipanel_set_visible(void *ptr, int8_t visible) {
     rt_uipanel_impl *panel = checked_panel(ptr, "UIPanel.SetVisible: expected Zanna.Game.UI.Panel");
     if (panel)
@@ -808,8 +1045,12 @@ void rt_uipanel_set_visible(void *ptr, int8_t visible) {
 }
 
 /// @brief Render the panel onto the canvas as a filled rectangle.
+/// @param ptr UIPanel to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
 /// @details Draws a rounded or sharp rectangle depending on corner_radius,
-///          then overlays the border if a border color is set.
+///          then overlays inward border frames if enabled. Zero alpha suppresses
+///          only the background, not the border. Null arguments and hidden
+///          panels are no-ops; invalid non-null handles raise runtime traps.
 void rt_uipanel_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     if (!ptr || !canvas)
@@ -877,6 +1118,7 @@ void rt_uipanel_draw(void *ptr, void *canvas) {
 // UINineSlice
 //=============================================================================
 
+/// @brief Private source, inset, tint-cache state for a UINineSlice.
 typedef struct {
     void *vptr;
     void *pixels;        ///< Source Pixels handle (retained)
@@ -890,8 +1132,11 @@ typedef struct {
     int64_t tint;   ///< Tint color (0 = no tint)
 } rt_uinineslice_impl;
 
-/// @brief Safe-cast a handle to the UINineSlice impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UINineSlice handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UINineSlice payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uinineslice_impl *checked_nineslice(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -903,6 +1148,9 @@ static rt_uinineslice_impl *checked_nineslice(void *ptr, const char *api) {
 }
 
 /// @brief GC finalizer: release the nine-slice's referenced source image.
+/// @param obj UINineSlice payload being finalized; `NULL` is accepted.
+/// @details Releases both the retained source and any cached tinted Pixels,
+///          then clears their slots.
 static void uinineslice_finalizer(void *obj) {
     rt_uinineslice_impl *ns = (rt_uinineslice_impl *)obj;
     if (!ns)
@@ -913,6 +1161,18 @@ static void uinineslice_finalizer(void *obj) {
     ns->tinted_pixels = NULL;
 }
 
+/// @brief Create a nine-slice descriptor for a retained Pixels source.
+/// @param pixels Required Pixels handle.
+/// @param left Requested left source inset.
+/// @param top Requested top source inset.
+/// @param right Requested right source inset.
+/// @param bottom Requested bottom source inset.
+/// @return A new UINineSlice reference, or `NULL` for null Pixels or allocation
+///         failure.
+/// @details A wrong source class raises a runtime trap. Negative insets become
+///          zero. If opposing horizontal or vertical insets exceed their source
+///          dimension, that pair is replaced by a complete half-and-remainder
+///          split. The source is retained and tint begins disabled.
 void *rt_uinineslice_new(void *pixels, int64_t left, int64_t top, int64_t right, int64_t bottom) {
     if (!ui_validate_pixels(pixels, "UINineSlice: expected Pixels"))
         return NULL;
@@ -960,6 +1220,11 @@ void *rt_uinineslice_new(void *pixels, int64_t left, int64_t top, int64_t right,
 }
 
 /// @brief Set a color tint applied over the nine-slice texture when drawn.
+/// @param ptr UINineSlice to mutate; `NULL` is a no-op.
+/// @param color Tint passed to rt_pixels_tint(), or zero to use the source.
+/// @details Reapplying the current tint is a no-op. A changed tint releases and
+///          invalidates the cached tinted image. A non-null invalid widget
+///          handle raises a runtime trap.
 void rt_uinineslice_set_tint(void *ptr, int64_t color) {
     rt_uinineslice_impl *ns =
         checked_nineslice(ptr, "UINineSlice.SetTint: expected Zanna.Game.UI.NineSlice");
@@ -975,7 +1240,12 @@ void rt_uinineslice_set_tint(void *ptr, int64_t color) {
 }
 
 /// @brief Resolve the Pixels image a nine-slice should draw from (its
-///        explicit source, or a sensible fallback). @return Pixels handle or NULL.
+///        explicit source, a current tinted cache, or the source as fallback).
+/// @param ns Nine-slice payload, or `NULL`.
+/// @return Borrowed cached/source Pixels, or `NULL` when unavailable.
+/// @details A nonzero tint rebuilds the owned cache when the source generation
+///          or tint value changes. Tint-allocation failure falls back to the
+///          original retained source.
 static void *uinineslice_draw_source(rt_uinineslice_impl *ns) {
     if (!ns || !ns->pixels || ns->tint == 0)
         return ns ? ns->pixels : NULL;
@@ -992,9 +1262,18 @@ static void *uinineslice_draw_source(rt_uinineslice_impl *ns) {
 }
 
 /// @brief Render the nine-slice texture onto the canvas at the given rect.
+/// @param ptr UINineSlice to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @param x Destination left coordinate.
+/// @param y Destination top coordinate.
+/// @param w Destination width; nonpositive values are ignored and positive
+///        values clamp to 16384.
+/// @param h Destination height, normalized like @p w.
 /// @details Splits the source texture into 9 patches using the configured insets
-///          (left/top/right/bottom) and tiles the center/edge patches to fill
-///          the destination rectangle while keeping corners at their natural size.
+///          and tiles the source center and edge strips to fill the destination.
+///          Corners retain their natural size unless clipped by a destination
+///          smaller than the combined insets. Null arguments are no-ops;
+///          invalid non-null widget or canvas handles raise runtime traps.
 void rt_uinineslice_draw(void *ptr, void *canvas, int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_gameui_draw_ops_t ops;
     if (!ptr || !canvas)
@@ -1101,9 +1380,10 @@ void rt_uinineslice_draw(void *ptr, void *canvas, int64_t x, int64_t y, int64_t 
 // UIMenuList
 //=============================================================================
 
-/// Maximum length for a single menu item label.
+/// @brief Menu-item buffer capacity in bytes, including its NUL terminator.
 #define MENULIST_MAX_TEXT 128
 
+/// @brief Private state stored in a runtime UIMenuList object.
 typedef struct {
     void *vptr;
     int64_t x, y;
@@ -1118,8 +1398,11 @@ typedef struct {
     int8_t visible;
 } rt_uimenulist_impl;
 
-/// @brief Safe-cast a handle to the UIMenuList impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UIMenuList handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UIMenuList payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uimenulist_impl *checked_menulist(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -1130,7 +1413,9 @@ static rt_uimenulist_impl *checked_menulist(void *ptr, const char *api) {
     return (rt_uimenulist_impl *)ptr;
 }
 
-/// @brief GC finalizer: free the menu list's item strings/array.
+/// @brief GC finalizer: release the menu list's optional BitmapFont.
+/// @param obj UIMenuList payload being finalized; `NULL` is accepted.
+/// @details Item labels are inline byte buffers and require no release.
 static void uimenulist_finalizer(void *obj) {
     rt_uimenulist_impl *menu = (rt_uimenulist_impl *)obj;
     if (!menu)
@@ -1139,6 +1424,14 @@ static void uimenulist_finalizer(void *obj) {
     menu->font = NULL;
 }
 
+/// @brief Create an empty, visible vertical menu list.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param item_height Row height; nonpositive values select 16 and positive
+///        values clamp to `[1, 16384]`.
+/// @return A new UIMenuList reference, or `NULL` if allocation fails.
+/// @details Selection begins at zero with default white/yellow/dark-gray
+///          colors and no custom font.
 void *rt_uimenulist_new(int64_t x, int64_t y, int64_t item_height) {
     rt_uimenulist_impl *menu = (rt_uimenulist_impl *)rt_obj_new_i64(
         RT_UIMENULIST_CLASS_ID, (int64_t)sizeof(rt_uimenulist_impl));
@@ -1160,6 +1453,12 @@ void *rt_uimenulist_new(int64_t x, int64_t y, int64_t item_height) {
 }
 
 /// @brief Append a text item to the menu list (max 64 items, 127 bytes each).
+/// @param ptr UIMenuList to mutate; `NULL` is a no-op.
+/// @param text Required runtime string copied into the next inline buffer.
+/// @details Null text is ignored. Copying stops at embedded NUL and preserves
+///          validated UTF-8 boundaries. The input is not retained. Adding past
+///          RT_UIMENULIST_MAX_ITEMS raises an item-limit trap; a non-null invalid
+///          menu handle raises a class trap.
 void rt_uimenulist_add_item(void *ptr, rt_string text) {
     if (!ptr || !text)
         return;
@@ -1177,6 +1476,10 @@ void rt_uimenulist_add_item(void *ptr, rt_string text) {
 }
 
 /// @brief Remove all entries from the uimenulist.
+/// @param ptr UIMenuList to clear; `NULL` is a no-op.
+/// @details Resets count and selection without changing styling, visibility,
+///          font, position, or row height. A non-null invalid handle raises a
+///          runtime trap.
 void rt_uimenulist_clear(void *ptr) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.Clear: expected Zanna.Game.UI.MenuList");
@@ -1187,6 +1490,10 @@ void rt_uimenulist_clear(void *ptr) {
 }
 
 /// @brief Set the selected item index, clamped to [0, count-1].
+/// @param ptr UIMenuList to mutate; `NULL` is a no-op.
+/// @param index Requested selection.
+/// @details An empty menu stores zero. A non-null invalid handle raises a
+///          runtime trap.
 void rt_uimenulist_set_selected(void *ptr, int64_t index) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.SetSelected: expected Zanna.Game.UI.MenuList");
@@ -1204,6 +1511,10 @@ void rt_uimenulist_set_selected(void *ptr, int64_t index) {
 }
 
 /// @brief Return the zero-based index of the currently highlighted menu item.
+/// @param ptr UIMenuList to query.
+/// @return Stored selected index, or zero for a null or invalid handle.
+/// @details Empty menus also report zero. A non-null invalid handle raises a
+///          runtime trap.
 int64_t rt_uimenulist_get_selected(void *ptr) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.Selected: expected Zanna.Game.UI.MenuList");
@@ -1211,6 +1522,9 @@ int64_t rt_uimenulist_get_selected(void *ptr) {
 }
 
 /// @brief Move the selection cursor up by one; wraps from first to last item.
+/// @param ptr UIMenuList to mutate; `NULL` is a no-op.
+/// @details Empty menus are unchanged. A non-null invalid handle raises a
+///          runtime trap.
 void rt_uimenulist_move_up(void *ptr) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.MoveUp: expected Zanna.Game.UI.MenuList");
@@ -1225,6 +1539,9 @@ void rt_uimenulist_move_up(void *ptr) {
 }
 
 /// @brief Move the selection cursor down by one; wraps from last to first item.
+/// @param ptr UIMenuList to mutate; `NULL` is a no-op.
+/// @details Empty menus are unchanged. A non-null invalid handle raises a
+///          runtime trap.
 void rt_uimenulist_move_down(void *ptr) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.MoveDown: expected Zanna.Game.UI.MenuList");
@@ -1240,6 +1557,12 @@ void rt_uimenulist_move_down(void *ptr) {
 
 /// @brief Set text/selection colors. `text_color` is the unselected entry color, `selected_color`
 /// is the highlighted entry, `highlight_bg` is the row background drawn behind the selection.
+/// @param ptr UIMenuList to mutate; `NULL` is a no-op.
+/// @param text_color Packed unselected-label color.
+/// @param selected_color Packed selected-label color.
+/// @param highlight_bg Packed selected-row background color.
+/// @details Values are stored verbatim. A non-null invalid handle raises a
+///          runtime trap.
 void rt_uimenulist_set_colors(void *ptr,
                               int64_t text_color,
                               int64_t selected_color,
@@ -1254,6 +1577,10 @@ void rt_uimenulist_set_colors(void *ptr,
 }
 
 /// @brief Assign a BitmapFont for menu item text; NULL uses the default font.
+/// @param ptr UIMenuList to mutate; `NULL` is a no-op.
+/// @param font Optional BitmapFont reference.
+/// @details A valid replacement is retained before the prior font is released.
+///          A wrong font class or non-null invalid menu raises a runtime trap.
 void rt_uimenulist_set_font(void *ptr, void *font) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.SetFont: expected Zanna.Game.UI.MenuList");
@@ -1265,6 +1592,9 @@ void rt_uimenulist_set_font(void *ptr, void *font) {
 }
 
 /// @brief Show or hide the menu list; hidden menus are skipped during draw.
+/// @param ptr UIMenuList to mutate; `NULL` is a no-op.
+/// @param visible Zero hides the menu; any nonzero value shows it.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uimenulist_set_visible(void *ptr, int8_t visible) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.SetVisible: expected Zanna.Game.UI.MenuList");
@@ -1273,13 +1603,22 @@ void rt_uimenulist_set_visible(void *ptr, int8_t visible) {
 }
 
 /// @brief Return the count of elements in the uimenulist.
+/// @param ptr UIMenuList to query.
+/// @return Number of stored items, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_uimenulist_get_count(void *ptr) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.Count: expected Zanna.Game.UI.MenuList");
     return menu ? menu->count : 0;
 }
 
-/// @brief Draw the uimenulist.
+/// @brief Draw all visible menu rows and the current selection highlight.
+/// @param ptr UIMenuList to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Null arguments, hidden menus, and empty menus are no-ops. The
+///          selected highlight begins four pixels left of the label and spans
+///          measured text width plus 16 pixels; labels render two pixels below
+///          each row origin. Invalid non-null handles raise runtime traps.
 void rt_uimenulist_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     if (!ptr || !canvas)
@@ -1319,6 +1658,14 @@ void rt_uimenulist_draw(void *ptr, void *canvas) {
 }
 
 /// @brief Handle input for menu navigation. Returns selected index on confirm, -1 otherwise.
+/// @param ptr UIMenuList to update.
+/// @param up Nonzero requests one wrapped upward move.
+/// @param down Nonzero requests one wrapped downward move.
+/// @param confirm Nonzero returns the resulting selection.
+/// @return Selected index when @p confirm is nonzero on a visible, nonempty
+///         menu; otherwise `-1`.
+/// @details Simultaneous up and down cancel navigation. A non-null invalid menu
+///          handle raises a runtime trap.
 int64_t rt_uimenulist_handle_input(void *ptr, int8_t up, int8_t down, int8_t confirm) {
     rt_uimenulist_impl *menu =
         checked_menulist(ptr, "UIMenuList.HandleInput: expected Zanna.Game.UI.MenuList");
@@ -1346,6 +1693,7 @@ int64_t rt_uimenulist_handle_input(void *ptr, int8_t up, int8_t down, int8_t con
 // GameButton — standalone styled button for custom layouts
 //=============================================================================
 
+/// @brief Private inline state stored in a runtime GameButton object.
 typedef struct {
     void *vptr;
     int64_t x, y, width, height;
@@ -1360,8 +1708,11 @@ typedef struct {
     int8_t visible;
 } rt_gamebutton_impl;
 
-/// @brief Safe-cast a handle to the GameButton impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque GameButton handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The GameButton payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_gamebutton_impl *checked_gamebutton(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -1375,6 +1726,14 @@ static rt_gamebutton_impl *checked_gamebutton(void *ptr, const char *api) {
 /// @brief Construct a styled game button at (x, y) with size (w, h) and label text. Defaults:
 /// dark gray normal, blue selected, light gray text, 1 px border, scale 1, visible. Text is
 /// truncated to 63 bytes.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @param text Optional runtime string copied into the inline label buffer.
+/// @return A new GameButton reference, or `NULL` if allocation fails.
+/// @details The input text is not retained and UTF-8 truncation avoids splitting
+///          a validated multibyte sequence.
 void *rt_gamebutton_new(int64_t x, int64_t y, int64_t w, int64_t h, void *text) {
     rt_gamebutton_impl *btn = (rt_gamebutton_impl *)rt_obj_new_i64(
         RT_GAMEBUTTON_CLASS_ID, (int64_t)sizeof(rt_gamebutton_impl));
@@ -1398,6 +1757,10 @@ void *rt_gamebutton_new(int64_t x, int64_t y, int64_t w, int64_t h, void *text) 
 }
 
 /// @brief Replace the button's label text (truncated to 63 bytes).
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param text Optional runtime string to copy; `NULL` clears the label.
+/// @details The input is not retained. A non-null invalid button handle raises
+///          a runtime trap.
 void rt_gamebutton_set_text(void *ptr, void *text) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetText: expected Zanna.Game.UI.GameButton");
@@ -1407,6 +1770,11 @@ void rt_gamebutton_set_text(void *ptr, void *text) {
 }
 
 /// @brief Set the box-fill colors for unselected (`normal`) and selected (highlighted) states.
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param normal Packed normal-state fill color.
+/// @param selected Packed selected-state fill color.
+/// @details Values are stored verbatim. A non-null invalid handle raises a
+///          runtime trap.
 void rt_gamebutton_set_colors(void *ptr, int64_t normal, int64_t selected) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetColors: expected Zanna.Game.UI.GameButton");
@@ -1417,6 +1785,10 @@ void rt_gamebutton_set_colors(void *ptr, int64_t normal, int64_t selected) {
 }
 
 /// @brief Set the text colors for unselected and selected states.
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param normal Packed normal-state text color.
+/// @param selected Packed selected-state text color.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_gamebutton_set_text_colors(void *ptr, int64_t normal, int64_t selected) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetTextColors: expected Zanna.Game.UI.GameButton");
@@ -1427,6 +1799,11 @@ void rt_gamebutton_set_text_colors(void *ptr, int64_t normal, int64_t selected) 
 }
 
 /// @brief Set border outline width (px) and color. Width 0 disables the border.
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param width Requested thickness; nonpositive values become zero. Drawing
+///        further limits it to half the smaller button dimension.
+/// @param color Packed border color; zero also suppresses drawing.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_gamebutton_set_border(void *ptr, int64_t width, int64_t color) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetBorder: expected Zanna.Game.UI.GameButton");
@@ -1437,6 +1814,9 @@ void rt_gamebutton_set_border(void *ptr, int64_t width, int64_t color) {
 }
 
 /// @brief Read the button's screen X position.
+/// @param ptr GameButton to query.
+/// @return Stored X coordinate, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_gamebutton_get_x(void *ptr) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.X: expected Zanna.Game.UI.GameButton");
@@ -1444,6 +1824,9 @@ int64_t rt_gamebutton_get_x(void *ptr) {
 }
 
 /// @brief Read the button's screen Y position.
+/// @param ptr GameButton to query.
+/// @return Stored Y coordinate, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_gamebutton_get_y(void *ptr) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.Y: expected Zanna.Game.UI.GameButton");
@@ -1451,6 +1834,9 @@ int64_t rt_gamebutton_get_y(void *ptr) {
 }
 
 /// @brief Read the button width in pixels.
+/// @param ptr GameButton to query.
+/// @return Positive stored width, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_gamebutton_get_width(void *ptr) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.Width: expected Zanna.Game.UI.GameButton");
@@ -1458,6 +1844,9 @@ int64_t rt_gamebutton_get_width(void *ptr) {
 }
 
 /// @brief Read the button height in pixels.
+/// @param ptr GameButton to query.
+/// @return Positive stored height, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_gamebutton_get_height(void *ptr) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.Height: expected Zanna.Game.UI.GameButton");
@@ -1465,6 +1854,9 @@ int64_t rt_gamebutton_get_height(void *ptr) {
 }
 
 /// @brief Set the button's screen X position.
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param v New X coordinate stored verbatim.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_gamebutton_set_x(void *ptr, int64_t v) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetX: expected Zanna.Game.UI.GameButton");
@@ -1473,6 +1865,9 @@ void rt_gamebutton_set_x(void *ptr, int64_t v) {
 }
 
 /// @brief Set the button's screen Y position.
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param v New Y coordinate stored verbatim.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_gamebutton_set_y(void *ptr, int64_t v) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetY: expected Zanna.Game.UI.GameButton");
@@ -1481,6 +1876,10 @@ void rt_gamebutton_set_y(void *ptr, int64_t v) {
 }
 
 /// @brief Resize the button, clamping dimensions to the UI maximum.
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_gamebutton_set_size(void *ptr, int64_t w, int64_t h) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetSize: expected Zanna.Game.UI.GameButton");
@@ -1491,6 +1890,9 @@ void rt_gamebutton_set_size(void *ptr, int64_t w, int64_t h) {
 }
 
 /// @brief Toggle visibility.
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param visible Zero hides the button; any nonzero value shows it.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_gamebutton_set_visible(void *ptr, int8_t visible) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetVisible: expected Zanna.Game.UI.GameButton");
@@ -1499,6 +1901,9 @@ void rt_gamebutton_set_visible(void *ptr, int8_t visible) {
 }
 
 /// @brief Return 1 if the button is visible.
+/// @param ptr GameButton to query.
+/// @return Normalized visible flag, or zero for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int8_t rt_gamebutton_get_visible(void *ptr) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.Visible: expected Zanna.Game.UI.GameButton");
@@ -1506,6 +1911,9 @@ int8_t rt_gamebutton_get_visible(void *ptr) {
 }
 
 /// @brief Set integer text scale, clamped to [1, 16].
+/// @param ptr GameButton to mutate; `NULL` is a no-op.
+/// @param scale Requested integer multiplier.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_gamebutton_set_text_scale(void *ptr, int64_t scale) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.SetTextScale: expected Zanna.Game.UI.GameButton");
@@ -1514,6 +1922,9 @@ void rt_gamebutton_set_text_scale(void *ptr, int64_t scale) {
 }
 
 /// @brief Return the current integer text scale.
+/// @param ptr GameButton to query.
+/// @return Stored scale, or one for a null or invalid handle.
+/// @details A non-null invalid handle raises a runtime trap.
 int64_t rt_gamebutton_get_text_scale(void *ptr) {
     rt_gamebutton_impl *btn =
         checked_gamebutton(ptr, "GameButton.TextScale: expected Zanna.Game.UI.GameButton");
@@ -1522,6 +1933,13 @@ int64_t rt_gamebutton_get_text_scale(void *ptr) {
 
 /// @brief Render the button to `canvas`. Picks colors based on `is_selected`, draws box +
 /// optional border + centered label. No-op if button is hidden.
+/// @param ptr GameButton to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @param is_selected Nonzero selects highlighted fill and text colors.
+/// @details Text is clipped to the number of default eight-pixel cells that
+///          fit at the current scale, then centered. If no cell fits, the
+///          already-drawn box and border remain without text. Null arguments
+///          and hidden buttons are no-ops; invalid non-null handles trap.
 void rt_gamebutton_draw(void *ptr, void *canvas, int8_t is_selected) {
     rt_gameui_draw_ops_t ops;
     if (!ptr || !canvas)
@@ -1584,6 +2002,9 @@ void rt_gamebutton_draw(void *ptr, void *canvas, int8_t is_selected) {
 
 
 /// @brief Number of UTF-8 codepoints in the first @p bytes of @p text.
+/// @param text Byte sequence to scan.
+/// @param bytes Number of readable bytes; nonpositive values return zero.
+/// @return Count of validated codepoints plus malformed single-byte units.
 int64_t ui_codepoint_count_bytes(const char *text, int64_t bytes) {
     if (!text || bytes <= 0)
         return 0;
@@ -1600,6 +2021,11 @@ int64_t ui_codepoint_count_bytes(const char *text, int64_t bytes) {
 }
 
 /// @brief Byte offset of the @p cp_index-th codepoint (clamped to @p bytes).
+/// @param text Byte sequence to scan.
+/// @param bytes Number of readable bytes.
+/// @param cp_index Zero-based codepoint boundary count.
+/// @return Zero for null/nonpositive inputs; otherwise the boundary after at
+///         most @p cp_index units, capped at @p bytes.
 int64_t ui_byte_for_codepoint(const char *text, int64_t bytes, int64_t cp_index) {
     if (!text || bytes <= 0 || cp_index <= 0)
         return 0;
@@ -1617,6 +2043,10 @@ int64_t ui_byte_for_codepoint(const char *text, int64_t bytes, int64_t cp_index)
 
 /// @brief Codepoint index containing/preceding byte offset @p byte_index
 ///        (inverse of ui_byte_for_codepoint).
+/// @param text Byte sequence to scan.
+/// @param bytes Number of readable bytes.
+/// @param byte_index Byte boundary to map, clamped to @p bytes.
+/// @return Number of complete UTF-8 units ending at or before the boundary.
 int64_t ui_codepoint_for_byte(const char *text, int64_t bytes, int64_t byte_index) {
     if (!text || bytes <= 0 || byte_index <= 0)
         return 0;
@@ -1636,6 +2066,11 @@ int64_t ui_codepoint_for_byte(const char *text, int64_t bytes, int64_t byte_inde
 
 /// @brief Byte offset of the codepoint immediately before @p byte_index
 ///        (for left-arrow / backspace caret movement).
+/// @param text Byte sequence to scan.
+/// @param bytes Number of readable bytes.
+/// @param byte_index Current byte position, clamped to @p bytes.
+/// @return Start of the unit containing or immediately preceding the position,
+///         or zero for null/nonpositive inputs.
 int64_t ui_prev_codepoint_byte(const char *text, int64_t bytes, int64_t byte_index) {
     if (!text || bytes <= 0 || byte_index <= 0)
         return 0;
@@ -1655,6 +2090,11 @@ int64_t ui_prev_codepoint_byte(const char *text, int64_t bytes, int64_t byte_ind
 
 /// @brief Byte offset of the codepoint immediately after @p byte_index
 ///        (for right-arrow / delete caret movement).
+/// @param text Byte sequence to scan.
+/// @param bytes Number of readable bytes.
+/// @param byte_index Current unit start; negative values become zero.
+/// @return Next validated/malformed-unit boundary capped at @p bytes, or the
+///         nonnegative byte length when already at or beyond the end.
 int64_t ui_next_codepoint_byte(const char *text, int64_t bytes, int64_t byte_index) {
     if (!text || bytes <= 0 || byte_index >= bytes)
         return bytes > 0 ? bytes : 0;
@@ -1667,6 +2107,13 @@ int64_t ui_next_codepoint_byte(const char *text, int64_t bytes, int64_t byte_ind
 
 /// @brief Rendered pixel width of the first @p bytes of @p text in @p font at
 ///        @p scale (used to position the caret/selection).
+/// @param text Byte sequence to measure.
+/// @param bytes Prefix size, clamped to 511; nonpositive values return zero.
+/// @param font Optional BitmapFont; `NULL` selects canvas-default metrics.
+/// @param scale Integer scale clamped to `[1, 16]`.
+/// @return Measured prefix width multiplied by the normalized scale.
+/// @details The copied prefix is NUL-terminated, so embedded NUL shortens the
+///          measured text.
 int64_t ui_text_prefix_width(const char *text, int64_t bytes, void *font, int64_t scale) {
     if (!text || bytes <= 0)
         return 0;
@@ -1682,6 +2129,14 @@ int64_t ui_text_prefix_width(const char *text, int64_t bytes, void *font, int64_
 
 /// @brief Draw a text run at (x, y) using an optional bitmap font and scale,
 ///        falling back to the canvas default font when none is set.
+/// @param ops Resolved operations and target canvas.
+/// @param x Left coordinate.
+/// @param y Top coordinate.
+/// @param text Nonempty NUL-terminated text.
+/// @param font Optional BitmapFont passed to font-aware operations.
+/// @param scale Integer multiplier clamped to `[1, 16]`.
+/// @param color Packed text color.
+/// @details Null operations, null text, and empty text are no-ops.
 void ui_draw_text_basic(const rt_gameui_draw_ops_t *ops,
                         int64_t x,
                         int64_t y,
@@ -1707,6 +2162,14 @@ void ui_draw_text_basic(const rt_gameui_draw_ops_t *ops,
 
 /// @brief True if point lies within the axis-aligned widget rect (used for
 ///        hit-testing clicks/hovers).
+/// @param x Rectangle left coordinate.
+/// @param y Rectangle top coordinate.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param px Point X coordinate.
+/// @param py Point Y coordinate.
+/// @return `1` when the point lies in both half-open coordinate spans;
+///         otherwise `0`.
 int8_t ui_point_inside(int64_t x, int64_t y, int64_t w, int64_t h, int64_t px, int64_t py) {
     return ui_coord_inside(x, w, px) && ui_coord_inside(y, h, py);
 }

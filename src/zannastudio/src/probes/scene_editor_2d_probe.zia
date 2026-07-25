@@ -323,7 +323,7 @@ func main() {
        or Convert.NumToInt(editor.tileSpinner.Value) != 1
        or editor.CanUndo()
        or editor.compactInspectorShown
-       or near(editor.bodySplit.GetPosition(), 0.68) == false {
+       or near(editor.bodySplit.GetPosition(), 0.66) == false {
         fail(shell, "new 2D tab inherited another scene's workspace or history");
         return;
     }

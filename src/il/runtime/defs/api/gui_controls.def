@@ -610,6 +610,7 @@ RT_FUNC(GuiImageSetScaleMode, rt_image_set_scale_mode, "Zanna.GUI.Image.SetScale
 RT_FUNC(GuiImageSetFilter, rt_image_set_filter, "Zanna.GUI.Image.SetFilter", "void(obj,i64)")
 RT_FUNC(GuiImageGetFilter, rt_image_get_filter, "Zanna.GUI.Image.GetFilter", "i64(obj)")
 RT_FUNC(GuiImageSetOpacity, rt_image_set_opacity, "Zanna.GUI.Image.SetOpacity", "void(obj,f64)")
+RT_FUNC(GuiImageSetFocusable, rt_image_set_focusable, "Zanna.GUI.Image.SetFocusable", "void(obj,i1)")
 RT_FUNC(GuiImageLoadFile, rt_image_load_file, "Zanna.GUI.Image.LoadFile", "i64(obj,str)")
 RT_FUNC(GuiFloatingPanelDestroy, rt_floatingpanel_destroy, "Zanna.GUI.FloatingPanel.Destroy", "void(obj)")
 

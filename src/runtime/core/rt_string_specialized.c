@@ -6,29 +6,34 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_string_specialized.c
-// Purpose: Specialized string operations for the Zanna runtime. Contains case
-//   conversion utilities (capitalize, title, camelCase, PascalCase, snake_case,
-//   kebab-case, screaming_snake), string distance metrics (Levenshtein, Jaro,
-//   Jaro-Winkler, Hamming), prefix/suffix manipulation, slug generation, and
-//   SQL LIKE pattern matching.
+// Purpose: Implements specialized byte-string transforms, similarity/distance
+// metrics, identifier naming conversions, and SQL LIKE-style matching.
 //
 // Key invariants:
 //   - Identifier-style case conversions use a shared split_words() helper that
 //     handles explicit separators, lower-to-upper boundaries, and acronym
-//     boundaries. They are byte/C-locale operations, not Unicode casing.
+//     boundaries. Casing is ASCII-only and locale-independent.
 //   - Levenshtein and Hamming return byte distances; Jaro and Jaro-Winkler
 //     return double similarity scores in the range 0.0-1.0.
-//   - LIKE matching supports % (any sequence) and _ (single char) wildcards.
+//   - LIKE literal comparison is byte-wise, while `_` and `%` backtracking move
+//     over strictly validated UTF-8 codepoints.
+//   - Null is treated as empty by these specialized APIs unless a declaration
+//     documents another sentinel/failure result.
 //
 // Ownership/Lifetime:
-//   - Returned strings are heap-allocated with reference counting.
-//   - Temporary buffers (word arrays, DP tables) are stack or malloc'd and freed.
+//   - String-returning operations allocate a fresh owned result, including for
+//     null/empty inputs; they do not retain or mutate their sources.
+//   - Temporary buffers (word arrays, match maps, and DP rows) are released on
+//     every ordinary success/failure path.
+//   - Distance and LIKE operations borrow inputs and allocate no returned state.
 //
 // Links: src/runtime/core/rt_string_internal.h (shared helpers),
 //        src/runtime/core/rt_string_ops.c (core operations),
 //        src/runtime/core/rt_string.h (public API)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Specialized runtime string transforms, metrics, and LIKE matching.
 
 #include "rt_internal.h"
 #include "rt_string.h"
@@ -47,7 +52,12 @@
 // Extended String Utilities
 //=============================================================================
 
-/// @brief Return a copy of `str` with the first byte uppercased (rest unchanged). ASCII-only.
+/// @brief Uppercase the first byte of a newly copied string.
+/// @details Applies ASCII-only `toupper` to byte zero and leaves every remaining
+///          byte unchanged. Null/empty input still creates an ordinary owned
+///          empty string rather than returning a shared singleton.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned copy, or `NULL` on allocation failure.
 rt_string rt_str_capitalize(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -64,7 +74,13 @@ rt_string rt_str_capitalize(rt_string str) {
     return result;
 }
 
-/// @brief Title-case: capitalize the first letter of every whitespace-separated word. ASCII-only.
+/// @brief Uppercase the first byte of each ASCII-whitespace-delimited word.
+/// @details Copies the complete byte string, uppercases only a byte at the
+///          beginning or immediately after ASCII whitespace, and does not
+///          lowercase any other byte. Null/empty input produces a fresh empty
+///          string.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned copy, or `NULL` on allocation failure.
 rt_string rt_str_title(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -91,8 +107,13 @@ rt_string rt_str_title(rt_string str) {
     return result;
 }
 
-/// @brief Strip `prefix` from the start of `str` if present. Returns a copy of `str` unchanged
-/// if it doesn't start with `prefix`.
+/// @brief Remove one matching byte prefix from @p str.
+/// @details Always allocates a copy. Null source becomes a fresh empty string;
+///          null, empty, overlong, or nonmatching prefix copies the complete
+///          source.
+/// @param str Borrowed source string; may be NULL.
+/// @param prefix Borrowed prefix byte string; may be NULL.
+/// @return Newly allocated owned result, or `NULL` on allocation failure.
 rt_string rt_str_remove_prefix(rt_string str, rt_string prefix) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -110,8 +131,12 @@ rt_string rt_str_remove_prefix(rt_string str, rt_string prefix) {
     return rt_string_from_bytes(str->data, slen);
 }
 
-/// @brief Strip `suffix` from the end of `str` if present. Returns a copy of `str` unchanged
-/// if it doesn't end with `suffix`.
+/// @brief Remove one matching byte suffix from @p str.
+/// @details Always allocates a copy and otherwise follows the null, empty,
+///          overlong, and nonmatching rules of @ref rt_str_remove_prefix.
+/// @param str Borrowed source string; may be NULL.
+/// @param suffix Borrowed suffix byte string; may be NULL.
+/// @return Newly allocated owned result, or `NULL` on allocation failure.
 rt_string rt_str_remove_suffix(rt_string str, rt_string suffix) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -129,12 +154,13 @@ rt_string rt_str_remove_suffix(rt_string str, rt_string suffix) {
     return rt_string_from_bytes(str->data, slen);
 }
 
-/// @brief Find the *last* occurrence of `needle` within `haystack`. Returns the 1-based byte
-/// position of the match, or 0 if not found.
-/// @details Shares the family-wide empty-needle rule (VDOC-168): an empty
-///          needle matches at every position 1..Length+1, so IndexOf returns
-///          the first (1), IndexOfFrom the clamped start, and LastIndexOf the
-///          final one (Length + 1) — never the 0 miss sentinel.
+/// @brief Find the last occurrence of @p needle in @p haystack.
+/// @details Compares stored bytes while scanning candidate starts backward.
+///          An empty needle matches at `Length + 1`; null operands and an
+///          overlong/missing needle return zero.
+/// @param haystack Borrowed source string; may be NULL.
+/// @param needle Borrowed byte sequence; may be NULL.
+/// @return One-based byte index of the final match, or zero when absent.
 int64_t rt_str_last_index_of(rt_string haystack, rt_string needle) {
     if (!haystack || !needle)
         return 0;
@@ -152,8 +178,13 @@ int64_t rt_str_last_index_of(rt_string haystack, rt_string needle) {
     return 0;
 }
 
-/// @brief Strip every occurrence of the first byte of `ch` from both ends of `str`. Useful for
-/// quoting/dequoting. Only the first byte of `ch` is examined; pass a single character.
+/// @brief Remove repeated occurrences of one byte from both ends of @p str.
+/// @details Uses only the first stored byte of @p ch, even if it begins a
+///          multibyte UTF-8 sequence. Null source becomes a fresh empty string;
+///          null/empty @p ch copies the complete source.
+/// @param str Borrowed source string; may be NULL.
+/// @param ch Borrowed string supplying the trim byte; may be NULL.
+/// @return Newly allocated owned trimmed copy, or `NULL` on allocation failure.
 rt_string rt_str_trim_char(rt_string str, rt_string ch) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -178,8 +209,13 @@ rt_string rt_str_trim_char(rt_string str, rt_string ch) {
     return rt_string_from_bytes(str->data + start, end - start);
 }
 
-/// @brief URL-friendly slugification: lowercase ASCII alnums kept as-is, runs of other bytes
-/// collapsed to a single '-'. Trailing '-' trimmed. Useful for filenames and URL paths.
+/// @brief Convert @p str to a lowercase ASCII slug.
+/// @details Preserves ASCII alphanumerics while lowercasing letters and
+///          collapses each run of every other byte, including non-ASCII bytes,
+///          to one hyphen. Leading/trailing separators are omitted. Null/empty
+///          input produces a fresh empty string.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned slug, or `NULL` after allocation failure.
 rt_string rt_str_slug(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -221,9 +257,14 @@ rt_string rt_str_slug(rt_string str) {
 // String Similarity / Distance
 // ---------------------------------------------------------------------------
 
-/// @brief Compute the Levenshtein edit distance between two strings — the minimum number of
-/// single-character insertions, deletions, or substitutions to transform `a` into `b`. O(|a|*|b|)
-/// time and O(min(|a|,|b|)) space (uses the rolling-row optimization).
+/// @brief Compute byte-wise Levenshtein edit distance.
+/// @details Treats null as empty and assigns unit cost to byte insertion,
+///          deletion, and substitution. A rolling row gives O(m*n) time and
+///          O(min(m,n)) temporary space.
+/// @param a Borrowed first byte string; may be NULL.
+/// @param b Borrowed second byte string; may be NULL.
+/// @return Edit distance, or -1 for lengths above `INT64_MAX`, temporary-size
+///         overflow, or allocation failure.
 int64_t rt_str_levenshtein(rt_string a, rt_string b) {
     if (!a && !b)
         return 0;
@@ -282,8 +323,14 @@ int64_t rt_str_levenshtein(rt_string a, rt_string b) {
     return result;
 }
 
-/// @brief Jaro string similarity, [0, 1] (1 = identical, 0 = no common characters within the
-/// matching window). Window size = max(|a|, |b|)/2 - 1. Counts matches and transpositions.
+/// @brief Compute byte-wise Jaro similarity.
+/// @details Uses a match window of `max(lengths)/2 - 1`, clamped to zero,
+///          followed by half-transposition scoring. Null is empty and two empty
+///          inputs score one.
+/// @param a Borrowed first byte string; may be NULL.
+/// @param b Borrowed second byte string; may be NULL.
+/// @return Similarity in `[0.0, 1.0]`; zero also represents unsupported huge
+///         lengths or match-map allocation failure.
 double rt_str_jaro(rt_string a, rt_string b) {
     if (!a && !b)
         return 1.0;
@@ -355,9 +402,13 @@ double rt_str_jaro(rt_string a, rt_string b) {
            3.0;
 }
 
-/// @brief Jaro-Winkler similarity: Jaro plus a bonus for matching prefixes (up to 4 chars).
-/// Better suited than Jaro for short strings and proper-noun matching where shared prefixes
-/// are highly informative.
+/// @brief Compute byte-wise Jaro-Winkler similarity.
+/// @details Adds `prefix * 0.1 * (1 - jaro)` for up to four equal leading
+///          bytes. The bonus is applied for every base score rather than only
+///          above a separate similarity threshold. Null is treated as empty.
+/// @param a Borrowed first byte string; may be NULL.
+/// @param b Borrowed second byte string; may be NULL.
+/// @return Jaro score adjusted by the common-prefix bonus.
 double rt_str_jaro_winkler(rt_string a, rt_string b) {
     double jaro = rt_str_jaro(a, b);
 
@@ -385,8 +436,12 @@ double rt_str_jaro_winkler(rt_string a, rt_string b) {
     return jaro + (double)prefix * p * (1.0 - jaro);
 }
 
-/// @brief Hamming distance: number of byte positions at which `a` and `b` differ. Both strings
-/// must have the same length; returns -1 if they don't.
+/// @brief Compute Hamming distance between equal-length byte strings.
+/// @details Treats null as empty and compares every stored byte, including
+///          embedded NUL.
+/// @param a Borrowed first byte string; may be NULL.
+/// @param b Borrowed second byte string; may be NULL.
+/// @return Number of differing positions, or -1 when lengths differ.
 int64_t rt_str_hamming(rt_string a, rt_string b) {
     size_t alen = a ? rt_string_len_bytes(a) : 0;
     size_t blen = b ? rt_string_len_bytes(b) : 0;
@@ -422,16 +477,19 @@ static int is_separator(char c) {
 /// @brief Split @p src into words, recognising both explicit separators and camelCase.
 /// @details Copies each detected word into @p buf with NUL terminators packed
 ///          end-to-end, and writes a pointer to each word into @p words.
-///          Word boundaries are explicit separators (@ref is_separator) or a
-///          lowercase→uppercase transition (camelCase). Stops at
-///          @p max_words even if @p src has more.
-/// @param src       Input bytes.
-/// @param len       Input length in bytes.
-/// @param buf       Output buffer that the @p words pointers index into.
-/// @param buf_cap   Capacity of @p buf in bytes.
-/// @param words     Receives a pointer to each word (NUL-terminated within @p buf).
-/// @param max_words Capacity of @p words; further words are dropped.
-/// @return Number of words written (≤ @p max_words).
+///          Boundaries are space/tab/underscore/hyphen, ASCII lower-to-upper
+///          transitions, or the final uppercase byte before an acronym-to-word
+///          transition such as `HTTPServer`. Embedded NUL is copied and exact
+///          lengths avoid later `strlen` truncation. The routine stops at
+///          @p max_words and copies only while @p buf_cap permits.
+/// @param src Borrowed input byte span.
+/// @param len Number of input bytes.
+/// @param buf Writable packed-word storage.
+/// @param buf_cap Total capacity of @p buf.
+/// @param words Output array receiving pointers into @p buf.
+/// @param word_lens Optional output array receiving exact byte lengths.
+/// @param max_words Capacity of @p words and @p word_lens.
+/// @return Number of word entries emitted, not exceeding @p max_words.
 static int split_words(const char *src,
                        size_t len,
                        char *buf,
@@ -490,15 +548,14 @@ static int split_words(const char *src,
 
 /// @brief Append bytes to a casing builder and trap on failure.
 /// @details The case-conversion helpers build their result through
-///          @ref rt_string_builder.  Ignoring append status can return a
-///          silently truncated string after allocation failure or size
-///          overflow.  This helper centralises the status check and emits a
-///          contextual trap while leaving cleanup to the caller.
-/// @param sb Builder receiving bytes.
-/// @param bytes Source byte range; may be NULL only when @p len is zero.
+///          @ref rt_string_builder. Any non-success status raises @p context
+///          (or a generic fallback), leaving builder/scratch cleanup to the
+///          caller if the trap hook returns.
+/// @param sb Initialized builder receiving bytes.
+/// @param bytes Borrowed source span; may be NULL only when @p len is zero.
 /// @param len Number of bytes to append.
-/// @param context Operation name used in the trap message.
-/// @return 1 on success, 0 after a trapped append failure.
+/// @param context Borrowed diagnostic message; may be NULL.
+/// @return One on success, or zero after a returning append-failure trap.
 static int append_case_bytes(rt_string_builder *sb, const char *bytes, size_t len, const char *context) {
     rt_sb_status_t status = rt_sb_append_bytes(sb, bytes, len);
     if (status == RT_SB_OK)
@@ -508,21 +565,23 @@ static int append_case_bytes(rt_string_builder *sb, const char *bytes, size_t le
 }
 
 /// @brief Append a single byte to a casing builder.
-/// @param sb Builder receiving the byte.
+/// @details Thin checked wrapper around @ref append_case_bytes.
+/// @param sb Initialized builder receiving the byte.
 /// @param ch Byte value to append.
-/// @param context Operation name used in the trap message.
-/// @return 1 on success, 0 after a trapped append failure.
+/// @param context Borrowed diagnostic message; may be NULL.
+/// @return One on success, or zero after a returning append-failure trap.
 static int append_case_char(rt_string_builder *sb, char ch, const char *context) {
     return append_case_bytes(sb, &ch, 1, context);
 }
 
 /// @brief Return the length of the next UTF-8 codepoint at @p data.
 /// @details Used by SQL LIKE `_` wildcard handling so `_` consumes one
-///          user-visible UTF-8 codepoint rather than one raw byte.  Invalid or
-///          truncated sequences trap and return zero.
-/// @param data Pointer to the current byte.
+///          strict UTF-8 codepoint rather than one raw byte. Invalid,
+///          noncanonical, surrogate, out-of-range, or truncated sequences trap.
+/// @param data Borrowed span beginning at the current byte.
 /// @param remaining Number of bytes available from @p data.
-/// @return Number of bytes in the next codepoint, or zero on invalid input.
+/// @return Width from one through four, or zero after a returning invalid-input
+///         trap.
 static size_t like_utf8_step(const char *data, size_t remaining) {
     size_t step = rt_utf8_strict_step(data, remaining);
     if (step == 0) {
@@ -532,6 +591,19 @@ static size_t like_utf8_step(const char *data, size_t remaining) {
     return step;
 }
 
+/// @brief Allocate scratch storage and split an arbitrary byte span into words.
+/// @details Allocates a packed buffer large enough for every input byte and a
+///          terminator per possible word, plus pointer and exact-length arrays.
+///          Output pointers are cleared before validation. Input length is
+///          limited to `INT_MAX` because @ref split_words uses an integer word
+///          limit. Allocation/size failure traps and leaves outputs null.
+/// @param src Borrowed input byte span.
+/// @param len Number of input bytes.
+/// @param buf_out Required output receiving owned packed byte storage.
+/// @param words_out Required output receiving an owned pointer array whose
+///        entries refer into `*buf_out`.
+/// @param word_lens_out Optional output receiving an owned exact-length array.
+/// @return Number of words, or zero for no words or after a returning trap.
 static int split_words_dynamic(const char *src,
                                size_t len,
                                char **buf_out,
@@ -586,9 +658,14 @@ static int split_words_dynamic(const char *src,
     return wc;
 }
 
-/// @brief Convert "hello world" / "hello-world" / "hello_world" to "helloWorld". First word
-/// stays lowercase; subsequent words have their first letter capitalized. Word separators
-/// (whitespace, '-', '_') are dropped.
+/// @brief Convert @p str to ASCII-folded camelCase.
+/// @details Uses the shared explicit/case-boundary splitter, lowercases every
+///          ASCII byte, then uppercases the first byte of each word after the
+///          first. Separators are dropped; high-bit and embedded-NUL bytes are
+///          preserved. Null/empty input produces a fresh empty string.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned result, or `NULL` after scratch, builder, or
+///         result allocation failure.
 rt_string rt_str_camel_case(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -639,7 +716,12 @@ camel_fail:
     return NULL;
 }
 
-/// @brief Convert to "HelloWorld" — like camelCase but the first letter is also capitalized.
+/// @brief Convert @p str to ASCII-folded PascalCase.
+/// @details Uses the shared word splitter, lowercases ASCII bytes, uppercases
+///          the first byte of every word, and drops separators. Null/empty
+///          input produces a fresh empty string.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_pascal_case(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -689,8 +771,12 @@ pascal_fail:
     return NULL;
 }
 
-/// @brief Convert to "hello_world": insert '_' before each capital letter (after the first),
-/// then lowercase. Word separators (whitespace, '-') become '_'.
+/// @brief Convert @p str to ASCII-folded snake_case.
+/// @details Uses shared word boundaries, lowercases ASCII bytes, and joins
+///          emitted words with one underscore. Null/empty input produces a
+///          fresh empty string.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_snake_case(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -736,7 +822,12 @@ snake_fail:
     return NULL;
 }
 
-/// @brief Convert to "hello-world": like snake_case but with '-' separators.
+/// @brief Convert @p str to ASCII-folded kebab-case.
+/// @details Uses shared word boundaries, lowercases ASCII bytes, and joins
+///          emitted words with one hyphen. Null/empty input produces a fresh
+///          empty string.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_kebab_case(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -782,7 +873,12 @@ kebab_fail:
     return NULL;
 }
 
-/// @brief Convert to "HELLO_WORLD": uppercase snake_case (constant-style identifier).
+/// @brief Convert @p str to SCREAMING_SNAKE_CASE.
+/// @details Uses shared word boundaries, uppercases ASCII bytes, and joins
+///          emitted words with one underscore. Null/empty input produces a
+///          fresh empty string.
+/// @param str Borrowed source string; may be NULL.
+/// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_screaming_snake(rt_string str) {
     if (!str)
         return rt_string_from_bytes("", 0);
@@ -832,12 +928,19 @@ screaming_fail:
 // SQL LIKE Pattern Matching
 //=============================================================================
 
-/// @brief Internal SQL LIKE pattern matching (case-sensitive).
-/// @param text Text string to match.
-/// @param tlen Text length.
-/// @param pat Pattern string (% = any chars, _ = one char, \ = escape).
-/// @param plen Pattern length.
-/// @return 1 if matched, 0 otherwise.
+/// @brief Match length-counted text against the runtime SQL LIKE grammar.
+/// @details `%` matches any sequence, `_` consumes one strict UTF-8 codepoint,
+///          and backslash escapes the following pattern byte; a final backslash
+///          is treated literally. Literal matching is byte-wise. The matcher
+///          stores the most recent `%` and backtracks through text one strict
+///          codepoint at a time. Case-insensitive mode folds ASCII only.
+/// @param text Borrowed text span.
+/// @param tlen Number of text bytes.
+/// @param pat Borrowed pattern span.
+/// @param plen Number of pattern bytes.
+/// @param case_insensitive Nonzero to fold ASCII letters for literal matches.
+/// @return One for a complete match; zero for mismatch or after a returning
+///         malformed-UTF-8 trap.
 static int8_t like_match(
     const char *text, size_t tlen, const char *pat, size_t plen, int case_insensitive) {
     size_t ti = 0, pi = 0;
@@ -909,8 +1012,13 @@ static int8_t like_match(
     return pi == plen ? 1 : 0;
 }
 
-/// @brief SQL LIKE-style pattern match (case-sensitive). `%` matches any sequence of
-/// UTF-8-shaped units and `_` matches one such unit. Returns 1 on match, 0 otherwise.
+/// @brief Match a runtime string with case-sensitive SQL LIKE semantics.
+/// @details Null operands are treated as empty spans. Delegates wildcard,
+///          escape, strict UTF-8 stepping, and whole-pattern matching to
+///          @ref like_match.
+/// @param text Borrowed text string; may be NULL.
+/// @param pattern Borrowed LIKE pattern; may be NULL.
+/// @return One for a complete match; otherwise zero.
 int8_t rt_str_like(rt_string text, rt_string pattern) {
     size_t tlen = rt_string_len_bytes(text);
     size_t plen = rt_string_len_bytes(pattern);
@@ -919,7 +1027,12 @@ int8_t rt_str_like(rt_string text, rt_string pattern) {
     return like_match(t, tlen, p, plen, 0);
 }
 
-/// @brief Case-insensitive variant of `_like`. ASCII-only for case folding (a-z ↔ A-Z).
+/// @brief Match a runtime string with ASCII-case-insensitive SQL LIKE semantics.
+/// @details Uses the same null, wildcard, escape, and strict UTF-8 rules as
+///          @ref rt_str_like, folding only ASCII literal bytes.
+/// @param text Borrowed text string; may be NULL.
+/// @param pattern Borrowed LIKE pattern; may be NULL.
+/// @return One for a complete match; otherwise zero.
 int8_t rt_str_like_ci(rt_string text, rt_string pattern) {
     size_t tlen = rt_string_len_bytes(text);
     size_t plen = rt_string_len_bytes(pattern);

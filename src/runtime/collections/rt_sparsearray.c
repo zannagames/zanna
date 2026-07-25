@@ -14,14 +14,15 @@
 // Key invariants:
 //   - Open-addressing hash table with 64-bit mix hash on the integer key to
 //     avoid clustering from sequential indices.
-//   - Initial capacity is configurable; probing is linear (index + i) % cap.
-//   - Load factor kept below 2/3 via resize. Capacity is always a power of two
+//   - Initial capacity is 16; probing is linear (index + i) modulo capacity.
+//   - The table doubles before an insertion at or above 70% load. Capacity is
+//     always a power of two
 //     (required for bitmask indexing: slot = hash & (capacity - 1)).
-//   - `occupied` flag distinguishes empty slots from slots holding a NULL value.
+//   - `occupied` distinguishes an unused slot from any signed integer key.
 //   - Get returns NULL for missing indices; no error is raised.
 //   - Set with NULL value removes the entry (slot becomes unoccupied).
-//   - Tombstones are not used; the entire table is rehashed on remove during
-//     resize, or a swap-with-probe approach is used to maintain probe chains.
+//   - Tombstones are not used; removal backward-reinserts the following probe
+//     cluster so early termination at an empty slot remains correct.
 //   - Not thread-safe; external synchronization required.
 //
 // Ownership/Lifetime:
@@ -33,6 +34,13 @@
 //        src/runtime/collections/rt_intmap.h (similar integer-keyed map)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements the runtime sparse signed-index array.
+/// @details Only non-null values occupy the power-of-two linear-probe table.
+///          Stored values are retained and GC-traced; reads return borrowed
+///          pointers, while index/value enumerations build owning snapshots in
+///          current physical slot order.
 
 #include "rt_sparsearray.h"
 
@@ -48,12 +56,16 @@
 
 // --- Open addressing hash map: int64_t -> void* ---
 
+/// @brief One physical slot in the open-addressed table.
+/// @details Null values are never stored by the public API; `occupied` exists
+///          so every signed key, including zero, remains representable.
 typedef struct {
     int64_t key;
     void *value;
     int8_t occupied;
 } sa_slot;
 
+/// @brief GC-managed SparseArray implementation payload.
 typedef struct {
     void *vptr;
     int64_t count;
@@ -63,6 +75,9 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the SparseArray implementation;
 ///        traps with @p what if @p obj is NULL or not a SparseArray.
+/// @param obj Opaque runtime handle to validate.
+/// @param what Diagnostic emitted by the trap subsystem on failure.
+/// @return Validated SparseArray implementation, or `NULL` after trapping.
 static rt_sparse_impl *as_sparse(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_SPARSEARRAY_CLASS_ID, sizeof(rt_sparse_impl))) {
         rt_trap(what);
@@ -74,6 +89,8 @@ static rt_sparse_impl *as_sparse(void *obj, const char *what) {
 // --- Hash function for int64 ---
 
 /// @brief 64-bit integer mix hash (Murmur3 fmix64) for sparse-array keys.
+/// @param key Arbitrary signed array index.
+/// @return Mixed unsigned hash suitable for power-of-two masking.
 static uint64_t sa_hash(int64_t key) {
     uint64_t k = (uint64_t)key;
     k ^= k >> 33;
@@ -87,12 +104,14 @@ static uint64_t sa_hash(int64_t key) {
 // --- Internal helpers ---
 
 /// @brief Drop one GC reference to a stored value and free it at zero.
+/// @param value Runtime object reference, or `NULL` for a no-op.
 static void sa_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
 }
 
 /// @brief GC finalizer: release every occupied slot's value, free the slots.
+/// @param obj SparseArray object being finalized; `NULL` is ignored.
 static void sa_finalizer(void *obj) {
     if (!obj)
         return;
@@ -114,6 +133,9 @@ static void sa_finalizer(void *obj) {
 }
 
 /// @brief GC traversal: visit the value of every occupied slot.
+/// @param obj SparseArray whose retained values are to be traced.
+/// @param visitor Collector callback invoked in physical slot order.
+/// @param ctx Opaque collector context forwarded unchanged.
 static void sa_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
@@ -126,10 +148,18 @@ static void sa_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     }
 }
 
+/// @brief Double and rehash the power-of-two slot table.
+/// @param sa SparseArray whose load threshold has been reached.
+/// @return 1 after publishing the larger table, or 0 after trapping.
 static int sa_grow(rt_sparse_impl *sa);
 
 /// @brief Open-addressed (linear-probe) insert/update of @p key→@p value;
 ///        retains the value, releasing a replaced one. Assumes spare capacity.
+/// @details Replacement retains before release, so assigning the identical
+///          object is safe.
+/// @param sa SparseArray with at least one reachable free slot.
+/// @param key Signed integer index.
+/// @param value Non-null runtime value to retain.
 static void sa_insert_internal(rt_sparse_impl *sa, int64_t key, void *value) {
     uint64_t h = sa_hash(key);
     int64_t mask = sa->capacity - 1;
@@ -158,6 +188,11 @@ static void sa_insert_internal(rt_sparse_impl *sa, int64_t key, void *value) {
 
 /// @brief Double the slot table and re-insert occupied entries (ownership
 ///        transferred, no extra retain). Traps on overflow/OOM.
+/// @details Allocation succeeds before the implementation publishes the new
+///          table. Rehashing only moves existing retained pointers; logical
+///          count and ownership are preserved.
+/// @param sa SparseArray to grow.
+/// @return 1 after rehashing, or 0 after an overflow/allocation trap.
 static int sa_grow(rt_sparse_impl *sa) {
     int64_t old_cap = sa->capacity;
     sa_slot *old_slots = sa->slots;
@@ -204,6 +239,11 @@ static int sa_grow(rt_sparse_impl *sa) {
 }
 
 /// @brief Linear-probe lookup of @p key; returns its slot or NULL if absent.
+/// @details Search terminates at the first unused slot, which is valid because
+///          deletion closes probe-chain gaps by reinsertion.
+/// @param sa SparseArray to search.
+/// @param key Signed index to locate.
+/// @return Borrowed occupied slot, or `NULL` when absent.
 static sa_slot *sa_find(rt_sparse_impl *sa, int64_t key) {
     if (!sa || sa->count == 0)
         return NULL;
@@ -226,6 +266,8 @@ static sa_slot *sa_find(rt_sparse_impl *sa, int64_t key) {
 /// @brief Construct a sparse array (int64 → value). Open-addressed hash with linear probing,
 /// capacity grows past 70% load. Suitable when most indices in a logical range are unused
 /// (e.g., entity IDs scattered across a wide ID space).
+/// @return New runtime-managed SparseArray, or `NULL` after an allocation
+///         trap.
 void *rt_sparse_new(void) {
     rt_sparse_impl *sa =
         (rt_sparse_impl *)rt_obj_new_i64(RT_SPARSEARRAY_CLASS_ID, sizeof(rt_sparse_impl));
@@ -248,8 +290,8 @@ void *rt_sparse_new(void) {
 }
 
 /// @brief Return the number of populated entries in the sparse array.
-/// @param obj Sparse array object pointer; returns 0 if NULL.
-/// @return Count of occupied slots.
+/// @param obj SparseArray handle, or `NULL`.
+/// @return Count of occupied non-null entries, or 0 for `NULL`.
 int64_t rt_sparse_len(void *obj) {
     if (!obj)
         return 0;
@@ -257,6 +299,11 @@ int64_t rt_sparse_len(void *obj) {
 }
 
 /// @brief Read the value stored at `index`, or NULL if absent.
+/// @details Creates no retain; the returned value remains owned by the
+///          SparseArray and is invalidated by replacement/removal/clear.
+/// @param obj SparseArray handle, or `NULL`.
+/// @param index Arbitrary signed index.
+/// @return Borrowed stored value, or `NULL` when absent.
 void *rt_sparse_get(void *obj, int64_t index) {
     if (!obj)
         return NULL;
@@ -267,9 +314,11 @@ void *rt_sparse_get(void *obj, int64_t index) {
 /// @brief Set the value at a sparse index, growing the table if needed.
 /// @details Uses open addressing with linear probing. Grows the table when
 ///          load factor exceeds 70% to maintain O(1) amortized access.
-/// @param obj Sparse array object pointer; no-op if NULL.
+///          A non-null value is retained; replacing a value releases the old
+///          one. Passing `NULL` removes @p index.
+/// @param obj SparseArray handle, or `NULL` for a no-op.
 /// @param index Sparse key to store at.
-/// @param value Value to associate with the index.
+/// @param value Value to retain, or `NULL` to remove the entry.
 void rt_sparse_set(void *obj, int64_t index, void *value) {
     if (!obj)
         return;
@@ -297,7 +346,7 @@ void rt_sparse_set(void *obj, int64_t index, void *value) {
 }
 
 /// @brief Check whether a value exists at the given sparse index.
-/// @param obj Sparse array object pointer; returns 0 if NULL.
+/// @param obj SparseArray handle, or `NULL`.
 /// @param index Sparse key to look up.
 /// @return 1 if the index is occupied, 0 otherwise.
 int8_t rt_sparse_has(void *obj, int64_t index) {
@@ -361,6 +410,10 @@ int8_t rt_sparse_remove(void *obj, int64_t index) {
 
 /// @brief Return a Seq of every populated index as boxed i64 values.
 /// Slot-iteration order, not insertion order. Snapshot at call time.
+/// @details The owning result retains each fresh boxed index. Ordering may
+///          change after growth or deletion.
+/// @param obj SparseArray handle, or `NULL`.
+/// @return New runtime-managed owning Seq of boxed indices.
 void *rt_sparse_indices(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -378,6 +431,11 @@ void *rt_sparse_indices(void *obj) {
 }
 
 /// @brief Return a Seq of every stored value (parallel to `_indices` order).
+/// @details The owning snapshot independently retains all values. A values
+///          snapshot and indices snapshot correspond positionally only when
+///          no intervening mutation changes the table.
+/// @param obj SparseArray handle, or `NULL`.
+/// @return New runtime-managed owning Seq of values.
 void *rt_sparse_values(void *obj) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -392,8 +450,9 @@ void *rt_sparse_values(void *obj) {
 }
 
 /// @brief Remove all entries from the sparse array.
-/// @details Releases all value references and marks all slots as unoccupied.
-/// @param obj Sparse array object pointer; no-op if NULL.
+/// @details Releases all value references and marks all slots as unoccupied
+///          while preserving the current capacity for reuse.
+/// @param obj SparseArray handle, or `NULL` for a no-op.
 void rt_sparse_clear(void *obj) {
     if (!obj)
         return;

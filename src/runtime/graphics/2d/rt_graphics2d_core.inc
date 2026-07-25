@@ -71,6 +71,11 @@
 #define RT2D_GPUTEXTURE_CLASS_ID INT64_C(-0x620125)
 #define RT2D_SCREENSCALER_CLASS_ID INT64_C(-0x620126)
 
+/// @brief Normalizes a finite angle into one signed revolution.
+/// @param angle_deg In-out angle in degrees.
+/// @return `1` when @p angle_deg is non-null and finite, otherwise `0`.
+/// @details Successful normalization uses `fmod(angle, 360)`, so positive
+///          inputs produce `[0, 360)` and negative inputs produce `(-360, 0]`.
 static int rt2d_normalize_angle_degrees(double *angle_deg) {
     if (!angle_deg || !isfinite(*angle_deg))
         return 0;
@@ -198,6 +203,10 @@ typedef struct {
 //=============================================================================
 
 /// @brief Clamp an int64 to `[min, max]`.
+/// @param value Value to constrain.
+/// @param min Inclusive lower bound.
+/// @param max Inclusive upper bound.
+/// @return @p min or @p max when outside the interval, otherwise @p value.
 static int64_t clamp_i64(int64_t value, int64_t min, int64_t max) {
     if (value < min)
         return min;
@@ -208,11 +217,16 @@ static int64_t clamp_i64(int64_t value, int64_t min, int64_t max) {
 
 /// @brief Clamp to the unsigned-byte range `[0, 255]`. Used for RGBA channel math
 ///        that passes through int64 intermediates to avoid overflow on multiplies.
+/// @param value Integer channel or alpha value to constrain.
+/// @return @p value clamped to `0..255`.
 static int64_t clamp_u8_i64(int64_t value) {
     return clamp_i64(value, 0, 255);
 }
 
 /// @brief Saturating integer addition: returns INT64_MAX / INT64_MIN instead of wrapping.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return `a + b`, saturated at the signed 64-bit limits.
 int64_t rt2d_saturating_add_i64(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -222,6 +236,9 @@ int64_t rt2d_saturating_add_i64(int64_t a, int64_t b) {
 }
 
 /// @brief Saturating integer subtraction: returns INT64_MAX / INT64_MIN instead of wrapping.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @return `a - b`, saturated at the signed 64-bit limits.
 static int64_t saturating_sub_i64(int64_t a, int64_t b) {
     if (b >= 0)
         return (a < INT64_MIN + b) ? INT64_MIN : a - b;
@@ -230,6 +247,9 @@ static int64_t saturating_sub_i64(int64_t a, int64_t b) {
 
 /// @brief Saturating integer multiplication using `long double` to detect overflow before
 /// truncation.
+/// @param a Left operand.
+/// @param b Right operand.
+/// @return `a * b`, saturated at the signed 64-bit limits.
 int64_t rt2d_saturating_mul_i64(int64_t a, int64_t b) {
     long double value = (long double)a * (long double)b;
     if (value >= (long double)INT64_MAX)
@@ -239,6 +259,12 @@ int64_t rt2d_saturating_mul_i64(int64_t a, int64_t b) {
     return (int64_t)value;
 }
 
+/// @brief Tests an opaque handle against either of two compatible runtime classes.
+/// @param obj Opaque object handle to validate.
+/// @param primary_class_id Primary accepted runtime class identifier.
+/// @param alias_class_id Alternate accepted runtime class identifier.
+/// @param min_size Minimum payload bytes required for either class.
+/// @return Nonzero when @p obj belongs to either class with sufficient storage.
 static int32_t rt2d_is_instance_of_either(void *obj,
                                           int64_t primary_class_id,
                                           int64_t alias_class_id,
@@ -247,6 +273,10 @@ static int32_t rt2d_is_instance_of_either(void *obj,
                    rt_obj_is_instance(obj, alias_class_id, min_size));
 }
 
+/// @brief Validates and casts a render-target or surface handle.
+/// @param target Opaque RenderTarget2D or Surface2D candidate.
+/// @return The implementation pointer when class, payload size, and magic
+///         cookie match; otherwise `NULL`.
 static rt_rendertarget2d_impl *rendertarget2d_checked(void *target) {
     if (!target)
         return NULL;
@@ -260,6 +290,8 @@ static rt_rendertarget2d_impl *rendertarget2d_checked(void *target) {
 }
 
 /// @brief Validate and cast a `void *` to `rt_texture2d_impl *` by checking the magic cookie.
+/// @param texture Opaque Texture2D or GpuTexture2D candidate.
+/// @return The validated implementation pointer, or `NULL`.
 static rt_texture2d_impl *texture2d_checked(void *texture) {
     if (!texture)
         return NULL;
@@ -271,6 +303,8 @@ static rt_texture2d_impl *texture2d_checked(void *texture) {
 }
 
 /// @brief Validate and cast a `void *` to `rt_renderer2d_impl *` by checking the magic cookie.
+/// @param renderer Opaque Renderer2D candidate.
+/// @return The validated implementation pointer, or `NULL`.
 static rt_renderer2d_impl *renderer2d_checked(void *renderer) {
     if (!renderer)
         return NULL;
@@ -284,22 +318,34 @@ static rt_renderer2d_impl *renderer2d_checked(void *renderer) {
 /// @details Used by every public Renderer2D / Material2D / TileLayer2D entry
 ///          point as a one-line type guard before downcasting an opaque
 ///          handle to its concrete impl pointer.
+/// @param obj Opaque object handle to test.
+/// @param class_id Required runtime class identifier.
+/// @return Nonzero when @p obj is non-null and belongs to @p class_id.
 int32_t rt2d_has_class(void *obj, int64_t class_id) {
     return obj && rt_obj_is_instance(obj, class_id, 0);
 }
 
 /// @brief Like rt2d_has_class but also requires the payload be at least
 ///        @p min_size bytes (guards struct-layout mismatches before a cast).
+/// @param obj Opaque object handle to test.
+/// @param class_id Required runtime class identifier.
+/// @param min_size Minimum object payload size in bytes.
+/// @return Nonzero when both the class and payload-size requirements match.
 int32_t rt2d_has_class_min(void *obj, int64_t class_id, size_t min_size) {
     return obj && rt_obj_is_instance(obj, class_id, min_size);
 }
 
+/// @brief Tests whether a handle is a supported bitmap-backed font class.
+/// @param font Opaque font candidate.
+/// @return Nonzero for BitmapFont or SpriteFont instances, otherwise zero.
 int32_t rt2d_is_bitmap_font_handle(void *font) {
     return font && (rt_obj_is_instance(font, RT_BITMAPFONT_CLASS_ID, 0) ||
                     rt_obj_is_instance(font, RT_SPRITEFONT_CLASS_ID, 0));
 }
 
 /// @brief Safe-cast an opaque handle to rt_shader2d_impl, or NULL if not one.
+/// @param shader Opaque Shader2D candidate.
+/// @return The validated implementation pointer, or `NULL`.
 static rt_shader2d_impl *shader2d_checked(void *shader) {
     return rt2d_has_class_min(shader, RT2D_SHADER_CLASS_ID, sizeof(rt_shader2d_impl))
                ? (rt_shader2d_impl *)shader
@@ -307,6 +353,8 @@ static rt_shader2d_impl *shader2d_checked(void *shader) {
 }
 
 /// @brief Safe-cast an opaque handle to rt_postprocess2d_impl, or NULL.
+/// @param postprocess Opaque PostProcess2D candidate.
+/// @return The validated implementation pointer, or `NULL`.
 static rt_postprocess2d_impl *postprocess2d_checked(void *postprocess) {
     return rt2d_has_class_min(postprocess, RT2D_POSTPROCESS_CLASS_ID, sizeof(rt_postprocess2d_impl))
                ? (rt_postprocess2d_impl *)postprocess
@@ -315,11 +363,15 @@ static rt_postprocess2d_impl *postprocess2d_checked(void *postprocess) {
 
 /// @brief True if @p shader is either a Shader2D or a PostProcess2D (both
 ///        accept the same apply-to-pixels usage).
+/// @param shader Opaque effect handle to test.
+/// @return Nonzero for either supported effect class, otherwise zero.
 static int32_t rt2d_is_shader_like(void *shader) {
     return shader2d_checked(shader) || postprocess2d_checked(shader);
 }
 
 /// @brief Safe-cast an opaque handle to rt_viewport2d_impl, or NULL.
+/// @param viewport Opaque Viewport2D or ScreenScaler candidate.
+/// @return The validated implementation pointer, or `NULL`.
 static rt_viewport2d_impl *viewport2d_checked(void *viewport) {
     return rt2d_is_instance_of_either(viewport,
                                       RT2D_VIEWPORT_CLASS_ID,
@@ -329,9 +381,13 @@ static rt_viewport2d_impl *viewport2d_checked(void *viewport) {
                : NULL;
 }
 
-/// @brief Safe-cast an opaque handle to rt_tileset2d_impl, or NULL.
+/// @brief Tests whether a value lies in a half-open signed interval.
 /// @details Uses an unsigned subtraction trick to collapse the "negative start" and
 ///   "value < start" cases into a single bounds check without signed-overflow UB.
+/// @param start Inclusive interval start.
+/// @param length Positive interval length.
+/// @param value Candidate coordinate.
+/// @return Nonzero exactly when @p value is in `[start, start + length)`.
 static int32_t point_in_interval_i64(int64_t start, int64_t length, int64_t value) {
     if (length <= 0 || value < start)
         return 0;
@@ -343,6 +399,11 @@ static int32_t point_in_interval_i64(int64_t start, int64_t length, int64_t valu
 /// @details Implemented as "does either interval contain the other's start?" — one containment
 /// implies
 ///   overlap in both directions. Zero-length intervals never overlap.
+/// @param a_start Start of the first interval.
+/// @param a_length Length of the first interval.
+/// @param b_start Start of the second interval.
+/// @param b_length Length of the second interval.
+/// @return Nonzero when the half-open intervals overlap.
 static int32_t intervals_overlap_i64(int64_t a_start,
                                      int64_t a_length,
                                      int64_t b_start,
@@ -356,6 +417,8 @@ static int32_t intervals_overlap_i64(int64_t a_start,
 /// @brief Return the unsigned distance from @p value to zero (i.e. `abs(value)` as uint64).
 /// @details Negative values use `(uint64_t)(-(value+1))+1u` so INT64_MIN is handled
 ///          without signed-overflow UB.
+/// @param value Signed value whose magnitude is requested.
+/// @return The exact unsigned magnitude, including `2^63` for `INT64_MIN`.
 static uint64_t distance_to_zero_i64(int64_t value) {
     if (value >= 0)
         return (uint64_t)value;
@@ -369,6 +432,12 @@ static uint64_t distance_to_zero_i64(int64_t value) {
 ///   both positions by `skip`, reduces `length` accordingly, then clips `length` to the remaining
 ///   space in both buffers. Sets `*length = 0` and returns 0 on any out-of-bounds condition. Called
 ///   twice per blit (once for X, once for Y) so the blit loop never has to range-check coordinates.
+/// @param dst_pos In-out destination coordinate on the selected axis.
+/// @param src_pos In-out source coordinate on the selected axis.
+/// @param length In-out copy length on the selected axis.
+/// @param dst_limit Exclusive destination dimension.
+/// @param src_limit Exclusive source dimension.
+/// @return Nonzero when clipping leaves a positive in-bounds span.
 static int32_t blit_clip_axis(
     int64_t *dst_pos, int64_t *src_pos, int64_t *length, int64_t dst_limit, int64_t src_limit) {
     if (!dst_pos || !src_pos || !length || *length <= 0 || dst_limit <= 0 || src_limit <= 0) {
@@ -425,6 +494,10 @@ static int32_t blit_clip_axis(
 /// @details Used for viewport coordinate transforms where the intermediate result must
 ///   be in `long double` to avoid losing precision, but must ultimately become an integer
 ///   pixel coordinate. Non-finite values are clamped to the appropriate extreme.
+/// @param value Floating-point coordinate to convert.
+/// @return The nearest signed 64-bit integer, saturated on overflow; negative
+///         infinity maps to `INT64_MIN`, while positive infinity and NaN map to
+///         `INT64_MAX`.
 static int64_t round_long_double_to_i64(long double value) {
     if (!isfinite((double)value))
         return value < 0.0L ? INT64_MIN : INT64_MAX;
@@ -437,6 +510,8 @@ static int64_t round_long_double_to_i64(long double value) {
 
 /// @brief Clamp a dimension to `[1, RT2D_MAX_DIM]`. Zero / negative requests become
 ///        1 so nothing downstream has to special-case an empty row or column.
+/// @param value Requested dimension.
+/// @return @p value clamped to the supported positive dimension range.
 static int64_t normalized_dim(int64_t value) {
     return clamp_i64(value, 1, RT2D_MAX_DIM);
 }
@@ -475,10 +550,12 @@ int32_t rt2d_checked_count(int64_t width, int64_t height, int64_t elem_size, int
 }
 
 /// @brief Pick an initial backing-array capacity for a dynamic list.
-/// @details Floor 16 (`RT2D_INITIAL_CAP`) so a single-element list doesn't
-///          thrash through tiny reallocs; ceiling 1Mi entries to cap a pathological
-///          "reserve everything up front" caller. Negative / zero requests default
-///          to the floor.
+/// @param requested Caller-requested entry count.
+/// @return `RT2D_INITIAL_CAP` for non-positive requests, `1048576` for larger
+///         requests, and the positive request unchanged otherwise.
+/// @details The default avoids tiny allocations when callers do not specify a
+///          capacity, while explicitly requested small positive capacities are
+///          preserved.
 int64_t rt2d_initial_capacity(int64_t requested) {
     if (requested <= 0)
         return RT2D_INITIAL_CAP;
@@ -492,6 +569,7 @@ int64_t rt2d_initial_capacity(int64_t requested) {
 ///          or opaque handles (constants, interned values) that don't need refcount
 ///          maintenance. `rt_heap_is_payload` distinguishes the two; this wrapper
 ///          means callers don't have to probe the heap bit themselves.
+/// @param obj Borrowed object handle whose payload reference count is incremented.
 void rt2d_retain_ref(void *obj) {
     if (obj && rt_heap_is_payload(obj))
         rt_obj_retain_maybe(obj);
@@ -502,6 +580,8 @@ void rt2d_retain_ref(void *obj) {
 ///          The slot is cleared *before* the potential free so observers can't see
 ///          a dangling pointer mid-release. Non-payload handles are skipped just
 ///          like `rt2d_retain_ref`.
+/// @param slot In-out pointer slot.  A non-null contained object is released as
+///        appropriate and the slot is always cleared first.
 void rt2d_release_ref_slot(void **slot) {
     if (!slot || !*slot)
         return;
@@ -515,6 +595,8 @@ void rt2d_release_ref_slot(void **slot) {
 /// @details Shape/debug APIs accept Canvas-style `0x00RRGGBB`, raw
 ///          `0xRRGGBBAA`, or tagged Color.RGBA values. Alpha is ignored by
 ///          these RGB-only drawing primitives.
+/// @param color Packed RGB, packed RGBA, or explicitly tagged Color value.
+/// @return The normalized low 24-bit `0x00RRGGBB` color.
 int64_t rt2d_draw_rgb(int64_t color) {
     uint64_t full = (uint64_t)color;
     uint64_t c = full & 0xFFFFFFFFu;
@@ -532,6 +614,10 @@ int64_t rt2d_draw_rgb(int64_t color) {
 ///          without touching color. Integer-math rounding uses the standard
 ///          `(a * b + 127) / 255` bias so channel products match the "divide by
 ///          255" behaviour you'd expect from floating-point.
+/// @param rgba Source texel encoded as `0xRRGGBBAA`.
+/// @param tint Multiplicative `0x00RRGGBB` tint, or a negative value to skip tinting.
+/// @param alpha Additional alpha scale, clamped to `0..255`.
+/// @return The transformed `0xRRGGBBAA` texel.
 static uint32_t apply_tint_alpha(uint32_t rgba, int64_t tint, int64_t alpha) {
     int64_t r = (rgba >> 24) & 255;
     int64_t g = (rgba >> 16) & 255;
@@ -561,6 +647,11 @@ static uint32_t apply_tint_alpha(uint32_t rgba, int64_t tint, int64_t alpha) {
 ///          - **ALPHA** (default): straight-alpha Porter-Duff source-over.
 ///          All multiplies use the `(a * b + 127) / 255` rounding bias so results
 ///          match float-reference output within 1 ULP.
+/// @param dst Destination texel encoded as `0xRRGGBBAA`.
+/// @param src Source texel encoded as `0xRRGGBBAA`.
+/// @param blend_mode Requested `RT_GRAPHICS2D_BLEND_*` operation; values other
+///        than opaque and additive use source-over alpha blending.
+/// @return The composited `0xRRGGBBAA` texel.
 static uint32_t blend_pixel(uint32_t dst, uint32_t src, int64_t blend_mode) {
     int64_t sr = (src >> 24) & 255;
     int64_t sg = (src >> 16) & 255;
@@ -602,10 +693,13 @@ static uint32_t blend_pixel(uint32_t dst, uint32_t src, int64_t blend_mode) {
 ///          enum ranges — clamping happens upstream in the public API setters, not
 ///          here. Keeps the inner loop branch-light.
 /// @param dst Destination Pixels (written in place).
-/// @param dx,dy Destination top-left in pixels.
+/// @param dx Destination top-left X coordinate.
+/// @param dy Destination top-left Y coordinate.
 /// @param src Source Pixels (read-only).
-/// @param sx,sy Source top-left in pixels (may be negative; will be clipped).
-/// @param width,height Copy size in pixels (may overflow bounds; will be clipped).
+/// @param sx Source top-left X coordinate; may be negative and is clipped.
+/// @param sy Source top-left Y coordinate; may be negative and is clipped.
+/// @param width Requested copy width; clipped to both images.
+/// @param height Requested copy height; clipped to both images.
 /// @param tint 0x00RRGGBB multiplicative tint, or negative to skip tinting.
 /// @param alpha Alpha scale in [0, 255].
 /// @param blend_mode One of `RT_GRAPHICS2D_BLEND_*`.
@@ -687,6 +781,9 @@ void rt2d_blit_pixels(void *dst,
 /// @details RT_GRAPHICS2D_WRAP_REPEAT performs a positive-modulo wrap (so
 ///          negative coords land in [0, limit)); other wrap modes clamp into
 ///          [0, limit-1]. Used by both nearest- and linear-filter samplers.
+/// @param coord Source coordinate to resolve.
+/// @param limit Positive coordinate-space extent.
+/// @param wrap Requested `RT_GRAPHICS2D_WRAP_*` mode.
 /// @return A coordinate in [0, limit). Returns 0 for limit <= 0.
 static int64_t sampler_coord_i64(int64_t coord, int64_t limit, int64_t wrap) {
     if (limit <= 0)
@@ -708,6 +805,12 @@ static int64_t sampler_coord_i64(int64_t coord, int64_t limit, int64_t wrap) {
 ///          clamped against the requested span first, then translated by the
 ///          region origin and finally resolved against the backing Pixels
 ///          bounds using the texture wrap mode.
+/// @param origin Source-space origin of the texture region.
+/// @param local_coord Coordinate relative to @p origin.
+/// @param span Region extent used for local wrapping or clamping.
+/// @param source_limit Full backing-image extent.
+/// @param wrap Requested `RT_GRAPHICS2D_WRAP_*` mode.
+/// @return A valid backing-image coordinate, or `0` for a degenerate extent.
 static int64_t sampler_region_coord_i64(
     int64_t origin, int64_t local_coord, int64_t span, int64_t source_limit, int64_t wrap) {
     if (source_limit <= 0 || span <= 0)
@@ -724,6 +827,8 @@ static int64_t sampler_region_coord_i64(
 }
 
 /// @brief Round and clamp a long-double color channel to a 0..255 byte.
+/// @param value Floating-point channel value.
+/// @return The nearest byte value, clamped to `0..255`.
 static uint8_t clamp_channel_ld(long double value) {
     if (value <= 0.0L)
         return 0;
@@ -747,8 +852,12 @@ static long double premul_channel(uint32_t rgba, int shift) {
 ///          alpha-premultiplied space (correct edge behaviour against
 ///          transparent texels), then un-premultiplies back to straight RGBA.
 ///          Returns fully transparent (0) when the blended alpha is zero.
-/// @param c00,c10,c01,c11 Corner texels (TL, TR, BL, BR) as 0xRRGGBBAA.
-/// @param tx,ty Fractional sample position in [0,1] within the texel quad.
+/// @param c00 Top-left texel encoded as `0xRRGGBBAA`.
+/// @param c10 Top-right texel encoded as `0xRRGGBBAA`.
+/// @param c01 Bottom-left texel encoded as `0xRRGGBBAA`.
+/// @param c11 Bottom-right texel encoded as `0xRRGGBBAA`.
+/// @param tx Fractional horizontal position in `[0, 1]`.
+/// @param ty Fractional vertical position in `[0, 1]`.
 /// @return The interpolated 0xRRGGBBAA color.
 static uint32_t bilerp_premul_rgba(
     uint32_t c00, uint32_t c10, uint32_t c01, uint32_t c11, long double tx, long double ty) {
@@ -782,6 +891,17 @@ static uint32_t bilerp_premul_rgba(
 ///          (sx, sy). Picks the nearest source texel, applying the wrap mode
 ///          for out-of-range coordinates. Returns 0 (transparent black) on
 ///          degenerate input.
+/// @param src Borrowed source Pixels image.
+/// @param sx Source-region origin X.
+/// @param sy Source-region origin Y.
+/// @param src_span_w Source-region width.
+/// @param src_span_h Source-region height.
+/// @param dst_span_w Full destination mapping width.
+/// @param dst_span_h Full destination mapping height.
+/// @param dst_x X coordinate relative to the destination mapping.
+/// @param dst_y Y coordinate relative to the destination mapping.
+/// @param wrap Source-coordinate wrap mode.
+/// @return The sampled `0xRRGGBBAA` texel, or transparent black for degenerate input.
 static uint32_t sample_pixels_nearest(void *src,
                                       int64_t sx,
                                       int64_t sy,
@@ -822,6 +942,17 @@ static uint32_t sample_pixels_nearest(void *src,
 ///          fractional source position. RGB is interpolated in premultiplied
 ///          alpha space, then converted back to straight RGBA, so transparent
 ///          edge texels do not darken partially transparent samples.
+/// @param src Borrowed source Pixels image.
+/// @param sx Source-region origin X.
+/// @param sy Source-region origin Y.
+/// @param src_span_w Source-region width.
+/// @param src_span_h Source-region height.
+/// @param dst_span_w Full destination mapping width.
+/// @param dst_span_h Full destination mapping height.
+/// @param dst_x X coordinate relative to the destination mapping.
+/// @param dst_y Y coordinate relative to the destination mapping.
+/// @param wrap Source-coordinate wrap mode.
+/// @return The filtered `0xRRGGBBAA` texel, or transparent black for degenerate input.
 static uint32_t sample_pixels_linear(void *src,
                                      int64_t sx,
                                      int64_t sy,
@@ -865,6 +996,18 @@ static uint32_t sample_pixels_linear(void *src,
 /// @details Single entry point so the inner blit loops don't have to check
 ///          the filter mode per pixel — only the dispatch sees the filter
 ///          argument. Defaults to nearest for unknown filter values.
+/// @param src Borrowed source Pixels image.
+/// @param sx Source-region origin X.
+/// @param sy Source-region origin Y.
+/// @param src_span_w Source-region width.
+/// @param src_span_h Source-region height.
+/// @param dst_span_w Full destination mapping width.
+/// @param dst_span_h Full destination mapping height.
+/// @param dst_x X coordinate relative to the destination mapping.
+/// @param dst_y Y coordinate relative to the destination mapping.
+/// @param filter Requested `RT_GRAPHICS2D_FILTER_*` mode.
+/// @param wrap Requested `RT_GRAPHICS2D_WRAP_*` mode.
+/// @return The nearest- or linear-filtered `0xRRGGBBAA` texel.
 static uint32_t sample_pixels(void *src,
                               int64_t sx,
                               int64_t sy,
@@ -890,14 +1033,16 @@ static uint32_t sample_pixels(void *src,
 ///          via blend_pixel. This is the workhorse for Renderer2D.DrawTexture*
 ///          and post-process passes.
 /// @param dst        Destination Pixels (RGBA8). Required.
-/// @param dx,dy      Top-left of the destination rect.
+/// @param dx         Destination rectangle X coordinate.
+/// @param dy         Destination rectangle Y coordinate.
 /// @param src        Source Pixels (RGBA8). Required.
-/// @param sx,sy      Top-left of the source region.
+/// @param sx         Source-region X coordinate.
+/// @param sy         Source-region Y coordinate.
 /// @param src_width  Width of the source region (the (sx,sy)..(sx+w,sy+h) span).
 /// @param src_height Height of the source region.
 /// @param dst_width  Width of the destination rect (scaling).
 /// @param dst_height Height of the destination rect (scaling).
-/// @param tint       0xAARRGGBB tint multiplier (-1 = no tint).
+/// @param tint       `0x00RRGGBB` tint multiplier, or negative for no tint.
 /// @param alpha      Extra opacity multiplier in [0, 255].
 /// @param blend_mode RT_GRAPHICS2D_BLEND_* (alpha / additive / replace …).
 /// @param filter     RT_GRAPHICS2D_FILTER_NEAREST or LINEAR.
@@ -989,6 +1134,18 @@ static void blit_pixels_sampled_scaled(void *dst,
 /// @brief Blit a full source image rotated around a pivot inside the source rect.
 /// @details The destination anchor `(dx,dy)` is the unrotated top-left; `pivot_x/y`
 ///          are source-local coordinates. Rotation is clockwise in screen space.
+/// @param dst Destination Pixels image modified in place.
+/// @param dx Destination X coordinate of the unrotated source image.
+/// @param dy Destination Y coordinate of the unrotated source image.
+/// @param src Borrowed full source Pixels image.
+/// @param pivot_x Rotation pivot X in source-local pixels.
+/// @param pivot_y Rotation pivot Y in source-local pixels.
+/// @param angle_deg Finite clockwise angle in degrees.
+/// @param tint Multiplicative `0x00RRGGBB` tint, or negative for no tint.
+/// @param alpha Additional alpha scale in `0..255`.
+/// @param blend_mode Requested `RT_GRAPHICS2D_BLEND_*` operation.
+/// @param filter Nearest or bilinear texture sampling.
+/// @param wrap Clamp or repeat behavior for sampled source coordinates.
 static void blit_pixels_rotated(void *dst,
                                 int64_t dx,
                                 int64_t dy,
@@ -1122,6 +1279,9 @@ static void blit_pixels_rotated(void *dst,
 ///          `Pixels` rather than as the source for a blit. Walks the full width×height
 ///          grid applying `apply_tint_alpha` to each texel; the source alpha is
 ///          respected so fully-transparent texels stay transparent.
+/// @param pixels Pixels image modified in place.
+/// @param tint Multiplicative `0x00RRGGBB` tint, or negative for no tint.
+/// @param alpha Additional alpha scale, clamped to `0..255` per texel.
 static void apply_tint_alpha_in_place(void *pixels, int64_t tint, int64_t alpha) {
     if (!pixels)
         return;
@@ -1140,6 +1300,12 @@ static void apply_tint_alpha_in_place(void *pixels, int64_t tint, int64_t alpha)
 ///   The source coordinates are NOT clipped — callers that may have out-of-bounds regions
 ///   should call `clip_region_to_source` first. Returns NULL if allocation fails or inputs
 ///   are invalid.
+/// @param pixels Borrowed source Pixels image.
+/// @param sx Source rectangle X coordinate.
+/// @param sy Source rectangle Y coordinate.
+/// @param width Positive output width.
+/// @param height Positive output height.
+/// @return A new owned Pixels image, or `NULL` for invalid input or allocation failure.
 void *rt2d_copy_region_pixels(void *pixels, int64_t sx, int64_t sy, int64_t width, int64_t height) {
     if (!pixels || width <= 0 || height <= 0)
         return NULL;
@@ -1156,6 +1322,14 @@ void *rt2d_copy_region_pixels(void *pixels, int64_t sx, int64_t sy, int64_t widt
 ///   When the rectangle runs past the right or bottom edge of the source, width/height are
 ///   trimmed. Updates all six in-out parameters and returns 1 if a non-empty intersection
 ///   remains, 0 if the rectangle is fully out of bounds.
+/// @param pixels Borrowed source Pixels image defining the clip bounds.
+/// @param dx In-out destination X coordinate adjusted for left clipping.
+/// @param dy In-out destination Y coordinate adjusted for top clipping.
+/// @param sx In-out source X coordinate.
+/// @param sy In-out source Y coordinate.
+/// @param w In-out rectangle width.
+/// @param h In-out rectangle height.
+/// @return `1` when a nonempty source intersection remains, otherwise `0`.
 static int8_t clip_region_to_source(
     void *pixels, int64_t *dx, int64_t *dy, int64_t *sx, int64_t *sy, int64_t *w, int64_t *h) {
     if (!pixels || !dx || !dy || !sx || !sy || !w || !h || *w <= 0 || *h <= 0)
@@ -1203,6 +1377,11 @@ static int8_t clip_region_to_source(
 ///   an unnecessary clone when neither tint nor alpha modification is active. Callers use the
 ///   NULL return to avoid the clone overhead in the common "unmodified" case — if non-NULL is
 ///   returned the caller owns the clone and must release it.
+/// @param pixels Borrowed source Pixels image.
+/// @param tint Multiplicative `0x00RRGGBB` tint, or negative for no tint.
+/// @param alpha Additional alpha scale.
+/// @return A new owned processed clone, or `NULL` when no processing is needed,
+///         input is invalid, or allocation fails.
 static void *processed_pixels_or_null(void *pixels, int64_t tint, int64_t alpha) {
     if (!pixels || (tint < 0 && clamp_u8_i64(alpha) == 255))
         return NULL;

@@ -6,37 +6,42 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_stack_safety.c
-// Purpose: Implements stack overflow detection and graceful error reporting for
-//          the Zanna runtime. On POSIX systems, installs a SIGSEGV handler on
-//          an alternate signal stack to catch stack overflows. On Windows,
-//          registers a Vectored Exception Handler for EXCEPTION_STACK_OVERFLOW.
+// Purpose: Installs best-effort platform fatal-fault diagnostics for native
+//          stack exhaustion and provides an unconditional stack-overflow
+//          termination entry point.
 //
 // Key invariants:
 //   - Process-wide signal/exception handlers are installed transactionally at
-//     most once, while concurrent callers wait for publication.
+//     most once after success; failed registration is silent and retryable.
 //   - POSIX alternate signal stacks are per-thread. Every caller preserves an
-//     already-enabled stack (including sanitizer-owned stacks) or installs a
-//     distinct thread-local buffer before returning.
+//     already-enabled stack or attempts to install a distinct thread-local
+//     buffer before checking process-wide readiness.
 //   - Signal/exception handlers write diagnostic messages using async-signal-
 //     safe methods (write/WriteFile) rather than fprintf, which is unsafe in
 //     low-stack conditions.
-//   - After detecting a stack overflow the process is terminated immediately
-//     via ExitProcess/exit(1); recovery is not attempted.
-//   - The fallback alternate stack (POSIX) is a thread-local buffer of size
+//   - Windows distinguishes EXCEPTION_STACK_OVERFLOW. POSIX cannot reliably
+//     distinguish overflow from other SIGSEGV/SIGBUS faults and reports both.
+//   - A handled fatal fault terminates immediately through ExitProcess/_exit;
+//     the explicit trap uses the same termination policy.
+//   - The POSIX fallback alternate stack is a thread-local buffer of size
 //     SIGSTKSZ; no heap allocation is used for signal infrastructure.
-//   - On platforms without signal support (e.g., bare-metal) the functions
-//     are compiled as no-ops.
+//   - Unsupported-platform initialization is a no-op, but the explicit trap
+//     still prints through stdio and exits with status 1.
 //
 // Ownership/Lifetime:
 //   - Handler state is process-global; POSIX alternate-stack storage belongs to
 //     each calling thread and remains valid for that thread's lifetime.
 //   - Existing alternate stacks and existing non-default fatal-signal handlers
 //     remain owned by the component that installed them.
+//   - Installed handlers and Windows error-mode changes are retained until
+//     process termination; this module provides no uninstall operation.
 //
 // Links: src/runtime/core/rt_stack_safety.h (public API),
-//        src/runtime/core/rt_trap.c (general runtime trap/abort mechanism)
+//        src/runtime/rt_platform.h (platform and thread-local abstractions)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Best-effort native stack-overflow diagnostics and termination.
 
 #include "rt_stack_safety.h"
 
@@ -62,12 +67,16 @@ static int g_stack_safety_state = RT_STACK_SAFETY_UNINITIALIZED;
 /// @brief Registration token retained for the lifetime of the process.
 static PVOID g_stack_safety_handler = NULL;
 
+/// @brief Dynamically resolved signature for `SetThreadStackGuarantee`.
 typedef BOOL(WINAPI *rt_set_thread_stack_guarantee_fn)(PULONG);
+/// @brief Dynamically resolved signature for `GetErrorMode`.
 typedef UINT(WINAPI *rt_get_error_mode_fn)(void);
 
 /// @brief Reserve enough stack for the current thread's overflow handler.
 /// @details SetThreadStackGuarantee is thread-local, so this runs before the
-///          process-wide ready-state fast path on every calling thread.
+///          process-wide ready-state fast path on every calling thread. The
+///          API is resolved dynamically and absence or failure is ignored
+///          because initialization has no status-return channel.
 static void ensure_thread_stack_guarantee(void) {
     ULONG guarantee = 64U * 1024U;
     HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -80,6 +89,13 @@ static void ensure_thread_stack_guarantee(void) {
 }
 
 /// @brief Vectored exception handler for stack overflow detection.
+/// @details For `EXCEPTION_STACK_OVERFLOW`, writes a fixed diagnostic directly
+///          to the current standard-error OS handle and terminates with status
+///          one. Invalid handles and failed writes do not prevent termination.
+///          Every other exception continues through the handler chain.
+/// @param ep Exception metadata supplied by Windows; may be `NULL`.
+/// @return `EXCEPTION_CONTINUE_SEARCH` for non-overflow exceptions. The
+///         overflow path does not return.
 static LONG WINAPI stack_overflow_handler(EXCEPTION_POINTERS *ep) {
     if (ep && ep->ExceptionRecord &&
         ep->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
@@ -102,6 +118,10 @@ static LONG WINAPI stack_overflow_handler(EXCEPTION_POINTERS *ep) {
 /// @brief Install the Windows exception handler after winning initialization.
 /// @details Registration occurs before global error-mode changes so a failed
 ///          `AddVectoredExceptionHandler` attempt leaves those modes untouched.
+///          Success retains the registration token, suppresses critical-error
+///          and GP-fault dialog boxes while preserving the current mode when
+///          `GetErrorMode` is available (otherwise starting from zero), and
+///          disables CRT abort messages/report-fault behavior.
 /// @return Non-zero when the handler was registered and can be published.
 static int install_stack_safety_handler(void) {
     PVOID handler = AddVectoredExceptionHandler(1, stack_overflow_handler);
@@ -118,6 +138,11 @@ static int install_stack_safety_handler(void) {
     return 1;
 }
 
+/// @brief Initialize Windows stack-overflow handling for the calling thread.
+/// @details Always attempts the thread-local stack guarantee first. One caller
+///          then registers and publishes the process-wide vectored handler;
+///          concurrent callers spin on the atomic state. Registration failure
+///          resets the state for a later retry and returns silently.
 void rt_init_stack_safety(void) {
     ensure_thread_stack_guarantee();
     for (;;) {
@@ -142,6 +167,10 @@ void rt_init_stack_safety(void) {
     }
 }
 
+/// @brief Emit the explicit Windows stack-overflow trap and terminate.
+/// @details Writes a fixed message with `WriteFile` when the standard-error
+///          handle is usable, ignores write errors, and calls `ExitProcess(1)`.
+/// @note This function does not return.
 void rt_trap_stack_overflow(void) {
     // Use WriteFile for safety in low-stack conditions
     HANDLE hStderr = GetStdHandle(STD_ERROR_HANDLE);
@@ -164,6 +193,8 @@ enum {
 };
 
 /// @brief Naturally aligned per-thread storage used only when no stack exists.
+/// @details The union remains alive for the entire thread lifetime and is large
+///          enough for the platform's `SIGSTKSZ` requirement.
 static RT_THREAD_LOCAL union {
     max_align_t alignment;
     unsigned char bytes[SIGSTKSZ];
@@ -172,7 +203,14 @@ static RT_THREAD_LOCAL union {
 /// @brief Atomic publication state for the process-wide signal handlers.
 static int g_stack_safety_state = RT_STACK_SAFETY_UNINITIALIZED;
 
-/// @brief Signal handler for SIGSEGV (stack overflow detection).
+/// @brief Report a handled POSIX fatal memory signal and terminate.
+/// @details Zanna cannot distinguish stack exhaustion from an arbitrary
+///          segmentation or bus fault at this layer. For SIGSEGV or SIGBUS it
+///          writes a fixed message with the async-signal-safe `write` syscall,
+///          ignores write errors, and calls `_exit(1)`.
+/// @param sig Delivered signal number.
+/// @param info Signal metadata; intentionally unused.
+/// @param context Machine context; intentionally unused.
 static void sigsegv_handler(int sig, siginfo_t *info, void *context) {
     (void)info;
     (void)context;
@@ -191,7 +229,8 @@ static void sigsegv_handler(int sig, siginfo_t *info, void *context) {
 ///          is deliberately preserved because runtimes such as ASan own and
 ///          unmap the stack they install during thread teardown. When disabled,
 ///          this function installs the caller's distinct thread-local buffer.
-/// @return Non-zero when an alternate stack was already present or installed.
+/// @return Non-zero when an alternate stack was already enabled or the
+///         thread-local replacement was installed; zero on query/install error.
 static int ensure_thread_alt_stack(void) {
     stack_t current;
     if (sigaltstack(NULL, &current) != 0)
@@ -210,16 +249,20 @@ static int ensure_thread_alt_stack(void) {
 /// @details Zanna does not replace non-default handlers (including ignored
 ///          dispositions), preserving sanitizer, debugger, embedding-host, and
 ///          crash-reporter ownership.
-/// @param action Signal disposition returned by a query-only `sigaction` call.
+/// @param action Non-null signal disposition returned by a query-only
+///               `sigaction` call.
 /// @return Non-zero when the disposition is not the platform default.
 static int has_external_signal_handler(const struct sigaction *action) {
     return action->sa_handler != SIG_DFL;
 }
 
 /// @brief Install both process-wide POSIX fatal-signal handlers transactionally.
-/// @details Existing non-default ownership causes a successful no-op. If the
-///          SIGBUS installation fails after SIGSEGV succeeds, the previous
-///          SIGSEGV disposition is restored before reporting failure.
+/// @details Queries both dispositions before mutation. If either signal has a
+///          non-default or ignored disposition, Zanna defers completely and
+///          reports a successful no-op, leaving the other signal untouched as
+///          well. Otherwise it installs one SA_SIGINFO|SA_ONSTACK handler for
+///          both. If SIGBUS installation fails after SIGSEGV succeeds, the
+///          previous SIGSEGV disposition is restored.
 /// @return Non-zero when the desired state is safe to publish as ready.
 static int install_stack_safety_handlers(void) {
     struct sigaction previous_segv;
@@ -246,6 +289,12 @@ static int install_stack_safety_handlers(void) {
     return 1;
 }
 
+/// @brief Initialize POSIX fatal-fault handling for the calling thread.
+/// @details Attempts the per-thread alternate stack on every call, even after
+///          process-wide readiness. Its failure is not surfaced and does not
+///          block handler registration. One caller queries/installs or defers
+///          the process signal handlers while concurrent callers spin on the
+///          atomic state. Installation failure resets the state for retry.
 void rt_init_stack_safety(void) {
     (void)ensure_thread_alt_stack();
 
@@ -271,6 +320,10 @@ void rt_init_stack_safety(void) {
     }
 }
 
+/// @brief Emit the explicit POSIX stack-overflow trap and terminate.
+/// @details Writes a fixed diagnostic directly to standard error and calls
+///          `_exit(1)`, bypassing stdio flushing and process-exit callbacks.
+/// @note This function does not return.
 void rt_trap_stack_overflow(void) {
     static const char msg[] = "Zanna runtime trap: stack overflow\n";
     (void)write(STDERR_FILENO, msg, sizeof(msg) - 1U);
@@ -279,10 +332,17 @@ void rt_trap_stack_overflow(void) {
 
 #else
 // Fallback for other platforms - no-op implementation
+/// @brief Perform unsupported-platform stack-safety initialization.
+/// @details No signal or exception handler is available, so this variant is a
+///          no-op.
 void rt_init_stack_safety(void) {
     // No-op on unsupported platforms
 }
 
+/// @brief Emit the fallback stack-overflow diagnostic and terminate.
+/// @details Uses `fprintf` and `fflush` because no supported async fault-handler
+///          environment is available, then calls `exit(1)`.
+/// @note This function does not return.
 void rt_trap_stack_overflow(void) {
     fprintf(stderr, "Zanna runtime trap: stack overflow\n");
     fflush(stderr);

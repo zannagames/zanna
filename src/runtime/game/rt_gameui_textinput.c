@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_gameui_textinput.c
+/// @file
+/// @brief Implements the UTF-8-aware, single-line GameUI text field.
+//
 // Purpose: UITextInput widget for the immediate-mode GameUI — editable single-
 //          line text field with UTF-8-aware cursor/selection handling. Split
 //          out of rt_gameui.c; shares helpers + key codes via
@@ -17,7 +20,9 @@
 //   - Immediate-mode: validates its canvas and draws against the current frame.
 //
 // Ownership/Lifetime:
-//   - Borrows the caller's canvas/font; owns its editable text buffer.
+//   - Borrows the caller's canvas for each draw.
+//   - Owns its dynamic text and placeholder buffers, retains an assigned
+//     BitmapFont, and releases all three through its finalizer.
 //
 // Links: src/runtime/game/rt_gameui.c (other widgets + shared helpers),
 //        src/runtime/game/rt_gameui_internal.h (shared helpers + key codes)
@@ -45,9 +50,12 @@
 // UITextInput
 //=============================================================================
 
+/// @brief Initial capacity of the owned text and placeholder buffers.
 #define RT_UITEXTINPUT_DEFAULT_BYTES 512
+/// @brief Default caret half-cycle duration in milliseconds.
 #define RT_UITEXTINPUT_DEFAULT_CURSOR_BLINK_MS 530
 
+/// @brief Private editable state stored in a runtime UITextInput object.
 typedef struct {
     void *vptr;
     int64_t x, y, w, h;
@@ -76,8 +84,11 @@ typedef struct {
     int64_t placeholder_capacity;
 } rt_uitextinput_impl;
 
-/// @brief Safe-cast a handle to the UITextInput impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UITextInput handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UITextInput payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uitextinput_impl *checked_textinput(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -89,6 +100,9 @@ static rt_uitextinput_impl *checked_textinput(void *ptr, const char *api) {
 }
 
 /// @brief GC finalizer: free the text buffer and release the field's font.
+/// @param obj UITextInput payload being finalized; `NULL` is accepted.
+/// @details Frees text and placeholder storage, clears their lengths/capacities,
+///          and releases the retained font.
 static void uitextinput_finalizer(void *obj) {
     rt_uitextinput_impl *ti = (rt_uitextinput_impl *)obj;
     if (!ti)
@@ -104,6 +118,14 @@ static void uitextinput_finalizer(void *obj) {
     ti->font = NULL;
 }
 
+/// @brief Grow an owned character buffer geometrically to a required capacity.
+/// @param buffer Address of the allocation pointer.
+/// @param capacity Address of the current byte capacity.
+/// @param needed Minimum required byte capacity.
+/// @return `1` when existing/new storage is sufficient; `0` for invalid growth,
+///         representability overflow, or allocation failure.
+/// @details New capacity doubles from at least one and newly added bytes are
+///          zero-initialized. Failure preserves the original allocation.
 static int8_t ensure_text_storage(char **buffer, int64_t *capacity, int64_t needed) {
     if (!buffer || !capacity || needed <= *capacity)
         return 1;
@@ -126,6 +148,12 @@ static int8_t ensure_text_storage(char **buffer, int64_t *capacity, int64_t need
 
 /// @brief Replace the field's buffer with @p len bytes of @p text, resetting
 ///        caret/selection (respects the max-codepoints cap).
+/// @param ti UITextInput payload to mutate.
+/// @param text Source bytes, or `NULL` for empty content.
+/// @param len Available source byte count.
+/// @details Copying stops at embedded NUL and at the configured codepoint cap.
+///          Allocation failure traps and leaves the prior state intact. Success
+///          moves the caret to the end and resets selection and scroll.
 static void textinput_set_bytes(rt_uitextinput_impl *ti, const char *text, size_t len) {
     if (!ti)
         return;
@@ -149,7 +177,11 @@ static void textinput_set_bytes(rt_uitextinput_impl *ti, const char *text, size_
 }
 
 /// @brief Get the normalized selection byte range (start <= end) via out
-///        params. @return non-zero if a non-empty selection exists.
+///        params.
+/// @param ti UITextInput payload to inspect.
+/// @param start Optional output for the inclusive lower byte offset.
+/// @param end Optional output for the exclusive upper byte offset.
+/// @return Nonzero for a nonempty clamped selection; otherwise zero.
 static int8_t textinput_selection_range(rt_uitextinput_impl *ti, int64_t *start, int64_t *end) {
     if (!ti || ti->selection_anchor < 0 || ti->selection_anchor == ti->cursor_byte)
         return 0;
@@ -174,7 +206,12 @@ static int8_t textinput_selection_range(rt_uitextinput_impl *ti, int64_t *start,
 }
 
 /// @brief Delete bytes [start, end) from the field and fix up the caret.
-/// @return non-zero if anything was removed.
+/// @param ti UITextInput payload to mutate.
+/// @param start Inclusive byte offset.
+/// @param end Exclusive byte offset, clamped to the text length.
+/// @return Nonzero when bytes were removed; otherwise zero.
+/// @details Compacts the terminating NUL, moves the caret to @p start, clears
+///          selection, and pulls scroll back when necessary.
 static int8_t textinput_delete_range(rt_uitextinput_impl *ti, int64_t start, int64_t end) {
     if (!ti || start < 0 || end <= start || start >= ti->text_bytes)
         return 0;
@@ -189,7 +226,9 @@ static int8_t textinput_delete_range(rt_uitextinput_impl *ti, int64_t start, int
     return 1;
 }
 
-/// @brief Delete the active selection (if any). @return non-zero if removed.
+/// @brief Delete the active selection, if any.
+/// @param ti UITextInput payload to mutate.
+/// @return Nonzero when a normalized nonempty selection was removed.
 static int8_t textinput_delete_selection(rt_uitextinput_impl *ti) {
     int64_t start = 0;
     int64_t end = 0;
@@ -197,7 +236,16 @@ static int8_t textinput_delete_selection(rt_uitextinput_impl *ti) {
 }
 
 /// @brief Insert @p src_len bytes at the caret, replacing any selection first
-///        and enforcing the max-codepoints cap. @return non-zero if inserted.
+///        and enforcing the max-codepoints cap.
+/// @param ti UITextInput payload to mutate.
+/// @param src Source byte sequence.
+/// @param src_len Available source bytes.
+/// @return Nonzero when the buffer changed, including selection deletion when
+///         no replacement codepoint could be accepted.
+/// @details Truncates to complete validated/malformed UTF-8 units, skips NUL,
+///          LF, and CR for this single-line widget, grows storage per accepted
+///          unit, and clears selection. Allocation failure traps after keeping
+///          any already-applied changes.
 static int8_t textinput_insert_bytes(rt_uitextinput_impl *ti, const char *src, size_t src_len) {
     if (!ti || !src || src_len == 0)
         return 0;
@@ -241,6 +289,10 @@ static int8_t textinput_insert_bytes(rt_uitextinput_impl *ti, const char *src, s
 
 /// @brief Move the caret to byte offset @p byte_pos; @p shift_held extends the
 ///        selection, otherwise the selection is collapsed.
+/// @param ti UITextInput payload to mutate.
+/// @param byte_pos Requested byte boundary, clamped to the text.
+/// @param shift_held Nonzero creates/preserves an anchor at the old caret.
+/// @details Restarts the cursor blink phase.
 static void textinput_move_cursor(rt_uitextinput_impl *ti, int64_t byte_pos, int8_t shift_held) {
     if (!ti)
         return;
@@ -259,7 +311,11 @@ static void textinput_move_cursor(rt_uitextinput_impl *ti, int64_t byte_pos, int
 }
 
 /// @brief Map a mouse x-coordinate to the nearest caret byte offset
-///        (accounting for scroll, font metrics, and codepoint boundaries).
+///        using font metrics and codepoint boundaries.
+/// @param ti UITextInput payload to measure.
+/// @param mx Absolute mouse X coordinate.
+/// @return Nearest caret byte boundary, choosing a unit's start before its
+///         measured midpoint and the text end beyond all midpoints.
 static int64_t textinput_byte_from_mouse(rt_uitextinput_impl *ti, int64_t mx) {
     if (!ti || ti->text_bytes <= 0)
         return 0;
@@ -283,6 +339,15 @@ static int64_t textinput_byte_from_mouse(rt_uitextinput_impl *ti, int64_t mx) {
     return best;
 }
 
+/// @brief Create an empty, visible, enabled single-line text input.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @return A new UITextInput reference, or `NULL` if object or initial-buffer
+///         allocation fails.
+/// @details Initializes text and placeholder buffers to 512 bytes, selection
+///          anchor to `-1`, caret blink to 530 ms, and default dark styling.
 void *rt_uitextinput_new(int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_uitextinput_impl *ti = (rt_uitextinput_impl *)rt_obj_new_i64(
         RT_UITEXTINPUT_CLASS_ID, (int64_t)sizeof(rt_uitextinput_impl));
@@ -314,6 +379,12 @@ void *rt_uitextinput_new(int64_t x, int64_t y, int64_t w, int64_t h) {
     return ti;
 }
 
+/// @brief Replace text and reset caret, selection, and scroll state.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param text Runtime string to copy, or `NULL` for empty content.
+/// @details Copying stops at embedded NUL and the configured codepoint limit;
+///          no input reference is retained. Allocation and wrong-class errors
+///          trap.
 void rt_uitextinput_set_text(void *ptr, rt_string text) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetText: expected Zanna.Game.UI.HudTextInput");
@@ -324,24 +395,41 @@ void rt_uitextinput_set_text(void *ptr, rt_string text) {
     textinput_set_bytes(ti, s, len);
 }
 
+/// @brief Copy the field's current text into a runtime string.
+/// @param ptr UITextInput to query.
+/// @return A caller-owned string copy, or the immortal empty singleton for a
+///         null/invalid handle.
+/// @details A non-null wrong-class handle raises a runtime trap.
 rt_string rt_uitextinput_get_text(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetText: expected Zanna.Game.UI.HudTextInput");
     return ti ? rt_const_cstr(ti->text) : rt_str_empty();
 }
 
+/// @brief Count the field's UTF-8 units.
+/// @param ptr UITextInput to query.
+/// @return Validated codepoints plus malformed single-byte units, or zero for
+///         null/invalid.
 int64_t rt_uitextinput_text_length(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.TextLength: expected Zanna.Game.UI.HudTextInput");
     return ti ? ui_codepoint_count_bytes(ti->text, ti->text_bytes) : 0;
 }
 
+/// @brief Return the caret as a codepoint index.
+/// @param ptr UITextInput to query.
+/// @return Complete UTF-8 units before the internal byte caret, or zero for
+///         null/invalid.
 int64_t rt_uitextinput_get_cursor(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetCursor: expected Zanna.Game.UI.HudTextInput");
     return ti ? ui_codepoint_for_byte(ti->text, ti->text_bytes, ti->cursor_byte) : 0;
 }
 
+/// @brief Move the caret to a clamped codepoint boundary.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param pos Requested codepoint index.
+/// @details Clears selection and restarts blink timing. Invalid handles trap.
 void rt_uitextinput_set_cursor(void *ptr, int64_t pos) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetCursor: expected Zanna.Game.UI.HudTextInput");
@@ -349,6 +437,10 @@ void rt_uitextinput_set_cursor(void *ptr, int64_t pos) {
         textinput_move_cursor(ti, ui_byte_for_codepoint(ti->text, ti->text_bytes, pos), 0);
 }
 
+/// @brief Select the complete byte range.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @details Anchors at zero and moves the caret to the text end. Invalid
+///          handles trap.
 void rt_uitextinput_select_all(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SelectAll: expected Zanna.Game.UI.HudTextInput");
@@ -358,6 +450,9 @@ void rt_uitextinput_select_all(void *ptr) {
     ti->cursor_byte = ti->text_bytes;
 }
 
+/// @brief Clear selection without moving the caret.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @details A non-null wrong-class handle raises a runtime trap.
 void rt_uitextinput_clear_selection(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.ClearSelection: expected Zanna.Game.UI.HudTextInput");
@@ -365,12 +460,19 @@ void rt_uitextinput_clear_selection(void *ptr) {
         ti->selection_anchor = -1;
 }
 
+/// @brief Test for a nonempty normalized selection.
+/// @param ptr UITextInput to query.
+/// @return `1` when anchor and caret enclose bytes; otherwise `0`.
 int8_t rt_uitextinput_has_selection(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.HasSelection: expected Zanna.Game.UI.HudTextInput");
     return textinput_selection_range(ti, NULL, NULL);
 }
 
+/// @brief Copy the active selection into a runtime string.
+/// @param ptr UITextInput to query.
+/// @return A caller-owned selected substring, the immortal empty singleton
+///         when unselected/null/invalid, or `NULL` on allocation failure.
 rt_string rt_uitextinput_get_selected_text(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetSelectedText: expected Zanna.Game.UI.HudTextInput");
@@ -381,12 +483,26 @@ rt_string rt_uitextinput_get_selected_text(void *ptr) {
     return rt_string_from_bytes(ti->text + start, (size_t)(end - start));
 }
 
+/// @brief Delete the active selection.
+/// @param ptr UITextInput to mutate; `NULL` or no selection is a no-op.
+/// @details Moves the caret to the removed range's start and clears the anchor.
+///          A non-null invalid handle raises a runtime trap.
 void rt_uitextinput_delete_selection(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.DeleteSelection: expected Zanna.Game.UI.HudTextInput");
     textinput_delete_selection(ti);
 }
 
+/// @brief Handle editing and caret-navigation keys for a focused field.
+/// @param ptr UITextInput to update.
+/// @param key_code Backspace, Delete, arrows, Home, End, or value 1 for
+///        select-all.
+/// @param shift_held Nonzero extends arrow/Home/End selection.
+/// @return `1` only when Backspace/Delete changes text; all other paths return
+///         zero.
+/// @details Disabled or unfocused fields ignore keys. Unshifted horizontal
+///          arrows collapse selections to their lower/upper edge. Invalid
+///          handles trap.
 int64_t rt_uitextinput_handle_key(void *ptr, int64_t key_code, int8_t shift_held) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.HandleKey: expected Zanna.Game.UI.HudTextInput");
@@ -449,6 +565,12 @@ int64_t rt_uitextinput_handle_key(void *ptr, int64_t key_code, int8_t shift_held
     return 0;
 }
 
+/// @brief Insert typed runtime-string bytes at the caret.
+/// @param ptr UITextInput to update.
+/// @param typed_text Source text; no reference is retained.
+/// @return Nonzero when insertion or replaced-selection deletion changes text.
+/// @details Requires enabled and focused state, enforces the codepoint limit,
+///          and filters NUL/CR/LF. Allocation and wrong-class errors trap.
 int64_t rt_uitextinput_handle_text(void *ptr, rt_string typed_text) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.HandleText: expected Zanna.Game.UI.HudTextInput");
@@ -458,6 +580,14 @@ int64_t rt_uitextinput_handle_text(void *ptr, rt_string typed_text) {
     return textinput_insert_bytes(ti, s, (size_t)rt_str_len(typed_text));
 }
 
+/// @brief Update focus and caret from a mouse click.
+/// @param ptr UITextInput to update.
+/// @param mx Mouse X coordinate.
+/// @param my Mouse Y coordinate.
+/// @param shift_held Nonzero extends selection from the prior caret.
+/// @details Enabled, visible fields focus only for an inside click; outside
+///          clicks defocus. Text position uses nearest measured codepoint
+///          midpoint. Invalid handles trap.
 void rt_uitextinput_handle_mouse_click(void *ptr, int64_t mx, int64_t my, int8_t shift_held) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.HandleMouseClick: expected Zanna.Game.UI.HudTextInput");
@@ -468,6 +598,12 @@ void rt_uitextinput_handle_mouse_click(void *ptr, int64_t mx, int64_t my, int8_t
         textinput_move_cursor(ti, textinput_byte_from_mouse(ti, mx), shift_held);
 }
 
+/// @brief Extend selection horizontally during a focused mouse drag.
+/// @param ptr UITextInput to update.
+/// @param mx Mouse X coordinate mapped to a caret boundary.
+/// @param my Mouse Y coordinate, currently ignored.
+/// @details Requires enabled and focused state. A missing anchor is created at
+///          the old caret. Invalid handles trap.
 void rt_uitextinput_handle_mouse_drag(void *ptr, int64_t mx, int64_t my) {
     (void)my;
     rt_uitextinput_impl *ti =
@@ -479,6 +615,11 @@ void rt_uitextinput_handle_mouse_drag(void *ptr, int64_t mx, int64_t my) {
     ti->cursor_byte = textinput_byte_from_mouse(ti, mx);
 }
 
+/// @brief Advance caret-blink elapsed time.
+/// @param ptr UITextInput to update.
+/// @param delta_ms Positive elapsed milliseconds; nonpositive values are
+///        ignored.
+/// @details Overflow resets elapsed time to zero. Invalid handles trap.
 void rt_uitextinput_update(void *ptr, int64_t delta_ms) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.Update: expected Zanna.Game.UI.HudTextInput");
@@ -490,6 +631,13 @@ void rt_uitextinput_update(void *ptr, int64_t delta_ms) {
         ti->cursor_blink_elapsed += delta_ms;
 }
 
+/// @brief Draw the text field through polymorphic GameUI canvas operations.
+/// @param ptr UITextInput to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Hidden/null fields are no-ops. Draws background, focus border,
+///          selection, placeholder or password-mask text, and a blinking caret.
+///          Password allocation failure draws an empty mask for that frame.
+///          Invalid non-null handles trap.
 void rt_uitextinput_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     rt_uitextinput_impl *ti =
@@ -546,6 +694,10 @@ void rt_uitextinput_draw(void *ptr, void *canvas) {
     free(password);
 }
 
+/// @brief Set the normal text color.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param color Packed value stored verbatim.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uitextinput_set_text_color(void *ptr, int64_t color) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetTextColor: expected Zanna.Game.UI.HudTextInput");
@@ -553,12 +705,18 @@ void rt_uitextinput_set_text_color(void *ptr, int64_t color) {
         ti->text_color = color;
 }
 
+/// @brief Return the normal text color.
+/// @param ptr UITextInput to query.
+/// @return Stored color, or zero for null/invalid.
 int64_t rt_uitextinput_get_text_color(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetTextColor: expected Zanna.Game.UI.HudTextInput");
     return ti ? ti->text_color : 0;
 }
 
+/// @brief Set the field background color.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param color Packed value stored verbatim.
 void rt_uitextinput_set_bg_color(void *ptr, int64_t color) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetBgColor: expected Zanna.Game.UI.HudTextInput");
@@ -566,12 +724,18 @@ void rt_uitextinput_set_bg_color(void *ptr, int64_t color) {
         ti->bg_color = color;
 }
 
+/// @brief Return the field background color.
+/// @param ptr UITextInput to query.
+/// @return Stored color, or zero for null/invalid.
 int64_t rt_uitextinput_get_bg_color(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetBgColor: expected Zanna.Game.UI.HudTextInput");
     return ti ? ti->bg_color : 0;
 }
 
+/// @brief Set the caret line color.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param color Packed value stored verbatim.
 void rt_uitextinput_set_cursor_color(void *ptr, int64_t color) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetCursorColor: expected Zanna.Game.UI.HudTextInput");
@@ -579,6 +743,9 @@ void rt_uitextinput_set_cursor_color(void *ptr, int64_t color) {
         ti->cursor_color = color;
 }
 
+/// @brief Set the selection-highlight base color.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param color Packed value stored verbatim; draw uses alpha 160.
 void rt_uitextinput_set_selection_color(void *ptr, int64_t color) {
     rt_uitextinput_impl *ti = checked_textinput(
         ptr, "UITextInput.SetSelectionColor: expected Zanna.Game.UI.HudTextInput");
@@ -586,6 +753,9 @@ void rt_uitextinput_set_selection_color(void *ptr, int64_t color) {
         ti->selection_color = color;
 }
 
+/// @brief Set the unfocused border color.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param color Packed value stored verbatim.
 void rt_uitextinput_set_border_color(void *ptr, int64_t color) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetBorderColor: expected Zanna.Game.UI.HudTextInput");
@@ -593,6 +763,9 @@ void rt_uitextinput_set_border_color(void *ptr, int64_t color) {
         ti->border_color = color;
 }
 
+/// @brief Set the focused border color.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param color Packed value stored verbatim.
 void rt_uitextinput_set_border_color_focused(void *ptr, int64_t color) {
     rt_uitextinput_impl *ti = checked_textinput(
         ptr, "UITextInput.SetBorderColorFocused: expected Zanna.Game.UI.HudTextInput");
@@ -600,6 +773,11 @@ void rt_uitextinput_set_border_color_focused(void *ptr, int64_t color) {
         ti->border_color_focused = color;
 }
 
+/// @brief Assign an optional retained BitmapFont.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param font BitmapFont reference, or `NULL` for default canvas text.
+/// @details Validates the font class, retains a replacement before releasing
+///          the prior font, and traps on wrong non-null classes.
 void rt_uitextinput_set_font(void *ptr, void *font) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetFont: expected Zanna.Game.UI.HudTextInput");
@@ -608,6 +786,9 @@ void rt_uitextinput_set_font(void *ptr, void *font) {
     ui_replace_ref(&ti->font, font);
 }
 
+/// @brief Set normalized visibility.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param visible Zero hides; any nonzero value shows.
 void rt_uitextinput_set_visible(void *ptr, int8_t visible) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetVisible: expected Zanna.Game.UI.HudTextInput");
@@ -615,12 +796,18 @@ void rt_uitextinput_set_visible(void *ptr, int8_t visible) {
         ti->visible = visible ? 1 : 0;
 }
 
+/// @brief Return normalized visibility.
+/// @param ptr UITextInput to query.
+/// @return Stored flag, or zero for null/invalid.
 int8_t rt_uitextinput_get_visible(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetVisible: expected Zanna.Game.UI.HudTextInput");
     return ti ? ti->visible : 0;
 }
 
+/// @brief Set normalized input-enabled state.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param enabled Zero disables; any nonzero value enables.
 void rt_uitextinput_set_enabled(void *ptr, int8_t enabled) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetEnabled: expected Zanna.Game.UI.HudTextInput");
@@ -628,12 +815,20 @@ void rt_uitextinput_set_enabled(void *ptr, int8_t enabled) {
         ti->enabled = enabled ? 1 : 0;
 }
 
+/// @brief Return normalized input-enabled state.
+/// @param ptr UITextInput to query.
+/// @return Stored flag, or zero for null/invalid.
 int8_t rt_uitextinput_get_enabled(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetEnabled: expected Zanna.Game.UI.HudTextInput");
     return ti ? ti->enabled : 0;
 }
 
+/// @brief Set keyboard-focus state.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param focused Zero clears focus; any nonzero value sets it.
+/// @details Always restarts blink timing and clears selection when focus is
+///          removed.
 void rt_uitextinput_set_focused(void *ptr, int8_t focused) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetFocused: expected Zanna.Game.UI.HudTextInput");
@@ -645,12 +840,18 @@ void rt_uitextinput_set_focused(void *ptr, int8_t focused) {
         ti->selection_anchor = -1;
 }
 
+/// @brief Return normalized focus state.
+/// @param ptr UITextInput to query.
+/// @return Stored flag, or zero for null/invalid.
 int8_t rt_uitextinput_get_focused(void *ptr) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.GetFocused: expected Zanna.Game.UI.HudTextInput");
     return ti ? ti->focused : 0;
 }
 
+/// @brief Toggle password display masking.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param password Zero shows text; nonzero draws one asterisk per codepoint.
 void rt_uitextinput_set_password_mode(void *ptr, int8_t password) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetPasswordMode: expected Zanna.Game.UI.HudTextInput");
@@ -658,6 +859,11 @@ void rt_uitextinput_set_password_mode(void *ptr, int8_t password) {
         ti->password_mode = password ? 1 : 0;
 }
 
+/// @brief Replace the owned placeholder text.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param placeholder Runtime string to copy, or `NULL` to clear.
+/// @details Copying stops at embedded NUL and retains no input reference.
+///          Storage growth and wrong-class failures trap.
 void rt_uitextinput_set_placeholder(void *ptr, rt_string placeholder) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetPlaceholder: expected Zanna.Game.UI.HudTextInput");
@@ -675,6 +881,13 @@ void rt_uitextinput_set_placeholder(void *ptr, rt_string placeholder) {
     ti->placeholder[len] = '\0';
 }
 
+/// @brief Set or remove the accepted-codepoint limit.
+/// @param ptr UITextInput to mutate; `NULL` is a no-op.
+/// @param max_cps Positive maximum, or nonpositive for unlimited input.
+/// @details Lowering the limit below current length immediately truncates text
+///          through textinput_set_bytes(), moving the caret to the new end and
+///          clearing selection/scroll. Every simple setter/getter above traps
+///          on a non-null wrong UITextInput class.
 void rt_uitextinput_set_max_codepoints(void *ptr, int64_t max_cps) {
     rt_uitextinput_impl *ti =
         checked_textinput(ptr, "UITextInput.SetMaxCodepoints: expected Zanna.Game.UI.HudTextInput");

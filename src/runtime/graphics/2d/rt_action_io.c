@@ -6,8 +6,24 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/2d/rt_action_io.c
+/// @file
+/// @brief Implements JSON serialization and transactional parsing for the
+///        global input-action registry.
 // Purpose: Input-action serialization: save the current action/binding set to JSON
 //   and load it back, reconstructing actions and bindings via the action core.
+//
+// Persistence model:
+//   - Save emits one top-level "actions" array in current linked-list order.
+//   - Load constructs a temporary registry while retaining the previous list.
+//     A syntactically/structurally invalid document destroys the temporary
+//     nodes and restores the previous registry; successful parsing replaces it.
+//   - Unknown object members and binding type tags are ignored for forward
+//     compatibility. Recognized numeric fields receive defensive conversion.
+//
+// Ownership/Lifetime:
+//   - Save returns a newly allocated runtime string.
+//   - Load borrows its input string, owns its parser and pending-binding buffer,
+//     and transfers successfully materialized nodes to the global registry.
 //
 // Links: rt_action.h (public API), rt_action_internal.h (shared model),
 //        rt_json_stream.h (streaming JSON parser), rt_action.c (action core)
@@ -29,9 +45,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Extract an int64 value from a borrowed runtime box.
 extern int64_t rt_unbox_i64(void *box);
 
 /// @brief Map a `BindingType` enum to the JSON serialization tag.
+/// @param type Internal binding kind.
+/// @return Borrowed static tag string, or `"unknown"` for unsupported values.
 static const char *binding_type_name(BindingType type) {
     switch (type) {
         case BIND_KEY:
@@ -62,6 +81,8 @@ static const char *binding_type_name(BindingType type) {
 /// @brief Reverse map: JSON tag string → `BindingType` enum.
 ///
 /// Returns `BIND_NONE` for unknown tags so the loader can skip them.
+/// @param name Borrowed non-null JSON tag string.
+/// @return Corresponding binding kind, or BIND_NONE when unrecognized.
 static BindingType binding_type_from_name(const char *name) {
     if (strcmp(name, "key") == 0)
         return BIND_KEY;
@@ -87,7 +108,9 @@ static BindingType binding_type_from_name(const char *name) {
 }
 
 /// @brief Release a streaming JSON parser object created by rt_json_stream_new.
-/// @param parser Parser handle; NULL is a no-op.
+/// @details Releases one reference and frees the object if that was the final
+///          reference.
+/// @param parser Owned parser handle; `NULL` is ignored.
 static void action_release_json_parser(void *parser) {
     if (parser && rt_obj_release_check0(parser))
         rt_obj_free(parser);
@@ -99,7 +122,9 @@ static void action_release_json_parser(void *parser) {
 /// `\\r`, `\\t`) and emits `\\u00XX` escapes for the remaining control bytes.
 /// Non-ASCII bytes pass through as-is — the persistence format assumes UTF-8
 /// throughout.
-/// @return 1 on success, 0 when a builder append failed.
+/// @param sb Borrowed destination builder.
+/// @param str Borrowed non-null, null-terminated text to quote.
+/// @return `1` on success; `0` when a builder append fails.
 static int sb_append_json_string(rt_string_builder *sb, const char *str) {
     static const char hex[] = "0123456789ABCDEF";
     if (rt_sb_append_cstr(sb, "\"") != RT_SB_OK)
@@ -148,7 +173,10 @@ static int sb_append_json_string(rt_string_builder *sb, const char *str) {
 /// Format: `{"actions":[{"name","type","bindings":[{"type","code","pad","value","keys":[...]}]}]}`.
 /// `keys` is only present for chord bindings. The result is a fresh
 /// `rt_string` that can be saved to disk and round-tripped via
-/// `rt_action_load`.
+/// `rt_action_load`. Actions and bindings retain current linked-list order.
+/// @return Newly owned JSON runtime string. Builder failure returns a newly
+///         allocated empty string when possible; final string allocation can
+///         return `NULL`.
 rt_string rt_action_save(void) {
     RT_ASSERT_MAIN_THREAD();
     rt_string_builder sb;
@@ -236,16 +264,15 @@ save_error:
     return rt_string_from_bytes("", 0);
 }
 
-/// @brief `Action.Load(json)` — restore action+binding state from a JSON string.
-///
-/// Inverse of `Save`. Uses the streaming JSON parser (`rt_json_stream`) so giant configs
-/// don't allocate a parse tree. Existing actions are replaced only after the entire
-/// document has parsed successfully.
 /// @brief Clamp a JSON number to a valid int64 without undefined behavior.
 /// @details rt_json_stream_number_value returns a raw double parsed from an
 ///   external, user-editable bindings file. A non-finite value (or one outside the
 ///   int64 range) makes a direct (int64_t) cast undefined behavior (C11 6.3.1.4p1),
-///   so reject/saturate before casting.
+///   so reject/saturate before casting. Finite fractional values truncate
+///   toward zero.
+/// @param v Parsed JSON number.
+/// @return Truncated int64, zero for non-finite input, or the nearest int64
+///         endpoint for out-of-range input.
 static int64_t action_clamp_json_i64(double v) {
     if (!isfinite(v))
         return 0;
@@ -259,14 +286,34 @@ static int64_t action_clamp_json_i64(double v) {
 /// @brief One parsed binding, buffered until the enclosing action object closes so
 ///        that "name"/"type"/"bindings" may appear in any order (JSON is unordered).
 typedef struct {
+    /// Parsed source kind; BIND_NONE causes the object to be ignored.
     BindingType btype;
+    /// Parsed key, button, or axis identifier.
     int64_t code;
+    /// Parsed controller index.
     int64_t pad;
+    /// Parsed digital contribution or analog scale.
     double value;
+    /// Parsed ordered chord keys.
     int64_t chord_keys[MAX_CHORD_KEYS];
+    /// Number of populated @ref chord_keys entries.
     int32_t chord_len;
 } action_pending_binding;
 
+/// @brief `Action.Load(json)` — restore action and binding state from JSON.
+/// @details Uses the streaming parser rather than constructing a JSON tree.
+///          The previous global list remains recoverable until the complete
+///          top-level object and its single `"actions"` array parse cleanly.
+///          Unknown members are skipped, unknown binding types are omitted,
+///          absent binding fields retain defaults, and action names must fit
+///          in 255 bytes. Parsed actions are inserted at the global list head.
+///          Allocation failure while growing the pending buffer fails the
+///          transaction; individual action/binding allocation failures are
+///          silently omitted by the underlying creation helpers.
+/// @param json Borrowed runtime string containing the JSON document.
+/// @return `1` after a structurally valid complete document replaces the
+///         registry; `0` on null input, parser creation failure, malformed
+///         structure, excessive chord/name length, or pending-buffer failure.
 int8_t rt_action_load(rt_string json) {
     RT_ASSERT_MAIN_THREAD();
     void *parser = NULL;

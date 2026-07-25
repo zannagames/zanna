@@ -4,20 +4,22 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/game/rt_timer.h
-// Purpose: Frame-based countdown timer using frame counts rather than wall-clock time, with
-// update-time expiration edges, completion state, and progress as an integer percentage.
+/// @file
+/// @brief Declares frame-counted and delta-millisecond countdown timer APIs.
+// Purpose: Deterministic frame- or millisecond-based countdown timing with
+// update-time expiration edges, completion state, and integer progress.
 //
 // Key invariants:
-//   - Duration is measured in frames; must be >= 1.
-//   - rt_timer_update must be called once per frame.
+//   - Duration uses frames in frame mode and milliseconds in ms mode; it must be >= 1.
+//   - Frame and millisecond update calls are no-ops on the opposite mode.
 //   - Update returns a one-shot expiration edge on the expiring frame.
 //   - IsExpired is a completion latch for one-shot timers, cleared by restart,
 //     reset, or stop.
 //   - Progress is reported as an integer percentage in [0, 100].
 //
 // Ownership/Lifetime:
-//   - Caller owns the rt_timer handle; destroy with rt_timer_destroy.
-//   - No reference counting; explicit destruction is required.
+//   - Timer handles are runtime reference-counted objects.
+//   - rt_timer_destroy releases the caller's owned reference.
 //
 // Links: src/runtime/game/rt_timer.c (implementation)
 //
@@ -30,18 +32,19 @@
 extern "C" {
 #endif
 
+/// @brief Runtime class identifier used to validate Timer handles.
 #define RT_TIMER_CLASS_ID INT64_C(-0x510201)
 
-/// Opaque handle to a Timer instance.
+/// @brief Opaque handle to a Timer instance.
 typedef struct rt_timer_impl *rt_timer;
 
 /// @brief Allocates and initializes a new Timer in the stopped state.
-/// @return A new Timer handle. The caller must free it with
-///   rt_timer_destroy().
+/// @return Owned Timer handle with zero duration, or `NULL` if allocation
+///         fails.
 rt_timer rt_timer_new(void);
 
-/// @brief Destroys a Timer and releases its memory.
-/// @param timer The timer to destroy. Passing NULL is a no-op.
+/// @brief Release one owned Timer reference.
+/// @param timer Owned handle to release; `NULL` is ignored.
 void rt_timer_destroy(rt_timer timer);
 
 /// @brief Starts a one-shot countdown timer.
@@ -61,9 +64,10 @@ void rt_timer_start(rt_timer timer, int64_t frames);
 /// @param frames Number of frames per cycle. Must be >= 1.
 void rt_timer_start_repeating(rt_timer timer, int64_t frames);
 
-/// @brief Stops the timer and resets its elapsed time.
-/// @param timer The timer to stop. Subsequent calls to rt_timer_update()
-///   will return 0 until the timer is started again.
+/// @brief Stop the timer while preserving elapsed time for queries.
+/// @details Clears the one-shot expiration latch but leaves duration,
+///          repetition, and timing mode unchanged.
+/// @param timer The timer to stop.
 void rt_timer_stop(rt_timer timer);
 
 /// @brief Resets the timer's elapsed count to zero without changing its
@@ -98,14 +102,15 @@ int8_t rt_timer_is_expired(rt_timer timer);
 
 /// @brief Retrieves the number of frames elapsed since the timer was
 ///   started or last reset.
+/// @details The shared query returns milliseconds when the timer is in ms mode.
 /// @param timer The timer to query.
-/// @return Elapsed frames, in [0, duration]. Returns 0 if not started.
+/// @return Stored elapsed amount in the active unit, or `0` for null.
 int64_t rt_timer_elapsed(rt_timer timer);
 
 /// @brief Retrieves the number of frames remaining before expiration.
+/// @details The shared query returns milliseconds when the timer is in ms mode.
 /// @param timer The timer to query.
-/// @return Remaining frames. Returns 0 if the timer has already expired
-///   or has not been started.
+/// @return Non-negative remainder in the active unit, or `0` for no duration.
 int64_t rt_timer_remaining(rt_timer timer);
 
 /// @brief Retrieves the timer's progress as an integer percentage.
@@ -115,7 +120,7 @@ int64_t rt_timer_progress(rt_timer timer);
 
 /// @brief Retrieves the total duration the timer was configured with.
 /// @param timer The timer to query.
-/// @return Total countdown duration in frames.
+/// @return Duration in frames or milliseconds according to the active mode.
 int64_t rt_timer_duration(rt_timer timer);
 
 /// @brief Queries whether the timer is set to repeat automatically.
@@ -135,7 +140,7 @@ int8_t rt_timer_is_ms(rt_timer timer);
 /// If the elapsed time already exceeds the new duration, the timer will
 /// expire on the next update.
 /// @param timer The timer to modify.
-/// @param frames New duration in frames. Must be >= 1.
+/// @param frames New positive duration in the timer's current unit.
 void rt_timer_set_duration(rt_timer timer, int64_t frames);
 
 // =========================================================================
@@ -156,19 +161,22 @@ void rt_timer_start_ms(rt_timer timer, int64_t duration_ms);
 void rt_timer_start_repeating_ms(rt_timer timer, int64_t interval_ms);
 
 /// @brief Advances the timer by dt milliseconds and checks for expiration.
+/// @details Repeating timers retain overshoot modulo the interval. One call
+///          returns a single edge even if @p dt spans multiple cycles.
 /// @param timer The timer to update.
-/// @param dt Delta time in milliseconds since last frame.
+/// @param dt Positive elapsed milliseconds.
 /// @return 1 if the timer expired this update, 0 otherwise.
 int8_t rt_timer_update_ms(rt_timer timer, int64_t dt);
 
-/// @brief Retrieves the elapsed time in milliseconds (ms-mode only).
+/// @brief Retrieve the shared elapsed amount through the ms-named API.
 /// @param timer The timer to query.
-/// @return Elapsed milliseconds, or elapsed frames if not in ms-mode.
+/// @return Elapsed milliseconds in ms mode, or elapsed frames in frame mode.
 int64_t rt_timer_elapsed_ms(rt_timer timer);
 
-/// @brief Retrieves the remaining time in milliseconds (ms-mode only).
+/// @brief Retrieve the shared remaining amount through the ms-named API.
 /// @param timer The timer to query.
-/// @return Remaining milliseconds, or 0 if expired.
+/// @return Remaining milliseconds in ms mode or frames in frame mode; zero
+///         when elapsed/no duration.
 int64_t rt_timer_remaining_ms(rt_timer timer);
 
 #ifdef __cplusplus

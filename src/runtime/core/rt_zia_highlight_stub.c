@@ -31,6 +31,8 @@
 //        src/runtime/graphics/rt_gui_codeeditor.c (consumer)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Weak no-keyword fallback for the Zia syntax-highlighting bridge.
 
 #include <stdint.h>
 
@@ -43,7 +45,12 @@
 #endif
 
 /// @brief Weak stub: report no identifier as a keyword.
-/// Overridden by rt_zia_highlight.cpp when zia_editor_services is linked.
+/// @details The fallback deliberately does not inspect or dereference the input,
+///          so null pointers and any length are safe. A strong editor-service
+///          definition overrides this symbol on platforms with weak linkage.
+/// @param name Borrowed identifier bytes; ignored and may be NULL.
+/// @param len Number of identifier bytes; ignored.
+/// @return Always zero.
 RT_WEAK int rt_zia_is_keyword(const char *name, int64_t len) {
     (void)name;
     (void)len;

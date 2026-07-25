@@ -326,6 +326,104 @@ func main() {
         return;
     }
 
+    // Selection-scoped inspector: node groups appear only with a selection,
+    // single-selection groups need exactly one node, and scene-scoped groups
+    // stay visible with the loaded scene. Scoping is pure presentation.
+    var emptySelection: List[Integer] = [];
+    editor.SelectSceneNodes(emptySelection, -1);
+    editor.Pump(sceneDoc);
+    if editor.lightInspector.group.IsVisible()
+       or editor.nameInput.IsVisible()
+       or editor.cameraInspector.group.IsVisible()
+       or editor.bakeGroup.IsVisible() == false
+       or editor.envGroup.IsVisible() == false {
+        Fail(shell, harness,
+             "empty selection did not scope the inspector to scene groups");
+        return;
+    }
+    editor.SelectSceneNodes([0], 0);
+    editor.Pump(sceneDoc);
+    // Component groups are presence-scoped: this mesh node carries no light,
+    // camera, or collider, so those groups stay hidden and the Add-component
+    // row offers them instead.
+    if editor.nameInput.IsVisible() == false
+       or editor.metadataInspector.group.IsVisible() == false
+       or editor.lightInspector.group.IsVisible()
+       or editor.cameraInspector.group.IsVisible()
+       or editor.colliderInspector.group.IsVisible()
+       or editor.addComponentRow.IsVisible() == false {
+        Fail(shell, harness,
+             "single selection did not present presence-scoped groups");
+        return;
+    }
+    // Adding the Light choice creates a default light as one transaction and
+    // reveals its group; Undo restores the canonical document exactly.
+    editor.addComponentDropdown.SetSelected(0);
+    if editor.AddSelectedComponentChoice() == false
+       or editor.lightInspector.group.IsVisible() == false
+       or editor.GetRevision() != revision + 1 {
+        Fail(shell, harness,
+             "Add component did not create a default light: revision="
+             + editor.GetRevision() + "/" + (revision + 1));
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != canonical
+       or editor.lightInspector.group.IsVisible() {
+        Fail(shell, harness,
+             "undoing the added light did not restore canonical bytes");
+        return;
+    }
+    // Bytes are canonical again; the add/undo pair advanced the revision.
+    revision = editor.GetRevision();
+    editor.SelectSceneNodes([0], 0);
+    editor.Pump(sceneDoc);
+    var pairSelection: List[Integer] = [];
+    pairSelection.add(0);
+    pairSelection.add(1);
+    editor.SelectSceneNodes(pairSelection, 0);
+    editor.Pump(sceneDoc);
+    if editor.lightInspector.group.IsVisible()
+       or editor.cameraInspector.group.IsVisible()
+       or editor.metadataInspector.group.IsVisible()
+       or editor.addComponentRow.IsVisible() == false
+       or sceneDoc.content != canonical
+       or editor.GetRevision() != revision {
+        Fail(shell, harness,
+             "multi-selection scoping drifted or mutated the document");
+        return;
+    }
+
+    // Live transform editing: a differing spinner value commits exactly one
+    // canonical transaction once the spinners are unfocused, and Undo
+    // restores the exact prior bytes. Echo values equal to the node commit
+    // nothing.
+    editor.SelectSceneNodes([0], 0);
+    editor.Pump(sceneDoc);
+    var liveBaseline = sceneDoc.content;
+    var liveRevision = editor.GetRevision();
+    editor.positionX.SetValue(editor.positionX.Value);
+    if editor.Pump(sceneDoc)
+       or editor.GetRevision() != liveRevision {
+        Fail(shell, harness,
+             "an unchanged spinner echo created a live-edit commit");
+        return;
+    }
+    editor.positionX.SetValue(editor.positionX.Value + 2.0);
+    if editor.Pump(sceneDoc) == false
+       or editor.GetRevision() != liveRevision + 1
+       or sceneDoc.content == liveBaseline {
+        Fail(shell, harness,
+             "a differing spinner value did not live-commit once: revision="
+             + editor.GetRevision() + "/" + (liveRevision + 1));
+        return;
+    }
+    if editor.Undo() == false or sceneDoc.content != liveBaseline {
+        Fail(shell, harness,
+             "undoing the live transform edit did not restore exact bytes");
+        return;
+    }
+
     harness.UnbindApp();
     shell.Destroy();
     Terminal.Say("RESULT: ok");

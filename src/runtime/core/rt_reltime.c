@@ -12,25 +12,32 @@
 //          "in 2 hours", or "just now".
 //
 // Key invariants:
-//   - Differences smaller than 10 seconds are reported as "just now".
+//   - Long-form differences smaller than 10 seconds are "just now"; short
+//     form uses "now".
 //   - Unit thresholds: <60s=seconds, <3600s=minutes, <86400s=hours,
 //     <2592000s=days, <31536000s=months, else=years.
+//   - Months and years are fixed approximations of 30 and 365 days; displayed
+//     unit values are truncated toward zero rather than rounded.
 //   - Future timestamps produce "in N <unit>"; past timestamps produce
 //     "N <unit> ago"; singular/plural is chosen correctly.
-//   - INT64_MIN negation is saturated to INT64_MAX to avoid undefined behaviour.
+//   - Timestamp differences use unsigned arithmetic across the complete int64
+//     domain. Duration magnitude saturates INT64_MIN to INT64_MAX.
 //   - The reference timestamp is explicit (not hardcoded to time(NULL)) so
 //     callers can pass a fixed reference for deterministic tests.
 //
 // Ownership/Lifetime:
 //   - Returned rt_string values are newly allocated; the caller owns the
 //     reference and must call rt_string_unref when done.
-//   - No heap allocation is performed beyond the returned string.
+//   - Duration assembly uses bounded inline builder storage and releases it on
+//     both success and failure; no input storage is borrowed.
 //
 // Links: src/runtime/core/rt_reltime.h (public API),
 //        src/runtime/core/rt_datetime.c (wall-clock time operations),
 //        src/runtime/core/rt_string_builder.c (string construction helper)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Human-readable relative timestamp and compact duration formatting.
 
 #include "rt_reltime.h"
 #include "rt_datetime.h"
@@ -51,7 +58,8 @@
 ///          failure (which returns `(time_t)-1`, aliasing the valid pre-epoch
 ///          instant) traps rather than being used as a bogus "now" that would
 ///          produce wildly wrong relative-time strings (VDOC-230).
-/// @return Seconds since the Unix epoch (UTC).
+/// @return Seconds since the Unix epoch, or zero after trapping if the wall
+///         clock failure is handled by a returning trap hook.
 static int64_t current_unix_seconds(void) {
     int64_t now;
     if (!rt_datetime_wall_seconds(&now)) {
@@ -65,6 +73,8 @@ static int64_t current_unix_seconds(void) {
 /// @details Avoids the well-known `-INT64_MIN` undefined-behaviour trap. Used by the
 ///          relative-time formatter when comparing two timestamps that may straddle
 ///          zero (e.g. epoch differences across the y2038 boundary on 32-bit hosts).
+/// @param x Signed value whose magnitude is required.
+/// @return `abs(x)` when representable, otherwise `INT64_MAX`.
 static int64_t i64_abs(int64_t x) {
     if (x == INT64_MIN)
         return INT64_MAX; // -INT64_MIN is UB; saturate instead
@@ -76,6 +86,11 @@ static int64_t i64_abs(int64_t x) {
 ///          strictly after @p reference) and a `uint64_t` magnitude. Doing the
 ///          subtraction in `uint64_t` avoids signed-overflow UB when the two values
 ///          are far apart in opposite directions of the int64 range.
+/// @param timestamp Target Unix timestamp.
+/// @param reference Baseline Unix timestamp.
+/// @param in_future Required destination set to one only when @p timestamp is
+///                  strictly greater than @p reference.
+/// @param abs_diff Required destination for the exact unsigned distance.
 static void reltime_diff(int64_t timestamp, int64_t reference, int *in_future, uint64_t *abs_diff) {
     if (timestamp >= reference) {
         *in_future = timestamp > reference;
@@ -106,10 +121,16 @@ static int reltime_append_bytes_checked(rt_string_builder *sb, const char *bytes
 
 /// @brief Format the relative time between two timestamps as a human string.
 /// @details Computes (timestamp - reference) and picks the best unit to express
-///          the offset: "just now", "X minutes ago", "in X hours", etc.
+///          the offset. Magnitudes below ten seconds return `just now`.
+///          Thereafter thresholds are 60 seconds, 60 minutes, 24 hours, fixed
+///          30-day months, and fixed 365-day years. The selected unit is floored.
+///          Formatting failure produces an empty string; defensive truncation
+///          preserves at most the first 127 bytes, although every valid int64
+///          timestamp pair fits the local buffer.
 /// @param timestamp The target Unix timestamp (seconds).
 /// @param reference The baseline Unix timestamp to compare against.
-/// @return Newly allocated runtime string like "3 minutes ago" or "in 2 hours".
+/// @return Owned runtime string such as `3 minutes ago`, `in 2 hours`, or
+///         `just now`; allocation failure follows @ref rt_string_from_bytes.
 rt_string rt_reltime_format_from(int64_t timestamp, int64_t reference) {
     uint64_t abs_diff;
     int in_future;
@@ -162,9 +183,10 @@ rt_string rt_reltime_format_from(int64_t timestamp, int64_t reference) {
 
 /// @brief Format a Unix timestamp as a relative time string from now.
 /// @details Computes the difference from the current time and delegates to
-///          the seconds-based formatter.
+///          @ref rt_reltime_format_from. A wall-clock read failure traps; if the
+///          trap hook returns, epoch zero is used as the reference fallback.
 /// @param timestamp Unix timestamp in seconds.
-/// @return Newly allocated runtime string like "5 minutes ago".
+/// @return Owned relative-time string.
 rt_string rt_reltime_format(int64_t timestamp) {
     return rt_reltime_format_from(timestamp, current_unix_seconds());
 }
@@ -178,9 +200,13 @@ rt_string rt_reltime_format(int64_t timestamp) {
 ///          The millisecond remainder is discarded, so a negative magnitude that
 ///          truncates to zero whole seconds renders as plain `0s` — the sign is
 ///          only emitted when the displayed whole-second magnitude is nonzero, so
-///          there is no `-0s` (VDOC-227).
+///          there is no `-0s` (VDOC-227). Zero intermediate and trailing
+///          components are omitted, while a wholly sub-second duration emits
+///          `0s`. `INT64_MIN` magnitude is saturated by one millisecond to avoid
+///          signed overflow. Any builder or local-format failure releases
+///          temporary storage and returns an owned empty string.
 /// @param duration_ms Duration in milliseconds.
-/// @return Newly allocated runtime string.
+/// @return Owned compact duration string.
 rt_string rt_reltime_format_duration(int64_t duration_ms) {
     int64_t abs_ms = i64_abs(duration_ms);
 
@@ -246,10 +272,14 @@ format_error:
 // ---------------------------------------------------------------------------
 
 /// @brief Format a timestamp as a short relative time from now.
-/// @details Like rt_reltime_format but uses abbreviated forms: "3m ago", "in 2h",
-///          "just now". Suitable for compact UI displays.
+/// @details Uses the same unsigned difference and fixed thresholds as the long
+///          formatter, but emits `s`, `m`, `h`, `d`, `mo`, or `y` suffixes and
+///          `now` below ten seconds. The selected value is floored. A wall-clock
+///          failure traps and falls back to epoch zero if the hook returns.
+///          Local formatting errors return an owned empty string; defensive
+///          buffer truncation retains a valid prefix.
 /// @param timestamp Unix timestamp in seconds.
-/// @return Newly allocated runtime string with abbreviated relative time.
+/// @return Owned abbreviated relative-time string.
 rt_string rt_reltime_format_short(int64_t timestamp) {
     int64_t now = current_unix_seconds();
     uint64_t abs_diff;

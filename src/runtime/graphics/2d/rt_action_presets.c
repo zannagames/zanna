@@ -6,9 +6,24 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/2d/rt_action_presets.c
+/// @file
+/// @brief Implements named collections of default keyboard, mouse, and
+///        gamepad action bindings.
 // Purpose: Built-in input-action presets (standard movement, menu navigation,
-//   platformer, top-down). Each preset defines a set of named actions and
-//   their default bindings on top of the action core.
+//   platformer, top-down, and 3D controls). Each preset defines a set of named
+//   actions and their default bindings on top of the action core.
+//
+// Key behavior:
+//   - Presets overlay the current global registry; they never clear it.
+//   - A missing name is defined with the preset's expected button/axis kind.
+//     Existing actions are reused, so repeated loads can add duplicates.
+//   - Helpers deliberately swallow allocation failure and type mismatches.
+//     LoadPreset reports whether the preset name was recognized, not whether
+//     every requested node was allocated.
+//
+// Ownership/Lifetime:
+//   - Newly defined Action names and all Binding nodes are malloc-owned by the
+//     global action registry. Input preset-name strings are borrowed.
 //
 // Links: rt_action.h (public API), rt_action_internal.h (shared model),
 //        rt_action.c (action core)
@@ -29,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Extract an int64 value from a borrowed runtime box.
 extern int64_t rt_unbox_i64(void *box);
 
 /// @brief Duplicate an action preset name with malloc-backed ownership.
@@ -36,7 +52,8 @@ extern int64_t rt_unbox_i64(void *box);
 ///          helper avoids depending on platform-specific `strdup` declarations
 ///          while preserving the existing ownership contract.
 /// @param text Source action name.
-/// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
+/// @return Owned copy, or `NULL` on invalid input, overflow, or allocation
+///         failure.
 static char *action_preset_strdup(const char *text) {
     if (!text)
         return NULL;
@@ -51,6 +68,12 @@ static char *action_preset_strdup(const char *text) {
 }
 
 /// @brief Internal: define a button or axis action by C-string name.
+/// @details Inserts new actions at the global list head and silently declines
+///          names that already exist.
+/// @param name Borrowed null-terminated action name.
+/// @param is_axis Nonzero to create an axis action; zero for a button action.
+/// @return Borrowed pointer to the newly owned registry node, or `NULL` for a
+///         duplicate/invalid name or allocation failure.
 static Action *define_action_cstr(const char *name, int8_t is_axis) {
     if (find_action(name))
         return NULL; /* Already exists — skip silently */
@@ -74,6 +97,9 @@ static Action *define_action_cstr(const char *name, int8_t is_axis) {
 }
 
 /// @brief Internal: bind a key to a button action by C-string name.
+/// @details Missing or axis-style actions and allocation failures are ignored.
+/// @param name Borrowed action name.
+/// @param key Runtime keyboard code to bind.
 static void bind_key_to(const char *name, int64_t key) {
     Action *a = find_action(name);
     if (!a || a->is_axis)
@@ -84,6 +110,10 @@ static void bind_key_to(const char *name, int64_t key) {
 }
 
 /// @brief Internal: bind a key to an axis action with the given contribution.
+/// @details Missing or button-style actions and allocation failures are ignored.
+/// @param name Borrowed axis-action name.
+/// @param key Runtime keyboard code to bind.
+/// @param value Contribution added while the key is held.
 static void bind_key_axis_to(const char *name, int64_t key, double value) {
     Action *a = find_action(name);
     if (!a || !a->is_axis)
@@ -94,6 +124,10 @@ static void bind_key_axis_to(const char *name, int64_t key, double value) {
 }
 
 /// @brief Internal: bind any-pad button to a button action.
+/// @details Stores controller index `-1`; missing/axis actions and allocation
+///          failures are ignored.
+/// @param name Borrowed button-action name.
+/// @param button Runtime gamepad-button code to bind.
 static void bind_pad_to(const char *name, int64_t button) {
     Action *a = find_action(name);
     if (!a || a->is_axis)
@@ -104,6 +138,11 @@ static void bind_pad_to(const char *name, int64_t button) {
 }
 
 /// @brief Internal: bind any-pad analog axis to an axis action.
+/// @details Stores controller index `-1`; missing/button actions and allocation
+///          failures are ignored.
+/// @param name Borrowed axis-action name.
+/// @param axis One of the `ZANNA_AXIS_*` identifiers.
+/// @param scale Multiplier applied to the raw device value.
 static void bind_pad_axis_to(const char *name, int64_t axis, double scale) {
     Action *a = find_action(name);
     if (!a || !a->is_axis)
@@ -114,6 +153,11 @@ static void bind_pad_axis_to(const char *name, int64_t axis, double scale) {
 }
 
 /// @brief Internal: bind any-pad button to an axis with a fixed contribution.
+/// @details Stores controller index `-1`; missing/button actions and allocation
+///          failures are ignored.
+/// @param name Borrowed axis-action name.
+/// @param button Runtime gamepad-button code to bind.
+/// @param value Contribution added while the button is held.
 static void bind_pad_button_axis_to(const char *name, int64_t button, double value) {
     Action *a = find_action(name);
     if (!a || !a->is_axis)
@@ -127,7 +171,8 @@ static void bind_pad_button_axis_to(const char *name, int64_t button, double val
 ///
 /// Defines six actions: 4 button (`move_up/down/left/right`) and 2 axis
 /// (`move_x`, `move_y`). Binds the standard physical inputs to all of
-/// them so a script can use whichever style fits its needs.
+/// them so a script can use whichever style fits its needs. Existing
+/// compatible actions receive the bindings even when definition is skipped.
 static void load_preset_standard_movement(void) {
     /* Button actions */
     define_action_cstr("move_up", 0);
@@ -180,6 +225,8 @@ static void load_preset_standard_movement(void) {
 
 /// @brief Preset: first/third-person 3D controls — WASD movement axes, jump,
 ///   sprint, crouch, interact, fire/aim, pause; left stick + face buttons on pad.
+/// @details Adds mouse buttons for fire/aim, any-pad buttons for discrete
+///          actions, and left-stick plus WASD movement axes.
 static void load_preset_fps3d(void) {
     define_action_cstr("jump", 0);
     define_action_cstr("sprint", 0);
@@ -214,6 +261,8 @@ static void load_preset_fps3d(void) {
 }
 
 /// @brief Preset: arrow/D-pad navigation + Enter/Space + Esc → `menu_*`/`confirm`/`back`.
+/// @details Adds WASD aliases and any-pad D-pad/A/B bindings alongside the
+///          keyboard navigation controls.
 static void load_preset_menu_navigation(void) {
     define_action_cstr("menu_up", 0);
     define_action_cstr("menu_down", 0);
@@ -252,6 +301,7 @@ static void load_preset_menu_navigation(void) {
 
 /// @brief Preset: 2D platformer controls — `move_left/right`, `jump`, `shoot`, `pause` + `move_x`
 /// axis.
+/// @details Combines keyboard, any-pad D-pad/face-button, and left-stick input.
 static void load_preset_platformer(void) {
     define_action_cstr("move_left", 0);
     define_action_cstr("move_right", 0);
@@ -290,6 +340,8 @@ static void load_preset_platformer(void) {
 }
 
 /// @brief Preset: top-down shooter controls — 4-directional movement + `fire`/`pause`.
+/// @details Provides both discrete movement actions and two movement axes
+///          sourced from keyboard, D-pad, and left stick.
 static void load_preset_topdown(void) {
     define_action_cstr("move_up", 0);
     define_action_cstr("move_down", 0);
@@ -357,7 +409,11 @@ static void load_preset_topdown(void) {
 ///   - `"fps3d"` — 3D first/third-person: move axes, jump/sprint/crouch,
 ///     interact, mouse fire/aim, pause; pad face buttons + left stick.
 /// Auto-initializes the action system if not already done. Returns
-/// 0 if `name` doesn't match any preset.
+/// 0 if `name` doesn't match any preset. A recognized preset returns success
+/// even if individual definitions or bindings could not be allocated.
+/// @param preset_name Borrowed exact preset identifier.
+/// @return `1` for a recognized identifier; `0` for null, empty, or unknown
+///         names.
 int8_t rt_action_load_preset(rt_string preset_name) {
     RT_ASSERT_MAIN_THREAD();
     if (!g_initialized)

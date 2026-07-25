@@ -19,11 +19,16 @@
 //   - The ABI of these functions is stable; codegen backends depend on their signatures.
 //
 // Ownership/Lifetime:
-//   - These functions are designed for terminal error conditions only.
+//   - Message inputs are borrowed for the duration of dispatch/formatting.
+//   - Recovery nodes and the latest diagnostic are thread-local; installing a
+//     legacy recovery allocates a small node that clear/recovery later frees.
+//   - Trap hooks may recover or return, while rt_abort always terminates.
 //
 // Links: src/runtime/core/rt_trap.c (implementation), src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Trap dispatch, legacy recovery, abort, and diagnostic assertions.
 #pragma once
 
 #include <setjmp.h>
@@ -49,7 +54,11 @@ void rt_trap(const char *msg);
 ///          pair a successful install with @ref rt_trap_clear_recovery before
 ///          returning normally, and must also clear it from the recovery path
 ///          before re-raising or handling the trap.
-/// @param buf Jump buffer that remains live until recovery is cleared.
+///          Installation allocates a stack node and aborts on allocation
+///          failure. Passing NULL clears consecutive topmost legacy frames
+///          without removing a native recovery frame.
+/// @param buf Borrowed jump buffer that remains live until recovery is cleared,
+///        or NULL for legacy-stack cleanup.
 void rt_trap_set_recovery(jmp_buf *buf);
 
 /// @brief Clear the current thread's top legacy trap recovery target.
@@ -106,12 +115,17 @@ void rt_diag_assert_eq(int64_t expected, int64_t actual, rt_string message);
 void rt_diag_assert_neq(int64_t a, int64_t b, rt_string message);
 
 /// @brief Assert two numbers are approximately equal.
+/// @details Exact equality and two NaNs pass. Other values use absolute error
+///          below `1e-9` when both magnitudes are below one and relative error
+///          below `1e-9` otherwise.
 /// @param expected The expected value.
 /// @param actual The actual value.
 /// @param message Description of what was being tested.
 void rt_diag_assert_eq_num(double expected, double actual, rt_string message);
 
 /// @brief Assert two strings are equal.
+/// @details Compares stored bytes for valid handles; two null handles pass.
+///          Invalid handles fail with bounded escaped diagnostics.
 /// @param expected The expected string.
 /// @param actual The actual string.
 /// @param message Description of what was being tested.

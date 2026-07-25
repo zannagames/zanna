@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_daterange.c
+/// @file
+/// @brief Implements the GC-managed closed DateRange timestamp interval.
+///
 // Purpose: Implements the DateRange type for the Zanna runtime, representing
 //          a closed interval [start, end] of Unix timestamps (seconds since
 //          epoch). Provides construction, containment testing, overlap
@@ -50,6 +53,7 @@
 // Internal structure
 // ---------------------------------------------------------------------------
 
+/// @brief Runtime payload storing normalized inclusive Unix-second endpoints.
 typedef struct {
     void *vptr;
     int64_t start; // Unix timestamp in seconds
@@ -57,6 +61,10 @@ typedef struct {
 } rt_daterange_impl;
 
 /// @brief Overflow-checked signed 64-bit subtraction. Returns 1 on overflow.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @param out Receives the difference on success.
+/// @return One on overflow; zero after writing the exact difference.
 static int daterange_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
     if ((b < 0 && a > INT64_MAX + b) || (b > 0 && a < INT64_MIN + b))
         return 1;
@@ -69,6 +77,9 @@ static int daterange_checked_sub_i64(int64_t a, int64_t b, int64_t *out) {
 ///          contiguous and not overlapping). Special-cases `INT64_MAX` so the `+1`
 ///          can't overflow. Used by the union/intersect operators to decide whether
 ///          two ranges merge cleanly.
+/// @param left_end Inclusive end of one normalized range.
+/// @param right_start Inclusive start of the other normalized range.
+/// @return One when at least one integer-second timestamp lies between them.
 static int daterange_has_gap(int64_t left_end, int64_t right_start) {
     if (right_start <= left_end)
         return 0;
@@ -81,6 +92,9 @@ static int daterange_has_gap(int64_t left_end, int64_t right_start) {
 /// @details `time_t` may be 32-bit or 64-bit depending on platform/ABI; the round-trip
 ///          cast catches truncation. Returns 0 (and leaves @p out untouched) when
 ///          @p value can't fit, 1 with the converted value on success.
+/// @param value Signed Unix-second timestamp.
+/// @param out Receives the exactly represented platform timestamp.
+/// @return One on exact conversion, otherwise zero.
 static int daterange_i64_to_time_t(int64_t value, time_t *out) {
     time_t t = (time_t)value;
     if ((int64_t)t != value)
@@ -99,7 +113,7 @@ static int daterange_i64_to_time_t(int64_t value, time_t *out) {
 ///          ranges from entering the system.
 /// @param start Start timestamp in seconds since Unix epoch (UTC).
 /// @param end End timestamp in seconds since Unix epoch (UTC).
-/// @return New GC-managed DateRange object.
+/// @return New GC-managed DateRange object, or `NULL` after an allocation trap.
 void *rt_daterange_new(int64_t start, int64_t end) {
     // Ensure start <= end
     int64_t s = start <= end ? start : end;
@@ -141,6 +155,7 @@ static rt_daterange_impl *as_daterange(void *obj) {
 /// @brief Return the start timestamp of the range (seconds since epoch).
 /// @param range DateRange object pointer; returns 0 if NULL.
 /// @return Start timestamp in UTC seconds.
+/// @note A null range and a range beginning at the epoch both return zero.
 int64_t rt_daterange_start(void *range) {
     if (!range)
         return 0;
@@ -150,6 +165,7 @@ int64_t rt_daterange_start(void *range) {
 /// @brief Return the end timestamp of the range (seconds since epoch).
 /// @param range DateRange object pointer; returns 0 if NULL.
 /// @return End timestamp in UTC seconds.
+/// @note A null range and a range ending at the epoch both return zero.
 int64_t rt_daterange_end(void *range) {
     if (!range)
         return 0;
@@ -199,6 +215,7 @@ int8_t rt_daterange_overlaps(void *range, void *other) {
 /// @param range First DateRange.
 /// @param other Second DateRange.
 /// @return New DateRange for the overlap, or NULL if the ranges are disjoint.
+/// @note A shared endpoint is a one-point intersection because ranges are closed.
 void *rt_daterange_intersection(void *range, void *other) {
     if (!range || !other)
         return NULL;
@@ -243,7 +260,7 @@ void *rt_daterange_union_range(void *range, void *other) {
 /// @details Computed as (end - start) / 86400. Fractional days are truncated.
 ///          For a 36-hour range, this returns 1 (not 2).
 /// @param range DateRange object pointer; returns 0 if NULL.
-/// @return Whole days contained in the range.
+/// @return Whole elapsed 24-hour units between endpoints.
 int64_t rt_daterange_days(void *range) {
     if (!range)
         return 0;
@@ -259,7 +276,7 @@ int64_t rt_daterange_days(void *range) {
 /// @brief Return the number of whole hours spanned by the range.
 /// @details Computed as (end - start) / 3600. Fractional hours are truncated.
 /// @param range DateRange object pointer; returns 0 if NULL.
-/// @return Whole hours contained in the range.
+/// @return Whole elapsed 3600-second units between endpoints.
 int64_t rt_daterange_hours(void *range) {
     if (!range)
         return 0;
@@ -297,9 +314,11 @@ int64_t rt_daterange_duration(void *range) {
 /// @brief Format the range as "YYYY-MM-DD HH:MM - YYYY-MM-DD HH:MM" (UTC).
 /// @details Converts both timestamps to UTC calendar components via gmtime_r
 ///          and formats into a fixed-layout string. Returns an empty string for
-///          NULL inputs. The output is always in UTC with no timezone suffix.
+///          null or platform-unrepresentable inputs. The output is always in
+///          UTC with no timezone suffix. If the fixed buffer is exceeded, the
+///          returned text is truncated to fit.
 /// @param range DateRange object pointer.
-/// @return Newly allocated runtime string with the formatted range.
+/// @return Newly allocated formatted or empty runtime string.
 rt_string rt_daterange_to_string(void *range) {
     if (!range)
         return rt_string_from_bytes("", 0);

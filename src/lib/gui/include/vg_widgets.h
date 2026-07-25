@@ -1496,6 +1496,11 @@ typedef struct vg_image {
     uint32_t bg_color;   ///< Background color (shown if image doesn't fill)
     float opacity;       ///< Image opacity (0-1)
     float corner_radius; ///< Corner radius for rounded images
+
+    /// Opt-in keyboard focus: interactive canvases (scene viewports) enable
+    /// this so click-to-focus and focus-gated shortcuts work like any other
+    /// focusable widget. Presentation-only images keep the default (false).
+    bool focusable;
 } vg_image_t;
 
 /// @brief Create a new image widget with no initial pixel data.
@@ -1579,6 +1584,14 @@ vg_image_filter_t vg_image_get_filter(const vg_image_t *image);
 /// @param image   Image widget.
 /// @param opacity Opacity in the range [0.0, 1.0] (0 = transparent, 1 = opaque).
 void vg_image_set_opacity(vg_image_t *image, float opacity);
+
+/// @brief Opt an image into keyboard focus (click-to-focus plus a focus ring).
+/// @details Interactive canvases (scene viewports) enable this so shortcut
+///          ownership follows the surface the user clicked, exactly like any
+///          other focusable widget. Presentation images keep the default.
+/// @param image Image widget.
+/// @param focusable true to accept focus; false restores presentation-only.
+void vg_image_set_focusable(vg_image_t *image, bool focusable);
 
 //=============================================================================
 // Spinner/NumberInput Widget

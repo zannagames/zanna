@@ -5,7 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_physics2d_joint.c
+/// @file rt_physics2d_joint.c
+/// @brief Implements Physics2D joint construction, world registration,
+///        constraint solving, and circle-body creation.
+///
+/// @details Joints retain both endpoint bodies and may be retained again by a
+/// world. Spring constraints apply bounded velocity impulses, while distance,
+/// hinge, and rope constraints use iterative mass-weighted position projection
+/// followed by velocity projection to prevent hidden constraint-axis velocity.
+///
+// File: src/runtime/graphics/2d/rt_physics2d_joint.c
 // Purpose: Joint/constraint implementations for the 2D physics engine.
 //   Provides DistanceJoint, SpringJoint, HingeJoint, RopeJoint, circle body
 //   creation, and the iterative joint constraint solver.
@@ -41,6 +50,8 @@
 /// @brief Return the world-space X coordinate of the body's center of mass.
 /// @details Circle bodies store their center directly in x,y.  AABB bodies store
 ///   the top-left corner, so the center is x + w/2.
+/// @param b Borrowed body implementation.
+/// @return The shape's current center X coordinate.
 static double body_cx(rt_body_impl *b) {
     return b->is_circle ? b->x : (b->x + b->w * 0.5);
 }
@@ -48,6 +59,8 @@ static double body_cx(rt_body_impl *b) {
 /// @brief Return the world-space Y coordinate of the body's center of mass.
 /// @details Circle bodies store their center directly in x,y.  AABB bodies store
 ///   the top-left corner, so the center is y + h/2.
+/// @param b Borrowed body implementation.
+/// @return The shape's current center Y coordinate.
 static double body_cy(rt_body_impl *b) {
     return b->is_circle ? b->y : (b->y + b->h * 0.5);
 }
@@ -55,6 +68,9 @@ static double body_cy(rt_body_impl *b) {
 /// @brief Return @p value if it is finite, otherwise return @p fallback.
 /// @details Used to sanitize NaN/Inf inputs on joint creation so internal state
 ///   always holds valid floating-point values.
+/// @param value Candidate value.
+/// @param fallback Replacement for non-finite input.
+/// @return @p value when finite, otherwise @p fallback.
 static double finite_or(double value, double fallback) {
     return isfinite(value) ? value : fallback;
 }
@@ -63,6 +79,8 @@ static double finite_or(double value, double fallback) {
 /// @details Used when sanitizing joint parameters that must be non-negative
 ///   (rest length, stiffness, damping, max length).  NaN, Inf, and negative
 ///   values all collapse to zero, which is the disabled/zero-effect state.
+/// @param value Candidate nonnegative joint parameter.
+/// @return @p value when finite and strictly positive, otherwise `0.0`.
 static double nonnegative_finite_or_zero(double value) {
     return (isfinite(value) && value > 0.0) ? value : 0.0;
 }
@@ -121,6 +139,7 @@ static rt_world_impl *checked_world(void *obj, const char *api) {
 ///   Releases body_a and body_b (which were retained in alloc_joint) and
 ///   frees them immediately if their counts also hit zero.  Nulls the pointers
 ///   to guard against double-free if the finalizer is somehow called twice.
+/// @param obj Finalizing joint implementation supplied by the object system.
 static void joint_finalizer(void *obj) {
     ph_joint *j = (ph_joint *)obj;
     if (!j)
@@ -213,6 +232,11 @@ static ph_joint *alloc_joint(int32_t type, void *body_a, void *body_b) {
 
 /// @brief Create a distance joint that holds bodies `a` and `b` exactly `length` units apart.
 /// The constraint is solved via positional correction each step (rigid rod, no springiness).
+/// @param body_a First distinct Physics2D.Body endpoint.
+/// @param body_b Second distinct Physics2D.Body endpoint.
+/// @param length Requested nonnegative center-to-center rest length.
+/// @return A new active joint handle retaining both bodies, or `NULL` for
+///         invalid input or allocation failure.
 void *rt_physics2d_distance_joint_new(void *body_a, void *body_b, double length) {
     ph_joint *j = alloc_joint(RT_JOINT_DISTANCE, body_a, body_b);
     if (!j)
@@ -249,6 +273,13 @@ void rt_physics2d_distance_joint_set_length(void *joint, double length) {
 
 /// @brief Create a spring joint between two bodies — applies Hooke's law force proportional to
 /// `stiffness` × displacement from `rest_length`, with `damping` proportional to relative velocity.
+/// @param body_a First distinct Physics2D.Body endpoint.
+/// @param body_b Second distinct Physics2D.Body endpoint.
+/// @param rest_length Requested nonnegative center-to-center rest length.
+/// @param stiffness Requested nonnegative Hooke coefficient.
+/// @param damping Requested nonnegative axis-velocity damping coefficient.
+/// @return A new active joint handle retaining both bodies, or `NULL` for
+///         invalid input or allocation failure.
 void *rt_physics2d_spring_joint_new(
     void *body_a, void *body_b, double rest_length, double stiffness, double damping) {
     ph_joint *j = alloc_joint(RT_JOINT_SPRING, body_a, body_b);
@@ -309,7 +340,15 @@ void rt_physics2d_spring_joint_set_damping(void *joint, double damping) {
 //=============================================================================
 
 /// @brief Create a hinge (pin) joint that locks two bodies to share a common world-space anchor
-/// point (anchor_x, anchor_y). Bodies remain free to rotate about the anchor.
+/// point (anchor_x, anchor_y).
+/// @details Physics2D has no angular body state; the stored local center offsets
+///          constrain linear motion so both endpoint anchor positions coincide.
+/// @param body_a First distinct Physics2D.Body endpoint.
+/// @param body_b Second distinct Physics2D.Body endpoint.
+/// @param anchor_x Initial world-space anchor X; non-finite input uses body A's center.
+/// @param anchor_y Initial world-space anchor Y; non-finite input uses body A's center.
+/// @return A new active joint handle retaining both bodies, or `NULL` for
+///         invalid input or allocation failure.
 void *rt_physics2d_hinge_joint_new(void *body_a, void *body_b, double anchor_x, double anchor_y) {
     ph_joint *j = alloc_joint(RT_JOINT_HINGE, body_a, body_b);
     if (!j)
@@ -350,6 +389,11 @@ double rt_physics2d_hinge_joint_get_angle(void *joint) {
 
 /// @brief Create a rope joint — distance constraint that's only active when bodies exceed
 /// `max_length` apart. Bodies can be closer freely (chain/rope behavior, not rigid rod).
+/// @param body_a First distinct Physics2D.Body endpoint.
+/// @param body_b Second distinct Physics2D.Body endpoint.
+/// @param max_length Requested nonnegative maximum center separation.
+/// @return A new active joint handle retaining both bodies, or `NULL` for
+///         invalid input or allocation failure.
 void *rt_physics2d_rope_joint_new(void *body_a, void *body_b, double max_length) {
     ph_joint *j = alloc_joint(RT_JOINT_ROPE, body_a, body_b);
     if (!j)
@@ -385,12 +429,16 @@ void rt_physics2d_rope_joint_set_max_length(void *joint, double max_length) {
 //=============================================================================
 
 /// @brief Borrow the first body referenced by the joint (caller must NOT release).
+/// @param joint Opaque Physics2D.Joint handle.
+/// @return The borrowed first body, or `NULL` for invalid input.
 void *rt_physics2d_joint_get_body_a(void *joint) {
     ph_joint *j = checked_joint(joint, "Physics2D.Joint.BodyA: expected Physics2D.Joint");
     return j ? j->body_a : NULL;
 }
 
 /// @brief Borrow the second body referenced by the joint (caller must NOT release).
+/// @param joint Opaque Physics2D.Joint handle.
+/// @return The borrowed second body, or `NULL` for invalid input.
 void *rt_physics2d_joint_get_body_b(void *joint) {
     ph_joint *j = checked_joint(joint, "Physics2D.Joint.BodyB: expected Physics2D.Joint");
     return j ? j->body_b : NULL;
@@ -407,8 +455,9 @@ int64_t rt_physics2d_joint_get_type(void *joint) {
 }
 
 /// @brief Return whether the joint is currently participating in constraint solving.
-/// @details A joint is active when it has been added to a world.  It becomes inactive
-///   (active == 0) when removed, which also signals the solver to skip it.
+/// @details Constructors initialize the flag to active even before registration.
+///   World removal clears it, and adding the joint to a world sets it again.
+///   Solvers skip inactive registered entries.
 /// @param joint  Any Physics2D joint handle.
 /// @return       1 if active, 0 if inactive or @p joint is invalid.
 int8_t rt_physics2d_joint_is_active(void *joint) {
@@ -424,6 +473,9 @@ int8_t rt_physics2d_joint_is_active(void *joint) {
 /// @details Linear scan over w->bodies[0..body_count).  Called by
 ///   rt_physics2d_world_add_joint to enforce the invariant that both joint bodies
 ///   must belong to the same world before a joint can be added.
+/// @param w Borrowed world implementation to inspect.
+/// @param body Borrowed body pointer to locate.
+/// @return Nonzero when the body is registered in @p w, otherwise zero.
 static int8_t world_has_body(rt_world_impl *w, void *body) {
     if (!w || !body)
         return 0;
@@ -445,7 +497,7 @@ static int8_t world_has_body(rt_world_impl *w, void *body) {
 /// @brief Register a joint with a world so it participates in constraint solving.
 /// @details Validates that both of the joint's bodies already belong to @p world
 ///   (traps if not), prevents duplicate registration, and enforces the
-///   grows world joint storage as needed. Retains @p joint so the GC
+///   body-membership invariant. Grows world joint storage as needed and retains @p joint so the GC
 ///   cannot collect it while it is registered.  Sets the joint active flag to 1.
 /// @param world  Physics2D.World handle.
 /// @param joint  Physics2D joint handle to register.
@@ -693,6 +745,7 @@ static void solve_rope(ph_joint *j, double dt) {
 ///   velocity" that balloons its swept AABB and launches it if the joint is
 ///   removed. Removing the constraint-axis relative velocity (an e=0 normal impulse
 ///   along the joint axis) is the velocity half of position-based dynamics.
+/// @param j Borrowed active distance joint to project.
 static void solve_distance_velocity(ph_joint *j) {
     rt_body_impl *a = (rt_body_impl *)j->body_a;
     rt_body_impl *b = (rt_body_impl *)j->body_b;
@@ -721,6 +774,7 @@ static void solve_distance_velocity(ph_joint *j) {
 ///   together at the anchor: the correct velocity constraint zeroes the relative
 ///   linear velocity, mass-weighted. Mirrors solve_distance_velocity for the pin
 ///   case and prevents the same phantom-velocity accumulation.
+/// @param j Borrowed active hinge joint to project.
 static void solve_hinge_velocity(ph_joint *j) {
     rt_body_impl *a = (rt_body_impl *)j->body_a;
     rt_body_impl *b = (rt_body_impl *)j->body_b;
@@ -742,6 +796,7 @@ static void solve_hinge_velocity(ph_joint *j) {
 ///   relative velocity along the axis only when the bodies are at/over max length
 ///   and still separating (rel_vn > 0). Approaching bodies keep their velocity so
 ///   the rope can go slack, matching solve_rope's position behaviour.
+/// @param j Borrowed active rope joint to project.
 static void solve_rope_velocity(ph_joint *j) {
     rt_body_impl *a = (rt_body_impl *)j->body_a;
     rt_body_impl *b = (rt_body_impl *)j->body_b;
@@ -803,7 +858,7 @@ void rt_physics2d_solve_joint_velocities(void *world, double dt) {
 /// @brief Iterate all spring joints in the world and apply velocity impulses.
 /// @details Called once per world step before positional correction so that the
 ///   velocity changes produced by Hooke's law can be integrated by the main
-///   velocity-Verlet loop before positions are locked down by solve_distance /
+///   symplectic-Euler loop before positions are locked down by solve_distance /
 ///   solve_hinge / solve_rope.
 /// @param world  Physics2D.World handle.
 /// @param dt     Time step in seconds passed through to solve_spring.
@@ -855,10 +910,11 @@ void rt_physics2d_solve_position_joints(void *world, double dt) {
     }
 }
 
-/// @brief Run the full joint solve pass for a world step: springs first, then positional.
-/// @details Spring joints apply velocity impulses (must run before position integration),
-///   then positional joints (distance, hinge, rope) run their Gauss-Seidel correction
-///   passes to lock anchor positions.  Called by the main world step function.
+/// @brief Run the combined spring and positional joint passes.
+/// @details This compatibility wrapper applies spring velocity impulses and
+///   then distance/hinge/rope position correction. It does not perform the
+///   separate post-position velocity-projection pass; the main world integrator
+///   invokes the phase-specific entry points at their required stages.
 /// @param world  Physics2D.World handle.
 /// @param dt     Time step in seconds.
 void rt_physics2d_solve_joints(void *world, double dt) {
@@ -873,6 +929,12 @@ void rt_physics2d_solve_joints(void *world, double dt) {
 /// @brief Construct a circle-shaped rigid body centered at (cx, cy) with `radius` and `mass`.
 /// Otherwise behaves like `_body_new` (default restitution 0.5, friction 0.3, layer 1, mask
 /// 0xFF...).
+/// @param cx Initial center X; non-finite input becomes zero.
+/// @param cy Initial center Y; non-finite input becomes zero.
+/// @param radius Positive circle radius; invalid values become one.
+/// @param mass Positive dynamic mass, or a nonpositive/non-finite value for a
+///             static circle.
+/// @return A new circle-body handle, or `NULL` if allocation fails.
 void *rt_physics2d_circle_body_new(double cx, double cy, double radius, double mass) {
     cx = finite_or(cx, 0.0);
     cy = finite_or(cy, 0.0);

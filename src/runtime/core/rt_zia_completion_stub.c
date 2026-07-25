@@ -38,6 +38,8 @@
 //        src/runtime/core/rt_string.h (rt_str_empty, rt_string type)
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Weak protocol-compatible fallbacks for Zia editor services.
 
 #include "rt_string.h"
 
@@ -55,6 +57,8 @@
 ///          so the IDE's completion / hover / diagnostics tooling receives a well-formed
 ///          handle even when editor services are not linked into this binary. The caller owns the
 ///          returned reference.
+/// @param payload Borrowed NUL-terminated protocol text.
+/// @return Newly allocated owned runtime string, or `NULL` on allocation failure.
 static rt_string zia_completion_unavailable_string(const char *payload) {
     return rt_string_from_bytes(payload, strlen(payload));
 }
@@ -63,7 +67,10 @@ static const char *const kUnavailableMessage =
     "Zia completion engine unavailable: link fe_zia to enable editor tooling";
 
 /// @brief Weak stub: returns an unavailable completion item.
-/// Overridden by rt_zia_completion.cpp when zia_editor_services is linked.
+/// @param source Borrowed source text; ignored.
+/// @param line One-based cursor line; ignored.
+/// @param col Zero-based cursor column; ignored.
+/// @return Owned tab-delimited unavailable completion payload.
 RT_WEAK rt_string rt_zia_complete(rt_string source, int64_t line, int64_t col) {
     (void)source;
     (void)line;
@@ -73,7 +80,12 @@ RT_WEAK rt_string rt_zia_complete(rt_string source, int64_t line, int64_t col) {
 }
 
 /// @brief Weak stub: returns an unavailable completion item.
-/// Overridden by rt_zia_completion.cpp when zia_editor_services is linked.
+/// @details Ignores @p file_path and delegates to @ref rt_zia_complete.
+/// @param source Borrowed source text; ignored by the fallback.
+/// @param file_path Borrowed path; ignored.
+/// @param line One-based cursor line; ignored.
+/// @param col Zero-based cursor column; ignored.
+/// @return Owned tab-delimited unavailable completion payload.
 RT_WEAK rt_string rt_zia_complete_for_file(rt_string source,
                                            rt_string file_path,
                                            int64_t line,
@@ -86,6 +98,10 @@ RT_WEAK rt_string rt_zia_complete_for_file(rt_string source,
 }
 
 /// @brief Weak stub: returns an unavailable signature-help payload.
+/// @param source Borrowed source text; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Owned unavailable-message string.
 RT_WEAK rt_string rt_zia_signature_help(rt_string source, int64_t line, int64_t col) {
     (void)source;
     (void)line;
@@ -94,6 +110,11 @@ RT_WEAK rt_string rt_zia_signature_help(rt_string source, int64_t line, int64_t 
 }
 
 /// @brief Weak stub: returns an unavailable signature-help payload.
+/// @param source Borrowed source text; ignored by the fallback.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Owned unavailable-message string.
 RT_WEAK rt_string rt_zia_signature_help_for_file(rt_string source,
                                                  rt_string file_path,
                                                  int64_t line,
@@ -106,12 +127,17 @@ RT_WEAK rt_string rt_zia_signature_help_for_file(rt_string source,
 }
 
 /// @brief Weak stub: diagnostics unavailable means "no diagnostics".
+/// @param source Borrowed source text; ignored.
+/// @return Shared owned empty-string diagnostic stream.
 RT_WEAK rt_string rt_zia_check(rt_string source) {
     (void)source;
     return rt_str_empty();
 }
 
 /// @brief Weak stub: diagnostics unavailable means "no diagnostics".
+/// @param source Borrowed source text; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Shared owned empty-string diagnostic stream.
 RT_WEAK rt_string rt_zia_check_for_file(rt_string source, rt_string file_path) {
     (void)source;
     (void)file_path;
@@ -120,6 +146,9 @@ RT_WEAK rt_string rt_zia_check_for_file(rt_string source, rt_string file_path) {
 
 /// @brief Weak stub: no document mirror exists without editor services; the
 ///        caller will full-sync on the next request.
+/// @param path Borrowed document path; ignored.
+/// @param text Borrowed complete text; ignored.
+/// @param revision Mirror revision; ignored.
 RT_WEAK void rt_zia_doc_sync_full(rt_string path, rt_string text, int64_t revision) {
     (void)path;
     (void)text;
@@ -128,6 +157,10 @@ RT_WEAK void rt_zia_doc_sync_full(rt_string path, rt_string text, int64_t revisi
 
 /// @brief Weak stub: no baseline mirror to patch; report failure so the caller
 ///        falls back to a full sync.
+/// @param path Borrowed document path; ignored.
+/// @param deltas_json Borrowed encoded edits; ignored.
+/// @param end_revision Target revision; ignored.
+/// @return Always zero to request full synchronization.
 RT_WEAK int8_t rt_zia_doc_sync_delta(rt_string path, rt_string deltas_json, int64_t end_revision) {
     (void)path;
     (void)deltas_json;
@@ -136,11 +169,14 @@ RT_WEAK int8_t rt_zia_doc_sync_delta(rt_string path, rt_string deltas_json, int6
 }
 
 /// @brief Weak stub: no-op; there is no mirror to drop.
+/// @param path Borrowed document path; ignored.
 RT_WEAK void rt_zia_doc_close(rt_string path) {
     (void)path;
 }
 
 /// @brief Weak stub: no mirror text without editor services.
+/// @param path Borrowed document path; ignored.
+/// @return Shared owned empty string.
 RT_WEAK rt_string rt_zia_doc_text(rt_string path) {
     (void)path;
     return rt_str_empty();
@@ -148,6 +184,8 @@ RT_WEAK rt_string rt_zia_doc_text(rt_string path) {
 
 /// @brief Weak stub: mirror-sourced diagnostics unavailable means "no
 ///        diagnostics" (a missing analyzer must not paint editor warnings).
+/// @param file_path Borrowed path; ignored.
+/// @return Shared owned empty diagnostic stream.
 RT_WEAK rt_string rt_zia_check_for_file_mirror(rt_string file_path) {
     (void)file_path;
     return rt_str_empty();
@@ -155,18 +193,25 @@ RT_WEAK rt_string rt_zia_check_for_file_mirror(rt_string file_path) {
 
 /// @brief Weak stub: async mirror-sourced diagnostics unavailable; return null
 ///        job so the caller full-syncs and falls back to the wrapped path.
+/// @param file_path Borrowed path; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_doc_begin_check_for_file(rt_string file_path) {
     (void)file_path;
     return NULL;
 }
 
 /// @brief Weak stub: structured diagnostics unavailable means "no diagnostics".
+/// @param source Borrowed source text; ignored.
+/// @return Newly allocated owned-element empty Seq.
 RT_WEAK void *rt_zia_toolchain_check(rt_string source) {
     (void)source;
     return rt_seq_new_owned();
 }
 
 /// @brief Weak stub: structured diagnostics unavailable means "no diagnostics".
+/// @param source Borrowed source text; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Newly allocated owned-element empty Seq.
 RT_WEAK void *rt_zia_toolchain_check_for_file(rt_string source, rt_string file_path) {
     (void)source;
     (void)file_path;
@@ -174,6 +219,9 @@ RT_WEAK void *rt_zia_toolchain_check_for_file(rt_string source, rt_string file_p
 }
 
 /// @brief Weak stub: async diagnostics unavailable; return null job.
+/// @param source Borrowed source text; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_toolchain_begin_check_for_file(rt_string source, rt_string file_path) {
     (void)source;
     (void)file_path;
@@ -182,6 +230,10 @@ RT_WEAK void *rt_zia_toolchain_begin_check_for_file(rt_string source, rt_string 
 
 /// @brief Weak stub: compile unavailable returns a structured failed result
 ///        without source diagnostics.
+/// @details Returns a Map with `success=false`, an empty diagnostics Seq, and
+///          empty `sourcePath`, `outputPath`, and `il` strings.
+/// @param source Borrowed source text; ignored.
+/// @return Newly allocated result Map owning its inserted values.
 RT_WEAK void *rt_zia_toolchain_compile(rt_string source) {
     (void)source;
     void *diagnostics = rt_seq_new_owned();
@@ -220,23 +272,38 @@ RT_WEAK void *rt_zia_toolchain_compile(rt_string source) {
 
 /// @brief Weak stub: compile unavailable returns a structured failed result
 ///        without source diagnostics.
+/// @param source Borrowed source text; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Newly allocated failed compile-result Map.
 RT_WEAK void *rt_zia_toolchain_compile_for_file(rt_string source, rt_string file_path) {
     (void)file_path;
     return rt_zia_toolchain_compile(source);
 }
 
+/// @brief Insert a boolean under a temporary copied C-string key.
+/// @param map Borrowed mutable runtime Map.
+/// @param key_text Borrowed NUL-terminated key.
+/// @param value Boolean value.
 static void zia_stub_map_set_bool(void *map, const char *key_text, int8_t value) {
     rt_string key = rt_string_from_bytes(key_text, strlen(key_text));
     rt_map_set_bool(map, key, value);
     rt_string_unref(key);
 }
 
+/// @brief Insert an integer under a temporary copied C-string key.
+/// @param map Borrowed mutable runtime Map.
+/// @param key_text Borrowed NUL-terminated key.
+/// @param value Signed value.
 static void zia_stub_map_set_int(void *map, const char *key_text, int64_t value) {
     rt_string key = rt_string_from_bytes(key_text, strlen(key_text));
     rt_map_set_int(map, key, value);
     rt_string_unref(key);
 }
 
+/// @brief Insert copied string key/value text into a runtime Map.
+/// @param map Borrowed mutable runtime Map.
+/// @param key_text Borrowed NUL-terminated key.
+/// @param value_text Borrowed NUL-terminated value.
 static void zia_stub_map_set_str(void *map, const char *key_text, const char *value_text) {
     rt_string key = rt_string_from_bytes(key_text, strlen(key_text));
     rt_string value = rt_string_from_bytes(value_text, strlen(value_text));
@@ -245,12 +312,18 @@ static void zia_stub_map_set_str(void *map, const char *key_text, const char *va
     rt_string_unref(key);
 }
 
+/// @brief Insert an object under a temporary copied C-string key.
+/// @param map Borrowed mutable runtime Map.
+/// @param key_text Borrowed NUL-terminated key.
+/// @param value Borrowed object retained by the Map API.
 static void zia_stub_map_set_obj(void *map, const char *key_text, void *value) {
     rt_string key = rt_string_from_bytes(key_text, strlen(key_text));
     rt_map_set(map, key, value);
     rt_string_unref(key);
 }
 
+/// @brief Build the structured one-item unavailable completion response.
+/// @return Newly allocated owned-element Seq containing one schema-complete Map.
 static void *zia_stub_completion_items_unavailable(void) {
     void *seq = rt_seq_new_owned();
     void *item = rt_map_new();
@@ -277,6 +350,10 @@ static void *zia_stub_completion_items_unavailable(void) {
 }
 
 /// @brief Weak stub: returns a structured unavailable completion item.
+/// @param source Borrowed source; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated unavailable completion Seq.
 RT_WEAK void *rt_zia_completion_items(rt_string source, int64_t line, int64_t col) {
     (void)source;
     (void)line;
@@ -285,6 +362,11 @@ RT_WEAK void *rt_zia_completion_items(rt_string source, int64_t line, int64_t co
 }
 
 /// @brief Weak stub: returns a structured unavailable completion item.
+/// @param source Borrowed source; ignored by the fallback.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated unavailable completion Seq.
 RT_WEAK void *rt_zia_completion_items_for_file(rt_string source,
                                                rt_string file_path,
                                                int64_t line,
@@ -294,6 +376,11 @@ RT_WEAK void *rt_zia_completion_items_for_file(rt_string source,
 }
 
 /// @brief Weak stub: async completion unavailable; return null job.
+/// @param source Borrowed source; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_completion_begin_items_for_file(rt_string source,
                                                      rt_string file_path,
                                                      int64_t line,
@@ -305,6 +392,9 @@ RT_WEAK void *rt_zia_completion_begin_items_for_file(rt_string source,
     return NULL;
 }
 
+/// @brief Build a schema-complete unavailable signature-help response.
+/// @return Newly allocated Map with unavailable fields and empty parameter and
+///         overload sequences.
 static void *zia_stub_signature_unavailable_map(void) {
     void *params = rt_seq_new_owned();
     void *result = rt_map_new();
@@ -330,6 +420,10 @@ static void *zia_stub_signature_unavailable_map(void) {
 }
 
 /// @brief Weak stub: structured signature help unavailable.
+/// @param source Borrowed source; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated unavailable signature Map.
 RT_WEAK void *rt_zia_signature_info(rt_string source, int64_t line, int64_t col) {
     (void)source;
     (void)line;
@@ -338,6 +432,11 @@ RT_WEAK void *rt_zia_signature_info(rt_string source, int64_t line, int64_t col)
 }
 
 /// @brief Weak stub: structured signature help unavailable.
+/// @param source Borrowed source; ignored by the fallback.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated unavailable signature Map.
 RT_WEAK void *rt_zia_signature_info_for_file(rt_string source,
                                              rt_string file_path,
                                              int64_t line,
@@ -347,6 +446,11 @@ RT_WEAK void *rt_zia_signature_info_for_file(rt_string source,
 }
 
 /// @brief Weak stub: async signature unavailable; return null job.
+/// @param source Borrowed source; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_completion_begin_signature_info_for_file(rt_string source,
                                                               rt_string file_path,
                                                               int64_t line,
@@ -358,6 +462,9 @@ RT_WEAK void *rt_zia_completion_begin_signature_info_for_file(rt_string source,
     return NULL;
 }
 
+/// @brief Build a structured lookup miss.
+/// @param reason Borrowed NUL-terminated reason text.
+/// @return Newly allocated Map with `found=false`.
 static void *zia_stub_not_found_map(const char *reason) {
     void *result = rt_map_new();
     zia_stub_map_set_bool(result, "found", 0);
@@ -365,6 +472,9 @@ static void *zia_stub_not_found_map(const char *reason) {
     return result;
 }
 
+/// @brief Build a structured rename failure with no edits.
+/// @param reason Borrowed NUL-terminated reason text.
+/// @return Newly allocated Map with `success=false` and an empty edits Seq.
 static void *zia_stub_rename_failure_map(const char *reason) {
     void *edits = rt_seq_new_owned();
     void *result = rt_map_new();
@@ -377,18 +487,26 @@ static void *zia_stub_rename_failure_map(const char *reason) {
 }
 
 /// @brief Weak stub: project indexes require editor services.
+/// @param root Borrowed project root; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_project_index_new(rt_string root) {
     (void)root;
     return NULL;
 }
 
 /// @brief Weak stub: no project index handle is valid without editor services.
+/// @param handle Opaque candidate; ignored.
+/// @return Always zero.
 RT_WEAK int8_t rt_zia_project_index_is_valid(void *handle) {
     (void)handle;
     return 0;
 }
 
 /// @brief Weak stub: cannot update a missing project index.
+/// @param handle Opaque index; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @param source Borrowed source; ignored.
+/// @return Always zero.
 RT_WEAK int8_t rt_zia_project_index_update_file(void *handle,
                                                 rt_string file_path,
                                                 rt_string source) {
@@ -399,6 +517,9 @@ RT_WEAK int8_t rt_zia_project_index_update_file(void *handle,
 }
 
 /// @brief Weak stub: cannot remove from a missing project index.
+/// @param handle Opaque index; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Always zero.
 RT_WEAK int8_t rt_zia_project_index_remove_file(void *handle, rt_string file_path) {
     (void)handle;
     (void)file_path;
@@ -406,16 +527,24 @@ RT_WEAK int8_t rt_zia_project_index_remove_file(void *handle, rt_string file_pat
 }
 
 /// @brief Weak stub: no-op without editor services.
+/// @param handle Opaque index; ignored.
 RT_WEAK void rt_zia_project_index_clear(void *handle) {
     (void)handle;
 }
 
 /// @brief Weak stub: no-op without editor services.
+/// @param handle Opaque index; ignored.
 RT_WEAK void rt_zia_project_index_destroy(void *handle) {
     (void)handle;
 }
 
 /// @brief Weak stub: definition lookup unavailable.
+/// @param handle Opaque index; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @param source Borrowed source; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated not-found Map.
 RT_WEAK void *rt_zia_project_index_definition(
     void *handle, rt_string file_path, rt_string source, int64_t line, int64_t col) {
     (void)handle;
@@ -427,6 +556,12 @@ RT_WEAK void *rt_zia_project_index_definition(
 }
 
 /// @brief Weak stub: reference lookup unavailable.
+/// @param handle Opaque index; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @param source Borrowed source; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated empty owned-element Seq.
 RT_WEAK void *rt_zia_project_index_references(
     void *handle, rt_string file_path, rt_string source, int64_t line, int64_t col) {
     (void)handle;
@@ -438,6 +573,13 @@ RT_WEAK void *rt_zia_project_index_references(
 }
 
 /// @brief Weak stub: rename unavailable.
+/// @param handle Opaque index; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @param source Borrowed source; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @param new_name Borrowed replacement name; ignored.
+/// @return Newly allocated failed-rename Map with no edits.
 RT_WEAK void *rt_zia_project_index_rename_edits(void *handle,
                                                 rt_string file_path,
                                                 rt_string source,
@@ -454,6 +596,10 @@ RT_WEAK void *rt_zia_project_index_rename_edits(void *handle,
 }
 
 /// @brief Weak stub: returns an unavailable hover payload.
+/// @param source Borrowed source; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Owned unavailable-message string.
 RT_WEAK rt_string rt_zia_hover(rt_string source, int64_t line, int64_t col) {
     (void)source;
     (void)line;
@@ -462,6 +608,11 @@ RT_WEAK rt_string rt_zia_hover(rt_string source, int64_t line, int64_t col) {
 }
 
 /// @brief Weak stub: returns an unavailable hover payload.
+/// @param source Borrowed source; ignored by the fallback.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Owned unavailable-message string.
 RT_WEAK rt_string rt_zia_hover_for_file(rt_string source,
                                         rt_string file_path,
                                         int64_t line,
@@ -473,6 +624,8 @@ RT_WEAK rt_string rt_zia_hover_for_file(rt_string source,
     return rt_zia_hover(source, line, col);
 }
 
+/// @brief Build a schema-complete unavailable structured hover response.
+/// @return Newly allocated Map with `available=false`.
 static void *zia_stub_hover_unavailable_map(void) {
     void *result = rt_map_new();
     zia_stub_map_set_bool(result, "available", 0);
@@ -487,6 +640,10 @@ static void *zia_stub_hover_unavailable_map(void) {
 }
 
 /// @brief Weak stub: structured hover unavailable.
+/// @param source Borrowed source; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated unavailable hover Map.
 RT_WEAK void *rt_zia_hover_info(rt_string source, int64_t line, int64_t col) {
     (void)source;
     (void)line;
@@ -495,6 +652,11 @@ RT_WEAK void *rt_zia_hover_info(rt_string source, int64_t line, int64_t col) {
 }
 
 /// @brief Weak stub: structured hover unavailable.
+/// @param source Borrowed source; ignored by the fallback.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Newly allocated unavailable hover Map.
 RT_WEAK void *rt_zia_hover_info_for_file(rt_string source,
                                          rt_string file_path,
                                          int64_t line,
@@ -504,6 +666,11 @@ RT_WEAK void *rt_zia_hover_info_for_file(rt_string source,
 }
 
 /// @brief Weak stub: async hover unavailable; return null job.
+/// @param source Borrowed source; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @param line Cursor line; ignored.
+/// @param col Cursor column; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_completion_begin_hover_info_for_file(rt_string source,
                                                           rt_string file_path,
                                                           int64_t line,
@@ -516,6 +683,8 @@ RT_WEAK void *rt_zia_completion_begin_hover_info_for_file(rt_string source,
 }
 
 /// @brief Weak stub: returns an unavailable symbol payload.
+/// @param source Borrowed source; ignored.
+/// @return Owned tab-delimited unavailable-symbol string.
 RT_WEAK rt_string rt_zia_symbols(rt_string source) {
     (void)source;
     return zia_completion_unavailable_string(
@@ -523,6 +692,9 @@ RT_WEAK rt_string rt_zia_symbols(rt_string source) {
 }
 
 /// @brief Weak stub: returns an unavailable symbol payload.
+/// @param source Borrowed source; ignored by the fallback.
+/// @param file_path Borrowed path; ignored.
+/// @return Owned tab-delimited unavailable-symbol string.
 RT_WEAK rt_string rt_zia_symbols_for_file(rt_string source, rt_string file_path) {
     (void)source;
     (void)file_path;
@@ -530,6 +702,9 @@ RT_WEAK rt_string rt_zia_symbols_for_file(rt_string source, rt_string file_path)
 }
 
 /// @brief Weak stub: async symbols unavailable; return null job.
+/// @param source Borrowed source; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_completion_begin_symbols_for_file(rt_string source, rt_string file_path) {
     (void)source;
     (void)file_path;
@@ -537,13 +712,18 @@ RT_WEAK void *rt_zia_completion_begin_symbols_for_file(rt_string source, rt_stri
 }
 
 /// @brief Weak stub: async semantic tokens unavailable; return null job.
+/// @param source Borrowed source; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Always `NULL`.
 RT_WEAK void *rt_zia_completion_begin_tokens_for_file(rt_string source, rt_string file_path) {
     (void)source;
     (void)file_path;
     return NULL;
 }
 
-/// @brief Weak stub: null async jobs are treated as already done.
+/// @brief Weak stub: no async job is considered done.
+/// @param handle Opaque job; ignored.
+/// @return Always zero, including for NULL.
 RT_WEAK int8_t rt_zia_semantic_job_is_done(void *handle) {
     // Match the strong editor-service semantics (VDOC-108): null/invalid
     // handles are never "done". The weak Begin* stubs return null, so
@@ -553,23 +733,30 @@ RT_WEAK int8_t rt_zia_semantic_job_is_done(void *handle) {
 }
 
 /// @brief Weak stub: the full editor-service bridge is not linked.
+/// @return Always zero.
 RT_WEAK int8_t rt_zia_service_available(void) {
     return 0;
 }
 
 /// @brief Weak stub: no mirrors exist without the editor service.
+/// @param path Borrowed document path; ignored.
+/// @return Always zero.
 RT_WEAK int8_t rt_zia_doc_has(rt_string path) {
     (void)path;
     return 0;
 }
 
 /// @brief Weak stub: null async jobs have no error.
+/// @param handle Opaque job; ignored.
+/// @return Always zero.
 RT_WEAK int8_t rt_zia_semantic_job_is_error(void *handle) {
     (void)handle;
     return 0;
 }
 
 /// @brief Weak stub: null async jobs have no error text.
+/// @param handle Opaque job; ignored.
+/// @return Shared owned empty string.
 RT_WEAK rt_string rt_zia_semantic_job_error(void *handle) {
     (void)handle;
     return rt_str_empty();
@@ -580,57 +767,74 @@ RT_WEAK rt_string rt_zia_semantic_job_error(void *handle) {
 ///          produce a semantic job failure payload. Returning `None` keeps the
 ///          Option-returning API side-channel-free in binaries that omit
 ///          `fe_zia`.
+/// @param handle Opaque job; ignored.
+/// @return Newly returned runtime None option.
 RT_WEAK void *rt_zia_semantic_job_error_option(void *handle) {
     (void)handle;
     return rt_option_none();
 }
 
 /// @brief Weak stub: null async jobs have no kind.
+/// @param handle Opaque job; ignored.
+/// @return Always zero.
 RT_WEAK int64_t rt_zia_semantic_job_kind(void *handle) {
     (void)handle;
     return 0;
 }
 
 /// @brief Weak stub: cancel is a no-op.
+/// @param handle Opaque job; ignored.
 RT_WEAK void rt_zia_semantic_job_cancel(void *handle) {
     (void)handle;
 }
 
-/// @brief Weak stub: empty completion result.
+/// @brief Weak stub: return the structured unavailable completion result.
+/// @param handle Opaque job; ignored.
+/// @return Newly allocated one-item unavailable completion Seq.
 RT_WEAK void *rt_zia_semantic_job_completion_items(void *handle) {
     (void)handle;
     return zia_stub_completion_items_unavailable();
 }
 
-/// @brief Weak stub: empty signature result.
+/// @brief Weak stub: return the structured unavailable signature result.
+/// @param handle Opaque job; ignored.
+/// @return Newly allocated unavailable signature Map.
 RT_WEAK void *rt_zia_semantic_job_signature_info(void *handle) {
     (void)handle;
     return zia_stub_signature_unavailable_map();
 }
 
-/// @brief Weak stub: empty hover result.
+/// @brief Weak stub: return the structured unavailable hover result.
+/// @param handle Opaque job; ignored.
+/// @return Newly allocated unavailable hover Map.
 RT_WEAK void *rt_zia_semantic_job_hover_info(void *handle) {
     (void)handle;
     return zia_stub_hover_unavailable_map();
 }
 
 /// @brief Weak stub: empty symbol result.
+/// @param handle Opaque job; ignored.
+/// @return Shared owned empty string.
 RT_WEAK rt_string rt_zia_semantic_job_symbols(void *handle) {
     (void)handle;
     return rt_str_empty();
 }
 
 /// @brief Weak stub: empty semantic-token result.
+/// @param handle Opaque job; ignored.
+/// @return Shared owned empty string.
 RT_WEAK rt_string rt_zia_semantic_job_tokens(void *handle) {
     (void)handle;
     return rt_str_empty();
 }
 
 /// @brief Weak stub: empty diagnostic result.
+/// @param handle Opaque job; ignored.
+/// @return Newly allocated empty owned-element Seq.
 RT_WEAK void *rt_zia_semantic_job_diagnostics(void *handle) {
     (void)handle;
     return rt_seq_new_owned();
 }
 
-/// @brief Weak stub: no-op.
+/// @brief Weak stub: no-op because no editor-service cache exists.
 RT_WEAK void rt_zia_completion_clear_cache(void) {}

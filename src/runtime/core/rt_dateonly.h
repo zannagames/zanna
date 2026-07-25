@@ -4,14 +4,18 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_dateonly.h
+/// @file
+/// @brief Declares the GC-managed DateOnly proleptic Gregorian value type.
+///
 // Purpose: DateOnly type representing a calendar date without time or timezone components,
 // providing creation, parsing, arithmetic, and formatting operations.
 //
 // Key invariants:
 //   - Month is 1-indexed (1=January, 12=December); day is 1-indexed.
 //   - Days since epoch are counted from 1970-01-01 (Unix epoch, day 0).
-//   - Parsing accepts exactly four unsigned year digits in YYYY-MM-DD. Creation
-//     accepts any signed year, whose formatted text may not round-trip (VDOC-231).
+//   - Creation and parsing share the year range 0000–9999. Parsing accepts
+//     exactly ten bytes in YYYY-MM-DD form, so every constructed value
+//     round-trips through the ISO formatter.
 //   - Date arithmetic traps on signed 64-bit overflow.
 //
 // Ownership/Lifetime:
@@ -41,7 +45,7 @@ extern "C" {
 //=========================================================================
 
 /// @brief Create a DateOnly from year, month, day.
-/// @param year Year (e.g., 2024).
+/// @param year Four-digit-domain year in [0,9999].
 /// @param month Month (1-12).
 /// @param day Day (1-31).
 /// @return Opaque DateOnly object pointer, or NULL for an invalid month/day.
@@ -58,7 +62,8 @@ void *rt_dateonly_parse(rt_string s);
 
 /// @brief Create from days since epoch (Jan 1, 1970).
 /// @param days Days since epoch.
-/// @return Opaque DateOnly object pointer. Traps on signed 64-bit overflow.
+/// @return New DateOnly, or `NULL` if the date is outside years 0000–9999.
+/// @note Traps on signed 64-bit conversion overflow.
 void *rt_dateonly_from_days(int64_t days);
 
 //=========================================================================
@@ -102,19 +107,24 @@ int64_t rt_dateonly_to_days(void *obj);
 /// @brief Add days to the date.
 /// @param obj Opaque DateOnly object pointer.
 /// @param days Number of days to add (can be negative).
-/// @return New DateOnly object. Traps on signed 64-bit overflow.
+/// @return New DateOnly, or `NULL` if the result leaves years 0000–9999.
+/// @note Traps on signed 64-bit overflow.
 void *rt_dateonly_add_days(void *obj, int64_t days);
 
 /// @brief Add months to the date.
 /// @param obj Opaque DateOnly object pointer.
 /// @param months Number of months to add (can be negative).
-/// @return New DateOnly object. Traps on signed 64-bit overflow.
+/// @return New DateOnly with day clamped to the target month, or `NULL` if
+///         the result leaves years 0000–9999.
+/// @note Traps on signed 64-bit overflow.
 void *rt_dateonly_add_months(void *obj, int64_t months);
 
 /// @brief Add years to the date.
 /// @param obj Opaque DateOnly object pointer.
 /// @param years Number of years to add (can be negative).
-/// @return New DateOnly object. Traps on signed 64-bit overflow.
+/// @return New DateOnly, clamping February 29 when necessary, or `NULL` if
+///         the result leaves years 0000–9999.
+/// @note Traps on signed 64-bit overflow.
 void *rt_dateonly_add_years(void *obj, int64_t years);
 
 /// @brief Get the difference in days between two dates.
@@ -165,12 +175,13 @@ void *rt_dateonly_end_of_year(void *obj);
 /// @param a First date.
 /// @param b Second date.
 /// @return -1 if a < b, 0 if equal, 1 if a > b.
+/// @note Null sorts before a valid date; two nulls compare equal.
 int64_t rt_dateonly_cmp(void *a, void *b);
 
 /// @brief Check equality of two dates.
 /// @param a First date.
 /// @param b Second date.
-/// @return 1 if equal, 0 otherwise.
+/// @return 1 if equal or both null, 0 otherwise.
 int8_t rt_dateonly_equals(void *a, void *b);
 
 //=========================================================================
@@ -179,13 +190,15 @@ int8_t rt_dateonly_equals(void *a, void *b);
 
 /// @brief Convert to ISO format string (YYYY-MM-DD).
 /// @param obj Opaque DateOnly object pointer.
-/// @return ISO format string.
+/// @return New ISO string, or the shared empty string for null.
 rt_string rt_dateonly_to_string(void *obj);
 
 /// @brief Format using custom format string.
 /// @param obj Opaque DateOnly object pointer.
 /// @param fmt Format string (supports %Y, %y, %m, %d, %B, %b, %A, %a, %j, and %%).
-/// @return Formatted string.
+/// @return New formatted string, shared empty string for null input, or `NULL`
+///         after allocation failure.
+/// @note Unknown conversion specifiers are preserved literally.
 rt_string rt_dateonly_format(void *obj, rt_string fmt);
 
 #ifdef __cplusplus

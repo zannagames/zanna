@@ -10,10 +10,16 @@
 //
 // Key invariants:
 //   - Behaviors are flag-based bitmask, applied in fixed order.
-//   - Update order: gravity → patrol/chase → move+collide → wall/edge reverse
-//     → shoot cooldown → sine float → animation.
+//   - Update order: gravity → patrol → chase → sine float → move+collide →
+//     wall reverse → edge reverse → shoot cooldown → animation.
+//
+// Ownership/Lifetime:
+//   - Behavior objects store only scalar preset state and need no finalizer.
+//   - Update borrows Behavior, Entity, and optional TileMap handles.
 //
 //===----------------------------------------------------------------------===//
+/// @file
+/// @brief Composable fixed-order 2D entity behavior presets.
 
 #include "rt_behavior.h"
 #include "rt_entity.h"
@@ -36,6 +42,12 @@
 
 /// @brief True if the target is within (0, @p range] of the entity (squared
 ///        distance compare; coincident points return 0).
+/// @param entity_x Entity X in pixels.
+/// @param entity_y Entity Y in pixels.
+/// @param target_x Target X in pixels.
+/// @param target_y Target Y in pixels.
+/// @param range Positive chase radius in pixels.
+/// @return One for a distinct target within range; otherwise zero.
 static int8_t behavior_target_in_chase_range(
     int64_t entity_x, int64_t entity_y, int64_t target_x, int64_t target_y, int64_t range) {
     if (range <= 0)
@@ -48,11 +60,16 @@ static int8_t behavior_target_in_chase_range(
 }
 
 /// @brief Saturating negation (INT64_MIN -> INT64_MAX).
+/// @param value Signed value.
+/// @return Negated value, saturating the unrepresentable minimum.
 static int64_t behavior_neg_sat_i64(int64_t value) {
     return value == INT64_MIN ? INT64_MAX : -value;
 }
 
 /// @brief Subtract @p amount from @p value, clamping at zero (no underflow).
+/// @param value Nonnegative countdown value.
+/// @param amount Delta; non-positive values are ignored.
+/// @return Remaining value clamped to zero.
 static int64_t behavior_sub_to_zero_i64(int64_t value, int64_t amount) {
     if (amount <= 0)
         return value;
@@ -61,6 +78,9 @@ static int64_t behavior_sub_to_zero_i64(int64_t value, int64_t amount) {
 
 /// @brief Phase increment for an oscillating behavior: (speed*dt)/16 wrapped
 ///        into the 0..36000 centidegree phase space. 0 on non-finite input.
+/// @param speed Configured angular speed.
+/// @param dt Positive tick duration.
+/// @return Truncated signed centidegree delta reduced modulo 36000.
 static int64_t behavior_phase_delta(int64_t speed, int64_t dt) {
     long double value = ((long double)speed * (long double)dt) / 16.0L;
     if (!isfinite(value))
@@ -74,6 +94,8 @@ static int64_t behavior_phase_delta(int64_t speed, int64_t dt) {
 }
 
 /// @brief Wrap a phase into [0, 36000) centidegrees (360.00° in 0.01° units).
+/// @param phase Signed centidegree phase.
+/// @return Equivalent nonnegative phase.
 static int64_t behavior_wrap_phase(int64_t phase) {
     phase %= 36000;
     if (phase < 0)
@@ -83,6 +105,10 @@ static int64_t behavior_wrap_phase(int64_t phase) {
 
 /// @brief Modular addition ((a + b) mod @p mod) with non-negative result and
 ///        overflow-safe intermediate reduction. Returns 0 if @p mod <= 0.
+/// @param a First addend.
+/// @param b Second addend.
+/// @param mod Positive modulus.
+/// @return Nonnegative modular sum, or zero for invalid modulus.
 static int64_t behavior_mod_add_i64(int64_t a, int64_t b, int64_t mod) {
     if (mod <= 0)
         return 0;
@@ -97,6 +123,7 @@ static int64_t behavior_mod_add_i64(int64_t a, int64_t b, int64_t mod) {
     return lhs + rhs;
 }
 
+/// @brief Scalar configuration and mutable timers for one Behavior object.
 typedef struct {
     uint32_t flags;
 
@@ -129,7 +156,10 @@ typedef struct {
 } behavior_impl;
 
 /// @brief Safe-cast a handle to the Behavior impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p bhv is NULL.
+///        class-id mismatch.
+/// @param bhv Borrowed candidate handle; may be NULL.
+/// @param api Borrowed mismatch diagnostic.
+/// @return Valid implementation pointer, or NULL.
 static behavior_impl *checked_behavior(void *bhv, const char *api) {
     if (!bhv)
         return NULL;
@@ -145,6 +175,7 @@ static behavior_impl *checked_behavior(void *bhv, const char *api) {
 ///          via the add_* methods. Update applies all active behaviors to an Entity
 ///          in a fixed priority order: gravity → patrol → chase → sine float →
 ///          move+collide → wall/edge reverse → shoot cooldown → animation.
+/// @return Owned zero-initialized Behavior object, or NULL on allocation.
 void *rt_behavior_new(void) {
     behavior_impl *b =
         (behavior_impl *)rt_obj_new_i64(RT_BEHAVIOR_CLASS_ID, (int64_t)sizeof(behavior_impl));
@@ -155,6 +186,8 @@ void *rt_behavior_new(void) {
 }
 
 /// @brief Add horizontal patrol behavior (entity walks left/right at given speed).
+/// @param bhv Borrowed Behavior.
+/// @param speed Signed horizontal speed.
 void rt_behavior_add_patrol(void *bhv, int64_t speed) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.AddPatrol: expected Zanna.Game.Behavior");
     if (!b)
@@ -164,6 +197,9 @@ void rt_behavior_add_patrol(void *bhv, int64_t speed) {
 }
 
 /// @brief Add chase-target behavior (entity moves toward the target when within range).
+/// @param bhv Borrowed Behavior.
+/// @param speed Signed chase speed.
+/// @param range Chase radius in pixels; non-positive disables range matching.
 void rt_behavior_add_chase(void *bhv, int64_t speed, int64_t range) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.AddChase: expected Zanna.Game.Behavior");
     if (!b)
@@ -174,6 +210,9 @@ void rt_behavior_add_chase(void *bhv, int64_t speed, int64_t range) {
 }
 
 /// @brief Add gravity behavior (applies downward acceleration with a terminal velocity).
+/// @param bhv Borrowed Behavior.
+/// @param gravity Signed acceleration passed to Entity.
+/// @param max_fall Positive terminal speed; non-positive becomes zero.
 void rt_behavior_add_gravity(void *bhv, int64_t gravity, int64_t max_fall) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.AddGravity: expected Zanna.Game.Behavior");
     if (!b)
@@ -184,6 +223,7 @@ void rt_behavior_add_gravity(void *bhv, int64_t gravity, int64_t max_fall) {
 }
 
 /// @brief Add edge-reverse behavior (entity turns around at platform edges).
+/// @param bhv Borrowed Behavior.
 void rt_behavior_add_edge_reverse(void *bhv) {
     behavior_impl *b =
         checked_behavior(bhv, "Behavior.AddEdgeReverse: expected Zanna.Game.Behavior");
@@ -192,6 +232,7 @@ void rt_behavior_add_edge_reverse(void *bhv) {
 }
 
 /// @brief Add wall-reverse behavior (entity turns around when hitting a wall).
+/// @param bhv Borrowed Behavior.
 void rt_behavior_add_wall_reverse(void *bhv) {
     behavior_impl *b =
         checked_behavior(bhv, "Behavior.AddWallReverse: expected Zanna.Game.Behavior");
@@ -200,6 +241,8 @@ void rt_behavior_add_wall_reverse(void *bhv) {
 }
 
 /// @brief Add shoot-on-cooldown behavior (shoot_ready flag sets after cooldown elapses).
+/// @param bhv Borrowed Behavior.
+/// @param cooldown_ms Positive cooldown; non-positive becomes one.
 void rt_behavior_add_shoot(void *bhv, int64_t cooldown_ms) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.AddShoot: expected Zanna.Game.Behavior");
     if (!b)
@@ -210,6 +253,9 @@ void rt_behavior_add_shoot(void *bhv, int64_t cooldown_ms) {
 }
 
 /// @brief Add sine-wave floating behavior (vertical oscillation for hovering enemies).
+/// @param bhv Borrowed Behavior.
+/// @param amplitude Signed vertical velocity amplitude.
+/// @param speed Signed phase speed.
 void rt_behavior_add_sine_float(void *bhv, int64_t amplitude, int64_t speed) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.AddSineFloat: expected Zanna.Game.Behavior");
     if (!b)
@@ -220,6 +266,9 @@ void rt_behavior_add_sine_float(void *bhv, int64_t amplitude, int64_t speed) {
 }
 
 /// @brief Add frame-based animation loop (cycles through frames at the given interval).
+/// @param bhv Borrowed Behavior.
+/// @param frame_count Frame modulus; non-positive becomes one.
+/// @param ms_per_frame Positive interval; non-positive becomes one.
 void rt_behavior_add_anim_loop(void *bhv, int64_t frame_count, int64_t ms_per_frame) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.AddAnimLoop: expected Zanna.Game.Behavior");
     if (!b)
@@ -233,6 +282,12 @@ void rt_behavior_add_anim_loop(void *bhv, int64_t frame_count, int64_t ms_per_fr
 /// @details Applies behaviors in priority order: gravity, patrol, chase, sine
 ///          float, move+collide, wall reverse, edge reverse, shoot cooldown,
 ///          then animation loop. The target_x/target_y are the chase target position.
+/// @param bhv Borrowed Behavior.
+/// @param entity Borrowed Entity; NULL makes the call a no-op.
+/// @param tilemap Borrowed optional TileMap passed to collision/edge queries.
+/// @param target_x Chase target X in pixels.
+/// @param target_y Chase target Y in pixels.
+/// @param dt Positive tick duration; non-positive is ignored.
 void rt_behavior_update(
     void *bhv, void *entity, void *tilemap, int64_t target_x, int64_t target_y, int64_t dt) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.Update: expected Zanna.Game.Behavior");
@@ -316,6 +371,8 @@ void rt_behavior_update(
 }
 
 /// @brief Check and consume the shoot-ready flag (returns 1 once, then resets).
+/// @param bhv Borrowed Behavior.
+/// @return One once per elapsed cooldown; otherwise zero.
 int8_t rt_behavior_shoot_ready(void *bhv) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.ShootReady: expected Zanna.Game.Behavior");
     if (!b)
@@ -328,6 +385,8 @@ int8_t rt_behavior_shoot_ready(void *bhv) {
 }
 
 /// @brief Get the current animation frame index from the animation loop behavior.
+/// @param bhv Borrowed Behavior.
+/// @return Current modular frame index, or zero on invalid input.
 int64_t rt_behavior_anim_frame(void *bhv) {
     behavior_impl *b = checked_behavior(bhv, "Behavior.AnimFrame: expected Zanna.Game.Behavior");
     return b ? b->anim_frame : 0;

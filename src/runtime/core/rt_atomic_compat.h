@@ -6,16 +6,18 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_atomic_compat.h
-// Purpose: Provides GCC/Clang __atomic_* builtin compatibility for MSVC.
-//          Maps __atomic_load_n, __atomic_store_n, __atomic_compare_exchange_n,
-//          __atomic_fetch_add, and __atomic_fetch_sub to MSVC Interlocked
-//          intrinsics via C11 _Generic dispatch.
+/// @file
+/// @brief Selects the platform atomic-compatibility layer for runtime code.
+///
+// Purpose: Provides the stable include point used by code written against
+//          GCC/Clang-style __atomic_* operations. On MSVC it imports the
+//          compatibility definitions from rt_platform.h; on compilers with
+//          native builtins it intentionally contributes no declarations.
 //
 // Key invariants:
 //   - On GCC/Clang this header is a no-op (builtins are native).
-//   - On MSVC, dispatches to 32-bit or 64-bit intrinsics based on operand size.
-//   - Memory ordering constants (__ATOMIC_RELAXED, etc.) are defined but MSVC
-//     intrinsics provide full barrier semantics regardless of ordering.
+//   - The MSVC implementation and memory-order mapping are centralized in the
+//     approved runtime platform adapter rather than duplicated here.
 //
 // Ownership/Lifetime:
 //   - Header-only, no state.

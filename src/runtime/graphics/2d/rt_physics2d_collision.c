@@ -5,6 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
+///
+/// @file rt_physics2d_collision.c
+/// @brief Implements discrete and swept shape tests plus impulse-based
+///        collision response for Physics2D.
+///
+/// @details Candidate body indices from the world's broad phase enter through
+/// `maybe_resolve_pair`. This module applies bidirectional layer filtering,
+/// dispatches AABB/circle overlap or continuous sweeps, records retained
+/// contacts, rolls dynamic bodies back to swept impact positions, and resolves
+/// velocity and penetration using restitution, Coulomb friction, and
+/// Baumgarte-style positional correction.
+///
 // File: src/runtime/graphics/2d/rt_physics2d_collision.c
 // Purpose: Broad- and narrow-phase collision detection plus impulse resolution
 //          for the 2D physics world. Split out of rt_physics2d.c; operates on
@@ -16,11 +28,11 @@
 //     candidate body pair; all narrow-phase helpers are file-local.
 //   - Collision math rejects non-finite manifolds (see world_record_contact)
 //     so the growable contact list stays clean under degenerate input.
-//   - Swept tests use previous-frame bounds (body_prev_*) to catch tunneling.
+//   - Swept tests use previous-substep bounds (body_prev_*) to catch tunneling.
 //
 // Ownership/Lifetime:
-//   - Borrows world/body handles owned by the caller; records contacts into
-//     the world's growable per-step contact array.
+//   - Collision helpers borrow world/body pointers. Successful contact records
+//     retain both bodies until the world clears its per-step contact array.
 //
 // Links: src/runtime/graphics/2d/rt_physics2d.c (world/body/contact lifecycle + API),
 //        src/runtime/graphics/2d/rt_physics2d_joint.c (joint solver),
@@ -39,6 +51,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @name Contact stabilization constants
+/// @{
 #define PHYSICS2D_CONTACT_SLOP 0.01
 #define PHYSICS2D_CONTACT_CORRECTION_PERCENT 0.4
 
@@ -47,17 +61,32 @@
  * adds each frame (v = g*dt ≈ 0.16 at 60Hz) forever, since there is no sleeping
  * system to hide the jitter. Matches Box2D's b2_velocityThreshold default. */
 #define PHYSICS2D_RESTITUTION_THRESHOLD 1.0
+/// @}
 
 //=============================================================================
 // Narrow-phase forward declarations (all file-local)
 //=============================================================================
 
+/// @name File-local narrow-phase operations
+/// @{
 static int8_t aabb_overlap(rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *pen);
 static int8_t shape_overlap(rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *pen);
 static int8_t swept_bounds_pair(
     rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *entry);
 static void resolve_collision(rt_body_impl *a, rt_body_impl *b, double nx, double ny, double pen);
+/// @}
 
+/// @brief Filter, detect, record, and resolve one broad-phase candidate pair.
+/// @details Discrete overlap takes precedence over swept collision. Swept hits
+///          record zero penetration and leave dynamic bodies at their
+///          time-of-impact positions so untested remainder motion cannot tunnel
+///          through a second obstacle. Bodies reaching either resolution path
+///          are sanitized afterward. @p dt is retained for solver API
+///          compatibility but is currently unused.
+/// @param w Mutable world owning the body array and contact list.
+/// @param ii First candidate body-array index.
+/// @param jj Second candidate body-array index.
+/// @param dt Current substep duration, currently unused.
 void maybe_resolve_pair(rt_world_impl *w, int ii, int jj, double dt) {
     (void)dt; /* time-of-impact rollback no longer advances by the remainder */
     if (!w || ii < 0 || jj < 0 || ii >= w->body_count || jj >= w->body_count)
@@ -165,6 +194,12 @@ static int8_t aabb_overlap(rt_body_impl *a, rt_body_impl *b, double *nx, double 
 ///   circles overlap.  Contact normal is the centre-to-centre direction; a degenerate
 ///   case (centres coincident, dist < 1e-12) emits a default +X normal to avoid a
 ///   division-by-zero.
+/// @param a First circle body.
+/// @param b Second circle body.
+/// @param nx Receives the unit normal X component from @p a toward @p b.
+/// @param ny Receives the unit normal Y component from @p a toward @p b.
+/// @param pen Receives the positive radial penetration depth.
+/// @return `1` for strict overlap, otherwise `0`; tangency is not overlap.
 static int8_t circle_circle_overlap(
     rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *pen) {
     double dx = b->x - a->x;
@@ -195,6 +230,12 @@ static int8_t circle_circle_overlap(
 ///   When the circle centre is inside the rectangle (dist_sq ≈ 0), selects the
 ///   nearest exit face using four edge distances and produces an inside-out normal
 ///   with a penetration depth that moves the circle fully outside.
+/// @param circle First body using circle geometry.
+/// @param rect Second body using AABB geometry.
+/// @param nx Receives the unit normal X component from circle toward rectangle.
+/// @param ny Receives the unit normal Y component from circle toward rectangle.
+/// @param pen Receives the positive minimum-translation penetration depth.
+/// @return `1` for strict overlap, otherwise `0`; tangency is not overlap.
 static int8_t circle_aabb_overlap(
     rt_body_impl *circle, rt_body_impl *rect, double *nx, double *ny, double *pen) {
     double rx1 = rect->x;
@@ -254,6 +295,12 @@ static int8_t circle_aabb_overlap(
 /// @details Handles the three possible pairings: circle/circle, circle/AABB, and AABB/AABB.
 ///   For circle-vs-AABB where the circle is body B, the normal is negated after the call
 ///   to restore the A-to-B direction convention.
+/// @param a First sanitized body.
+/// @param b Second sanitized body.
+/// @param nx Receives the contact-normal X component from @p a toward @p b.
+/// @param ny Receives the contact-normal Y component from @p a toward @p b.
+/// @param pen Receives the penetration depth.
+/// @return `1` when the current shapes strictly overlap, otherwise `0`.
 static int8_t shape_overlap(rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *pen) {
     if (!a || !b || !nx || !ny || !pen)
         return 0;
@@ -282,6 +329,14 @@ static int8_t shape_overlap(rt_body_impl *a, rt_body_impl *b, double *nx, double
 ///   is zero, the intervals are either always overlapping (returns 1, entry=-inf, exit=+inf)
 ///   or always separated (returns 0).  Used by swept_bounds_pair to check each axis
 ///   independently before combining via the max(entry)/min(exit) convention.
+/// @param a_min Previous minimum coordinate of interval A.
+/// @param a_max Previous maximum coordinate of interval A.
+/// @param b_min Previous minimum coordinate of interval B.
+/// @param b_max Previous maximum coordinate of interval B.
+/// @param rel Relative displacement of A with respect to B over the substep.
+/// @param entry Receives the normalized axis entry time.
+/// @param exit Receives the normalized axis exit time.
+/// @return `1` when the axis permits an overlap interval, otherwise `0`.
 static int8_t swept_axis(double a_min,
                          double a_max,
                          double b_min,
@@ -307,14 +362,18 @@ static int8_t swept_axis(double a_min,
     return 1;
 }
 
-/// @brief Swept AABB continuous collision test between two bodies.
-/// @details Computes the relative velocity (A's displacement minus B's displacement this frame),
-///   then calls swept_axis on both X and Y independently.  The overall entry time is
-///   max(x_entry, y_entry) and exit time is min(x_exit, y_exit); a collision occurred
-///   when entry < exit, 0 ≤ entry ≤ 1, and entry is finite.  On success, both bodies
-///   are rolled back to their positions at the entry time so the subsequent impulse
-///   resolution happens at the moment of contact rather than at full penetration depth.
-///   The dominant entry axis determines the contact normal direction.
+/// @brief Perform continuous collision detection for two moving circles.
+/// @details Solves the relative-motion quadratic for the earliest surface
+///          intersection in normalized substep time `[0, 1]`. Initially
+///          overlapping circles and negligible/non-finite relative motion are
+///          rejected because the discrete path handles overlap. On success,
+///          dynamic bodies are rolled back to their impact positions.
+/// @param a First circle body.
+/// @param b Second circle body.
+/// @param nx Receives the unit impact-normal X component from @p a toward @p b.
+/// @param ny Receives the unit impact-normal Y component from @p a toward @p b.
+/// @param entry_out Receives normalized time of impact in `[0, 1]`.
+/// @return `1` for a swept impact, otherwise `0`.
 static int8_t swept_circle_circle_pair(
     rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *entry_out) {
     double adx = a->x - a->prev_x;
@@ -368,6 +427,17 @@ static int8_t swept_circle_circle_pair(
 /// @brief Swept (continuous) collision of a moving point against a static AABB.
 /// @details Returns the entry time t in [0,1] and contact normal if the point's
 ///          motion this step crosses the box; used so fast bodies don't tunnel.
+/// @param px Point X coordinate at the start of the substep.
+/// @param py Point Y coordinate at the start of the substep.
+/// @param vx Point displacement along X over the substep.
+/// @param vy Point displacement along Y over the substep.
+/// @param rx1 Rectangle minimum X.
+/// @param ry1 Rectangle minimum Y.
+/// @param rx2 Rectangle maximum X.
+/// @param ry2 Rectangle maximum Y.
+/// @param nx Receives the axis-aligned impact-normal X component.
+/// @param ny Receives the axis-aligned impact-normal Y component.
+/// @param entry_out Receives normalized entry time in `[0, 1]`.
 /// @return Non-zero on a hit (out params written), 0 otherwise.
 static int8_t swept_point_aabb(double px,
                                double py,
@@ -401,6 +471,15 @@ static int8_t swept_point_aabb(double px,
 
 /// @brief Swept collision of a moving circle against a (possibly moving) AABB,
 ///        reduced to a point-vs-expanded-AABB test on the relative motion.
+/// @details Face candidates from the expanded box are geometrically checked
+///          against the original rectangle, and corner-circle quadratics are
+///          tested separately to reject rounded-corner false positives. On
+///          success dynamic bodies are rolled back to the earliest impact.
+/// @param circle First body using circle geometry.
+/// @param rect Second body using AABB geometry.
+/// @param nx Receives the impact-normal X component from circle toward box.
+/// @param ny Receives the impact-normal Y component from circle toward box.
+/// @param entry_out Receives normalized time of impact in `[0, 1]`.
 /// @return Non-zero on a hit (entry time/normal written), 0 otherwise.
 static int8_t swept_circle_aabb_pair(
     rt_body_impl *circle, rt_body_impl *rect, double *nx, double *ny, double *entry_out) {
@@ -494,7 +573,15 @@ static int8_t swept_circle_aabb_pair(
 }
 
 /// @brief Swept collision between two AABBs using their relative velocity
-///        (Minkowski-expanded point sweep). @return non-zero on a hit.
+///        and previous-substep interval bounds.
+/// @details Combines per-axis entry/exit intervals and rolls dynamic bodies
+///          back to the normalized impact time. Static bodies remain fixed.
+/// @param a First AABB body.
+/// @param b Second AABB body.
+/// @param nx Receives the axis-aligned impact-normal X component.
+/// @param ny Receives the axis-aligned impact-normal Y component.
+/// @param entry_out Receives normalized time of impact in `[0, 1]`.
+/// @return Nonzero on a swept hit, otherwise zero.
 static int8_t swept_aabb_pair(
     rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *entry_out) {
     if (!a || !b || !nx || !ny || !entry_out)
@@ -556,6 +643,11 @@ static int8_t swept_aabb_pair(
 
 /// @brief Swept test between two bodies, dispatching to the circle/AABB sweep
 ///        appropriate to their shapes; writes contact normal and entry time.
+/// @param a First sanitized body.
+/// @param b Second sanitized body.
+/// @param nx Receives the impact-normal X component from @p a toward @p b.
+/// @param ny Receives the impact-normal Y component from @p a toward @p b.
+/// @param entry_out Receives normalized time of impact in `[0, 1]`.
 /// @return Non-zero if the bodies collide during this step, 0 otherwise.
 static int8_t swept_bounds_pair(
     rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *entry_out) {
@@ -596,8 +688,8 @@ static int8_t swept_bounds_pair(
 ///      velocity and apply a friction impulse clamped to J * mu, where
 ///      mu = (friction_A + friction_B) / 2 (averaged coefficient).
 ///   5. **Positional correction (Baumgarte)**: Gently push overlapping bodies
-///      apart by 40% of the excess penetration (with a 1% slop threshold) to
-///      prevent slow sinking without causing jitter.
+///      apart by 40% of the excess penetration (with a 0.01-world-unit slop
+///      threshold) to prevent slow sinking without causing jitter.
 ///
 /// @param a   First body. Modified in-place (velocity and position).
 /// @param b   Second body. Modified in-place (velocity and position).

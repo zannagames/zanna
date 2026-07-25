@@ -4,6 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/core/rt_context.h
+/// @file
+/// @brief Declares caller-owned per-VM runtime contexts and binding lifecycle.
+///
 // Purpose: Per-VM runtime context that isolates all global mutable state across concurrent VM
 // instances, including module variables, file channels, argument stores, and type registry.
 //
@@ -43,30 +46,43 @@ typedef struct RtModvarEntry {
     uint64_t hash; ///< Cached hash of (name, kind) for indexed lookup.
 } RtModvarEntry;
 
+/// @brief Storage kinds used to size and clean module-variable slots.
 enum {
+    /// Signed 64-bit integer slot.
     RT_MODVAR_KIND_I64 = 0,
+    /// IEEE-754 double slot.
     RT_MODVAR_KIND_F64 = 1,
+    /// Boolean byte slot.
     RT_MODVAR_KIND_I1 = 2,
+    /// Generic runtime pointer slot.
     RT_MODVAR_KIND_PTR = 3,
+    /// Retained runtime string-handle slot.
     RT_MODVAR_KIND_STR = 4,
+    /// Opaque fixed-size byte block.
     RT_MODVAR_KIND_BLOCK = 5,
 };
 
-// Forward declarations for opaque per-module state stored in context
+/// @brief Opaque file-channel entry defined by the optional I/O component.
 struct RtFileChannelEntry;
 
+/// @brief Per-context dynamically allocated file-channel table.
 typedef struct RtFileState {
     struct RtFileChannelEntry *entries;
     size_t count;
     size_t capacity;
 } RtFileState;
 
+/// @brief Per-context retained command-line argument array.
 typedef struct RtArgsState {
     rt_string *items;
     size_t size;
     size_t cap;
 } RtArgsState;
 
+/// @brief Per-context OOP class/interface/binding registry storage.
+///
+/// Concrete element types and the platform read/write lock remain private to
+/// the optional OOP runtime component.
 typedef struct RtTypeRegistryState {
     void *classes;
     size_t classes_len, classes_cap;
@@ -172,7 +188,7 @@ void rt_set_current_context(RtContext *ctx);
 
 /// @brief Retrieve the current thread's runtime context.
 /// @details Returns the context bound via rt_set_current_context.
-/// @return Active context, or NULL if none bound.
+/// @return Borrowed active context, or NULL if none bound.
 RtContext *rt_get_current_context(void);
 
 /// @brief Access the process-wide legacy runtime context.

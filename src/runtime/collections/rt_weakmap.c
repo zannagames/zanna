@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/collections/rt_weakmap.c
+/// @file
+/// @brief Implements the GC-managed string-keyed WeakMap collection.
+///
 // Purpose: Implements a string-keyed map that holds zeroing weak references
 //   to its values. Keys are retained rt_string handles; values are tracked by
 //   rt_weakref so freeing a target automatically makes subsequent lookups
@@ -24,6 +27,9 @@
 //   - WeakMap objects are GC-managed (rt_obj_new_i64).
 //   - Entry keys are retained and released with the entry.
 //   - Weak reference handles are owned by the map and freed on removal/clear.
+//   - Returned values are borrowed and are not kept alive by the lookup.
+//     Keys() returns an owning Seq that retains the live entries' immutable
+//     strings independently of subsequent map mutation.
 //
 // Links: src/runtime/collections/rt_weakmap.h (public API),
 //        src/runtime/core/rt_gc.h (zeroing weak references)
@@ -45,18 +51,31 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Initial open-addressing table capacity.
 #define WM_INITIAL_CAP 16
 
+/// @brief Installs @p buf as the current thread's non-local trap recovery target.
+/// @param buf Jump buffer that receives control when a runtime trap is raised.
 void rt_trap_set_recovery(jmp_buf *buf);
+
+/// @brief Removes the current thread's trap recovery target.
 void rt_trap_clear_recovery(void);
+
+/// @brief Returns the diagnostic text associated with the latest runtime trap.
+/// @return Borrowed null-terminated diagnostic text, if available.
 const char *rt_trap_get_error(void);
 
+/// @brief One open-addressing slot containing an owned key and weakref handle.
 typedef struct {
     rt_string key;
     rt_weakref *value_ref;
     int8_t occupied;
 } wm_entry;
 
+/// @brief Runtime object payload for the WeakMap hash table.
+///
+/// `count` includes occupied entries whose weak target has already died;
+/// public size queries scan the table and report only live targets.
 typedef struct {
     wm_entry *entries;
     int64_t capacity;
@@ -65,6 +84,9 @@ typedef struct {
 
 /// @brief Checked cast of an opaque handle to the WeakMap implementation;
 ///        traps with @p what if @p obj is NULL or not a WeakMap.
+/// @param obj Opaque runtime object to validate.
+/// @param what Diagnostic raised when validation fails.
+/// @return Validated map payload, or `NULL` after raising a trap.
 static rt_weakmap_data *as_weakmap(void *obj, const char *what) {
     if (!rt_obj_is_instance(obj, RT_WEAKMAP_CLASS_ID, sizeof(rt_weakmap_data))) {
         rt_trap(what);
@@ -73,7 +95,10 @@ static rt_weakmap_data *as_weakmap(void *obj, const char *what) {
     return (rt_weakmap_data *)obj;
 }
 
-/// @brief Borrow the byte buffer + length of a key string (empty "" if null).
+/// @brief Borrows the byte buffer and length of a key string.
+/// @param key Key to inspect; null or unavailable data normalizes to empty.
+/// @param out_len Receives the byte count of the returned data.
+/// @return Borrowed key bytes, or a stable empty C string for zero length.
 static const char *wm_key_data(rt_string key, size_t *out_len) {
     if (!key) {
         *out_len = 0;
@@ -94,11 +119,18 @@ static const char *wm_key_data(rt_string key, size_t *out_len) {
 }
 
 /// @brief Per-process keyed hash of @p len bytes of @p data.
+/// @param data Byte buffer to hash; null is accepted for a zero-length key.
+/// @param len Number of significant bytes, including embedded null bytes.
+/// @return Keyed 64-bit hash value.
 static uint64_t wm_hash_bytes(const char *data, size_t len) {
     return rt_keyed_hash_bytes(data ? data : "", len);
 }
 
 /// @brief True iff an occupied @p entry's key byte-matches @p key/@p key_len.
+/// @param entry Slot whose retained string key is compared.
+/// @param key Query-key bytes.
+/// @param key_len Query-key length in bytes.
+/// @return One for an occupied exact byte match, otherwise zero.
 static int8_t wm_entry_matches(const wm_entry *entry, const char *key, size_t key_len) {
     if (!entry->occupied)
         return 0;
@@ -109,12 +141,15 @@ static int8_t wm_entry_matches(const wm_entry *entry, const char *key, size_t ke
 
 /// @brief True iff @p entry is occupied AND its weak value reference is still
 ///        alive (the referent has not been collected).
+/// @param entry Slot to inspect.
+/// @return One only for an occupied slot with a live referent.
 static int8_t wm_entry_alive(const wm_entry *entry) {
     return entry->occupied && rt_weakref_alive(entry->value_ref) ? 1 : 0;
 }
 
 /// @brief Release an occupied entry: drop the key string + free the weakref,
 ///        then mark the slot empty.
+/// @param entry Slot to clear; null and unoccupied slots are ignored.
 static void wm_release_entry(wm_entry *entry) {
     if (!entry || !entry->occupied)
         return;
@@ -127,6 +162,8 @@ static void wm_release_entry(wm_entry *entry) {
 
 /// @brief Allocate a zeroed entry table of @p capacity slots; traps on
 ///        overflow/OOM.
+/// @param capacity Positive number of slots to allocate.
+/// @return New zero-initialized table, or `NULL` after raising a trap.
 static wm_entry *wm_alloc_entries(int64_t capacity) {
     if (capacity <= 0 || (uint64_t)capacity > SIZE_MAX / sizeof(wm_entry)) {
         rt_trap("WeakMap: allocation size overflow");
@@ -142,6 +179,10 @@ static wm_entry *wm_alloc_entries(int64_t capacity) {
 
 /// @brief Linear-probe for @p key: returns the matching slot or the first
 ///        free slot; -1 only if the table is completely full.
+/// @param data Initialized map payload with positive capacity.
+/// @param key Query-key bytes.
+/// @param key_len Query-key length in bytes.
+/// @return Matching or first free slot index, or `-1` for a full table.
 static int64_t wm_find_slot(rt_weakmap_data *data, const char *key, size_t key_len) {
     uint64_t h = wm_hash_bytes(key, key_len);
     int64_t idx = (int64_t)(h % (uint64_t)data->capacity);
@@ -155,8 +196,15 @@ static int64_t wm_find_slot(rt_weakmap_data *data, const char *key, size_t key_l
     return -1;
 }
 
-/// @brief Re-insert a still-live @p entry into @p data during a rehash
-///        (ownership moved as-is, no retain). Traps if no slot is found.
+/// @brief Re-inserts an occupied entry while rebuilding a probe cluster/table.
+///
+/// Ownership of the entry's key and weakref handle moves as-is; neither is
+/// retained or copied. Growth and compaction call this only for live entries,
+/// while removal may move a dead occupied entry to preserve probe reachability.
+///
+/// @param data Destination table.
+/// @param entry Occupied entry whose resources transfer into @p data.
+/// @note Raises a trap if the destination has no available slot.
 static void wm_move_live_entry(rt_weakmap_data *data, wm_entry entry) {
     size_t key_len = 0;
     const char *key = wm_key_data(entry.key, &key_len);
@@ -171,6 +219,8 @@ static void wm_move_live_entry(rt_weakmap_data *data, wm_entry entry) {
 
 /// @brief Double the table; live entries are carried over and dead (collected)
 ///        weak entries are dropped during the rehash. Traps on overflow/OOM.
+/// @param data Map payload whose table is replaced on success.
+/// @return Nonzero after successful growth; zero after an overflow/allocation trap.
 static int wm_grow(rt_weakmap_data *data) {
     int64_t old_cap = data->capacity;
     wm_entry *old_entries = data->entries;
@@ -203,6 +253,7 @@ static int wm_grow(rt_weakmap_data *data) {
 
 /// @brief GC finalizer: release every occupied entry (key + weakref) and
 ///        free the entry table.
+/// @param obj WeakMap instance being finalized; null is ignored.
 static void weakmap_finalizer(void *obj) {
     if (!obj)
         return;
@@ -217,6 +268,9 @@ static void weakmap_finalizer(void *obj) {
     data->count = 0;
 }
 
+/// @brief Creates an empty WeakMap with the initial hash-table capacity.
+/// @return New GC-managed WeakMap, or `NULL` after an allocation trap.
+/// @note The map owns only keys and weakref handles; it never retains values.
 void *rt_weakmap_new(void) {
     void *obj = rt_obj_new_i64(RT_WEAKMAP_CLASS_ID, sizeof(rt_weakmap_data));
     if (!obj) {
@@ -236,6 +290,10 @@ void *rt_weakmap_new(void) {
     return obj;
 }
 
+/// @brief Counts entries whose weak referents are currently live.
+/// @param map WeakMap to scan; null returns zero.
+/// @return Number of live entries, excluding occupied slots with dead targets.
+/// @note Runs in O(capacity) and does not physically remove dead entries.
 int64_t rt_weakmap_len(void *map) {
     if (!map)
         return 0;
@@ -248,10 +306,25 @@ int64_t rt_weakmap_len(void *map) {
     return live;
 }
 
+/// @brief Tests whether the map currently exposes any live weak value.
+/// @param map WeakMap to scan; null is considered empty.
+/// @return One when the live-entry count is zero, otherwise zero.
+/// @note Runs in O(capacity).
 int8_t rt_weakmap_is_empty(void *map) {
     return rt_weakmap_len(map) == 0 ? 1 : 0;
 }
 
+/// @brief Inserts or replaces a key's zeroing weak value reference.
+///
+/// Null keys normalize to the retained runtime empty string. Replacing an
+/// occupied key swaps weakref handles without changing the retained key.
+/// At approximately 70% occupied load, the table doubles and drops dead entries.
+///
+/// @param map WeakMap to mutate; null is ignored.
+/// @param key Length-aware string key; null denotes the empty key.
+/// @param value Nullable runtime-managed weak target; never strongly retained.
+/// @note Weakref/key setup is trap-protected so a failed new insertion releases
+///       any resources acquired before re-raising the diagnostic.
 void rt_weakmap_set(void *map, rt_string key, void *value) {
     if (!map)
         return;
@@ -309,6 +382,11 @@ void rt_weakmap_set(void *map, rt_string key, void *value) {
     data->count++;
 }
 
+/// @brief Looks up the current referent for a string key.
+/// @param map WeakMap to query; null returns `NULL`.
+/// @param key Length-aware string key; null denotes the empty key.
+/// @return Borrowed live target, or `NULL` if the key is absent or collected.
+/// @note The returned pointer is not kept alive by the map or this call.
 void *rt_weakmap_get(void *map, rt_string key) {
     if (!map)
         return NULL;
@@ -321,6 +399,10 @@ void *rt_weakmap_get(void *map, rt_string key) {
     return rt_weakref_get(data->entries[slot].value_ref);
 }
 
+/// @brief Tests whether a key maps to a currently live referent.
+/// @param map WeakMap to query; null returns false.
+/// @param key Length-aware string key; null denotes the empty key.
+/// @return One for an occupied matching slot with a live target, otherwise zero.
 int8_t rt_weakmap_has(void *map, rt_string key) {
     if (!map)
         return 0;
@@ -331,6 +413,15 @@ int8_t rt_weakmap_has(void *map, rt_string key) {
     return slot >= 0 && wm_entry_alive(&data->entries[slot]) ? 1 : 0;
 }
 
+/// @brief Removes an occupied key and repairs its linear-probe cluster.
+///
+/// The retained key and weakref handle are released. Subsequent occupied slots
+/// are removed and reinserted so lookups are not cut off by the new empty slot.
+///
+/// @param map WeakMap to mutate; null returns false.
+/// @param key Length-aware string key; null denotes the empty key.
+/// @return One if an occupied entry was removed, even if its target was already
+///         dead; zero if the key was absent.
 int8_t rt_weakmap_remove(void *map, rt_string key) {
     if (!map)
         return 0;
@@ -358,6 +449,10 @@ int8_t rt_weakmap_remove(void *map, rt_string key) {
     return 1;
 }
 
+/// @brief Creates a snapshot of keys whose weak targets are currently live.
+/// @param map WeakMap to scan; null produces an empty sequence.
+/// @return New owning Seq retaining each live entry's string key.
+/// @note Iteration follows hash-table slot order and is not sorted.
 void *rt_weakmap_keys(void *map) {
     void *seq = rt_seq_new();
     rt_seq_set_owns_elements(seq, 1);
@@ -371,6 +466,10 @@ void *rt_weakmap_keys(void *map) {
     return seq;
 }
 
+/// @brief Removes every occupied slot while preserving table capacity.
+/// @param map WeakMap to clear; null is ignored.
+/// @note Releases all retained keys and weakref handles but never releases
+///       target objects, which were not strongly owned.
 void rt_weakmap_clear(void *map) {
     if (!map)
         return;
@@ -380,6 +479,11 @@ void rt_weakmap_clear(void *map) {
     data->count = 0;
 }
 
+/// @brief Rebuilds the table without entries whose weak targets have died.
+/// @param map WeakMap to compact; null returns zero.
+/// @return Number of dead occupied entries removed.
+/// @note Live key/weakref ownership moves without extra retains. Capacity is
+///       unchanged, and no rebuild occurs when there are no dead entries.
 int64_t rt_weakmap_compact(void *map) {
     if (!map)
         return 0;

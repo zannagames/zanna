@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/game/rt_gameui_widgets.c
+/// @file
+/// @brief Implements interactive table, slider, dropdown, tooltip, and modal widgets.
+//
 // Purpose: Interactive GameUI widgets — UITable, UISlider, UIDropdown,
 //          UITooltip, and UIModal — for the immediate-mode game UI. Split out
 //          of rt_gameui.c; shares geometry/text/key helpers via
@@ -17,8 +20,9 @@
 //   - Input handling uses the UI_KEY_* codes and the shared hit-test helpers.
 //
 // Ownership/Lifetime:
-//   - Borrows caller-owned canvas/font/state objects; releases temporaries via
-//     ui_release_obj.
+//   - Draw calls borrow their canvas.
+//   - Tables, dropdowns, and modals own dynamic arrays; modals retain children.
+//     Widget finalizers release all owned allocations and retained references.
 //
 // Links: src/runtime/game/rt_gameui.c (core widgets + shared helpers),
 //        src/runtime/game/rt_gameui_internal.h (shared helpers + key codes)
@@ -47,10 +51,14 @@
 // UITable
 //=============================================================================
 
+/// @brief Initial table column-record capacity.
 #define RT_UITABLE_DEFAULT_COLUMNS 16
+/// @brief Initial table row-record capacity.
 #define RT_UITABLE_DEFAULT_ROWS 512
+/// @brief Fixed byte capacity of each table cell, including NUL.
 #define RT_UITABLE_MAX_CELL_BYTES 64
 
+/// @brief One inline title and sort/layout descriptor for a table column.
 typedef struct {
     char title[64];
     int64_t width;
@@ -59,10 +67,12 @@ typedef struct {
     int8_t sort_numeric;
 } rt_uitable_column_t;
 
+/// @brief One table row owning a column-capacity-sized cell slab.
 typedef struct {
     char *cells;
 } rt_uitable_row_t;
 
+/// @brief Private dynamic state stored in a runtime UITable object.
 typedef struct {
     void *vptr;
     int64_t x, y, w, h;
@@ -115,8 +125,11 @@ static int table_parse_sort_number(const char *text, double *out_value) {
     return isfinite(*out_value) ? 1 : 0;
 }
 
-/// @brief Safe-cast a handle to the UITable impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UITable handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UITable payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uitable_impl *checked_table(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -131,6 +144,7 @@ static rt_uitable_impl *checked_table(void *ptr, const char *api) {
 /// @param ptr Candidate TableClickResult object.
 /// @param api Public API name for trap diagnostics.
 /// @return The impl, or NULL if @p ptr is NULL.
+/// @details A non-null class mismatch raises a runtime trap.
 static rt_table_click_result_impl *checked_table_click_result(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -145,7 +159,8 @@ static rt_table_click_result_impl *checked_table_click_result(void *ptr, const c
 /// @param kind One of RT_UITABLE_CLICK_NONE, RT_UITABLE_CLICK_ROW, or RT_UITABLE_CLICK_HEADER.
 /// @param row Row index for row clicks; ignored for other kinds.
 /// @param column Column index for header clicks; ignored for other kinds.
-/// @return New Zanna.Game.UI.TableClickResult object.
+/// @return New TableClickResult reference, or `NULL` after an allocation trap.
+/// @details Irrelevant row/column fields are normalized to `-1`.
 static void *table_click_result_new(int64_t kind, int64_t row, int64_t column) {
     rt_table_click_result_impl *result = (rt_table_click_result_impl *)rt_obj_new_i64(
         RT_UITABLE_CLICK_RESULT_CLASS_ID, (int64_t)sizeof(rt_table_click_result_impl));
@@ -160,6 +175,9 @@ static void *table_click_result_new(int64_t kind, int64_t row, int64_t column) {
 }
 
 /// @brief GC finalizer: free the table's column/row/cell storage.
+/// @param obj UITable payload being finalized; `NULL` is accepted.
+/// @details Frees each populated row slab, both dynamic record arrays, and the
+///          optional retained font, then clears counts and pointers.
 static void uitable_finalizer(void *obj) {
     rt_uitable_impl *table = (rt_uitable_impl *)obj;
     if (!table)
@@ -182,6 +200,8 @@ static void uitable_finalizer(void *obj) {
 
 /// @brief Number of data rows that fit in the table's body area (height
 ///        minus the header row, divided by row height).
+/// @param table UITable payload to inspect.
+/// @return Nonnegative number of complete visible rows.
 static int64_t table_visible_rows(rt_uitable_impl *table) {
     if (!table || table->row_height <= 0)
         return 0;
@@ -193,6 +213,9 @@ static int64_t table_visible_rows(rt_uitable_impl *table) {
 
 /// @brief Clamp the scroll offset so the view never scrolls past the last
 ///        page of rows (called after row add/remove or resize).
+/// @param table UITable payload to repair; `NULL` is a no-op.
+/// @details Also moves an out-of-range selection to the last row and uses `-1`
+///          when no rows remain.
 static void table_clamp_scroll(rt_uitable_impl *table) {
     if (!table)
         return;
@@ -210,12 +233,21 @@ static void table_clamp_scroll(rt_uitable_impl *table) {
 
 /// @brief Advance an x cursor by a column @p width with saturation
 ///        (next column's left edge during header/cell layout).
+/// @param x Current coordinate.
+/// @param width Column width; nonpositive values leave @p x unchanged.
+/// @return Saturated coordinate sum.
 static int64_t table_column_next_x(int64_t x, int64_t width) {
     if (width <= 0)
         return x;
     return ui_add_sat_i64(x, width);
 }
 
+/// @brief Locate one fixed-size cell within a row slab.
+/// @param table UITable supplying logical column capacity.
+/// @param row Row containing an allocated cell slab.
+/// @param col Column-capacity index.
+/// @return Mutable pointer to the cell's first byte, or `NULL` for invalid
+///         inputs/index.
 static char *table_cell_ptr(const rt_uitable_impl *table,
                             const rt_uitable_row_t *row,
                             int64_t col) {
@@ -224,6 +256,11 @@ static char *table_cell_ptr(const rt_uitable_impl *table,
     return row->cells + (size_t)col * RT_UITABLE_MAX_CELL_BYTES;
 }
 
+/// @brief Grow the zeroed row-record array geometrically.
+/// @param table UITable to mutate.
+/// @param needed Required record capacity.
+/// @return `1` when sufficient; `0` for representability/allocation failure.
+/// @details Growth doubles from at least one and preserves existing row slabs.
 static int8_t ensure_table_row_capacity(rt_uitable_impl *table, int64_t needed) {
     if (!table || needed <= table->row_capacity)
         return 1;
@@ -248,6 +285,13 @@ static int8_t ensure_table_row_capacity(rt_uitable_impl *table, int64_t needed) 
     return 1;
 }
 
+/// @brief Grow column records and every existing row's cell slab.
+/// @param table UITable to mutate.
+/// @param needed Required logical column capacity.
+/// @return `1` when all arrays are sufficient; `0` for overflow/allocation
+///         failure.
+/// @details New record/cell bytes are zeroed. Logical column capacity updates
+///          only after all row slabs have grown.
 static int8_t ensure_table_column_capacity(rt_uitable_impl *table, int64_t needed) {
     if (!table || needed <= table->column_capacity)
         return 1;
@@ -285,6 +329,11 @@ static int8_t ensure_table_column_capacity(rt_uitable_impl *table, int64_t neede
     return 1;
 }
 
+/// @brief Allocate a zeroed cell slab for one new row.
+/// @param table UITable supplying column capacity.
+/// @param row Empty row record that receives the allocation.
+/// @return `1` on success; otherwise `0`.
+/// @details Lazily creates default column capacity when necessary.
 static int8_t table_alloc_row_cells(rt_uitable_impl *table, rt_uitable_row_t *row) {
     if (!table || !row)
         return 0;
@@ -295,6 +344,15 @@ static int8_t table_alloc_row_cells(rt_uitable_impl *table, rt_uitable_row_t *ro
     return row->cells ? 1 : 0;
 }
 
+/// @brief Create an empty, visible, striped UITable with header and border.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @return A new UITable reference, or `NULL` if object or initial capacity
+///         allocation fails.
+/// @details Preallocates 16 column and 512 row records, but no row cell slabs.
+///          Header height is 22, row height 20, and sort/selection begin `-1`.
 void *rt_uitable_new(int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_uitable_impl *table =
         (rt_uitable_impl *)rt_obj_new_i64(RT_UITABLE_CLASS_ID, (int64_t)sizeof(*table));
@@ -331,6 +389,14 @@ void *rt_uitable_new(int64_t x, int64_t y, int64_t w, int64_t h) {
     return table;
 }
 
+/// @brief Append a copied column descriptor.
+/// @param ptr UITable to mutate.
+/// @param title Runtime title copied into 64 inline bytes.
+/// @param width Positive pixel width, or 80 when nonpositive.
+/// @param align Code `0..2`, with invalid values becoming zero.
+/// @return New column index, or `-1` on invalid handle/allocation failure.
+/// @details Grows all existing row slabs when column capacity expands. New
+///          columns begin nonsortable and lexicographic. Failures trap.
 int64_t rt_uitable_add_column(void *ptr, rt_string title, int64_t width, int64_t align) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.AddColumn: expected Zanna.Game.UI.Table");
     if (!table)
@@ -348,6 +414,12 @@ int64_t rt_uitable_add_column(void *ptr, rt_string title, int64_t width, int64_t
     return idx;
 }
 
+/// @brief Configure one column's sortable and numeric flags.
+/// @param ptr UITable to mutate.
+/// @param col Existing column index.
+/// @param sortable Zero disables; nonzero enables.
+/// @param numeric Zero compares text; nonzero parses finite numeric values.
+/// @details Invalid indices are ignored. Wrong non-null classes trap.
 void rt_uitable_set_column_sortable(void *ptr, int64_t col, int8_t sortable, int8_t numeric) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.SetColumnSortable: expected Zanna.Game.UI.Table");
@@ -357,12 +429,20 @@ void rt_uitable_set_column_sortable(void *ptr, int64_t col, int8_t sortable, int
     table->columns[col].sort_numeric = numeric ? 1 : 0;
 }
 
+/// @brief Return the number of logical columns.
+/// @param ptr UITable to query.
+/// @return Stored count, or zero for null/invalid.
 int64_t rt_uitable_column_count(void *ptr) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.ColumnCount: expected Zanna.Game.UI.Table");
     return table ? table->column_count : 0;
 }
 
+/// @brief Append a zeroed row with cell storage for column capacity.
+/// @param ptr UITable to mutate.
+/// @return New row index, or `-1` on invalid handle/allocation failure.
+/// @details The first row becomes selected and scroll is reclamped. Allocation
+///          failures trap.
 int64_t rt_uitable_add_row(void *ptr) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.AddRow: expected Zanna.Game.UI.Table");
     if (!table)
@@ -384,6 +464,13 @@ int64_t rt_uitable_add_row(void *ptr) {
     return idx;
 }
 
+/// @brief Copy text into an existing table cell.
+/// @param ptr UITable to mutate.
+/// @param row Existing row index.
+/// @param col Existing column index.
+/// @param text Runtime string copied to a 64-byte cell; null clears it.
+/// @details Invalid indices are ignored, input is not retained, and valid UTF-8
+///          truncation preserves boundaries. Wrong-class handles trap.
 void rt_uitable_set_cell(void *ptr, int64_t row, int64_t col, rt_string text) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.SetCell: expected Zanna.Game.UI.Table");
     if (!table || row < 0 || row >= table->row_count || col < 0 || col >= table->column_count)
@@ -393,6 +480,12 @@ void rt_uitable_set_cell(void *ptr, int64_t row, int64_t col, rt_string text) {
         ui_copy_text(cell, RT_UITABLE_MAX_CELL_BYTES, text);
 }
 
+/// @brief Copy an existing table cell to a runtime string.
+/// @param ptr UITable to query.
+/// @param row Existing row index.
+/// @param col Existing column index.
+/// @return Caller-owned cell copy, the immortal empty singleton when
+///         unavailable, or `NULL` on allocation failure.
 rt_string rt_uitable_get_cell(void *ptr, int64_t row, int64_t col) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.GetCell: expected Zanna.Game.UI.Table");
     if (!table || row < 0 || row >= table->row_count || col < 0 || col >= table->column_count)
@@ -401,6 +494,11 @@ rt_string rt_uitable_get_cell(void *ptr, int64_t row, int64_t col) {
     return cell ? rt_const_cstr(cell) : rt_str_empty();
 }
 
+/// @brief Free and remove one row, shifting later records left.
+/// @param ptr UITable to mutate.
+/// @param row Existing index.
+/// @details Clears the spare tail record and reclamps scroll/selection. Invalid
+///          indices are ignored; wrong-class handles trap.
 void rt_uitable_remove_row(void *ptr, int64_t row) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.RemoveRow: expected Zanna.Game.UI.Table");
     if (!table || row < 0 || row >= table->row_count)
@@ -413,6 +511,10 @@ void rt_uitable_remove_row(void *ptr, int64_t row) {
     table_clamp_scroll(table);
 }
 
+/// @brief Free every row cell slab while retaining row-record capacity.
+/// @param ptr UITable to mutate.
+/// @details Resets row count and scroll to zero and selection to `-1`. Columns
+///          remain unchanged. Invalid handles trap.
 void rt_uitable_clear_rows(void *ptr) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.ClearRows: expected Zanna.Game.UI.Table");
     if (!table)
@@ -426,6 +528,9 @@ void rt_uitable_clear_rows(void *ptr) {
     table->selected_row = -1;
 }
 
+/// @brief Return the number of populated rows.
+/// @param ptr UITable to query.
+/// @return Stored count, or zero for null/invalid.
 int64_t rt_uitable_row_count(void *ptr) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.RowCount: expected Zanna.Game.UI.Table");
     return table ? table->row_count : 0;
@@ -433,7 +538,12 @@ int64_t rt_uitable_row_count(void *ptr) {
 
 /// @brief Comparator for sorting two rows by the table's active sort column
 ///        (numeric or lexicographic per the column's flag).
+/// @param table UITable supplying sort column/direction.
+/// @param a First row.
+/// @param b Second row.
 /// @return <0, 0, >0 like strcmp (caller applies the descending flip).
+/// @details Valid finite numeric strings sort before invalid numeric strings in
+///          ascending mode; two invalid strings fall back to bytewise strcmp.
 static int table_compare_rows(rt_uitable_impl *table,
                               const rt_uitable_row_t *a,
                               const rt_uitable_row_t *b) {
@@ -464,6 +574,12 @@ static int table_compare_rows(rt_uitable_impl *table,
     return table->sort_descending ? -cmp : cmp;
 }
 
+/// @brief Stably sort rows in place by one column.
+/// @param ptr UITable to mutate.
+/// @param col Existing column index.
+/// @param descending Zero selects ascending; nonzero descending.
+/// @details Forces the chosen column sortable, records sort state, and uses
+///          insertion sort. Invalid indices are ignored; invalid handles trap.
 void rt_uitable_sort_by(void *ptr, int64_t col, int8_t descending) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.SortBy: expected Zanna.Game.UI.Table");
     if (!table || col < 0 || col >= table->column_count)
@@ -483,17 +599,27 @@ void rt_uitable_sort_by(void *ptr, int64_t col, int8_t descending) {
     }
 }
 
+/// @brief Return the active sort column.
+/// @param ptr UITable to query.
+/// @return Column index, or `-1` for none/null/invalid.
 int64_t rt_uitable_get_sort_column(void *ptr) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.SortColumn: expected Zanna.Game.UI.Table");
     return table ? table->sort_column : -1;
 }
 
+/// @brief Return the normalized descending-sort flag.
+/// @param ptr UITable to query.
+/// @return Stored flag, or zero for null/invalid.
 int8_t rt_uitable_get_sort_descending(void *ptr) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.SortDescending: expected Zanna.Game.UI.Table");
     return table ? table->sort_descending : 0;
 }
 
+/// @brief Set and clamp the first visible row.
+/// @param ptr UITable to mutate.
+/// @param row Requested offset.
+/// @details Clamps against current visible-row capacity and repairs selection.
 void rt_uitable_set_scroll(void *ptr, int64_t row) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.SetScroll: expected Zanna.Game.UI.Table");
     if (!table)
@@ -502,11 +628,17 @@ void rt_uitable_set_scroll(void *ptr, int64_t row) {
     table_clamp_scroll(table);
 }
 
+/// @brief Return the clamped scroll offset.
+/// @param ptr UITable to query.
+/// @return Stored offset, or zero for null/invalid.
 int64_t rt_uitable_get_scroll(void *ptr) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.Scroll: expected Zanna.Game.UI.Table");
     return table ? table->scroll_offset : 0;
 }
 
+/// @brief Select an existing row or clear selection.
+/// @param ptr UITable to mutate.
+/// @param row Existing index; invalid values store `-1`.
 void rt_uitable_set_selected_row(void *ptr, int64_t row) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.SetSelectedRow: expected Zanna.Game.UI.Table");
@@ -515,12 +647,23 @@ void rt_uitable_set_selected_row(void *ptr, int64_t row) {
     table->selected_row = row < 0 || row >= table->row_count ? -1 : row;
 }
 
+/// @brief Return the selected row index.
+/// @param ptr UITable to query.
+/// @return Stored index, or `-1` for none/null/invalid.
 int64_t rt_uitable_get_selected_row(void *ptr) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.SelectedRow: expected Zanna.Game.UI.Table");
     return table ? table->selected_row : -1;
 }
 
+/// @brief Hit-test a table click and apply row selection or header sorting.
+/// @param ptr UITable to update.
+/// @param mx Click X coordinate.
+/// @param my Click Y coordinate.
+/// @return Row index, `-2` for a column-header hit, or `-1` for a miss.
+/// @details Hidden/outside clicks miss. Header hits record the column and
+///          toggle a sortable column's direction; body hits select the
+///          scroll-adjusted row. Invalid handles trap.
 int64_t rt_uitable_handle_click(void *ptr, int64_t mx, int64_t my) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.HandleClick: expected Zanna.Game.UI.Table");
@@ -560,7 +703,9 @@ int64_t rt_uitable_handle_click(void *ptr, int64_t mx, int64_t my) {
 /// @param ptr Opaque Zanna.Game.UI.Table object.
 /// @param mx Click x-coordinate in canvas pixels.
 /// @param my Click y-coordinate in canvas pixels.
-/// @return New Zanna.Game.UI.TableClickResult object.
+/// @return New TableClickResult reference, or `NULL` after allocation failure.
+/// @details Delegation preserves legacy selection/sort/header state. Misses
+///          become NONE; allocation and wrong-class failures trap.
 void *rt_uitable_handle_click_result(void *ptr, int64_t mx, int64_t my) {
     int64_t clicked = rt_uitable_handle_click(ptr, mx, my);
     if (clicked >= 0)
@@ -574,6 +719,9 @@ void *rt_uitable_handle_click_result(void *ptr, int64_t mx, int64_t my) {
     return table_click_result_new(RT_UITABLE_CLICK_NONE, -1, -1);
 }
 
+/// @brief Return the column index recorded by the most recent inside click.
+/// @param ptr UITable to query.
+/// @return Header index, or `-1` for no header/null/invalid.
 int64_t rt_uitable_last_header_click(void *ptr) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.LastHeaderClick: expected Zanna.Game.UI.Table");
@@ -583,6 +731,7 @@ int64_t rt_uitable_last_header_click(void *ptr) {
 /// @brief Return the raw TableClickResult kind value.
 /// @param ptr Opaque Zanna.Game.UI.TableClickResult object.
 /// @return RT_UITABLE_CLICK_NONE, RT_UITABLE_CLICK_ROW, or RT_UITABLE_CLICK_HEADER.
+/// @details Null results report NONE; wrong non-null classes trap.
 int64_t rt_table_click_result_kind(void *ptr) {
     rt_table_click_result_impl *result = checked_table_click_result(
         ptr, "TableClickResult.Kind: expected Zanna.Game.UI.TableClickResult");
@@ -592,6 +741,7 @@ int64_t rt_table_click_result_kind(void *ptr) {
 /// @brief Return whether a TableClickResult represents a miss.
 /// @param ptr Opaque Zanna.Game.UI.TableClickResult object.
 /// @return 1 for no-hit results, otherwise 0.
+/// @details Null results classify as NONE; wrong classes trap.
 int8_t rt_table_click_result_is_none(void *ptr) {
     return rt_table_click_result_kind(ptr) == RT_UITABLE_CLICK_NONE ? 1 : 0;
 }
@@ -599,6 +749,7 @@ int8_t rt_table_click_result_is_none(void *ptr) {
 /// @brief Return whether a TableClickResult represents a row hit.
 /// @param ptr Opaque Zanna.Game.UI.TableClickResult object.
 /// @return 1 for row-hit results, otherwise 0.
+/// @details Wrong non-null classes trap.
 int8_t rt_table_click_result_is_row(void *ptr) {
     return rt_table_click_result_kind(ptr) == RT_UITABLE_CLICK_ROW ? 1 : 0;
 }
@@ -606,6 +757,7 @@ int8_t rt_table_click_result_is_row(void *ptr) {
 /// @brief Return whether a TableClickResult represents a header hit.
 /// @param ptr Opaque Zanna.Game.UI.TableClickResult object.
 /// @return 1 for header-hit results, otherwise 0.
+/// @details Wrong non-null classes trap.
 int8_t rt_table_click_result_is_header(void *ptr) {
     return rt_table_click_result_kind(ptr) == RT_UITABLE_CLICK_HEADER ? 1 : 0;
 }
@@ -613,6 +765,7 @@ int8_t rt_table_click_result_is_header(void *ptr) {
 /// @brief Return the row index stored in a row-hit result.
 /// @param ptr Opaque Zanna.Game.UI.TableClickResult object.
 /// @return Zanna.Option.SomeI64(row) for row hits, otherwise Zanna.Option.None().
+/// @details Wrong non-null classes trap.
 void *rt_table_click_result_row_option(void *ptr) {
     rt_table_click_result_impl *result = checked_table_click_result(
         ptr, "TableClickResult.RowOption: expected Zanna.Game.UI.TableClickResult");
@@ -624,6 +777,7 @@ void *rt_table_click_result_row_option(void *ptr) {
 /// @brief Return the header column index stored in a header-hit result.
 /// @param ptr Opaque Zanna.Game.UI.TableClickResult object.
 /// @return Zanna.Option.SomeI64(column) for header hits, otherwise Zanna.Option.None().
+/// @details Wrong non-null classes trap.
 void *rt_table_click_result_column_option(void *ptr) {
     rt_table_click_result_impl *result = checked_table_click_result(
         ptr, "TableClickResult.ColumnOption: expected Zanna.Game.UI.TableClickResult");
@@ -632,6 +786,9 @@ void *rt_table_click_result_column_option(void *ptr) {
     return rt_option_some_i64(result->column);
 }
 
+/// @brief Adjust scrolling by a signed row delta.
+/// @param ptr UITable to mutate.
+/// @param delta Relative rows, added with saturation then clamped.
 void rt_uitable_handle_scroll(void *ptr, int64_t delta) {
     rt_uitable_impl *table =
         checked_table(ptr, "UITable.HandleScroll: expected Zanna.Game.UI.Table");
@@ -641,6 +798,11 @@ void rt_uitable_handle_scroll(void *ptr, int64_t delta) {
     table_clamp_scroll(table);
 }
 
+/// @brief Navigate row selection with shared GameUI key codes.
+/// @param ptr UITable to update.
+/// @param key_code Up, Down, Home, End, PageUp, or PageDown.
+/// @details Empty tables are no-ops. Selection clamps to rows and scroll is
+///          adjusted to keep it visible. Hidden state does not block keys.
 void rt_uitable_handle_key(void *ptr, int64_t key_code) {
     rt_uitable_impl *table = checked_table(ptr, "UITable.HandleKey: expected Zanna.Game.UI.Table");
     if (!table || table->row_count <= 0)
@@ -673,6 +835,11 @@ void rt_uitable_handle_key(void *ptr, int64_t key_code) {
     table_clamp_scroll(table);
 }
 
+/// @brief Draw a visible table's header, scrolled rows, selection, and border.
+/// @param ptr UITable to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Null/hidden inputs are no-ops. Only complete rows fitting the body
+///          height draw. Invalid non-null handles trap.
 void rt_uitable_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     rt_uitable_impl *table = checked_table(ptr, "UITable.Draw: expected Zanna.Game.UI.Table");
@@ -723,6 +890,7 @@ void rt_uitable_draw(void *ptr, void *canvas) {
 // UISlider
 //=============================================================================
 
+/// @brief Private state stored in a runtime UISlider object.
 typedef struct {
     void *vptr;
     int64_t x, y, w, h;
@@ -734,8 +902,11 @@ typedef struct {
     int8_t visible, enabled, dragging;
 } rt_uislider_impl;
 
-/// @brief Safe-cast a handle to the UISlider impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UISlider handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UISlider payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uislider_impl *checked_slider(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -748,6 +919,11 @@ static rt_uislider_impl *checked_slider(void *ptr, const char *api) {
 
 /// @brief Clamp @p value to the slider's [min, max] range and snap it to the
 ///        nearest step boundary.
+/// @param s UISlider supplying range and step.
+/// @param value Candidate value.
+/// @return Range-clamped value, rounded to the nearest step from the minimum
+///         when step is greater than one.
+/// @details Floating intermediate conversion saturates before the final clamp.
 static int64_t slider_clamp_value(rt_uislider_impl *s, int64_t value) {
     if (!s)
         return 0;
@@ -770,7 +946,9 @@ static int64_t slider_clamp_value(rt_uislider_impl *s, int64_t value) {
 }
 
 /// @brief Set the slider value from a mouse x-coordinate along the track.
-/// @return non-zero if the value changed.
+/// @param s UISlider to mutate.
+/// @param mx Absolute X coordinate, clamped across the full widget width.
+/// @return Nonzero only when the snapped value changed.
 static int8_t slider_set_from_mouse(rt_uislider_impl *s, int64_t mx) {
     if (!s || s->w <= 1)
         return 0;
@@ -785,6 +963,16 @@ static int8_t slider_set_from_mouse(rt_uislider_impl *s, int64_t mx) {
     return 1;
 }
 
+/// @brief Create a visible, enabled horizontal slider.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @param min_v First range endpoint.
+/// @param max_v Second endpoint; reversed endpoints are swapped.
+/// @return A new UISlider reference, or `NULL` on allocation failure.
+/// @details Value begins at minimum, step at one, value display enabled, label
+///          hidden, and dragging false.
 void *rt_uislider_new(int64_t x, int64_t y, int64_t w, int64_t h, int64_t min_v, int64_t max_v) {
     rt_uislider_impl *s =
         (rt_uislider_impl *)rt_obj_new_i64(RT_UISLIDER_CLASS_ID, (int64_t)sizeof(*s));
@@ -815,6 +1003,10 @@ void *rt_uislider_new(int64_t x, int64_t y, int64_t w, int64_t h, int64_t min_v,
     return s;
 }
 
+/// @brief Clamp and snap the current value.
+/// @param ptr UISlider to mutate; `NULL` is a no-op.
+/// @param v Requested value.
+/// @details A non-null invalid handle raises a runtime trap.
 void rt_uislider_set_value(void *ptr, int64_t v) {
     rt_uislider_impl *s =
         checked_slider(ptr, "UISlider.SetValue: expected Zanna.Game.UI.HudSlider");
@@ -822,11 +1014,18 @@ void rt_uislider_set_value(void *ptr, int64_t v) {
         s->current_value = slider_clamp_value(s, v);
 }
 
+/// @brief Return the current slider value.
+/// @param ptr UISlider to query.
+/// @return Stored value, or zero for null/invalid.
 int64_t rt_uislider_get_value(void *ptr) {
     rt_uislider_impl *s = checked_slider(ptr, "UISlider.Value: expected Zanna.Game.UI.HudSlider");
     return s ? s->current_value : 0;
 }
 
+/// @brief Set the positive snapping/navigation step.
+/// @param ptr UISlider to mutate.
+/// @param step Positive value, or one when nonpositive.
+/// @details Immediately resnaps current value. Invalid handles trap.
 void rt_uislider_set_step(void *ptr, int64_t step) {
     rt_uislider_impl *s = checked_slider(ptr, "UISlider.SetStep: expected Zanna.Game.UI.HudSlider");
     if (!s)
@@ -835,6 +1034,10 @@ void rt_uislider_set_step(void *ptr, int64_t step) {
     s->current_value = slider_clamp_value(s, s->current_value);
 }
 
+/// @brief Copy and conditionally show a slider label.
+/// @param ptr UISlider to mutate.
+/// @param label Runtime string copied into 64 inline bytes.
+/// @details Empty/null labels hide display; input is not retained.
 void rt_uislider_set_label(void *ptr, rt_string label) {
     rt_uislider_impl *s =
         checked_slider(ptr, "UISlider.SetLabel: expected Zanna.Game.UI.HudSlider");
@@ -844,6 +1047,11 @@ void rt_uislider_set_label(void *ptr, rt_string label) {
     s->show_label = s->label[0] != '\0';
 }
 
+/// @brief Adjust a visible, enabled slider from the keyboard.
+/// @param ptr UISlider to update.
+/// @param key_code Left/Down decrement, Right/Up increment, Home selects
+///        minimum, and End maximum.
+/// @return Nonzero only when current value changes.
 int8_t rt_uislider_handle_key(void *ptr, int64_t key_code) {
     rt_uislider_impl *s =
         checked_slider(ptr, "UISlider.HandleKey: expected Zanna.Game.UI.HudSlider");
@@ -861,6 +1069,12 @@ int8_t rt_uislider_handle_key(void *ptr, int64_t key_code) {
     return before != s->current_value;
 }
 
+/// @brief Begin dragging after an inside mouse press and map its X position.
+/// @param ptr UISlider to update.
+/// @param mx Mouse X coordinate.
+/// @param my Mouse Y coordinate.
+/// @return Nonzero only when the mapped value changes; an inside press at the
+///         existing value still starts dragging while returning zero.
 int8_t rt_uislider_handle_mouse_down(void *ptr, int64_t mx, int64_t my) {
     rt_uislider_impl *s =
         checked_slider(ptr, "UISlider.HandleMouseDown: expected Zanna.Game.UI.HudSlider");
@@ -870,6 +1084,10 @@ int8_t rt_uislider_handle_mouse_down(void *ptr, int64_t mx, int64_t my) {
     return slider_set_from_mouse(s, mx);
 }
 
+/// @brief Update an active enabled drag from a mouse X coordinate.
+/// @param ptr UISlider to update.
+/// @param mx Mouse X coordinate.
+/// @return Nonzero when the snapped value changes; otherwise zero.
 int8_t rt_uislider_handle_mouse_drag(void *ptr, int64_t mx) {
     rt_uislider_impl *s =
         checked_slider(ptr, "UISlider.HandleMouseDrag: expected Zanna.Game.UI.HudSlider");
@@ -878,6 +1096,9 @@ int8_t rt_uislider_handle_mouse_drag(void *ptr, int64_t mx) {
     return slider_set_from_mouse(s, mx);
 }
 
+/// @brief End dragging.
+/// @param ptr UISlider to update.
+/// @return Previous dragging flag, then clears it; zero for null/invalid.
 int8_t rt_uislider_handle_mouse_up(void *ptr) {
     rt_uislider_impl *s =
         checked_slider(ptr, "UISlider.HandleMouseUp: expected Zanna.Game.UI.HudSlider");
@@ -888,6 +1109,12 @@ int8_t rt_uislider_handle_mouse_up(void *ptr) {
     return was;
 }
 
+/// @brief Draw the slider track, fill, thumb, and optional label.
+/// @param ptr UISlider to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Hidden/null inputs are no-ops. Equal endpoints produce zero fill
+///          with the thumb centered four pixels left of the origin. Invalid
+///          non-null handles trap.
 void rt_uislider_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     rt_uislider_impl *s = checked_slider(ptr, "UISlider.Draw: expected Zanna.Game.UI.HudSlider");
@@ -911,9 +1138,12 @@ void rt_uislider_draw(void *ptr, void *canvas) {
 // UIDropdown
 //=============================================================================
 
+/// @brief Initial option-record capacity of a UIDropdown.
 #define RT_UIDROPDOWN_DEFAULT_OPTIONS 32
+/// @brief Option-label byte capacity including NUL.
 #define RT_UIDROPDOWN_MAX_TEXT 64
 
+/// @brief Private dynamic option state stored in a UIDropdown.
 typedef struct {
     void *vptr;
     int64_t x, y, w, h;
@@ -927,8 +1157,11 @@ typedef struct {
     int8_t visible, enabled;
 } rt_uidropdown_impl;
 
-/// @brief Safe-cast a handle to the UIDropdown impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UIDropdown handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UIDropdown payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uidropdown_impl *checked_dropdown(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -940,6 +1173,9 @@ static rt_uidropdown_impl *checked_dropdown(void *ptr, const char *api) {
 }
 
 /// @brief GC finalizer: free the dropdown's option strings/array.
+/// @param obj UIDropdown payload being finalized; `NULL` is accepted.
+/// @details Frees the option-record array, clears count/capacity, and releases
+///          the optional retained font.
 static void uidropdown_finalizer(void *obj) {
     rt_uidropdown_impl *dd = (rt_uidropdown_impl *)obj;
     if (!dd)
@@ -952,6 +1188,10 @@ static void uidropdown_finalizer(void *obj) {
     dd->font = NULL;
 }
 
+/// @brief Grow and zero the option-record array geometrically.
+/// @param dd UIDropdown to mutate.
+/// @param needed Required number of option records.
+/// @return `1` when capacity is sufficient; `0` for overflow/allocation failure.
 static int8_t ensure_dropdown_option_capacity(rt_uidropdown_impl *dd, int64_t needed) {
     if (!dd || needed <= dd->option_capacity)
         return 1;
@@ -976,6 +1216,14 @@ static int8_t ensure_dropdown_option_capacity(rt_uidropdown_impl *dd, int64_t ne
     return 1;
 }
 
+/// @brief Create an empty, visible, enabled, closed UIDropdown.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @return A new UIDropdown reference, or `NULL` if object/initial option
+///         allocation fails.
+/// @details Preallocates 32 option records and initializes selection to `-1`.
 void *rt_uidropdown_new(int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_uidropdown_impl *dd =
         (rt_uidropdown_impl *)rt_obj_new_i64(RT_UIDROPDOWN_CLASS_ID, (int64_t)sizeof(*dd));
@@ -1003,6 +1251,11 @@ void *rt_uidropdown_new(int64_t x, int64_t y, int64_t w, int64_t h) {
     return dd;
 }
 
+/// @brief Append a copied dropdown option.
+/// @param ptr UIDropdown to mutate.
+/// @param text Runtime string copied into 64 inline bytes; null creates empty.
+/// @details First addition selects index zero. Input is not retained.
+///          Allocation and wrong-class failures trap.
 void rt_uidropdown_add_option(void *ptr, rt_string text) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.AddOption: expected Zanna.Game.UI.HudDropdown");
@@ -1018,6 +1271,10 @@ void rt_uidropdown_add_option(void *ptr, rt_string text) {
     dd->option_count++;
 }
 
+/// @brief Clear all options without releasing allocated capacity.
+/// @param ptr UIDropdown to mutate.
+/// @details Zeroes all option bytes, resets count and selection to `-1`, and
+///          closes the list. Invalid handles trap.
 void rt_uidropdown_clear_options(void *ptr) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.ClearOptions: expected Zanna.Game.UI.HudDropdown");
@@ -1030,12 +1287,18 @@ void rt_uidropdown_clear_options(void *ptr) {
     dd->open = 0;
 }
 
+/// @brief Return the selected option index.
+/// @param ptr UIDropdown to query.
+/// @return Stored index, or `-1` for none/null/invalid.
 int64_t rt_uidropdown_get_selected(void *ptr) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.Selected: expected Zanna.Game.UI.HudDropdown");
     return dd ? dd->selected : -1;
 }
 
+/// @brief Select an existing option or clear selection.
+/// @param ptr UIDropdown to mutate.
+/// @param index Existing index; invalid values store `-1`.
 void rt_uidropdown_set_selected(void *ptr, int64_t index) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.SetSelected: expected Zanna.Game.UI.HudDropdown");
@@ -1044,6 +1307,10 @@ void rt_uidropdown_set_selected(void *ptr, int64_t index) {
     dd->selected = index < 0 || index >= dd->option_count ? -1 : index;
 }
 
+/// @brief Copy the selected option label.
+/// @param ptr UIDropdown to query.
+/// @return Caller-owned label copy, immortal empty singleton when unavailable,
+///         or `NULL` on allocation failure.
 rt_string rt_uidropdown_get_selected_text(void *ptr) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.SelectedText: expected Zanna.Game.UI.HudDropdown");
@@ -1052,12 +1319,18 @@ rt_string rt_uidropdown_get_selected_text(void *ptr) {
     return rt_const_cstr(dd->options[dd->selected]);
 }
 
+/// @brief Return normalized expanded-list state.
+/// @param ptr UIDropdown to query.
+/// @return Stored open flag, or zero for null/invalid.
 int8_t rt_uidropdown_is_open(void *ptr) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.IsOpen: expected Zanna.Game.UI.HudDropdown");
     return dd ? dd->open : 0;
 }
 
+/// @brief Open a visible, enabled dropdown.
+/// @param ptr UIDropdown to mutate.
+/// @details Does not require any options. Invalid handles trap.
 void rt_uidropdown_open(void *ptr) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.Open: expected Zanna.Game.UI.HudDropdown");
@@ -1065,6 +1338,8 @@ void rt_uidropdown_open(void *ptr) {
         dd->open = 1;
 }
 
+/// @brief Close a dropdown regardless of enabled/visible state.
+/// @param ptr UIDropdown to mutate.
 void rt_uidropdown_close(void *ptr) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.Close: expected Zanna.Game.UI.HudDropdown");
@@ -1072,6 +1347,14 @@ void rt_uidropdown_close(void *ptr) {
         dd->open = 0;
 }
 
+/// @brief Toggle, select, or dismiss a dropdown from a click.
+/// @param ptr UIDropdown to update.
+/// @param mx Click X coordinate.
+/// @param my Click Y coordinate.
+/// @return `1` for header or expanded-list hits; otherwise `0`.
+/// @details Header hits toggle. Open-list hits select the row and close.
+///          Outside clicks close while returning zero. Hidden/disabled inputs
+///          are ignored.
 int8_t rt_uidropdown_handle_click(void *ptr, int64_t mx, int64_t my) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.HandleClick: expected Zanna.Game.UI.HudDropdown");
@@ -1094,6 +1377,11 @@ int8_t rt_uidropdown_handle_click(void *ptr, int64_t mx, int64_t my) {
     return 0;
 }
 
+/// @brief Handle keyboard expansion and wrapped option navigation.
+/// @param ptr UIDropdown to update.
+/// @param key_code Escape, Enter, Up, or Down.
+/// @return `1` for a recognized key on a visible, enabled, nonempty dropdown;
+///         otherwise `0`.
 int8_t rt_uidropdown_handle_key(void *ptr, int64_t key_code) {
     rt_uidropdown_impl *dd =
         checked_dropdown(ptr, "UIDropdown.HandleKey: expected Zanna.Game.UI.HudDropdown");
@@ -1118,6 +1406,11 @@ int8_t rt_uidropdown_handle_key(void *ptr, int64_t key_code) {
     return 0;
 }
 
+/// @brief Draw the closed field and, when open, every option row.
+/// @param ptr UIDropdown to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Hidden/null inputs are no-ops. The selected option row receives a
+///          distinct background. Invalid non-null handles trap.
 void rt_uidropdown_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     rt_uidropdown_impl *dd =
@@ -1163,6 +1456,7 @@ void rt_uidropdown_draw(void *ptr, void *canvas) {
 // UITooltip
 //=============================================================================
 
+/// @brief Private hover-timing and inline text state for a UITooltip.
 typedef struct {
     void *vptr;
     int64_t x, y;
@@ -1176,8 +1470,11 @@ typedef struct {
     int8_t hovered;
 } rt_uitooltip_impl;
 
-/// @brief Safe-cast a handle to the UITooltip impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UITooltip handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UITooltip payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uitooltip_impl *checked_tooltip(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -1188,7 +1485,9 @@ static rt_uitooltip_impl *checked_tooltip(void *ptr, const char *api) {
     return (rt_uitooltip_impl *)ptr;
 }
 
-/// @brief GC finalizer: free the tooltip's text buffer.
+/// @brief GC finalizer: release the tooltip's optional font.
+/// @param obj UITooltip payload being finalized; `NULL` is accepted.
+/// @details Text is inline and requires no deallocation.
 static void uitooltip_finalizer(void *obj) {
     rt_uitooltip_impl *t = (rt_uitooltip_impl *)obj;
     if (!t)
@@ -1197,6 +1496,10 @@ static void uitooltip_finalizer(void *obj) {
     t->font = NULL;
 }
 
+/// @brief Create an empty, initially hidden hover tooltip.
+/// @return A new UITooltip reference, or `NULL` on allocation failure.
+/// @details Initializes six-pixel padding, a 500-millisecond dwell delay, and
+///          default dark background/white text/gray border.
 void *rt_uitooltip_new(void) {
     rt_uitooltip_impl *t =
         (rt_uitooltip_impl *)rt_obj_new_i64(RT_UITOOLTIP_CLASS_ID, (int64_t)sizeof(*t));
@@ -1212,6 +1515,11 @@ void *rt_uitooltip_new(void) {
     return t;
 }
 
+/// @brief Copy tooltip text into its 256-byte inline buffer.
+/// @param ptr UITooltip to mutate.
+/// @param text Runtime string to copy, or `NULL` to clear.
+/// @details Input is not retained and validated UTF-8 is not split. Invalid
+///          handles trap.
 void rt_uitooltip_set_text(void *ptr, rt_string text) {
     rt_uitooltip_impl *t =
         checked_tooltip(ptr, "UITooltip.SetText: expected Zanna.Game.UI.HudTooltip");
@@ -1219,6 +1527,9 @@ void rt_uitooltip_set_text(void *ptr, rt_string text) {
         ui_copy_text(t->text, sizeof(t->text), text);
 }
 
+/// @brief Set the nonnegative dwell delay.
+/// @param ptr UITooltip to mutate.
+/// @param ms Milliseconds; negative values become zero.
 void rt_uitooltip_set_hover_delay_ms(void *ptr, int64_t ms) {
     rt_uitooltip_impl *t =
         checked_tooltip(ptr, "UITooltip.SetHoverDelayMs: expected Zanna.Game.UI.HudTooltip");
@@ -1226,6 +1537,14 @@ void rt_uitooltip_set_hover_delay_ms(void *ptr, int64_t ms) {
         t->hover_delay_ms = ms < 0 ? 0 : ms;
 }
 
+/// @brief Update cursor-relative position, hover timer, and visibility.
+/// @param ptr UITooltip to update.
+/// @param mx Cursor X; display X becomes saturated `mx + 14`.
+/// @param my Cursor Y; display Y becomes saturated `my + 18`.
+/// @param hovered_target Zero resets/hides; nonzero maintains hover.
+/// @param delta_ms Positive elapsed time added with saturation.
+/// @details Nonpositive elapsed values leave dwell unchanged. Visibility is
+///          true once elapsed time reaches the configured delay.
 void rt_uitooltip_update(
     void *ptr, int64_t mx, int64_t my, int8_t hovered_target, int64_t delta_ms) {
     rt_uitooltip_impl *t =
@@ -1248,6 +1567,12 @@ void rt_uitooltip_update(
     t->visible = t->hover_elapsed_ms >= t->hover_delay_ms;
 }
 
+/// @brief Draw a visible nonempty tooltip, constrained to the canvas.
+/// @param ptr UITooltip to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Measures text plus padding, shifts overflow back from right/bottom,
+///          clamps coordinates to zero, and draws fill, frame, then text.
+///          Hidden/null inputs are no-ops; invalid handles trap.
 void rt_uitooltip_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     rt_uitooltip_impl *t =
@@ -1280,9 +1605,12 @@ void rt_uitooltip_draw(void *ptr, void *canvas) {
 // UIModal
 //=============================================================================
 
+/// @brief Initial retained-child slot capacity.
 #define RT_UIMODAL_DEFAULT_CHILDREN 16
+/// @brief Initial inline-button record capacity.
 #define RT_UIMODAL_DEFAULT_BUTTONS 4
 
+/// @brief One copied modal button label and activation metadata record.
 typedef struct {
     char text[64];
     int64_t return_value;
@@ -1290,6 +1618,7 @@ typedef struct {
     int8_t is_cancel;
 } rt_uimodal_button_t;
 
+/// @brief Private geometry, content, children, buttons, and state of UIModal.
 typedef struct {
     void *vptr;
     int64_t x, y, w, h;
@@ -1315,8 +1644,11 @@ typedef struct {
     void *font;
 } rt_uimodal_impl;
 
-/// @brief Safe-cast a handle to the UIModal impl, trapping @p api on a
-///        class-id mismatch. @return The impl, or NULL if @p ptr is NULL.
+/// @brief Validate and cast an opaque UIModal handle.
+/// @param ptr Candidate handle; `NULL` is accepted.
+/// @param api Trap message used for a non-null class mismatch.
+/// @return The UIModal payload when valid; otherwise `NULL`.
+/// @details A mismatched handle raises a runtime trap.
 static rt_uimodal_impl *checked_modal(void *ptr, const char *api) {
     if (!ptr)
         return NULL;
@@ -1328,6 +1660,9 @@ static rt_uimodal_impl *checked_modal(void *ptr, const char *api) {
 }
 
 /// @brief GC finalizer: free the modal's buttons/strings and release children.
+/// @param obj UIModal payload being finalized; `NULL` is accepted.
+/// @details Releases every retained child, frees child/button arrays, releases
+///          the optional font, and clears their metadata. Text is inline.
 static void uimodal_finalizer(void *obj) {
     rt_uimodal_impl *m = (rt_uimodal_impl *)obj;
     if (!m)
@@ -1346,6 +1681,10 @@ static void uimodal_finalizer(void *obj) {
     m->button_capacity = 0;
 }
 
+/// @brief Grow and zero the retained-child pointer array geometrically.
+/// @param m UIModal to mutate.
+/// @param needed Required slot count.
+/// @return `1` when sufficient; `0` on overflow/allocation failure.
 static int8_t ensure_modal_child_capacity(rt_uimodal_impl *m, int64_t needed) {
     if (!m || needed <= m->child_capacity)
         return 1;
@@ -1369,6 +1708,10 @@ static int8_t ensure_modal_child_capacity(rt_uimodal_impl *m, int64_t needed) {
     return 1;
 }
 
+/// @brief Grow and zero the button-record array geometrically.
+/// @param m UIModal to mutate.
+/// @param needed Required record count.
+/// @return `1` when sufficient; `0` on overflow/allocation failure.
 static int8_t ensure_modal_button_capacity(rt_uimodal_impl *m, int64_t needed) {
     if (!m || needed <= m->button_capacity)
         return 1;
@@ -1395,6 +1738,13 @@ static int8_t ensure_modal_button_capacity(rt_uimodal_impl *m, int64_t needed) {
 
 /// @brief Initialize a freshly allocated modal's geometry and default state
 ///        (shared by rt_uimodal_new and rt_uimodal_new_at).
+/// @param m Allocated payload to initialize.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @details Clears all bytes, sets selection/result to `-1`, visible/modal
+///          flags true, open false, and default colors/overlay alpha.
 static void modal_init(rt_uimodal_impl *m, int64_t x, int64_t y, int64_t w, int64_t h) {
     memset(m, 0, sizeof(*m));
     m->x = x;
@@ -1413,10 +1763,21 @@ static void modal_init(rt_uimodal_impl *m, int64_t x, int64_t y, int64_t w, int6
     m->overlay_alpha = 128;
 }
 
+/// @brief Create a closed modal at the origin.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @return Result of rt_uimodal_new_at(0, 0, @p w, @p h).
 void *rt_uimodal_new(int64_t w, int64_t h) {
     return rt_uimodal_new_at(0, 0, w, h);
 }
 
+/// @brief Create a closed modal with explicit geometry.
+/// @param x Initial left coordinate.
+/// @param y Initial top coordinate.
+/// @param w Width clamped to `[1, 16384]`.
+/// @param h Height clamped to `[1, 16384]`.
+/// @return A new UIModal reference, or `NULL` if object or initial 16-child/
+///         four-button capacity allocation fails.
 void *rt_uimodal_new_at(int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_uimodal_impl *m =
         (rt_uimodal_impl *)rt_obj_new_i64(RT_UIMODAL_CLASS_ID, (int64_t)sizeof(*m));
@@ -1433,18 +1794,30 @@ void *rt_uimodal_new_at(int64_t x, int64_t y, int64_t w, int64_t h) {
     return m;
 }
 
+/// @brief Copy title text into a 128-byte inline buffer.
+/// @param ptr UIModal to mutate.
+/// @param title Runtime string to copy; no reference is retained.
 void rt_uimodal_set_title(void *ptr, rt_string title) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.SetTitle: expected Zanna.Game.UI.Modal");
     if (m)
         ui_copy_text(m->title, sizeof(m->title), title);
 }
 
+/// @brief Copy body content into a 512-byte inline buffer.
+/// @param ptr UIModal to mutate.
+/// @param text Runtime string to copy; no reference is retained.
 void rt_uimodal_set_content(void *ptr, rt_string text) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.SetContent: expected Zanna.Game.UI.Modal");
     if (m)
         ui_copy_text(m->content_text, sizeof(m->content_text), text);
 }
 
+/// @brief Append a copied modal action button.
+/// @param ptr UIModal to mutate.
+/// @param text Runtime label copied into 64 inline bytes.
+/// @param return_value Result stored when triggered.
+/// @return New button index, or `-1` on invalid handle/allocation failure.
+/// @details The first button becomes selected. Allocation failures trap.
 int64_t rt_uimodal_add_button(void *ptr, rt_string text, int64_t return_value) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.AddButton: expected Zanna.Game.UI.Modal");
     if (!m)
@@ -1461,6 +1834,9 @@ int64_t rt_uimodal_add_button(void *ptr, rt_string text, int64_t return_value) {
     return idx;
 }
 
+/// @brief Replace the unique default button and select it.
+/// @param ptr UIModal to mutate.
+/// @param index Existing button index; invalid values are ignored.
 void rt_uimodal_set_default_button(void *ptr, int64_t index) {
     rt_uimodal_impl *m =
         checked_modal(ptr, "UIModal.SetDefaultButton: expected Zanna.Game.UI.Modal");
@@ -1472,6 +1848,9 @@ void rt_uimodal_set_default_button(void *ptr, int64_t index) {
     m->selected_button = index;
 }
 
+/// @brief Replace the unique Escape/cancel button.
+/// @param ptr UIModal to mutate.
+/// @param index Existing button index; invalid values are ignored.
 void rt_uimodal_set_cancel_button(void *ptr, int64_t index) {
     rt_uimodal_impl *m =
         checked_modal(ptr, "UIModal.SetCancelButton: expected Zanna.Game.UI.Modal");
@@ -1482,6 +1861,11 @@ void rt_uimodal_set_cancel_button(void *ptr, int64_t index) {
     m->buttons[index].is_cancel = 1;
 }
 
+/// @brief Retain and append an arbitrary child runtime object.
+/// @param ptr UIModal to mutate.
+/// @param child_widget Non-null child reference.
+/// @details Drawing recognizes TextInput, Slider, Dropdown, Table, and MenuList;
+///          input forwarding recognizes TextInput. Capacity failures trap.
 void rt_uimodal_add_child(void *ptr, void *child_widget) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.AddChild: expected Zanna.Game.UI.Modal");
     if (!m || !child_widget)
@@ -1494,6 +1878,9 @@ void rt_uimodal_add_child(void *ptr, void *child_widget) {
     m->children[m->child_count++] = child_widget;
 }
 
+/// @brief Open and show a modal while resetting result.
+/// @param ptr UIModal to mutate.
+/// @details Sets result to `-1` and preserves selected button.
 void rt_uimodal_open(void *ptr) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.Open: expected Zanna.Game.UI.Modal");
     if (!m)
@@ -1503,24 +1890,35 @@ void rt_uimodal_open(void *ptr) {
     m->result = -1;
 }
 
+/// @brief Close a modal without changing visible flag or result.
+/// @param ptr UIModal to mutate.
 void rt_uimodal_close(void *ptr) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.Close: expected Zanna.Game.UI.Modal");
     if (m)
         m->open = 0;
 }
 
+/// @brief Return normalized open state.
+/// @param ptr UIModal to query.
+/// @return Stored flag, or zero for null/invalid.
 int8_t rt_uimodal_is_open(void *ptr) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.IsOpen: expected Zanna.Game.UI.Modal");
     return m ? m->open : 0;
 }
 
+/// @brief Return the last triggered button result.
+/// @param ptr UIModal to query.
+/// @return Stored result, initially/reset `-1`, or `-1` for null/invalid.
 int64_t rt_uimodal_get_result(void *ptr) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.Result: expected Zanna.Game.UI.Modal");
     return m ? m->result : -1;
 }
 
 /// @brief Activate button @p index: record its return value, close the modal.
-/// @return the button's return value (or a sentinel if @p index is invalid).
+/// @param m UIModal to mutate.
+/// @param index Existing button index.
+/// @return Button return value, or `-1` for invalid input.
+/// @details Successful activation clears both open and visible.
 static int64_t modal_trigger_button(rt_uimodal_impl *m, int64_t index) {
     if (!m || index < 0 || index >= m->button_count)
         return -1;
@@ -1530,6 +1928,14 @@ static int64_t modal_trigger_button(rt_uimodal_impl *m, int64_t index) {
     return m->result;
 }
 
+/// @brief Handle modal button traversal/activation and child text keys.
+/// @param ptr Open UIModal to update.
+/// @param key_code Tab, Enter, Escape, or key forwarded to TextInput children.
+/// @param shift_held Reverse Tab flag and forwarded selection modifier.
+/// @return Triggered button result, or `-1` when none closes the modal.
+/// @details Tab wraps selection. Enter triggers selected (or default only if
+///          none selected); Escape searches cancel. Remaining input is
+///          forwarded to every TextInput child.
 int64_t rt_uimodal_handle_key(void *ptr, int64_t key_code, int8_t shift_held) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.HandleKey: expected Zanna.Game.UI.Modal");
     if (!m || !m->open)
@@ -1569,6 +1975,12 @@ int64_t rt_uimodal_handle_key(void *ptr, int64_t key_code, int8_t shift_held) {
     return -1;
 }
 
+/// @brief Hit-test fixed modal buttons and forward other clicks to text inputs.
+/// @param ptr Open UIModal to update.
+/// @param mx Click X coordinate.
+/// @param my Click Y coordinate.
+/// @return Triggered button result, or `-1` for no button.
+/// @details Buttons are 88x24 with eight-pixel gaps along the lower right.
 int64_t rt_uimodal_handle_click(void *ptr, int64_t mx, int64_t my) {
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.HandleClick: expected Zanna.Game.UI.Modal");
     if (!m || !m->open)
@@ -1593,6 +2005,12 @@ int64_t rt_uimodal_handle_click(void *ptr, int64_t mx, int64_t my) {
     return -1;
 }
 
+/// @brief Draw an open visible modal, recognized children, and buttons.
+/// @param ptr UIModal to render.
+/// @param canvas 2D Canvas or registered Canvas3D target.
+/// @details Draw order is dim overlay, panel/frame/title/content, children in
+///          insertion order, then action buttons. Null/closed inputs are
+///          no-ops; invalid handles trap.
 void rt_uimodal_draw(void *ptr, void *canvas) {
     rt_gameui_draw_ops_t ops;
     rt_uimodal_impl *m = checked_modal(ptr, "UIModal.Draw: expected Zanna.Game.UI.Modal");

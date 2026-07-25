@@ -27,11 +27,13 @@
 //     refcount and container graph mutations hold a nestable shared scope.
 //   - The GC table lock (pthread_mutex / CRITICAL_SECTION) protects the tracked-
 //     object table and weak reference registry; finalizers run outside the lock.
-//   - Pass statistics (total_collected, pass_count) are updated atomically.
+//   - Pass statistics (total_collected, pass_count) are read and updated while
+//     holding the GC table lock.
 //
 // Ownership/Lifetime:
-//   - The global GC state (entries table, weak ref registry) is heap-allocated
-//     lazily and lives for the process lifetime.
+//   - The entries table and weak registry are allocated lazily and live until
+//     rt_gc_shutdown detaches them; synchronization primitives remain reusable
+//     for the process lifetime.
 //   - Tracked object pointers are borrowed; the GC does not retain a reference
 //     — it relies on the object's own refcount to stay alive until collection.
 //
@@ -40,6 +42,9 @@
 //        src/runtime/core/rt_object.c (object allocation and finalizer registry)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements cycle collection, weak references, and graph quiescence.
 
 #include "rt_gc.h"
 
@@ -65,8 +70,13 @@
 
 #include "rt_trap.h"
 
+/// @brief Install a thread-local non-local recovery destination for GC cleanup.
+/// @param buf Borrowed jump buffer that remains live until recovery is cleared.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's most recently installed recovery destination.
 void rt_trap_clear_recovery(void);
+/// @brief Read the current thread's last trap diagnostic.
+/// @return Runtime-owned C string valid until the next trap on this thread.
 const char *rt_trap_get_error(void);
 
 //=============================================================================
@@ -177,6 +187,10 @@ static int64_t g_gc_alloc_counter = 0;
 static int64_t g_gc_collection_requested = 0;
 
 /// @brief Atomic CAS for int64_t (portable across GCC/Clang and MSVC).
+/// @param ptr Address of the integer to compare and possibly replace.
+/// @param expected In/out expected value; receives the observed value on failure.
+/// @param desired Replacement written when the comparison succeeds.
+/// @return 1 on exchange success, otherwise 0.
 static int gc_atomic_cas_i64(int64_t *ptr, int64_t *expected, int64_t desired) {
 #if defined(_MSC_VER) && !defined(__clang__)
     long long old = _InterlockedCompareExchange64(
@@ -197,6 +211,10 @@ static int gc_atomic_cas_i64(int64_t *ptr, int64_t *expected, int64_t desired) {
 
 #ifdef _WIN32
 /// @brief InitOnce callback that initialises the CRITICAL_SECTION on first use.
+/// @param InitOnce Windows one-time initialization record.
+/// @param Parameter Unused caller parameter.
+/// @param Context Unused context output.
+/// @return `TRUE` after initializing the process-lifetime GC lock.
 static BOOL CALLBACK gc_lock_init_callback(PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context) {
     (void)InitOnce;
     (void)Parameter;
@@ -338,6 +356,8 @@ static int gc_world_begin_collection(void) {
 }
 
 /// @brief Release exclusive managed-graph access after collection or recovery.
+/// @details Clears the collector thread's nesting state before releasing the
+///   platform write lock. Calling without exclusive ownership is a no-op.
 static void gc_world_end_collection(void) {
     if (!g_gc_world_exclusive)
         return;
@@ -356,6 +376,8 @@ static void gc_world_end_collection(void) {
 //=============================================================================
 
 /// @brief Splitmix64-style pointer hash for hash table slot computation.
+/// @param p Pointer value to mix; the pointer is not dereferenced.
+/// @return Deterministically mixed integer derived from the address bits.
 static uint64_t ptr_hash(void *p) {
     uint64_t v = (uint64_t)(uintptr_t)p;
     v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -453,6 +475,8 @@ int8_t rt_gc_should_suppress_cycle_release(void *payload) {
 }
 
 /// @brief Check if a hash table slot contains a live (tracked) entry.
+/// @param e Non-NULL table entry to inspect.
+/// @return 1 unless the slot contains the empty or tombstone sentinel.
 static int gc_slot_is_live(const gc_entry *e) {
     return e->obj != GC_EMPTY && e->obj != GC_TOMBSTONE;
 }
@@ -475,6 +499,7 @@ static void gc_clear_collecting_flag(void) {
 /// @brief Find the slot index for @p obj in the hash table.
 /// @details Uses linear probing. Tombstones are skipped (do not terminate
 ///          the probe chain); empty slots terminate it.
+/// @param obj Exact tracked payload address to locate.
 /// @return Slot index if found, -1 otherwise. Caller must hold gc_lock.
 static int64_t find_entry(void *obj) {
     if (!g_gc.entries || g_gc.capacity == 0)
@@ -498,6 +523,8 @@ static int64_t find_entry(void *obj) {
 ///          entry, and frees the old table. Tombstones are discarded. The
 ///          caller must hold gc_lock.
 /// @param new_cap New table capacity (must be a power of two).
+/// @return 1 on success, or 0 for invalid sizing or allocation failure; the
+///   existing table remains owned by the GC on failure.
 static int gc_rehash(int64_t new_cap) {
     if (new_cap <= 0 || (uint64_t)new_cap > (uint64_t)SIZE_MAX / sizeof(gc_entry))
         return 0;
@@ -637,6 +664,11 @@ static void gc_reference_array_traverse(void *obj, rt_gc_visitor_t visitor, void
 /// @brief Register an object for cycle detection.
 /// @details Inserts @p obj into the GC hash table. If already tracked, updates
 ///          the traverse function. The table grows when load exceeds 5/8.
+///          NULL objects or callbacks are accepted as no-ops. Invalid live
+///          payloads, unsupported heap kinds, capacity overflow, and allocation
+///          failure raise a runtime trap.
+/// @param obj Borrowed heap object or reference-array payload to register.
+/// @param traverse Strong-edge callback retained in collector bookkeeping.
 void rt_gc_track(void *obj, rt_gc_traverse_fn traverse) {
     gc_track_result result = gc_track_impl(obj, traverse);
     switch (result) {
@@ -669,7 +701,9 @@ int8_t rt_gc_track_reference_array(void *array) {
 }
 
 /// @brief Remove an object from cycle tracking.
-/// @details Tombstones the hash table slot so probe chains remain intact.
+/// @details Tombstones the hash table slot so probe chains remain intact. NULL
+///   and currently untracked payloads are no-ops; no object reference is released.
+/// @param obj Exact borrowed payload address to remove.
 void rt_gc_untrack(void *obj) {
     if (!obj)
         return;
@@ -741,6 +775,8 @@ void rt_gc_relocate_payload(void *old_payload, void *new_payload) {
 }
 
 /// @brief Check if an object is in the tracking table.
+/// @param obj Exact borrowed payload address to query; NULL is never tracked.
+/// @return 1 when the address has a live table entry, otherwise 0.
 int8_t rt_gc_is_tracked(void *obj) {
     if (!obj)
         return 0;
@@ -752,6 +788,7 @@ int8_t rt_gc_is_tracked(void *obj) {
 }
 
 /// @brief Return the number of objects currently in the tracking table.
+/// @return Locked snapshot of live entries, excluding empty and tombstone slots.
 int64_t rt_gc_tracked_count(void) {
     gc_lock();
     int64_t n = g_gc.count;
@@ -763,6 +800,7 @@ int64_t rt_gc_tracked_count(void) {
 // Weak Reference Registry
 //=============================================================================
 
+/// @brief Fixed number of buckets in the lazily allocated weak-target registry.
 #define WEAK_BUCKET_COUNT 64
 
 /// @brief Lazily allocate the weak-reference bucket table on first use.
@@ -777,6 +815,11 @@ static int ensure_weak_buckets(void) {
     return 1;
 }
 
+/// @brief Find or allocate the weak-reference chain for one target.
+/// @details Lazily creates both the bucket table and the per-target chain. The
+///   caller must hold the GC lock.
+/// @param target Non-NULL managed target used as the exact chain key.
+/// @return Existing or newly allocated chain, or NULL on allocation failure.
 static weak_chain *ensure_weak_chain(void *target) {
     if (!ensure_weak_buckets())
         return NULL;
@@ -800,6 +843,8 @@ static weak_chain *ensure_weak_chain(void *target) {
 }
 
 /// @brief Add @p ref to the per-target weak-reference chain for @p target.
+/// @param target Non-NULL managed target whose chain receives the handle.
+/// @param ref Non-NULL weak handle to link at the head of the chain.
 /// @return 1 on success, 0 on allocation failure.
 static int register_weak_ref(void *target, rt_weakref *ref) {
     weak_chain *wc = ensure_weak_chain(target);
@@ -811,6 +856,10 @@ static int register_weak_ref(void *target, rt_weakref *ref) {
 }
 
 /// @brief Remove @p ref from the per-target weak-reference chain for @p target.
+/// @details Frees the chain node when the removed handle was its final member.
+///   The caller must hold the GC lock. Missing targets and handles are no-ops.
+/// @param target Exact target key used when the handle was registered.
+/// @param ref Weak handle to unlink.
 static void unregister_weak_ref(void *target, rt_weakref *ref) {
     if (!g_gc.weak_buckets || g_gc.weak_bucket_count <= 0)
         return;
@@ -840,6 +889,8 @@ static void unregister_weak_ref(void *target, rt_weakref *ref) {
 }
 
 /// @brief Return 1 if @p candidate is a live weak-reference heap object (lock must be held).
+/// @param candidate Opaque pointer to validate against heap metadata and class ID.
+/// @return 1 for a sufficiently sized live `RT_WEAKREF_CLASS_ID` object, otherwise 0.
 static int gc_is_weakref_handle_unlocked(void *candidate) {
     rt_heap_hdr_t *hdr = NULL;
     if (!candidate || !rt_heap_try_get_header(candidate, &hdr) || !hdr)
@@ -851,6 +902,9 @@ static int gc_is_weakref_handle_unlocked(void *candidate) {
 }
 
 /// @brief Return 1 if @p target can be registered as a zeroing weak target.
+/// @param target Candidate runtime string or non-string managed heap payload;
+///   NULL represents a cleared weak reference.
+/// @return 1 for NULL or a live supported runtime handle, otherwise 0.
 static int gc_weak_target_is_valid(void *target) {
     if (!target)
         return 1;
@@ -863,6 +917,7 @@ static int gc_weak_target_is_valid(void *target) {
 }
 
 /// @brief Detach a weak-reference object from the registry during generic object release.
+/// @param obj Weak-reference payload being finalized; NULL is a no-op.
 static void weakref_finalizer(void *obj) {
     rt_weakref *ref = (rt_weakref *)obj;
     if (!ref)
@@ -880,7 +935,12 @@ static void weakref_finalizer(void *obj) {
 //=============================================================================
 
 /// @brief Create a zeroing weak reference. The target's refcount is NOT bumped.
-/// @details When the target is freed, the reference automatically becomes NULL.
+/// @details When the target is freed, the reference automatically becomes
+///   NULL. The target must be NULL, a live runtime string, or a live non-string
+///   heap payload. Invalid targets and allocation failures trap.
+/// @param target Borrowed managed target, or NULL for an initially empty handle.
+/// @return Caller-owned weak-reference object, or NULL if a returning trap hook
+///   permits an error path to continue.
 rt_weakref *rt_weakref_new(void *target) {
     rt_gc_mutator_enter();
     if (!gc_weak_target_is_valid(target)) {
@@ -917,6 +977,12 @@ rt_weakref *rt_weakref_new(void *target) {
 }
 
 /// @brief Dereference a weak ref, retaining and returning the target or NULL if freed.
+/// @details Promotion and zeroing are serialized with target destruction. A
+///   mortal target is atomically retained before return; immortal targets need
+///   no increment. Invalid handles and mortal refcount overflow trap.
+/// @param ref Borrowed weak-reference handle; NULL behaves as an empty handle.
+/// @return Caller-owned retained target, or NULL when no live target remains or
+///   an error trap returns locally.
 void *rt_weakref_get(rt_weakref *ref) {
     if (!ref)
         return NULL;
@@ -997,6 +1063,11 @@ void *rt_weakref_get(rt_weakref *ref) {
 }
 
 /// @brief Check if a weak reference's target is still alive.
+/// @details Validates the handle and reads the target's current string or heap
+///   reference count without retaining it.
+/// @param ref Borrowed weak-reference handle; NULL is not alive.
+/// @return 1 when a nonzero-refcount target is registered, otherwise 0.
+/// @warning An invalid non-NULL handle raises a runtime trap.
 int8_t rt_weakref_alive(rt_weakref *ref) {
     if (!ref)
         return 0;
@@ -1031,6 +1102,9 @@ int8_t rt_weakref_alive(rt_weakref *ref) {
 }
 
 /// @brief Destroy a weak reference handle. Does NOT affect the target.
+/// @details Detaches the handle from its target chain, clears it, and releases
+///   the caller's object reference. NULL is a no-op; invalid handles trap.
+/// @param ref Weak-reference handle whose caller-owned reference is released.
 void rt_weakref_free(rt_weakref *ref) {
     if (!ref)
         return;
@@ -1056,6 +1130,8 @@ void rt_weakref_free(rt_weakref *ref) {
 
 /// @brief Returns 1 if `candidate` is a registered weak-reference handle. Used by polymorphic
 /// dispatch sites to distinguish weak-ref objects from regular GC objects.
+/// @param candidate Opaque pointer to validate; NULL and stale pointers return zero.
+/// @return 1 for a live weak-reference object, otherwise 0.
 int8_t rt_weakref_is_handle(void *candidate) {
     int8_t is_handle = 0;
     gc_lock();
@@ -1066,6 +1142,11 @@ int8_t rt_weakref_is_handle(void *candidate) {
 
 /// @brief Re-point a weak reference at a different target (or to NULL to clear). Unregisters
 /// from the old target's weak-list and registers with the new one.
+/// @details The new chain is allocated before the old registration is removed,
+///   so allocation failure leaves the handle unchanged. Reusing the existing
+///   target is a no-op. Invalid handles or targets and allocation failure trap.
+/// @param ref Borrowed weak-reference handle; NULL is a no-op.
+/// @param target Borrowed replacement managed target, or NULL to clear.
 void rt_weakref_reset(rt_weakref *ref, void *target) {
     if (!ref)
         return;
@@ -1112,7 +1193,10 @@ void rt_weakref_reset(rt_weakref *ref, void *target) {
 
 /// @brief Zero all weak references pointing to a target being freed.
 /// @details Called internally by rt_obj_free before deallocating. Walks the
-///          per-target chain in the weak bucket and sets each ref's target to NULL.
+///          per-target chain in the weak bucket, clears every target and chain
+///          link, removes the registry node, and frees that node. NULL and
+///          unregistered targets are no-ops.
+/// @param target Exact borrowed address whose observer chain is cleared.
 void rt_gc_clear_weak_refs(void *target) {
     if (!target)
         return;
@@ -1158,6 +1242,8 @@ void rt_gc_clear_weak_refs(void *target) {
 //=============================================================================
 
 /// @brief Visitor that trial-decrements child refcounts (called under gc_lock).
+/// @param child Borrowed child payload reported by a traversal callback.
+/// @param ctx Unused visitor context.
 static void trial_decrement(void *child, void *ctx) {
     (void)ctx;
     if (!child)
@@ -1175,6 +1261,7 @@ typedef struct {
     int8_t retained;
 } gc_snap_entry;
 
+/// @brief Per-member state retained across cycle finalization and recovery.
 typedef struct {
     gc_snap_entry entry;
     gc_snap_entry *snapshot_entry;
@@ -1187,6 +1274,7 @@ typedef struct {
     int reclaimed;
 } gc_garbage_state;
 
+/// @brief Dynamically growing list of strong edges reported by traversals.
 typedef struct {
     void **items;
     int64_t count;
@@ -1194,6 +1282,7 @@ typedef struct {
     int oom;
 } gc_edge_list;
 
+/// @brief Dynamically growing restore-phase traversal queue.
 typedef struct {
     gc_snap_entry *items;
     int64_t count;
@@ -1206,6 +1295,8 @@ typedef struct {
 ///          a traversal callback. The buffer doubles each time it fills and the OOM flag
 ///          sticks once set so subsequent pushes are no-ops — callers detect overflow by
 ///          inspecting `list->oom` after the traversal completes.
+/// @param list Mutable edge list that owns its backing allocation.
+/// @param child Non-NULL borrowed child address to append.
 /// @return 1 on successful append, 0 on OOM, NULL inputs, or NULL @p child.
 static int gc_edge_list_push(gc_edge_list *list, void *child) {
     if (!list || list->oom || !child)
@@ -1236,6 +1327,8 @@ static int gc_edge_list_push(gc_edge_list *list, void *child) {
 /// @details Bridges the per-object traverse callback (which expects a `(child, ctx)`
 ///          visitor) to the edge-list collector. Discards push failures since the caller
 ///          checks `list->oom` after the walk completes.
+/// @param child Borrowed child address supplied by the tracked object's traversal.
+/// @param ctx Non-NULL `gc_edge_list` destination.
 static void gc_edge_collector(void *child, void *ctx) {
     (void)gc_edge_list_push((gc_edge_list *)ctx, child);
 }
@@ -1244,6 +1337,9 @@ static void gc_edge_collector(void *child, void *ctx) {
 /// @details Used by phase 3 (the "restore" pass) to enqueue objects that need to be
 ///          re-marked as live after the trial-deletion phase. Doubling growth and
 ///          sticky OOM flag mirror `gc_edge_list_push`.
+/// @param work Mutable restore queue that owns its backing allocation.
+/// @param obj Non-NULL borrowed tracked payload to enqueue.
+/// @param traverse Non-NULL strong-edge callback paired with @p obj.
 /// @return 1 on success, 0 on OOM, NULL inputs, or missing traverse function.
 static int gc_worklist_push(gc_worklist *work, void *obj, rt_gc_traverse_fn traverse) {
     if (!work || work->oom || !obj || !traverse)
@@ -1298,6 +1394,8 @@ typedef struct {
 ///          that are also in the garbage set — those will be freed by their own
 ///          reclaim-phase walk and re-releasing them here would underflow the refcount.
 ///          External (non-garbage) children get a normal release-and-free-on-zero.
+/// @param child Borrowed outgoing target reported by a garbage member traversal.
+/// @param ctx Optional `gc_release_edges_ctx` identifying intra-cycle members.
 static void gc_release_outgoing_ref(void *child, void *ctx) {
     if (!child)
         return;
@@ -1313,6 +1411,7 @@ static void gc_release_outgoing_ref(void *child, void *ctx) {
 ///          zeros the count for finalizer semantics, and runs the finalizer once.
 ///          The caller either restores every garbage member when any object
 ///          resurrects, or frees every member when no resurrection occurs.
+/// @param state Mutable reclaim record for one confirmed garbage member.
 static void gc_finalize_unreachable(gc_garbage_state *state) {
     if (!state || !state->entry.obj)
         return;
@@ -1354,6 +1453,12 @@ static void gc_finalize_unreachable(gc_garbage_state *state) {
 }
 
 /// @brief Restore garbage members after finalizer resurrection or trap recovery.
+/// @details Reconstitutes released snapshot references, optionally reinstalls
+///   detached finalizers that did not resurrect, and re-registers surviving
+///   payloads with their original traversal callbacks.
+/// @param garbage Array of mutable reclaim records; NULL is a no-op.
+/// @param garbage_count Number of entries in @p garbage.
+/// @param restore_finalizers Non-zero to reinstall eligible detached callbacks.
 static void gc_restore_garbage_state(gc_garbage_state *garbage,
                                      int64_t garbage_count,
                                      int restore_finalizers) {
@@ -1387,6 +1492,11 @@ static void gc_restore_garbage_state(gc_garbage_state *garbage,
 }
 
 /// @brief Free a finalized unreachable object after the no-resurrection decision.
+/// @details Releases outgoing non-cycle references, clears weak observers and
+///   monitor state, then frees the zero-ref heap payload exactly once.
+/// @param state Mutable reclaim record for the finalized object.
+/// @param release_ctx Edge-release context containing the complete garbage set.
+/// @return 1 when the payload was reclaimed, otherwise 0.
 static int gc_free_finalized_unreachable(gc_garbage_state *state, void *release_ctx) {
     if (!state || !state->entry.obj || state->reclaimed)
         return 0;
@@ -1417,7 +1527,8 @@ static int gc_free_finalized_unreachable(gc_garbage_state *state, void *release_
 ///            outside the lock and clear weak refs only for objects not resurrected.
 /// The exclusive managed-graph barrier spans all four phases, making traversal
 /// observe a stable set of strong edges and matching reference counts.
-/// @return Number of objects freed.
+/// @return Number of objects freed. Reentrant calls, calls deferred from a
+///   mutator scope, empty sets, and returning error traps yield zero.
 int64_t rt_gc_collect(void) {
     int64_t freed = 0;
     int64_t snap_count = 0;
@@ -1741,6 +1852,8 @@ int64_t rt_gc_collect(void) {
 ///          request. The request is serviced at a mutator boundary or explicit
 ///          @ref rt_gc_safepoint, never recursively inside the allocator.
 ///          Set to 0 (default) to disable automatic collection.
+/// @param n Positive allocation count between requests; zero or negative
+///   disables triggering. Changing it also clears accumulated debt.
 void rt_gc_set_threshold(int64_t n) {
     __atomic_store_n(&g_gc_threshold, n > 0 ? n : 0, __ATOMIC_RELAXED);
     __atomic_store_n(&g_gc_alloc_counter, 0, __ATOMIC_RELAXED);
@@ -1748,6 +1861,7 @@ void rt_gc_set_threshold(int64_t n) {
 }
 
 /// @brief Read the current auto-collection threshold (0 = disabled).
+/// @return Atomically observed positive threshold, or zero when disabled.
 int64_t rt_gc_get_threshold(void) {
     return __atomic_load_n(&g_gc_threshold, __ATOMIC_RELAXED);
 }
@@ -1803,6 +1917,8 @@ void rt_gc_safepoint(void) {
 //=============================================================================
 
 /// @brief Return cumulative count of objects freed by cycle collection.
+/// @return Locked, saturating cumulative count since startup or the last
+///   @ref rt_gc_shutdown.
 int64_t rt_gc_total_collected(void) {
     gc_lock();
     int64_t n = g_gc.total_collected;
@@ -1811,6 +1927,7 @@ int64_t rt_gc_total_collected(void) {
 }
 
 /// @brief Return the number of collection passes run since startup.
+/// @return Locked pass count since startup or the last @ref rt_gc_shutdown.
 int64_t rt_gc_pass_count(void) {
     gc_lock();
     int64_t n = g_gc.pass_count;
@@ -2017,7 +2134,9 @@ static void free_weak_buckets(weak_chain *weak_buckets, int64_t weak_bucket_coun
 /// @details Detaches the tracking and weak-ref tables while holding the GC lock,
 /// then frees the detached storage after unlocking. This keeps shutdown
 /// idempotent and allows a later allocation/GC pass to lazily recreate the
-/// tables without touching a destroyed mutex.
+/// tables without touching a destroyed mutex. Weak handles are zeroed and all
+/// counters, thresholds, and request state are reset. Calls made while
+/// collection is active or graph exclusivity cannot be acquired are no-ops.
 void rt_gc_shutdown(void) {
     if (!gc_world_begin_exclusive(0))
         return;

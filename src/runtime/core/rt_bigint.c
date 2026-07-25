@@ -6,6 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/core/rt_bigint.c
+/// @file
+/// @brief Implements GC-managed arbitrary-precision signed integers.
+///
 // Purpose: Implements arbitrary-precision integer arithmetic for the Zanna
 //          runtime. Uses a base-2^32 little-endian digit array with a separate
 //          sign flag. Covers grade-school add/sub/mul, Knuth Algorithm D for
@@ -26,6 +29,9 @@
 //     finalizer (bigint_finalizer) frees the digit array via free().
 //   - Intermediate bigint_t values used during computation are owned by the
 //     function and freed before return or on error paths.
+//   - Public operations never consume operands and return new BigInt/runtime
+//     objects. Across this ABI, a null BigInt operand denotes numeric zero.
+//     Nonnull objects of the wrong runtime class raise a trap.
 //
 // Links: src/runtime/core/rt_bigint.h (public API),
 //        src/runtime/core/rt_object.c (rt_obj_new_i64, rt_obj_set_finalizer),
@@ -52,9 +58,15 @@
 // Internal Representation
 //=============================================================================
 
+/// @brief Numeric base represented by one 32-bit magnitude limb.
 #define BIGINT_BASE ((uint64_t)1 << 32)
+/// @brief Runtime class identifier encoded from the text `BigInt`.
 #define BIGINT_CLASS_ID 0x424967496E74 // "BigInt"
 
+/// @brief Sign-magnitude payload stored inside each runtime BigInt object.
+///
+/// Only the first `len` limbs are significant. Limbs are little-endian,
+/// `len <= cap`, and normalized zero has `len == 0` and `sign == 0`.
 typedef struct {
     uint32_t *digits; // Little-endian digits (least significant first)
     int64_t len;      // Number of digits
@@ -82,7 +94,12 @@ static int bigint_check(void *obj) {
 // Memory Management
 //=============================================================================
 
+/// @brief Releases the separately allocated digit array during object finalization.
+/// @param obj BigInt payload being finalized.
 static void bigint_finalizer(void *obj);
+
+/// @brief Releases an internally owned BigInt runtime reference.
+/// @param bi Nullable BigInt reference to release and possibly free.
 static void bigint_release_owned(bigint_t *bi);
 
 /// @brief Checked signed 64-bit addition for digit counts.
@@ -155,7 +172,8 @@ static int bigint_capacity_is_allocable(int64_t capacity) {
 ///          (bigint_finalizer) ensures the digit array is freed when the GC
 ///          reclaims the outer object.
 /// @param capacity Initial number of uint32 digit slots to allocate.
-/// @return Pointer to the initialized bigint_t, or NULL on allocation failure.
+/// @return Initialized GC-managed payload, or `NULL` after an allocation trap.
+/// @note Nonpositive requested capacity is normalized to four limbs.
 static bigint_t *bigint_alloc(int64_t capacity) {
     void *obj = rt_obj_new_i64(BIGINT_CLASS_ID, sizeof(bigint_t));
     if (!obj)
@@ -204,6 +222,7 @@ static void bigint_finalizer(void *obj) {
 /// `rt_obj_free` if the count hits zero. Used by helpers that
 /// allocate intermediate BigInts they don't return to the caller
 /// (e.g. quotient discarded after a remainder calculation).
+/// @param bi Nullable owned reference to release.
 static void bigint_release_owned(bigint_t *bi) {
     if (bi && rt_obj_release_check0(bi))
         rt_obj_free(bi);
@@ -218,6 +237,8 @@ static void bigint_release_owned(bigint_t *bi) {
 ///          do not continue with an undersized digit buffer.
 /// @param bi BigInt whose digit array may need expansion.
 /// @param cap Minimum number of digit slots required.
+/// @return Nonzero when capacity is sufficient; zero after an overflow or
+///         allocation trap.
 static int bigint_ensure_capacity(bigint_t *bi, int64_t cap) {
     if (cap <= bi->cap)
         return 1;
@@ -269,7 +290,7 @@ static void bigint_normalize(bigint_t *bi) {
 ///          returns a new object rather than modifying an operand in place.
 ///          The clone inherits the sign and length but gets its own digit storage.
 /// @param a Source BigInt to copy.
-/// @return New BigInt with identical value, or NULL on allocation failure.
+/// @return New BigInt with identical value, or `NULL` after allocation failure.
 static bigint_t *bigint_clone(bigint_t *a) {
     bigint_t *result = bigint_alloc(a->len);
     if (!result)
@@ -325,11 +346,13 @@ void *rt_bigint_from_i64(int64_t val) {
 
 /// @brief Parse a BigInt from decimal or 0x/0b/0o-prefixed text.
 /// @details Skips leading whitespace, handles an optional sign character, then
-///          detects the 0x/0X prefix to choose base 10 or 16. Digits are
+///          detects `0x`, `0b`, or `0o` to choose base 16, 2, or 8. Digits are
 ///          accumulated using grade-school multiply-and-add: for each digit d,
 ///          result = result * base + d. Returns NULL for empty or non-numeric
 ///          input rather than trapping, so callers can provide their own
-///          diagnostic. The result is always normalized (no leading zeros).
+///          diagnostic. Underscores are ignored wherever they occur within the
+///          digit scan; trailing space, tab, CR, and LF are accepted. The result
+///          is always normalized (no leading zeros).
 /// @param str Runtime string containing the number text.
 /// @return New BigInt, or NULL if the string is empty, NULL, or invalid.
 void *rt_bigint_from_str(rt_string str) {
@@ -437,7 +460,10 @@ void *rt_bigint_from_str(rt_string str) {
     return result;
 }
 
-/// @brief Create a BigInt from a big-endian two's-complement byte array.
+/// @brief Creates a BigInt from a big-endian two's-complement byte array.
+/// @param bytes Runtime Bytes object to decode; null/empty denotes zero.
+/// @return New normalized BigInt with the decoded signed value.
+/// @note Redundant leading sign-extension bytes are accepted.
 void *rt_bigint_from_bytes(void *bytes) {
     if (!bytes)
         return rt_bigint_zero();
@@ -521,11 +547,13 @@ void *rt_bigint_from_bytes(void *bytes) {
 }
 
 /// @brief Return a new BigInt representing zero.
+/// @return New GC-managed zero value.
 void *rt_bigint_zero(void) {
     return rt_bigint_from_i64(0);
 }
 
 /// @brief Return a new BigInt representing one.
+/// @return New GC-managed one value.
 void *rt_bigint_one(void) {
     return rt_bigint_from_i64(1);
 }
@@ -541,6 +569,7 @@ void *rt_bigint_one(void) {
 ///          to detect lossy narrowing ahead of time.
 /// @param a BigInt to convert.
 /// @return int64_t representation, saturated when out of range.
+/// @note A null operand converts to zero.
 int64_t rt_bigint_to_i64(void *a) {
     if (!bigint_check(a))
         return 0;
@@ -586,8 +615,8 @@ rt_string rt_bigint_to_str(void *a) {
 ///          for negative values. Traps on invalid base (< 2 or > 36).
 /// @param a BigInt to convert.
 /// @param base Radix for the output (2-36).
-/// @return Newly allocated runtime string.
-/// @brief Convert BigInt to string in the specified base (2-36).
+/// @return Newly allocated lowercase runtime string, or `NULL` after a trap.
+/// @note A null BigInt formats as `0`.
 rt_string rt_bigint_to_str_base(void *a, int64_t base) {
     if (!bigint_check(a))
         return rt_string_from_bytes("0", 1);
@@ -653,8 +682,10 @@ rt_string rt_bigint_to_str_base(void *a, int64_t base) {
 }
 
 /// @brief Convert BigInt to a big-endian two's-complement byte array.
-/// @warning The current sign-extension decision is incorrect for some negative
-///          magnitudes (for example -129 encodes as 0x7f); see VDOC-203.
+/// @param a BigInt to encode; null denotes zero.
+/// @return New runtime Bytes object containing a minimal signed encoding.
+/// @details Adds a leading `0x00` or `0xFF` only when required to preserve the
+///          sign. The zero encoding is the single byte `0x00`.
 void *rt_bigint_to_bytes(void *a) {
     if (!bigint_check(a))
         return NULL;
@@ -764,6 +795,7 @@ void *rt_bigint_to_bytes(void *a) {
 ///          narrowing before calling rt_bigint_to_i64.
 /// @param a BigInt to test.
 /// @return 1 if the value is representable as int64, 0 otherwise.
+/// @note A null operand denotes zero and therefore fits.
 int8_t rt_bigint_fits_i64(void *a) {
     if (!bigint_check(a))
         return 1;
@@ -796,6 +828,8 @@ int8_t rt_bigint_fits_i64(void *a) {
 /// difference is decisive (no leading zeros after `bigint_normalize`),
 /// otherwise we walk from the top digit downward and stop at the
 /// first inequality.
+/// @param a First normalized magnitude.
+/// @param b Second normalized magnitude.
 /// @return >0 if |a|>|b|, <0 if |a|<|b|, 0 if equal.
 static int bigint_cmp_mag(bigint_t *a, bigint_t *b) {
     if (a->len != b->len)
@@ -815,6 +849,8 @@ static int bigint_cmp_mag(bigint_t *a, bigint_t *b) {
 /// carry to absorb the overflow of two 32-bit additions plus
 /// carry. Capacity is grown lazily so an addition that produces a
 /// new top digit doesn't require a separate pass.
+/// @param a First normalized magnitude.
+/// @param b Second normalized magnitude.
 /// @return New normalized BigInt with `sign = 0`, or NULL on alloc failure.
 static bigint_t *bigint_add_mag(bigint_t *a, bigint_t *b) {
     int64_t max_len = (a->len > b->len) ? a->len : b->len;
@@ -850,6 +886,8 @@ static bigint_t *bigint_add_mag(bigint_t *a, bigint_t *b) {
 /// digit and the result is garbage. School-book subtraction with a
 /// 1-bit borrow flag, base 2^32. The result is normalized so any
 /// leading zero digits introduced by cancellation are trimmed.
+/// @param a Magnitude from which @p b is subtracted.
+/// @param b Magnitude no larger than @p a.
 /// @return New normalized non-negative BigInt, or NULL on alloc failure.
 static bigint_t *bigint_sub_mag(bigint_t *a, bigint_t *b) {
     bigint_t *result = bigint_alloc(a->len);
@@ -1137,20 +1175,15 @@ static bigint_t *bigint_single_bit_mask(int64_t n) {
 // Basic Arithmetic
 //=============================================================================
 
-/// @brief Add two BigInts, returning a new result.
-/// @details Dispatches to magnitude-add or magnitude-subtract depending on the
-///          signs: same signs → add magnitudes (keep sign); different signs →
-///          subtract smaller from larger (take sign of larger). NULL inputs
-///          are treated as zero. Neither input is consumed.
-/// @param a First addend (not consumed).
-/// @param b Second addend (not consumed).
-/// @return New BigInt holding a + b.
 /// @brief Add two BigInt operands without receiver validation.
 /// @details Internal core shared by the public `rt_bigint_add` (which validates
 ///          first) and `rt_bigint_sub`, which passes a trusted STACK-allocated
 ///          negated copy of b. Internal callers pass already-trusted operands
 ///          (heap instances or internal stack temps), so re-validating here
 ///          would wrongly reject the stack temp (VDOC-204).
+/// @param a Trusted first operand, or null for zero.
+/// @param b Trusted second operand, or null for zero.
+/// @return New BigInt holding the sum, or `NULL` after allocation failure.
 static void *bigint_add_impl(void *a, void *b) {
     if (!a)
         return b ? bigint_clone((bigint_t *)b) : rt_bigint_zero();
@@ -1186,6 +1219,12 @@ static void *bigint_add_impl(void *a, void *b) {
     }
 }
 
+/// @brief Adds two BigInts without consuming either operand.
+/// @details Dispatches to magnitude addition for like signs and magnitude
+///          subtraction for unlike signs. Null operands denote zero.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return New normalized BigInt holding `a + b`.
 void *rt_bigint_add(void *a, void *b) {
     if (!bigint_check(a) || !bigint_check(b))
         return rt_bigint_zero();
@@ -1200,6 +1239,7 @@ void *rt_bigint_add(void *a, void *b) {
 /// @param a Minuend (not consumed).
 /// @param b Subtrahend (not consumed).
 /// @return New BigInt holding a - b.
+/// @note Null operands denote zero.
 void *rt_bigint_sub(void *a, void *b) {
     if (!bigint_check(a) || !bigint_check(b))
         return rt_bigint_zero();
@@ -1283,6 +1323,8 @@ void *rt_bigint_mul(void *a, void *b) {
 /// @param b Divisor (not consumed). Must be non-zero.
 /// @param remainder If non-NULL, receives a new BigInt holding the remainder.
 /// @return New BigInt holding the quotient (truncated toward zero).
+/// @note The remainder has the dividend's sign and satisfies
+///       `a == quotient * b + remainder` with `|remainder| < |b|`.
 void *rt_bigint_divmod(void *a, void *b, void **remainder) {
     if (!bigint_check(a) || !bigint_check(b))
         return NULL;
@@ -1573,12 +1615,18 @@ void *rt_bigint_divmod(void *a, void *b, void **remainder) {
     return quot;
 }
 
-/// @brief Divide two BigInts, returning the quotient. Traps on zero divisor.
+/// @brief Divides two BigInts and returns the quotient truncated toward zero.
+/// @param a Dividend; null denotes zero.
+/// @param b Nonzero divisor.
+/// @return New quotient BigInt, or `NULL` after a division-by-zero trap.
 void *rt_bigint_div(void *a, void *b) {
     return rt_bigint_divmod(a, b, NULL);
 }
 
 /// @brief Return the remainder of BigInt division (a % b).
+/// @param a Dividend; null denotes zero.
+/// @param b Nonzero divisor.
+/// @return New remainder with the dividend's sign, or `NULL` after a trap.
 void *rt_bigint_mod(void *a, void *b) {
     void *rem = NULL;
     void *quot = rt_bigint_divmod(a, b, &rem);
@@ -1587,6 +1635,8 @@ void *rt_bigint_mod(void *a, void *b) {
 }
 
 /// @brief Negate a BigInt, returning a new result.
+/// @param a Operand; null denotes zero.
+/// @return New BigInt with the opposite sign, with zero remaining nonnegative.
 void *rt_bigint_neg(void *a) {
     if (!bigint_check(a))
         return rt_bigint_zero();
@@ -1603,6 +1653,8 @@ void *rt_bigint_neg(void *a) {
 }
 
 /// @brief Return the absolute value of a BigInt.
+/// @param a Operand; null denotes zero.
+/// @return New nonnegative BigInt with the same magnitude.
 void *rt_bigint_abs(void *a) {
     if (!bigint_check(a))
         return rt_bigint_zero();
@@ -1652,11 +1704,10 @@ int64_t rt_bigint_cmp(void *a, void *b) {
     return bi_a->sign ? -mag_cmp : mag_cmp;
 }
 
-/// @brief Check equality of two BigInts.
-/// @param a First operand.
-/// @param b Second operand.
-/// @return 1 if the values are equal, 0 otherwise.
 /// @brief Return 1 if two BigInts are equal.
+/// @param a First operand; null denotes zero.
+/// @param b Second operand; null denotes zero.
+/// @return One when the numeric values are equal, otherwise zero.
 int8_t rt_bigint_eq(void *a, void *b) {
     return rt_bigint_cmp(a, b) == 0 ? 1 : 0;
 }
@@ -1716,21 +1767,29 @@ void *rt_bigint_and(void *a, void *b) {
     return bigint_bitwise_twos((bigint_t *)a, (bigint_t *)b, '&');
 }
 
-/// @brief Bitwise OR of two BigInts (two's complement semantics).
+/// @brief Computes bitwise OR using infinite-width two's-complement semantics.
+/// @param a First operand; null denotes zero.
+/// @param b Second operand; null denotes zero.
+/// @return New BigInt holding `a OR b`.
 void *rt_bigint_or(void *a, void *b) {
     if (!bigint_check(a) || !bigint_check(b))
         return rt_bigint_zero();
     return bigint_bitwise_twos((bigint_t *)a, (bigint_t *)b, '|');
 }
 
-/// @brief Bitwise XOR of two BigInts (two's complement semantics).
+/// @brief Computes bitwise XOR using infinite-width two's-complement semantics.
+/// @param a First operand; null denotes zero.
+/// @param b Second operand; null denotes zero.
+/// @return New BigInt holding `a XOR b`.
 void *rt_bigint_xor(void *a, void *b) {
     if (!bigint_check(a) || !bigint_check(b))
         return rt_bigint_zero();
     return bigint_bitwise_twos((bigint_t *)a, (bigint_t *)b, '^');
 }
 
-/// @brief Bitwise NOT (one's complement) of a BigInt.
+/// @brief Computes infinite-width two's-complement bitwise NOT.
+/// @param a Operand; null denotes zero.
+/// @return New BigInt equal to `-(a + 1)`.
 void *rt_bigint_not(void *a) {
     if (!bigint_check(a))
         return rt_bigint_zero();
@@ -1751,7 +1810,10 @@ void *rt_bigint_not(void *a) {
     return result;
 }
 
-/// @brief Left-shift a BigInt by n bits.
+/// @brief Left-shifts a BigInt by @p n bits.
+/// @param a Value to shift; null denotes zero.
+/// @param n Shift distance; nonpositive values return an unchanged clone.
+/// @return New BigInt equal to `a * 2^n` for positive @p n.
 void *rt_bigint_shl(void *a, int64_t n) {
     if (!bigint_check(a))
         return rt_bigint_zero();
@@ -1796,7 +1858,12 @@ void *rt_bigint_shl(void *a, int64_t n) {
     return result;
 }
 
-/// @brief Arithmetic right-shift a BigInt by n bits.
+/// @brief Arithmetic-right-shifts a BigInt by @p n bits.
+/// @param a Value to shift; null denotes zero.
+/// @param n Shift distance; nonpositive values return an unchanged clone.
+/// @return New floor-division result `floor(a / 2^n)` for positive @p n.
+/// @note Negative values round toward negative infinity by detecting discarded
+///       one bits and incrementing the shifted magnitude.
 void *rt_bigint_shr(void *a, int64_t n) {
     if (!bigint_check(a))
         return rt_bigint_zero();
@@ -1890,9 +1957,10 @@ void *rt_bigint_pow(void *a, int64_t n) {
 /// @brief Modular exponentiation: compute a^n mod m.
 /// @details Uses binary exponentiation with intermediate modular reduction after
 ///          each multiply, keeping intermediate values bounded by m^2 rather
-///          than growing exponentially. Essential for cryptographic operations
-///          (RSA, Diffie-Hellman) where a^n would be astronomically large but
-///          a^n mod m fits in a reasonable number of digits. Traps on zero modulus.
+///          than growing exponentially. The per-bit loop follows a fixed
+///          three-multiplication schedule (cross product and both squares), but
+///          the underlying arbitrary-precision operations are not documented as
+///          constant-time. Traps on zero modulus or a negative exponent.
 /// @param a Base (not consumed).
 /// @param n Exponent (not consumed).
 /// @param m Modulus (not consumed; must be non-zero).
@@ -1921,9 +1989,10 @@ void *rt_bigint_pow_mod(void *a, void *n, void *m) {
     if (!a || rt_bigint_is_zero(a))
         return rt_bigint_zero();
 
-    /* S-23: Montgomery ladder — always executes exactly 2 modular multiplications
-     * per exponent bit (MSB to LSB), preventing timing-based exponent recovery.
-     * Invariant: r1 - r0 = base^(2^k) at each step.
+    /* S-23: ladder-style fixed arithmetic schedule — executes one cross product
+     * and both candidate squares per exponent bit (MSB to LSB). This avoids
+     * skipping a multiply based solely on the exponent bit, but the general
+     * BigInt implementation does not promise whole-operation constant time.
      * if bit==1: r0 = r0*r1 mod m;  r1 = r1^2 mod m
      * if bit==0: r1 = r0*r1 mod m;  r0 = r0^2 mod m */
     int64_t nbits = rt_bigint_bit_length(n);
@@ -2012,8 +2081,8 @@ void *rt_bigint_pow_mod(void *a, void *n, void *m) {
 }
 
 /// @brief Compute the greatest common divisor using Euclidean algorithm.
-/// @details Repeatedly replaces the larger value with the remainder of dividing
-///          the larger by the smaller until the remainder is zero. Operates on
+/// @details Repeatedly replaces `(x, y)` with `(y, x mod y)` until the
+///          remainder is zero. Operates on
 ///          absolute values so negative inputs are handled correctly. Returns
 ///          zero when both inputs are zero (mathematical convention).
 /// @param a First value (not consumed).
@@ -2123,14 +2192,16 @@ int64_t rt_bigint_bit_length(void *a) {
     return bits;
 }
 
-/// @brief Test whether bit n is set (0 = LSB).
 /// @details Uses infinite-width two's-complement semantics: positions beyond a
 ///          positive magnitude return 0, while positions beyond a negative
 ///          magnitude return its sign-extension bit (1).
 /// @param a BigInt to test.
 /// @param n Zero-based bit index.
-/// @return 1 if the bit is set, 0 otherwise.
 /// @brief Test bit n (0 = LSB). Returns 1 if set, 0 if clear.
+/// @param a Value to inspect; null denotes zero.
+/// @param n Nonnegative zero-based bit index.
+/// @return One if the infinite-width two's-complement bit is set; zero for a
+///         clear bit or a negative index.
 int8_t rt_bigint_test_bit(void *a, int64_t n) {
     if (!bigint_check(a))
         return 0;
@@ -2169,6 +2240,9 @@ int8_t rt_bigint_test_bit(void *a, int64_t n) {
 }
 
 /// @brief Return a new BigInt with bit n set to 1.
+/// @param a Value to modify conceptually; null denotes zero.
+/// @param n Zero-based bit index; a negative index returns an unchanged clone.
+/// @return New value with bit @p n set under infinite-width two's-complement semantics.
 void *rt_bigint_set_bit(void *a, int64_t n) {
     if (!bigint_check(a))
         return rt_bigint_zero();
@@ -2184,6 +2258,9 @@ void *rt_bigint_set_bit(void *a, int64_t n) {
 }
 
 /// @brief Return a new BigInt with bit n cleared to 0.
+/// @param a Value to modify conceptually; null denotes zero.
+/// @param n Zero-based bit index; a negative index returns an unchanged clone.
+/// @return New value with bit @p n cleared under infinite-width two's-complement semantics.
 void *rt_bigint_clear_bit(void *a, int64_t n) {
     if (!bigint_check(a))
         return rt_bigint_zero();

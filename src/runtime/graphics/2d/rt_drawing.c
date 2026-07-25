@@ -5,21 +5,32 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_drawing.c
+// File: src/runtime/graphics/2d/rt_drawing.c
+/// @file
+/// @brief Implements clipped logical-pixel primitives, bitmap text, color
+///        constructors, pixel blits, framebuffer capture, and image export.
 // Purpose: Basic drawing primitives for the Canvas runtime. Includes line, box,
 //   frame, disc, ring, plot, text rendering (normal and scaled), alpha-blended
 //   shapes, pixel blitting (opaque and alpha), get_pixel, copy_rect, and
 //   save_bmp/save_png.
 //
 // Key invariants:
-//   - All functions guard against NULL canvas_ptr and NULL gfx_win.
-//   - Colors use 0x00RRGGBB format (alpha ignored by most primitives).
+//   - Drawing entry points validate the Canvas/native-window handles and become
+//     no-ops when unavailable.
+//   - Primitive colors are converted to opaque RGB. Alpha-specific operations
+//     receive a separate alpha value; Pixels blits either copy or composite
+//     their stored RGBA texels.
 //   - Coordinate origin is top-left; x increases right, y increases down.
+//   - Logical clipping occurs before backend int32 conversion. HiDPI blits and
+//     filled spans expand logical pixels to their physical framebuffer blocks.
 //
 // Ownership/Lifetime:
-//   - No ownership changes; operates on existing canvas handles.
+//   - Canvas, Pixels, path, and text parameters are borrowed.
+//   - CopyRect returns a newly owned Pixels object. Save helpers own and release
+//     their temporary snapshot.
 //
-// Links: rt_graphics_internal.h, rt_graphics.h (public API),
+// Links: src/runtime/graphics/common/rt_graphics_internal.h,
+//        src/runtime/graphics/common/rt_graphics.h (public API),
 //        rt_font.h (glyph data), rt_pixels.h (Pixels buffer)
 //
 //===----------------------------------------------------------------------===//
@@ -35,6 +46,8 @@
 ///          in a static so the trace check on every `Canvas.Box()` is
 ///          a single int compare. Used by debug builds to log the
 ///          first 32 box draws — useful when reproducing layout bugs.
+/// @return `1` when the environment variable was present during the first
+///         query; otherwise `0`.
 static int rt_trace_canvas_box_enabled(void) {
     static int cached = -1;
     if (cached == -1)
@@ -56,6 +69,11 @@ static int rt_trace_canvas_box_enabled(void) {
 ///          Substitutes `?` (U+003F) for any malformed sequence so the
 ///          renderer never blows up on bad input. Advances `*index`
 ///          by the consumed byte count and returns 0 at EOF.
+/// @param str Borrowed UTF-8 byte buffer.
+/// @param byte_len Number of readable bytes in @p str.
+/// @param index Required in/out byte offset.
+/// @param codepoint_out Required output for the decoded scalar or `'?'`.
+/// @return `1` when one input unit was consumed; `0` for invalid pointers or EOF.
 static int rt_canvas_next_codepoint(const char *str,
                                     size_t byte_len,
                                     size_t *index,
@@ -112,6 +130,9 @@ static int rt_canvas_next_codepoint(const char *str,
 ///          bytes) ensures non-ASCII glyphs and ASCII glyphs both
 ///          contribute exactly one cell — `"héllo"` measures the same
 ///          as `"hello"` regardless of UTF-8 byte length.
+/// @param text Borrowed runtime string.
+/// @param scale Positive integer glyph scale.
+/// @return Saturating logical width, or `0` for invalid text/scale.
 static int64_t rt_canvas_text_codepoint_width(rt_string text, int64_t scale) {
     if (!text || scale < 1)
         return 0;
@@ -131,6 +152,8 @@ static int64_t rt_canvas_text_codepoint_width(rt_string text, int64_t scale) {
 
 /// @brief Round a long double to the nearest int64, saturating at INT64_MIN/MAX instead of
 /// overflowing.
+/// @param value Finite value to convert.
+/// @return Nearest int64 with ties away from zero and endpoint saturation.
 static int64_t rt_canvas_round_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -140,6 +163,8 @@ static int64_t rt_canvas_round_ld_to_i64_sat(long double value) {
 }
 
 /// @brief Floor a long double to int64, saturating at INT64_MIN/MAX instead of overflowing.
+/// @param value Finite value to convert.
+/// @return Mathematical floor saturated to the int64 range.
 static int64_t rt_canvas_floor_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -149,6 +174,8 @@ static int64_t rt_canvas_floor_ld_to_i64_sat(long double value) {
 }
 
 /// @brief Ceil a long double to int64, saturating at INT64_MIN/MAX instead of overflowing.
+/// @param value Finite value to convert.
+/// @return Mathematical ceiling saturated to the int64 range.
 static int64_t rt_canvas_ceil_ld_to_i64_sat(long double value) {
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
@@ -197,8 +224,10 @@ static int8_t rt_canvas_clip_line_test(long double p,
 ///          back to int64 with saturation, then verified to fit in int32 (the
 ///          ZannaGFX backend takes int32 coordinates).
 /// @param canvas Canvas whose clip rect provides the bounds.
-/// @param x1,y1  In/out: line start. Replaced with the clipped start on success.
-/// @param x2,y2  In/out: line end. Replaced with the clipped end on success.
+/// @param x1 In/out line-start X, replaced with the clipped value on success.
+/// @param y1 In/out line-start Y, replaced with the clipped value on success.
+/// @param x2 In/out line-end X, replaced with the clipped value on success.
+/// @param y2 In/out line-end Y, replaced with the clipped value on success.
 /// @return 1 if any portion of the line is visible (endpoints updated), 0 if
 ///         fully outside the clip rect or if endpoints don't fit int32.
 static int8_t rt_canvas_clip_line_to_logical(
@@ -236,6 +265,9 @@ static int8_t rt_canvas_clip_line_to_logical(
 }
 
 /// @brief Compute the last inclusive pixel of a rect span: start + max(length-1, 0), saturating.
+/// @param start First coordinate.
+/// @param length Span length; values at most one return @p start.
+/// @return Saturating inclusive final coordinate.
 static int64_t rt_canvas_rect_last(int64_t start, int64_t length) {
     if (length <= 1)
         return start;
@@ -243,11 +275,21 @@ static int64_t rt_canvas_rect_last(int64_t start, int64_t length) {
 }
 
 /// @brief Convert a Zanna packed color to the opaque 24-bit RGB value expected by ZannaGFX.
+/// @param color Runtime RGB, tagged ARGB, or raw RGBA color.
+/// @return Opaque backend `0xRRGGBB` value with alpha discarded.
 static vgfx_color_t rt_canvas_color_to_vgfx_rgb(int64_t color) {
     return (vgfx_color_t)((rt_pixels_color_to_rgba(color) >> 8) & 0x00FFFFFFu);
 }
 
 /// @brief Draw a line between two points on the canvas.
+/// @details Clips in logical coordinates, rejects endpoints that cannot fit the
+///          backend int32 API after clipping, and draws an opaque stroke.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x1 Logical start X.
+/// @param y1 Logical start Y.
+/// @param x2 Logical end X.
+/// @param y2 Logical end Y.
+/// @param color Packed stroke color; effective alpha is ignored.
 void rt_canvas_line(
     void *canvas_ptr, int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t color) {
     if (!canvas_ptr)
@@ -268,6 +310,15 @@ void rt_canvas_line(
 }
 
 /// @brief Draw a filled rectangle on the canvas.
+/// @details Intersects the rectangle with the current logical clip and backend
+///          coordinate limits. Optional environment tracing logs the first 32
+///          calls before validation.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical left edge.
+/// @param y Logical top edge.
+/// @param w Width; nonpositive/clipped-empty rectangles draw nothing.
+/// @param h Height; nonpositive/clipped-empty rectangles draw nothing.
+/// @param color Packed fill color; effective alpha is ignored.
 void rt_canvas_box(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color) {
     static int trace_count = 0;
     if (!canvas_ptr)
@@ -300,6 +351,14 @@ void rt_canvas_box(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int64_t h,
 }
 
 /// @brief Draw an unfilled rectangle (outline) on the canvas.
+/// @details Builds four clipped inclusive-edge lines. Nonpositive dimensions
+///          draw nothing.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical left edge.
+/// @param y Logical top edge.
+/// @param w Outline width.
+/// @param h Outline height.
+/// @param color Packed stroke color; effective alpha is ignored.
 void rt_canvas_frame(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color) {
     if (!canvas_ptr)
         return;
@@ -317,6 +376,18 @@ void rt_canvas_frame(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int64_t 
     }
 }
 
+/// @brief Rasterize a filled circle only across visible clip rows.
+/// @details Computes each scanline extent with long-double square roots and
+///          saturating conversion, then intersects the run with the clip.
+/// @param canvas Borrowed live Canvas implementation.
+/// @param cx Logical center X.
+/// @param cy Logical center Y.
+/// @param radius Nonnegative logical radius.
+/// @param color Backend RGB color.
+/// @param clip_x Clip left edge.
+/// @param clip_y Clip top edge.
+/// @param clip_w Positive clip width.
+/// @param clip_h Positive clip height.
 static void rt_canvas_disc_clipped_safe(rt_canvas *canvas,
                                         int64_t cx,
                                         int64_t cy,
@@ -326,6 +397,18 @@ static void rt_canvas_disc_clipped_safe(rt_canvas *canvas,
                                         int64_t clip_y,
                                         int64_t clip_w,
                                         int64_t clip_h);
+/// @brief Rasterize a connected circle outline only across visible clip rows.
+/// @details Joins each row's rounded left/right intersections to those from
+///          the preceding row so steep arc sections do not contain gaps.
+/// @param canvas Borrowed live Canvas implementation.
+/// @param cx Logical center X.
+/// @param cy Logical center Y.
+/// @param radius Nonnegative logical radius.
+/// @param color Backend RGB color.
+/// @param clip_x Clip left edge.
+/// @param clip_y Clip top edge.
+/// @param clip_w Positive clip width.
+/// @param clip_h Positive clip height.
 static void rt_canvas_ring_clipped_safe(rt_canvas *canvas,
                                         int64_t cx,
                                         int64_t cy,
@@ -337,6 +420,14 @@ static void rt_canvas_ring_clipped_safe(rt_canvas *canvas,
                                         int64_t clip_h);
 
 /// @brief Draw a filled circle on the canvas.
+/// @details Negative radius is ignored; zero draws one pixel. Normal int32
+///          circles use the backend fast path, while huge/out-of-range circles
+///          use clipped scanline rasterization bounded by the viewport.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param cx Logical center X.
+/// @param cy Logical center Y.
+/// @param radius Nonnegative radius in logical pixels.
+/// @param color Packed fill color; effective alpha is ignored.
 void rt_canvas_disc(void *canvas_ptr, int64_t cx, int64_t cy, int64_t radius, int64_t color) {
     if (!canvas_ptr)
         return;
@@ -371,6 +462,13 @@ void rt_canvas_disc(void *canvas_ptr, int64_t cx, int64_t cy, int64_t radius, in
 }
 
 /// @brief Draw an unfilled circle (outline) on the canvas.
+/// @details Negative radius is ignored; zero draws one pixel. Huge/out-of-range
+///          circles use a clip-bounded connected scanline outline.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param cx Logical center X.
+/// @param cy Logical center Y.
+/// @param radius Nonnegative radius in logical pixels.
+/// @param color Packed stroke color; effective alpha is ignored.
 void rt_canvas_ring(void *canvas_ptr, int64_t cx, int64_t cy, int64_t radius, int64_t color) {
     if (!canvas_ptr)
         return;
@@ -404,6 +502,10 @@ void rt_canvas_ring(void *canvas_ptr, int64_t cx, int64_t cy, int64_t radius, in
 }
 
 /// @brief Draw a single pixel at the given coordinates.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical X coordinate.
+/// @param y Logical Y coordinate.
+/// @param color Packed color; effective alpha is ignored.
 void rt_canvas_plot(void *canvas_ptr, int64_t x, int64_t y, int64_t color) {
     if (!canvas_ptr)
         return;
@@ -421,56 +523,70 @@ void rt_canvas_plot(void *canvas_ptr, int64_t x, int64_t y, int64_t color) {
 
 // Color constants — packed 0x00RRGGBB
 /// @brief Return the predefined red color constant.
+/// @return Plain RGB `0xFF0000`.
 int64_t rt_color_red(void) {
     return 0xFF0000;
 }
 
 /// @brief Return the predefined green color constant.
+/// @return Plain RGB `0x00FF00`.
 int64_t rt_color_green(void) {
     return 0x00FF00;
 }
 
 /// @brief Return the predefined blue color constant.
+/// @return Plain RGB `0x0000FF`.
 int64_t rt_color_blue(void) {
     return 0x0000FF;
 }
 
 /// @brief Return the predefined white color constant.
+/// @return Plain RGB `0xFFFFFF`.
 int64_t rt_color_white(void) {
     return 0xFFFFFF;
 }
 
 /// @brief Return the predefined black color constant.
+/// @return Plain RGB `0x000000`.
 int64_t rt_color_black(void) {
     return 0x000000;
 }
 
 /// @brief Return the predefined yellow color constant.
+/// @return Plain RGB `0xFFFF00`.
 int64_t rt_color_yellow(void) {
     return 0xFFFF00;
 }
 
 /// @brief Return the predefined cyan color constant.
+/// @return Plain RGB `0x00FFFF`.
 int64_t rt_color_cyan(void) {
     return 0x00FFFF;
 }
 
 /// @brief Return the predefined magenta color constant.
+/// @return Plain RGB `0xFF00FF`.
 int64_t rt_color_magenta(void) {
     return 0xFF00FF;
 }
 
 /// @brief Return the predefined gray color constant.
+/// @return Plain RGB `0x808080`.
 int64_t rt_color_gray(void) {
     return 0x808080;
 }
 
 /// @brief Return the predefined orange color constant.
+/// @return Plain RGB `0xFFA500`.
 int64_t rt_color_orange(void) {
     return 0xFFA500;
 }
 
 /// @brief Construct a color from red, green, blue components (0-255).
+/// @param r Red channel, clamped to 0..255.
+/// @param g Green channel, clamped to 0..255.
+/// @param b Blue channel, clamped to 0..255.
+/// @return Plain implicit-alpha `0xRRGGBB` color.
 int64_t rt_color_rgb(int64_t r, int64_t g, int64_t b) {
     uint8_t r8 = (r < 0) ? 0 : (r > 255) ? 255 : (uint8_t)r;
     uint8_t g8 = (g < 0) ? 0 : (g > 255) ? 255 : (uint8_t)g;
@@ -479,6 +595,11 @@ int64_t rt_color_rgb(int64_t r, int64_t g, int64_t b) {
 }
 
 /// @brief Construct a color from red, green, blue, alpha components (0-255).
+/// @param r Red channel, clamped to 0..255.
+/// @param g Green channel, clamped to 0..255.
+/// @param b Blue channel, clamped to 0..255.
+/// @param a Alpha channel, clamped to 0..255.
+/// @return Tagged explicit-alpha runtime `0xAARRGGBB` color.
 int64_t rt_color_rgba(int64_t r, int64_t g, int64_t b, int64_t a) {
     uint8_t r8 = (r < 0) ? 0 : (r > 255) ? 255 : (uint8_t)r;
     uint8_t g8 = (g < 0) ? 0 : (g > 255) ? 255 : (uint8_t)g;
@@ -494,7 +615,13 @@ int64_t rt_color_rgba(int64_t r, int64_t g, int64_t b, int64_t a) {
 ///        using saturating int64 math, with a bonus int32-fits check for the eventual vgfx call.
 /// @details Used by the per-pixel plot/fill helpers below. Saturating addition
 ///          ensures clip_x + clip_w doesn't wrap on extreme inputs.
-/// @return 1 if the point is inside the clip rect AND fits in int32, 0 otherwise.
+/// @param x Point X.
+/// @param y Point Y.
+/// @param clip_x Clip left edge.
+/// @param clip_y Clip top edge.
+/// @param clip_w Positive clip width.
+/// @param clip_h Positive clip height.
+/// @return `1` if the point is inside the clip and fits int32; otherwise `0`.
 static int8_t rt_canvas_point_in_clip_i64(
     int64_t x, int64_t y, int64_t clip_x, int64_t clip_y, int64_t clip_w, int64_t clip_h) {
     if (clip_w <= 0 || clip_h <= 0)
@@ -510,6 +637,14 @@ static int8_t rt_canvas_point_in_clip_i64(
 /// @details Used by line/disc/ring/text rasterizers that step pixel-by-pixel
 ///          and want clip-correct behavior without paying for a separate
 ///          ZannaGFX clip-set per pixel. NULL canvas / NULL gfx_win are no-ops.
+/// @param canvas Borrowed Canvas implementation.
+/// @param x Logical pixel X.
+/// @param y Logical pixel Y.
+/// @param color Backend RGB color.
+/// @param clip_x Clip left edge.
+/// @param clip_y Clip top edge.
+/// @param clip_w Clip width.
+/// @param clip_h Clip height.
 static void rt_canvas_pset_clipped(rt_canvas *canvas,
                                    int64_t x,
                                    int64_t y,
@@ -529,6 +664,16 @@ static void rt_canvas_pset_clipped(rt_canvas *canvas,
 ///          int64 math, then verifies each side fits in int32 before issuing
 ///          the vgfx_fill_rect call. Empty intersections (x1 <= x0) are no-ops.
 ///          Used by box/frame primitives that may straddle the clip boundary.
+/// @param canvas Borrowed Canvas implementation.
+/// @param x Rectangle left edge.
+/// @param y Rectangle top edge.
+/// @param w Rectangle width.
+/// @param h Rectangle height.
+/// @param color Backend RGB color.
+/// @param clip_x Clip left edge.
+/// @param clip_y Clip top edge.
+/// @param clip_w Clip width.
+/// @param clip_h Clip height.
 static void rt_canvas_fill_rect_clipped(rt_canvas *canvas,
                                         int64_t x,
                                         int64_t y,
@@ -555,6 +700,10 @@ static void rt_canvas_fill_rect_clipped(rt_canvas *canvas,
         canvas->gfx_win, (int32_t)x0, (int32_t)y0, (int32_t)(x1 - x0), (int32_t)(y1 - y0), color);
 }
 
+/// @brief Compute the inclusive width of a horizontal span with saturation.
+/// @param x0 First inclusive coordinate.
+/// @param x1 Last inclusive coordinate.
+/// @return `x1 - x0 + 1` with int64 saturation, or `0` for reversed spans.
 static int64_t rt_canvas_span_width_sat(int64_t x0, int64_t x1) {
     if (x1 < x0)
         return 0;
@@ -571,6 +720,11 @@ static int64_t rt_canvas_span_width_sat(int64_t x0, int64_t x1) {
 ///   thickened to fill the corresponding physical rows. Using rt_canvas_line for
 ///   these spans instead leaves gaps between physical rows (vgfx_line scales only
 ///   its endpoints, not the stroke width), producing striped fills.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x0 First inclusive logical X; order may be reversed.
+/// @param x1 Last inclusive logical X.
+/// @param y Logical row.
+/// @param color Packed fill color; effective alpha is ignored.
 void rt_canvas_fill_hspan(void *canvas_ptr, int64_t x0, int64_t x1, int64_t y, int64_t color) {
     if (!canvas_ptr)
         return;
@@ -716,6 +870,14 @@ static void rt_canvas_ring_clipped_safe(rt_canvas *canvas,
 //=============================================================================
 
 /// @brief Draw text at the given position on the canvas.
+/// @details Decodes UTF-8, substitutes `'?'` for malformed or unsupported
+///          codepoints, and draws one clipped 8x8 monochrome glyph per
+///          codepoint. Text advances horizontally with no newline handling.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical left edge of the first glyph.
+/// @param y Logical top edge of the glyph row.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param color Packed foreground color; effective alpha is ignored.
 void rt_canvas_text(void *canvas_ptr, int64_t x, int64_t y, rt_string text, int64_t color) {
     if (!canvas_ptr || !text)
         return;
@@ -767,6 +929,15 @@ void rt_canvas_text(void *canvas_ptr, int64_t x, int64_t y, rt_string text, int6
 
 /// @brief Draw text at (x, y) with foreground @p fg and explicit @p bg fill behind each glyph.
 /// Useful for status bars and code editors where the background must be opaque.
+/// @details Every one of each glyph's 64 pixels is written, choosing foreground
+///          for set font bits and background otherwise. UTF-8 fallback behavior
+///          matches rt_canvas_text().
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical left edge of the first glyph.
+/// @param y Logical top edge of the glyph row.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param fg Packed foreground color.
+/// @param bg Packed background color.
 void rt_canvas_text_bg(
     void *canvas_ptr, int64_t x, int64_t y, rt_string text, int64_t fg, int64_t bg) {
     if (!canvas_ptr || !text)
@@ -819,11 +990,14 @@ void rt_canvas_text_bg(
 /// @brief Return the rendered width of `text` in pixels at 1× scale.
 /// @details Counts UTF-8 codepoints (so multibyte glyphs each take one
 ///          cell of the monospace 8×8 font) and multiplies by 8.
+/// @param text Borrowed UTF-8 runtime string.
+/// @return Saturating logical width, or `0` for null text.
 int64_t rt_canvas_text_width(rt_string text) {
     return rt_canvas_text_codepoint_width(text, 1);
 }
 
 /// @brief Return the height of one line of text in pixels — always 8 for the built-in font.
+/// @return Constant logical height `8`.
 int64_t rt_canvas_text_height(void) {
     return 8;
 }
@@ -834,6 +1008,12 @@ int64_t rt_canvas_text_height(void) {
 
 /// @brief Draw text with each pixel of the 8×8 built-in font expanded into a `scale × scale` rect.
 /// Useful for HiDPI/big-pixel UIs without loading a separate larger font.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical left edge of the first scaled glyph.
+/// @param y Logical top edge of the glyph row.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param scale Positive integer expansion factor.
+/// @param color Packed foreground color; effective alpha is ignored.
 void rt_canvas_text_scaled(
     void *canvas_ptr, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t color) {
     if (!canvas_ptr || !text || scale < 1)
@@ -886,6 +1066,13 @@ void rt_canvas_text_scaled(
 }
 
 /// @brief Like `_text_scaled` but fills the @p bg color behind each glyph (full per-pixel cell).
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical left edge of the first scaled glyph.
+/// @param y Logical top edge of the glyph row.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param scale Positive integer expansion factor.
+/// @param fg Packed foreground color.
+/// @param bg Packed background color.
 void rt_canvas_text_scaled_bg(
     void *canvas_ptr, int64_t x, int64_t y, rt_string text, int64_t scale, int64_t fg, int64_t bg) {
     if (!canvas_ptr || !text || scale < 1)
@@ -937,6 +1124,9 @@ void rt_canvas_text_scaled_bg(
 }
 
 /// @brief Return the rendered width of `text` in pixels when drawn at the given integer scale.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param scale Positive integer expansion factor.
+/// @return Saturating logical width, or `0` for invalid text/scale.
 int64_t rt_canvas_text_scaled_width(rt_string text, int64_t scale) {
     return rt_canvas_text_codepoint_width(text, scale);
 }
@@ -949,6 +1139,10 @@ int64_t rt_canvas_text_scaled_width(rt_string text, int64_t scale) {
 /// @details Pre-measures via `text_width`, then offsets x so the
 ///          rendered glyphs sit symmetrically about the canvas
 ///          centerline.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param y Logical top edge of the glyph row.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param color Packed foreground color.
 void rt_canvas_text_centered(void *canvas_ptr, int64_t y, rt_string text, int64_t color) {
     if (!canvas_ptr || !text)
         return;
@@ -959,6 +1153,11 @@ void rt_canvas_text_centered(void *canvas_ptr, int64_t y, rt_string text, int64_
 }
 
 /// @brief Draw text right-aligned to the canvas with @p margin pixels of padding.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param margin Logical distance from the canvas right edge; may be negative.
+/// @param y Logical top edge of the glyph row.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param color Packed foreground color.
 void rt_canvas_text_right(
     void *canvas_ptr, int64_t margin, int64_t y, rt_string text, int64_t color) {
     if (!canvas_ptr || !text)
@@ -970,6 +1169,11 @@ void rt_canvas_text_right(
 }
 
 /// @brief Draw scaled text horizontally centered in the canvas at row @p y.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param y Logical top edge of the scaled glyph row.
+/// @param text Borrowed UTF-8 runtime string.
+/// @param color Packed foreground color.
+/// @param scale Positive integer expansion factor.
 void rt_canvas_text_centered_scaled(
     void *canvas_ptr, int64_t y, rt_string text, int64_t color, int64_t scale) {
     if (!canvas_ptr || !text || scale < 1)
@@ -985,6 +1189,17 @@ void rt_canvas_text_centered_scaled(
 //=============================================================================
 
 /// @brief Fill a rectangle with @p color blended at @p alpha [0..255] over the existing pixels.
+/// @details Nonpositive alpha is transparent; values at least 255 use an
+///          opaque backend fill. Intermediate values perform per-pixel source-
+///          over blending after logical clipping. Any alpha encoded in
+///          @p color is replaced by the explicit argument.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical left edge.
+/// @param y Logical top edge.
+/// @param w Positive rectangle width.
+/// @param h Positive rectangle height.
+/// @param color Packed source RGB color.
+/// @param alpha Blend alpha; values outside 0..255 clamp by branch behavior.
 void rt_canvas_box_alpha(
     void *canvas_ptr, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color, int64_t alpha) {
     if (!canvas_ptr || w <= 0 || h <= 0)
@@ -1022,6 +1237,16 @@ void rt_canvas_box_alpha(
 }
 
 /// @brief Fill a disc with @p color blended at @p alpha [0..255] over the existing pixels.
+/// @details Requires a strictly positive radius and alpha. Fully opaque int32
+///          circles use the backend fast path; other cases scan only clipped
+///          rows and blend individual pixels. Encoded color alpha is replaced.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param cx Logical center X.
+/// @param cy Logical center Y.
+/// @param radius Strictly positive logical radius.
+/// @param color Packed source RGB color.
+/// @param alpha Blend alpha; nonpositive is transparent and values at least
+///        255 are opaque.
 void rt_canvas_disc_alpha(
     void *canvas_ptr, int64_t cx, int64_t cy, int64_t radius, int64_t color, int64_t alpha) {
     if (!canvas_ptr || radius <= 0)
@@ -1114,6 +1339,15 @@ void rt_canvas_disc_alpha(
 ///          (opaque, region, alpha, alpha-region) share identical
 ///          clipping behavior — keeps clip semantics consistent and
 ///          off-by-one bugs to one place.
+/// @param canvas Borrowed live Canvas implementation.
+/// @param pixels Borrowed valid Pixels implementation with storage.
+/// @param dx In/out destination logical X.
+/// @param dy In/out destination logical Y.
+/// @param sx In/out source X.
+/// @param sy In/out source Y.
+/// @param w In/out copy width.
+/// @param h In/out copy height.
+/// @return `1` when a positive clipped region remains; otherwise `0`.
 static int8_t rt_canvas_prepare_blit_region(rt_canvas *canvas,
                                             rt_pixels_impl *pixels,
                                             int64_t *dx,
@@ -1171,6 +1405,14 @@ static int8_t rt_canvas_prepare_blit_region(rt_canvas *canvas,
 }
 
 /// @brief Copy a rectangular region from one surface to another.
+/// @details Copies the full Pixels source at logical destination @p x,@p y
+///          without alpha compositing: all RGBA channels overwrite the
+///          framebuffer. Source/destination clipping is automatic, and each
+///          logical texel expands across its HiDPI physical block.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Destination logical X.
+/// @param y Destination logical Y.
+/// @param pixels_ptr Borrowed Pixels handle.
 void rt_canvas_blit(void *canvas_ptr, int64_t x, int64_t y, void *pixels_ptr) {
     if (!canvas_ptr || !pixels_ptr)
         return;
@@ -1244,6 +1486,16 @@ void rt_canvas_blit(void *canvas_ptr, int64_t x, int64_t y, void *pixels_ptr) {
 
 /// @brief Blit a sub-rectangle of @p pixels_ptr onto the canvas at (x, y).
 /// Auto-clipped to source and destination bounds; out-of-range source rects are no-ops.
+/// @details Copies RGBA bytes without alpha compositing and expands each
+///          logical texel across its HiDPI physical block.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param dx Destination logical X.
+/// @param dy Destination logical Y.
+/// @param pixels_ptr Borrowed Pixels handle.
+/// @param sx Source rectangle X.
+/// @param sy Source rectangle Y.
+/// @param w Source width.
+/// @param h Source height.
 void rt_canvas_blit_region(void *canvas_ptr,
                            int64_t dx,
                            int64_t dy,
@@ -1324,6 +1576,14 @@ void rt_canvas_blit_region(void *canvas_ptr,
 ///          than overwriting. Internal helper (declared in rt_graphics_internal.h)
 ///          so the SpriteBatch region fast path can blend transparent sprite-sheet
 ///          frames instead of stamping opaque rectangles.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param dx Destination logical X.
+/// @param dy Destination logical Y.
+/// @param pixels_ptr Borrowed Pixels handle.
+/// @param sx Source rectangle X.
+/// @param sy Source rectangle Y.
+/// @param w Source width.
+/// @param h Source height.
 void rt_canvas_blit_region_alpha(void *canvas_ptr,
                                  int64_t dx,
                                  int64_t dy,
@@ -1432,6 +1692,10 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
 ///          Honors the canvas's HiDPI scale by expanding each logical
 ///          source pixel into the corresponding physical pixel block
 ///          (so a 1× sprite stays sharp on a 2× display).
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Destination logical X.
+/// @param y Destination logical Y.
+/// @param pixels_ptr Borrowed Pixels handle.
 void rt_canvas_blit_alpha(void *canvas_ptr, int64_t x, int64_t y, void *pixels_ptr) {
     if (!canvas_ptr || !pixels_ptr)
         return;
@@ -1539,6 +1803,10 @@ void rt_canvas_blit_alpha(void *canvas_ptr, int64_t x, int64_t y, void *pixels_p
 ///          procedural painting tools and color picking. Goes through
 ///          `vgfx_point` rather than direct framebuffer access so the
 ///          read honors any pending coordinate transforms.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical X coordinate.
+/// @param y Logical Y coordinate.
+/// @return Backend packed RGB value, or `0` for invalid/out-of-range input.
 int64_t rt_canvas_get_pixel(void *canvas_ptr, int64_t x, int64_t y) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
     if (!canvas)
@@ -1566,7 +1834,15 @@ int64_t rt_canvas_get_pixel(void *canvas_ptr, int64_t x, int64_t y) {
 ///          Pixels stays at logical resolution (matches what the
 ///          user drew, not what the GPU rendered). Out-of-range
 ///          source pixels are recorded as 0 so the resulting buffer
-///          is dense and easy to feed back into `Canvas.Blit`.
+///          is dense and easy to feed back into `Canvas.Blit`. Requests
+///          larger than 268,435,456 pixels are rejected.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param x Logical source left edge.
+/// @param y Logical source top edge.
+/// @param w Positive output width.
+/// @param h Positive output height.
+/// @return Owned Pixels snapshot, or `NULL` for invalid dimensions/handles,
+///         size overflow, allocation failure, or framebuffer failure.
 void *rt_canvas_copy_rect(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int64_t h) {
     if (w <= 0 || h <= 0)
         return NULL;
@@ -1636,7 +1912,9 @@ void *rt_canvas_copy_rect(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int
 ///             write (handles BMP header, row alignment, alpha→24-bit
 ///             demotion).
 ///          3. Release the temporary Pixels after the write completes.
-/// @return 1 on success, 0 on any failure (no canvas, write error, ...).
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param path Borrowed output path runtime string.
+/// @return `1` on success; `0` on invalid input, snapshot, or write failure.
 int64_t rt_canvas_save_bmp(void *canvas_ptr, rt_string path) {
     if (!path)
         return 0;
@@ -1669,7 +1947,9 @@ int64_t rt_canvas_save_bmp(void *canvas_ptr, rt_string path) {
 ///          per-pixel alpha unlike the BMP path). Smaller files than
 ///          BMP for typical UI screenshots; slower to write because
 ///          of the compression pass.
-/// @return 1 on success, 0 on any failure.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param path Borrowed output path runtime string.
+/// @return `1` on success; `0` on invalid input, snapshot, or write failure.
 int64_t rt_canvas_save_png(void *canvas_ptr, rt_string path) {
     if (!path)
         return 0;

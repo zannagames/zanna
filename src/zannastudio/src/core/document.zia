@@ -64,6 +64,8 @@ class Scene2DWorkspaceState {
     expose Integer selectedCellY;
     expose Integer tileId;
     expose Number splitPosition;
+    expose Number hierarchySplitPosition;
+    expose Number canvasSplitPosition;
     expose Number canvasScrollX;
     expose Number canvasScrollY;
     expose Number inspectorScrollY;
@@ -88,7 +90,9 @@ class Scene2DWorkspaceState {
         selectedCellX = -1;
         selectedCellY = -1;
         tileId = 1;
-        splitPosition = 0.68;
+        splitPosition = 0.66;
+        hierarchySplitPosition = 0.20;
+        canvasSplitPosition = 0.72;
         canvasScrollX = 0.0;
         canvasScrollY = 0.0;
         inspectorScrollY = 0.0;
@@ -134,6 +138,7 @@ class Scene3DWorkspaceState {
     expose Number viewTargetY;
     expose Number viewTargetZ;
     expose Number splitPosition;
+    expose Number hierarchySplitPosition;
     expose Number inspectorScrollY;
     expose Boolean inspectorRequestedVisible;
     expose Boolean compactInspectorShown;
@@ -169,7 +174,8 @@ class Scene3DWorkspaceState {
         viewTargetX = 0.0;
         viewTargetY = 0.0;
         viewTargetZ = 0.0;
-        splitPosition = 0.65;
+        splitPosition = 0.62;
+        hierarchySplitPosition = 0.22;
         inspectorScrollY = 0.0;
         inspectorRequestedVisible = true;
         compactInspectorShown = false;

@@ -19,7 +19,8 @@
 //   - rt_abs_i64(INT64_MIN) fires rt_trap("integer overflow in abs").
 //   - All functions are exposed with C linkage (extern "C") so C++ callers
 //     and both the VM and native backends can link them directly.
-//   - No global state — all functions are pure mathematical operations.
+//   - No global state. Floating helpers and integer comparisons are pure;
+//     rt_abs_i64 raises a trap for its unrepresentable input.
 //
 // Ownership/Lifetime:
 //   - No heap allocation. All functions are stateless wrappers.
@@ -28,6 +29,9 @@
 //        src/runtime/core/rt_trap.h (rt_trap for abs overflow)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements the runtime's scalar mathematical ABI.
 
 #include "rt_math.h"
 #include "rt.hpp"
@@ -235,14 +239,19 @@ long long rt_max_i64(long long a, long long b) {
 //=========================================================================
 
 #ifndef M_PI
+/// @brief Double-precision approximation of pi when the C library omits M_PI.
 #define M_PI 3.14159265358979323846
 #endif
 #ifndef M_E
+/// @brief Double-precision approximation of Euler's number when omitted by libc.
 #define M_E 2.71828182845904523536
 #endif
+/// @brief Tau expressed as exactly twice this translation unit's pi constant.
 #define M_TAU (2.0 * M_PI)
 
 /// @brief Compute arc tangent of y/x using signs to determine quadrant.
+/// @details Delegates to `atan2`, preserving its signed-zero, infinity, and NaN
+///   quadrant rules without adding runtime traps.
 /// @param y Y coordinate.
 /// @param x X coordinate.
 /// @return Angle in radians in range [-pi, pi].
@@ -251,6 +260,8 @@ double rt_atan2(double y, double x) {
 }
 
 /// @brief Compute arc sine of x.
+/// @details Delegates to `asin`; values outside [-1, 1] produce NaN according
+///   to the platform math library.
 /// @param x Input in range [-1, 1].
 /// @return Angle in radians in range [-pi/2, pi/2].
 double rt_asin(double x) {
@@ -258,6 +269,8 @@ double rt_asin(double x) {
 }
 
 /// @brief Compute arc cosine of x.
+/// @details Delegates to `acos`; values outside [-1, 1] produce NaN according
+///   to the platform math library.
 /// @param x Input in range [-1, 1].
 /// @return Angle in radians in range [0, pi].
 double rt_acos(double x) {
@@ -265,6 +278,8 @@ double rt_acos(double x) {
 }
 
 /// @brief Compute hyperbolic sine of x.
+/// @details Delegates to `sinh`; sufficiently large magnitudes may overflow to
+///   signed infinity without trapping.
 /// @param x Input value.
 /// @return sinh(x).
 double rt_sinh(double x) {
@@ -272,6 +287,8 @@ double rt_sinh(double x) {
 }
 
 /// @brief Compute hyperbolic cosine of x.
+/// @details Delegates to `cosh`; sufficiently large magnitudes may overflow to
+///   positive infinity without trapping.
 /// @param x Input value.
 /// @return cosh(x).
 double rt_cosh(double x) {
@@ -279,6 +296,7 @@ double rt_cosh(double x) {
 }
 
 /// @brief Compute hyperbolic tangent of x.
+/// @details Delegates to `tanh`, which approaches signed one for infinite inputs.
 /// @param x Input value.
 /// @return tanh(x).
 double rt_tanh(double x) {
@@ -286,6 +304,7 @@ double rt_tanh(double x) {
 }
 
 /// @brief Round to nearest integer, away from zero on tie.
+/// @details Delegates to `round`; signed zero, NaN, and infinities propagate.
 /// @param x Input value.
 /// @return Rounded value.
 double rt_round(double x) {
@@ -293,6 +312,7 @@ double rt_round(double x) {
 }
 
 /// @brief Truncate toward zero.
+/// @details Delegates to `trunc`; signed zero, NaN, and infinities propagate.
 /// @param x Input value.
 /// @return Truncated value.
 double rt_trunc(double x) {
@@ -300,6 +320,8 @@ double rt_trunc(double x) {
 }
 
 /// @brief Compute base-10 logarithm.
+/// @details Delegates to `log10`; zero produces negative infinity and negative
+///   finite input produces NaN without trapping.
 /// @param x Input (must be positive).
 /// @return log10(x).
 double rt_log10(double x) {
@@ -307,6 +329,8 @@ double rt_log10(double x) {
 }
 
 /// @brief Compute base-2 logarithm.
+/// @details Delegates to `log2`; zero produces negative infinity and negative
+///   finite input produces NaN without trapping.
 /// @param x Input (must be positive).
 /// @return log2(x).
 double rt_log2(double x) {
@@ -314,6 +338,8 @@ double rt_log2(double x) {
 }
 
 /// @brief Compute floating-point remainder.
+/// @details Delegates to `fmod`. A zero divisor or infinite dividend produces
+///   NaN; a finite result has the dividend's sign.
 /// @param x Dividend.
 /// @param y Divisor.
 /// @return Remainder of x/y.
@@ -321,7 +347,9 @@ double rt_fmod(double x, double y) {
     return fmod(x, y);
 }
 
-/// @brief Compute sqrt(x*x + y*y) without overflow.
+/// @brief Compute the Euclidean norm without spurious intermediate overflow.
+/// @details Delegates to `hypot`, which scales its calculation but may still
+///   return infinity when the mathematical result is not representable.
 /// @param x First value.
 /// @param y Second value.
 /// @return Hypotenuse.
@@ -330,6 +358,9 @@ double rt_hypot(double x, double y) {
 }
 
 /// @brief Clamp a value to a range [lo, hi].
+/// @details Finite inverted bounds are exchanged before comparison. A NaN
+///   @p val propagates because both comparisons are false; NaN bounds follow
+///   ordinary IEEE comparison behavior and are not exchanged.
 /// @param val Value to clamp.
 /// @param lo Lower bound.
 /// @param hi Upper bound.
@@ -349,6 +380,7 @@ double rt_clamp_f64(double val, double lo, double hi) {
 }
 
 /// @brief Clamp an integer to a range [lo, hi].
+/// @details Exchanges inverted bounds before applying inclusive comparisons.
 /// @param val Value to clamp.
 /// @param lo Lower bound.
 /// @param hi Upper bound.
@@ -368,6 +400,10 @@ long long rt_clamp_i64(long long val, long long lo, long long hi) {
 }
 
 /// @brief Linear interpolation between a and b.
+/// @details Preserves exact endpoints for @p t equal to zero or one and
+///   propagates the first NaN encountered in @p a, @p b, then @p t. Opposite-
+///   sign endpoints use a weighted sum to avoid overflow from `b - a` during
+///   ordinary interpolation. Values of @p t outside [0, 1] extrapolate.
 /// @param a Start value.
 /// @param b End value.
 /// @param t Interpolation factor (0 = a, 1 = b).
@@ -389,6 +425,9 @@ double rt_lerp(double a, double b, double t) {
 }
 
 /// @brief Wrap a value to range [lo, hi).
+/// @details Uses `fmod` and adds one range width for negative remainders.
+///   A non-positive range returns @p lo. Finite valid inputs produce the stated
+///   half-open result; non-finite values follow `fmod` and may produce NaN.
 /// @param val Value to wrap.
 /// @param lo Lower bound (inclusive).
 /// @param hi Upper bound (exclusive).
@@ -405,6 +444,8 @@ double rt_wrap_f64(double val, double lo, double hi) {
 }
 
 /// @brief Wrap an integer to range [lo, hi).
+/// @details Uses unsigned distance arithmetic so the full signed 64-bit domain
+///   is handled without signed overflow. A non-positive range returns @p lo.
 /// @param val Value to wrap.
 /// @param lo Lower bound (inclusive).
 /// @param hi Upper bound (exclusive).
@@ -430,24 +471,31 @@ long long rt_wrap_i64(long long val, long long lo, long long hi) {
 }
 
 /// @brief Return the constant Pi.
+/// @details Uses the platform `M_PI` when available, otherwise the local
+///   double-precision fallback.
 /// @return Pi (3.14159...).
 double rt_math_pi(void) {
     return M_PI;
 }
 
 /// @brief Return Euler's number.
+/// @details Uses the platform `M_E` when available, otherwise the local
+///   double-precision fallback.
 /// @return e (2.71828...).
 double rt_math_e(void) {
     return M_E;
 }
 
 /// @brief Return Tau (2*Pi).
+/// @details Computed at compile time as twice the same pi constant returned by
+///   @ref rt_math_pi.
 /// @return Tau (6.28318...).
 double rt_math_tau(void) {
     return M_TAU;
 }
 
 /// @brief Convert radians to degrees.
+/// @details Multiplies by 180/pi; NaN and infinity propagate without trapping.
 /// @param radians Angle in radians.
 /// @return Angle in degrees.
 double rt_deg(double radians) {
@@ -455,6 +503,7 @@ double rt_deg(double radians) {
 }
 
 /// @brief Convert degrees to radians.
+/// @details Multiplies by pi/180; NaN and infinity propagate without trapping.
 /// @param degrees Angle in degrees.
 /// @return Angle in radians.
 double rt_rad(double degrees) {

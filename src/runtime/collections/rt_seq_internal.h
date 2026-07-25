@@ -24,6 +24,14 @@
 //        src/runtime/collections/rt_seq_ops.c (sorting and functional operations)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Shares the private Seq storage layout across its implementation units.
+/// @details This is not a public ABI header. Core mutation and higher-order
+///          operations require direct access to the same length, capacity,
+///          pointer allocation, and element-ownership flag; all external
+///          callers must continue to use `rt_seq.h`.
+
 #pragma once
 
 #include "rt_seq.h"

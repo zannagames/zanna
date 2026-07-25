@@ -17,12 +17,13 @@
 //   - Every heap allocation is preceded by an rt_heap_hdr_t carrying
 //     magic==RT_MAGIC. Public helpers validate live payloads against the
 //     registry before touching the header.
-//   - refcnt==0 is the freed state; refcnt>=RT_HEAP_IMMORTAL_REFCNT is immortal/static
-//     sentinel (never freed). All atomic inc/dec use __ATOMIC_RELAXED.
+//   - refcnt==0 is logically dead and awaits immediate or explicit deferred
+//     reclamation; refcnt>=RT_HEAP_IMMORTAL_REFCNT is an immortal/static
+//     sentinel. Release operations publish with release semantics.
 //   - Final reclamation zeroes weak observers before unregistering the payload.
 //   - rt_heap_release() returns non-pooled blocks through rt_free only when
 //     refcnt drops to 0; pooled string blocks return to their owning slab.
-//   - The kind field (RT_HEAP_KIND_*) disambiguates string vs array vs raw.
+//   - The kind field (RT_HEAP_*) disambiguates string, array, and object payloads.
 //   - len/cap are logical element counts for string/array payloads; raw
 //     (opaque) payloads leave len=0, cap=byte size.
 //
@@ -35,6 +36,9 @@
 //        src/runtime/core/rt_pool.h (slab pool for small allocations)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements the registered, reference-counted runtime heap.
 
 #include "rt_heap.h"
 #include "rt_gc.h"
@@ -89,14 +93,17 @@ static int g_shutdown_registered = 0;
    in the audio component and its zannaaud dependency.  When the audio
    component IS linked, its strong definition overrides this no-op. */
 #if defined(_MSC_VER)
+/// @brief Shut down the optional audio subsystem during global runtime teardown.
 extern void rt_audio_shutdown(void);
 #else
+/// @brief Weak no-op audio shutdown used when the audio component is not linked.
 __attribute__((weak)) void rt_audio_shutdown(void) {}
 #endif
 
-/* Legacy context shutdown is defined in rt_context.c. */
+/// @brief Release process-global legacy runtime context state.
 extern void rt_legacy_context_shutdown(void);
 
+/// @brief Detach and free the live-payload registry's slot storage.
 static void rt_heap_registry_shutdown_(void);
 
 /// @brief Global shutdown handler called at process exit via atexit().
@@ -119,10 +126,16 @@ static void rt_global_shutdown(void) {
 }
 
 #if RT_PLATFORM_LINUX
+/// @brief Register a DSO-aware process-exit callback with the Linux C++ ABI.
+/// @param func Callback accepting @p arg.
+/// @param arg Opaque callback argument.
+/// @param dso_handle Optional DSO identity; NULL registers for process exit.
+/// @return Zero on success, or a nonzero registration error.
 extern int __cxa_atexit(void (*func)(void *), void *arg, void *dso_handle);
 
 /// @brief __cxa_atexit trampoline that runs rt_global_shutdown at process exit
 ///        (Linux only; matches the void(*)(void*) callback signature).
+/// @param arg Unused registration argument.
 static void rt_global_shutdown_atexit_(void *arg) {
     (void)arg;
     rt_global_shutdown();
@@ -131,13 +144,18 @@ static void rt_global_shutdown_atexit_(void *arg) {
 /// @brief Register rt_global_shutdown to run at process exit.
 /// @details Linux late-bound native executables don't get a usable atexit(),
 ///          so the Linux variant routes through libc's __cxa_atexit(); all
-///          other platforms use plain atexit(). @return 0 on success.
+///          other platforms use plain atexit().
+/// @return Zero on success, or a nonzero registration error.
 static int rt_register_shutdown_handler_(void) {
     // glibc does not export atexit() for late-bound native executables, but
     // __cxa_atexit() is available from libc and feeds the same exit handler list.
     return __cxa_atexit(rt_global_shutdown_atexit_, NULL, NULL);
 }
 #elif RT_PLATFORM_WINDOWS
+/// @brief Accept shutdown registration for CRT-less Windows native binaries.
+/// @details Windows relies on process teardown rather than calling CRT
+///   `atexit`, which can block from the custom startup path.
+/// @return Always zero.
 static int rt_register_shutdown_handler_(void) {
     // The Windows runtime archive is shared with native PE binaries that enter
     // through Zanna's CRT-less startup shim. Calling CRT atexit from that path
@@ -146,6 +164,8 @@ static int rt_register_shutdown_handler_(void) {
     return 0;
 }
 #else
+/// @brief Register @ref rt_global_shutdown through the platform C runtime.
+/// @return Zero on success, or the nonzero result from `atexit`.
 static int rt_register_shutdown_handler_(void) {
     return atexit(rt_global_shutdown);
 }
@@ -155,9 +175,12 @@ static int rt_register_shutdown_handler_(void) {
 // Live Payload Registry
 //=============================================================================
 
+/// @brief Never-used live-payload registry slot.
 #define RT_HEAP_REG_EMPTY NULL
+/// @brief Deleted registry slot that preserves a linear-probe chain.
 #define RT_HEAP_REG_TOMBSTONE ((void *)(uintptr_t)1)
 
+/// @brief Process-global open-addressed set of exact live payload addresses.
 typedef struct {
     void **slots;
     size_t count;
@@ -166,6 +189,7 @@ typedef struct {
     int lock;
 } rt_heap_registry_t;
 
+/// @brief Lazily allocated payload registry and its spinlock state.
 static rt_heap_registry_t g_heap_registry_;
 
 /// @brief Hash a pointer to 64 bits using David Stafford's mix13 finalizer.
@@ -175,6 +199,8 @@ static rt_heap_registry_t g_heap_registry_;
 ///          well-tested public-domain mixer that scrambles those
 ///          patterns into a uniform-looking output suitable for
 ///          open-addressing hash tables.
+/// @param p Pointer value to mix; it is not dereferenced.
+/// @return Mixed 64-bit value used to select a registry probe sequence.
 static uint64_t rt_heap_ptr_hash_(const void *p) {
     uint64_t v = (uint64_t)(uintptr_t)p;
     v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -224,6 +250,8 @@ static void rt_heap_registry_unlock_(void) {
 ///          live (a real value). Lookups must walk past tombstones,
 ///          insertions can reuse them; this helper distinguishes the
 ///          live case for those callers.
+/// @param slot Registry slot value to classify.
+/// @return 1 for a real payload address, otherwise 0.
 static int rt_heap_registry_slot_is_live_(void *slot) {
     return slot != RT_HEAP_REG_EMPTY && slot != RT_HEAP_REG_TOMBSTONE;
 }
@@ -235,6 +263,8 @@ static int rt_heap_registry_slot_is_live_(void *slot) {
 ///          probe sequences against the new mask and drops all
 ///          tombstones along the way. Returns 0 on allocation
 ///          failure (caller leaves the registry untouched).
+/// @param min_capacity Minimum power-of-two-compatible capacity requested.
+/// @return 1 after installing the replacement table, otherwise 0.
 static int rt_heap_registry_grow_locked_(size_t min_capacity) {
     size_t new_capacity = 256;
     if (g_heap_registry_.capacity) {
@@ -278,6 +308,8 @@ static int rt_heap_registry_grow_locked_(size_t min_capacity) {
 ///          Initial allocation: 256 slots. Subsequent growth: 2×.
 ///          Includes tombstones in the load calculation because they
 ///          still consume probe-sequence length.
+/// @return 1 when current or newly allocated capacity can accept one entry,
+///   otherwise 0.
 static int rt_heap_registry_ensure_capacity_locked_(void) {
     if (g_heap_registry_.capacity == 0)
         return rt_heap_registry_grow_locked_(256);
@@ -299,6 +331,8 @@ static int rt_heap_registry_ensure_capacity_locked_(void) {
 ///          (saving a slot) only after confirming the key isn't
 ///          already present further along the chain. Returns 1 if
 ///          stored or already present, 0 if the table is empty.
+/// @param payload Non-NULL exact payload address to insert.
+/// @return 1 when present after the call, otherwise 0.
 static int rt_heap_registry_insert_existing_locked_(void *payload) {
     if (!payload || !g_heap_registry_.slots || g_heap_registry_.capacity == 0)
         return 0;
@@ -328,6 +362,8 @@ static int rt_heap_registry_insert_existing_locked_(void *payload) {
 ///          insert so callers don't have to manage the two-stage
 ///          dance themselves. NULL payloads are silently ignored
 ///          (treated as success).
+/// @param payload Exact payload address to insert, or NULL for a no-op.
+/// @return 1 on success, otherwise 0 when capacity cannot be provided.
 static int rt_heap_registry_insert_locked_(void *payload) {
     if (!payload)
         return 1;
@@ -340,6 +376,8 @@ static int rt_heap_registry_insert_locked_(void *payload) {
 /// @details Walks the probe chain from `hash & mask`, skipping over
 ///          tombstones (which mean "moved on"), stopping at the
 ///          first EMPTY slot. Returns 0 for unknown payloads.
+/// @param payload Exact payload address to locate.
+/// @return 1 when the registry contains @p payload, otherwise 0.
 static int rt_heap_registry_contains_locked_(void *payload) {
     if (!payload || payload == RT_HEAP_REG_TOMBSTONE || !g_heap_registry_.slots ||
         g_heap_registry_.capacity == 0)
@@ -385,6 +423,7 @@ static int rt_heap_try_get_header_locked_(void *payload, rt_heap_hdr_t **out_hdr
 ///          re-empty) so that probe sequences past the deleted slot
 ///          still terminate at the original "empty" sentinel. The
 ///          next `grow` invocation drops accumulated tombstones.
+/// @param payload Exact address to remove; missing and NULL values are no-ops.
 static void rt_heap_registry_remove_locked_(void *payload) {
     if (!payload || !g_heap_registry_.slots || g_heap_registry_.capacity == 0)
         return;
@@ -410,6 +449,9 @@ static void rt_heap_registry_remove_locked_(void *payload) {
 ///          remember the new one. Implements as remove-old +
 ///          insert-new under the same lock so no thread can observe
 ///          an inconsistent state.
+/// @param old_payload Exact currently registered address.
+/// @param new_payload Replacement address to insert.
+/// @return 1 when the entry is moved or addresses match, otherwise 0.
 static int RT_HEAP_UNUSED_PRIVATE rt_heap_registry_move_locked_(void *old_payload,
                                                                 void *new_payload) {
     if (old_payload == new_payload)
@@ -433,10 +475,9 @@ static int RT_HEAP_UNUSED_PRIVATE rt_heap_registry_move_locked_(void *old_payloa
 }
 
 /// @brief Free the registry's slot array at process shutdown.
-/// @details Called from `rt_global_shutdown` after every payload has
-///          been freed. The registry slots themselves are pointers
-///          into already-freed memory; we only need to free the
-///          slot array, not the (already-released) payloads.
+/// @details Registry entries are borrowed addresses, so process-exit teardown
+///   frees only the slot array and resets bookkeeping. It does not attempt to
+///   release any payload that remains registered.
 static void rt_heap_registry_shutdown_(void) {
     free(g_heap_registry_.slots);
     g_heap_registry_.slots = NULL;
@@ -453,6 +494,8 @@ static void rt_heap_registry_shutdown_(void) {
 ///          release builds because heap entry points form the runtime's safety
 ///          boundary for generated and host code.
 /// @param hdr Header pointer returned by a checked header lookup.
+/// @warning Invalid metadata raises a runtime trap and returns only when the
+///   active trap dispatcher permits local continuation.
 static void rt_heap_validate_header(const rt_heap_hdr_t *hdr) {
     if (!hdr) {
         rt_trap("rt_heap_validate_header: null header");
@@ -477,10 +520,13 @@ static void rt_heap_validate_header(const rt_heap_hdr_t *hdr) {
     }
 }
 
+/// @brief Validate a heap header at a public-operation safety boundary.
 #define RT_HEAP_VALIDATE(hdr) rt_heap_validate_header(hdr)
 
 /// @brief Returns 1 if `payload` is a tracked rt_heap allocation. Looks up the registry under
 /// the heap lock. Used by polymorphic dispatch to distinguish heap-managed pointers from raw.
+/// @param payload Exact candidate payload address; NULL and the tombstone sentinel are rejected.
+/// @return 1 when currently registered, otherwise 0.
 int8_t rt_heap_is_payload(void *payload) {
     if (!payload || payload == RT_HEAP_REG_TOMBSTONE)
         return 0;
@@ -493,6 +539,11 @@ int8_t rt_heap_is_payload(void *payload) {
 /// @brief Validate `payload` and write its `rt_heap_hdr_t *` to `out_hdr`. Returns 1 on
 /// success, 0 if the pointer isn't a tracked heap allocation. Avoids a separate is_payload+
 /// header-cast pair in performance-sensitive call sites.
+/// @param payload Exact candidate payload address.
+/// @param out_hdr Optional destination cleared on failure and filled on success.
+/// @return 1 when @p payload is registered with valid magic, otherwise 0.
+/// @warning The returned header is borrowed and becomes unsafe when the caller
+///   does not otherwise pin the payload against concurrent final release.
 int8_t rt_heap_try_get_header(void *payload, rt_heap_hdr_t **out_hdr) {
     if (out_hdr)
         *out_hdr = NULL;
@@ -594,6 +645,10 @@ int8_t rt_heap_contains_range(const void *ptr, size_t bytes) {
 ///          or raw pointers through runtime surfaces, so they must fail with a
 ///          trap instead of relying on debug-only assertions or dereferencing
 ///          freed memory.
+/// @param payload Exact candidate payload; NULL returns NULL without trapping.
+/// @param fn_name Optional operation name included in an invalid-pointer diagnostic.
+/// @return Borrowed header for a registered payload, or NULL after a rejected
+///   input or returning trap.
 static rt_heap_hdr_t *rt_heap_checked_header_(void *payload, const char *fn_name) {
     if (!payload)
         return NULL;
@@ -781,6 +836,9 @@ void rt_heap_retain(void *payload) {
 }
 
 /// @brief Non-trapping retain for code that already has its own recovery/cleanup path.
+/// @details Validates and increments under the heap registry lock, preventing a
+///   concurrent final release from freeing the header during promotion.
+/// @param payload Exact borrowed payload address; NULL is reported as not live.
 /// @return 1 when retained, 2 when live immortal and not retained, 0 when not
 ///         live/managed, and -1 on mortal refcount overflow.
 int32_t rt_heap_try_retain_live(void *payload) {
@@ -985,10 +1043,12 @@ void rt_heap_free_zero_ref(void *payload) {
 }
 
 /// @brief Obtain a mutable header pointer for a payload.
-/// @details Thin wrapper around @ref payload_to_hdr that exists for API
-///          symmetry with @ref rt_heap_hdr_c.
+/// @details Performs a checked registry lookup before exposing the header. The
+///   caller must already own a reference or otherwise prevent concurrent final
+///   release for the entire period in which it dereferences the returned pointer.
 /// @param payload Payload pointer produced by @ref rt_heap_alloc.
 /// @return Mutable header pointer, or `NULL` when @p payload is `NULL`.
+/// @warning An invalid non-NULL payload raises a runtime trap.
 rt_heap_hdr_t *rt_heap_hdr(void *payload) {
     return rt_heap_checked_header_(payload, "rt_heap_hdr");
 }
@@ -1164,6 +1224,9 @@ static inline uint32_t atomic_fetch_or_u32(volatile uint32_t *ptr, uint32_t valu
 /// @brief Atomically mark the heap allocation as disposed (logical free). Returns 1 if this
 /// call performed the mark, 0 if it was already disposed (idempotent). Useful for one-shot
 /// finalizer guards in collections that own heterogeneous resources.
+/// @param payload Exact object payload to mark; NULL returns zero.
+/// @return 1 for the caller that changes the bit from clear to set, otherwise 0.
+/// @warning Invalid non-NULL payloads raise a runtime trap.
 int32_t rt_heap_mark_disposed(void *payload) {
     rt_heap_hdr_t *hdr = rt_heap_checked_header_(payload, "rt_heap_mark_disposed");
     if (!hdr)
