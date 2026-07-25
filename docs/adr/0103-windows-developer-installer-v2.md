@@ -9,6 +9,12 @@ last-verified: 2026-07-16
 Date: 2026-07-15
 Status: Accepted
 
+The Task Dialog and system-light presentation choice in this ADR's user
+experience section is superseded by
+[ADR 0175](0175-zanna-games-windows-installer-experience.md). Its native
+control, accessibility, DPI, high-contrast, and small-work-area requirements
+remain active.
+
 ## Context
 
 Zanna's Windows package builder already validates staged files, hashes the

@@ -228,9 +228,14 @@ one-click choice and also offers SDK, Complete, and Customize paths. Customize
 selects current-user or all-users scope, a validated Unicode/long-path
 destination, components with accurate byte estimates, PATH, safe Open With
 associations, and Start Menu shortcuts. Native Task Dialogs and a scrollable
-customization window use system colors, high-contrast behavior, keyboard
-navigation, UI Automation names, per-monitor DPI awareness, Zanna branding,
-and a usable small-work-area layout.
+customization window have been replaced in the primary journey by a native
+Zanna Games shell: dark charcoal surfaces, a green/steel/teal compile rail,
+code-drawn vector branding, and semantic action cards. The shell retains
+system high-contrast colors, keyboard navigation, native UI Automation names,
+DPI-aware geometry, and a usable scrollable small-work-area layout without
+embedding a browser, framework, or raster-art dependency. Focused Windows
+dialogs remain in use for errors, Restart Manager decisions, and update
+results.
 
 Before mutation, the host validates the complete schema-3 overlay inventory,
 PE architecture, component graph, semantic version policy, supported Windows

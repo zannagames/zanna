@@ -385,7 +385,9 @@ if(WIN32)
     add_executable(zanna_installer_host WIN32
         tools/windows_installer/main.cpp
         tools/windows_installer/WindowsInstallerHost.cpp
+        tools/windows_installer/WindowsInstallerBrandDialog.cpp
         tools/windows_installer/WindowsInstallerLifecycle.cpp
+        tools/windows_installer/WindowsInstallerTheme.cpp
         tools/windows_installer/WindowsInstallerVersion.cpp
         tools/windows_installer/WindowsInstallerWizard.cpp
         tools/windows_installer/WindowsInstallerUpdate.cpp
@@ -412,7 +414,8 @@ if(WIN32)
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/common/packaging"
         "${CMAKE_CURRENT_SOURCE_DIR}/runtime/core")
     target_link_libraries(zanna_installer_host PRIVATE
-        advapi32 bcrypt comctl32 ole32 rstrtmgr shell32 shlwapi user32 uxtheme version winhttp)
+        advapi32 bcrypt comctl32 dwmapi gdi32 ole32 rstrtmgr shell32 shlwapi user32 uxtheme
+        version winhttp)
     install(TARGETS zanna_installer_host RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
     add_executable(zanna_installer_cleanup WIN32

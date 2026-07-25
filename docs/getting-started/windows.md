@@ -187,6 +187,12 @@ Build a local developer installer with:
 .\scripts\build_installer.ps1 --target windows
 ```
 
+The interactive installer uses Zanna Games' dark charcoal, green, steel, and
+teal visual language from its first screen through completion. It still uses
+native controls for keyboard and screen-reader access, switches to Windows
+system colors in high-contrast mode, and scrolls on small or highly scaled
+work areas.
+
 Debug CRT payloads are rejected by default. Use Release or RelWithDebInfo for a
 package intended for another developer. The wrapper enables Zanna Studio when
 the setting is absent and verifies both `zannastudio.exe` and

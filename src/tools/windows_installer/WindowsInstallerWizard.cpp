@@ -19,19 +19,21 @@
 // Ownership/Lifetime:
 //   - Modal contexts outlive their HWNDs and worker threads are joined.
 //
-// Links: WindowsInstallerWizard.hpp, WindowsInstallerLifecycle.cpp
+// Links: WindowsInstallerWizard.hpp, WindowsInstallerBrandDialog.cpp,
+//        WindowsInstallerTheme.cpp, WindowsInstallerLifecycle.cpp,
+//        docs/adr/0175-zanna-games-windows-installer-experience.md
 //
 //===----------------------------------------------------------------------===//
 
 #include "WindowsInstallerWizard.hpp"
+#include "WindowsInstallerBrandDialog.hpp"
 #include "WindowsInstallerResources.h"
+#include "WindowsInstallerTheme.hpp"
 #include "WindowsInstallerUpdate.hpp"
 
 #include <commctrl.h>
-#include <shellapi.h>
 #include <shlobj.h>
 #include <shobjidl.h>
-#include <uxtheme.h>
 
 #include <algorithm>
 #include <array>
@@ -41,9 +43,9 @@
 #include <exception>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -285,81 +287,6 @@ std::wstring dependencySummary() {
     return result;
 }
 
-HRESULT CALLBACK
-hyperlinkCallback(HWND window, UINT notification, WPARAM, LPARAM parameter, LONG_PTR) {
-    if (notification == TDN_HYPERLINK_CLICKED && parameter) {
-        const HINSTANCE result = ShellExecuteW(nullptr,
-                                               L"open",
-                                               reinterpret_cast<const wchar_t *>(parameter),
-                                               nullptr,
-                                               nullptr,
-                                               SW_SHOWNORMAL);
-        if (reinterpret_cast<INT_PTR>(result) <= 32) {
-            MessageBoxW(window,
-                        L"Windows could not open that link.",
-                        L"Zanna Tools Setup",
-                        MB_OK | MB_ICONWARNING);
-        }
-    }
-    return S_OK;
-}
-
-int showTaskDialog(HINSTANCE instance,
-                   std::wstring_view title,
-                   std::wstring_view instruction,
-                   std::wstring_view content,
-                   const std::vector<TASKDIALOG_BUTTON> &buttons,
-                   TASKDIALOG_COMMON_BUTTON_FLAGS commonButtons,
-                   TASKDIALOG_FLAGS flags,
-                   PCWSTR icon,
-                   std::wstring_view expanded = {},
-                   std::wstring_view verification = {},
-                   bool *verificationChecked = nullptr) {
-    if (buttons.size() > std::numeric_limits<UINT>::max())
-        throw std::runtime_error("too many native setup dialog actions");
-    TASKDIALOGCONFIG config{sizeof(config)};
-    config.hInstance = instance;
-    config.dwFlags =
-        flags | TDF_SIZE_TO_CONTENT | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_ENABLE_HYPERLINKS;
-    config.dwCommonButtons = commonButtons;
-    const std::wstring titleText(title);
-    const std::wstring instructionText(instruction);
-    const std::wstring contentText(content);
-    const std::wstring expandedText(expanded);
-    const std::wstring verificationText(verification);
-    config.pszWindowTitle = titleText.c_str();
-    config.pszMainInstruction = instructionText.c_str();
-    config.pszContent = contentText.c_str();
-    if (icon) {
-        config.pszMainIcon = icon;
-    } else {
-        config.dwFlags |= TDF_USE_HICON_MAIN;
-        config.hMainIcon = static_cast<HICON>(LoadImageW(instance,
-                                                         MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER),
-                                                         IMAGE_ICON,
-                                                         0,
-                                                         0,
-                                                         LR_DEFAULTSIZE | LR_SHARED));
-    }
-    config.cButtons = static_cast<UINT>(buttons.size());
-    config.pButtons = buttons.empty() ? nullptr : buttons.data();
-    config.nDefaultButton = buttons.empty() ? 0 : buttons.front().nButtonID;
-    config.pszExpandedInformation = expandedText.empty() ? nullptr : expandedText.c_str();
-    config.pszExpandedControlText = expandedText.empty() ? nullptr : L"Show details";
-    config.pszCollapsedControlText = expandedText.empty() ? nullptr : L"Hide details";
-    config.pszVerificationText = verificationText.empty() ? nullptr : verificationText.c_str();
-    config.pfCallback = hyperlinkCallback;
-    int selected = IDCANCEL;
-    BOOL checked = FALSE;
-    const HRESULT result =
-        TaskDialogIndirect(&config, &selected, nullptr, verificationChecked ? &checked : nullptr);
-    if (FAILED(result))
-        throw std::runtime_error("cannot create the native Windows setup dialog");
-    if (verificationChecked)
-        *verificationChecked = checked != FALSE;
-    return selected;
-}
-
 void copyTextToClipboard(std::wstring_view text) {
     if (text.size() > std::numeric_limits<size_t>::max() / sizeof(wchar_t) - 1U)
         throw std::runtime_error("clipboard text is too large");
@@ -427,7 +354,7 @@ struct CustomDialogContext {
     HWND destination{nullptr};
     HWND associationOption{nullptr};
     HWND acceptButton{nullptr};
-    HFONT font{nullptr};
+    std::unique_ptr<InstallerThemeResources> theme;
     bool scopeLocked{false};
     bool accepted{false};
     InstallScope displayedScope{InstallScope::User};
@@ -468,7 +395,8 @@ HWND createControl(CustomDialogContext &context,
                                    nullptr);
     if (!control)
         throw std::runtime_error("cannot create a native setup control");
-    setControlFont(control, context.font);
+    setControlFont(control, context.theme->bodyFont());
+    applyInstallerControlTheme(control, *context.theme);
     return control;
 }
 
@@ -769,9 +697,66 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
     if (!context)
         return DefWindowProcW(window, message, wParam, lParam);
     switch (message) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_PAINT: {
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(window, &paint);
+            RECT client{};
+            GetClientRect(window, &client);
+            drawInstallerBackdrop(dc, client, 0, *context->theme);
+            const UINT dpi = context->theme->dpi();
+            RECT mark{scaled(22, dpi), scaled(11, dpi), scaled(58, dpi), scaled(47, dpi)};
+            drawInstallerBrandMark(dc, mark, *context->theme);
+            const int saved = SaveDC(dc);
+            SetBkMode(dc, TRANSPARENT);
+            SelectObject(dc, context->theme->monoBoldFont());
+            SetTextColor(dc, context->theme->textColor());
+            RECT name{scaled(70, dpi), scaled(8, dpi), scaled(222, dpi), scaled(29, dpi)};
+            DrawTextW(dc, L"ZANNA", -1, &name, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            SelectObject(dc, context->theme->monoFont());
+            SetTextColor(dc, context->theme->accentColor(InstallerAccent::Green));
+            RECT mode{scaled(70, dpi), scaled(27, dpi), scaled(222, dpi), scaled(49, dpi)};
+            DrawTextW(
+                dc, L"CUSTOM BUILD", -1, &mode, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            RestoreDC(dc, saved);
+            EndPaint(window, &paint);
+            return 0;
+        }
+        case WM_DRAWITEM: {
+            const auto *item = reinterpret_cast<const DRAWITEMSTRUCT *>(lParam);
+            if (!item)
+                break;
+            InstallerAccent accent = InstallerAccent::Steel;
+            switch (static_cast<int>(item->CtlID)) {
+                case kIdAccept:
+                case kIdTypical:
+                    accent = InstallerAccent::Green;
+                    break;
+                case kIdBrowse:
+                case kIdSDK:
+                case kIdComplete:
+                    accent = InstallerAccent::Teal;
+                    break;
+                default:
+                    break;
+            }
+            drawInstallerActionButton(*item, accent, *context->theme);
+            return TRUE;
+        }
+        case WM_CTLCOLORSTATIC:
+        case WM_CTLCOLORBTN:
+        case WM_CTLCOLOREDIT:
+        case WM_CTLCOLORLISTBOX:
+            return reinterpret_cast<LRESULT>(colorInstallerControl(message,
+                                                                   reinterpret_cast<HDC>(wParam),
+                                                                   reinterpret_cast<HWND>(lParam),
+                                                                   *context->theme));
         case WM_COMMAND:
             if (HIWORD(wParam) == BN_SETFOCUS || HIWORD(wParam) == EN_SETFOCUS)
                 revealFocusedControl(*context, reinterpret_cast<HWND>(lParam));
+            if (HIWORD(wParam) != BN_CLICKED)
+                break;
             switch (LOWORD(wParam)) {
                 case kIdBrowse:
                     try {
@@ -892,7 +877,7 @@ ATOM registerCustomWindowClass(HINSTANCE instance) {
                                                       0,
                                                       LR_DEFAULTSIZE | LR_SHARED));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    windowClass.hbrBackground = nullptr;
     windowClass.lpszClassName = L"ZannaInstallerOptionsWindowV2";
     windowClass.hIconSm = windowClass.hIcon;
     const ATOM atom = RegisterClassExW(&windowClass);
@@ -919,13 +904,8 @@ bool showCustomDialog(HINSTANCE instance,
     context.initialComponents = initialComponents;
     context.scopeLocked = scopeLocked;
     context.displayedScope = initialScope;
-
-    NONCLIENTMETRICSW metrics{sizeof(metrics)};
-    if (!SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0))
-        throw std::runtime_error("cannot load the Windows interface font");
-    context.font = CreateFontIndirectW(&metrics.lfMessageFont);
-    if (!context.font)
-        throw std::runtime_error("cannot create the Windows interface font");
+    const UINT dpi = GetDpiForSystem();
+    context.theme = std::make_unique<InstallerThemeResources>(dpi);
 
     struct DialogResources {
         CustomDialogContext &context;
@@ -933,15 +913,12 @@ bool showCustomDialog(HINSTANCE instance,
         ~DialogResources() {
             if (context.window && IsWindow(context.window))
                 DestroyWindow(context.window);
-            if (context.font)
-                DeleteObject(context.font);
         }
     } resources{context};
 
-    const UINT dpi = GetDpiForSystem();
     const int componentHeight = static_cast<int>(package.metadata.components.size()) * 31;
     const int clientHeight = 460 + componentHeight;
-    context.virtualWidth = scaled(680, dpi);
+    context.virtualWidth = scaled(660, dpi);
     context.virtualHeight = scaled(clientHeight, dpi);
     RECT bounds{0, 0, scaled(680, dpi), scaled(clientHeight, dpi)};
     if (!AdjustWindowRectExForDpi(&bounds,
@@ -979,23 +956,15 @@ bool showCustomDialog(HINSTANCE instance,
                                      &context);
     if (!context.window)
         throw std::runtime_error("cannot create the native setup options window");
-    SetWindowTheme(context.window, L"Explorer", nullptr);
-    setControlFont(context.window, context.font);
+    applyInstallerWindowTheme(context.window, *context.theme);
+    setControlFont(context.window, context.theme->bodyFont());
 
-    HWND brandIcon = createControl(context, 0, L"STATIC", L"", SS_ICON, 24, 9, 36, 36, -1, dpi);
-    SendMessageW(brandIcon,
-                 STM_SETICON,
-                 reinterpret_cast<WPARAM>(LoadImageW(instance,
-                                                     MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER),
-                                                     IMAGE_ICON,
-                                                     scaled(32, dpi),
-                                                     scaled(32, dpi),
-                                                     LR_SHARED)),
-                 0);
     const std::wstring introduction = utf8ToWide(package.metadata.displayName) + L" " +
                                       utf8ToWide(package.metadata.version) +
                                       L" — choose the developer setup you want.";
-    createControl(context, 0, L"STATIC", introduction.c_str(), SS_LEFT, 72, 18, 575, 28, -1, dpi);
+    HWND introductionControl = createControl(
+        context, 0, L"STATIC", introduction.c_str(), SS_LEFT, 240, 18, 407, 28, -1, dpi);
+    setControlFont(introductionControl, context.theme->monoFont());
     createControl(
         context, 0, L"BUTTON", L"Installation scope", BS_GROUPBOX, 20, 50, 630, 74, -1, dpi);
     HWND userScope = createControl(context,
@@ -1027,7 +996,7 @@ bool showCustomDialog(HINSTANCE instance,
     createControl(
         context, 0, L"STATIC", L"Installation folder:", SS_LEFT, 24, 137, 145, 22, -1, dpi);
     context.destination = createControl(context,
-                                        WS_EX_CLIENTEDGE,
+                                        WS_EX_STATICEDGE,
                                         L"EDIT",
                                         initialDestination.c_str(),
                                         ES_AUTOHSCROLL | WS_TABSTOP,
@@ -1041,7 +1010,7 @@ bool showCustomDialog(HINSTANCE instance,
                   0,
                   L"BUTTON",
                   L"Browse...",
-                  BS_PUSHBUTTON | WS_TABSTOP,
+                  BS_OWNERDRAW | WS_TABSTOP,
                   558,
                   157,
                   92,
@@ -1063,10 +1032,10 @@ bool showCustomDialog(HINSTANCE instance,
                   0,
                   L"BUTTON",
                   L"Minimal",
-                  BS_PUSHBUTTON | WS_TABSTOP,
+                  BS_OWNERDRAW | WS_TABSTOP,
                   36,
                   222,
-                  90,
+                  106,
                   28,
                   kIdMinimal,
                   dpi);
@@ -1074,23 +1043,23 @@ bool showCustomDialog(HINSTANCE instance,
                   0,
                   L"BUTTON",
                   L"Typical",
-                  BS_DEFPUSHBUTTON | WS_TABSTOP,
-                  134,
+                  BS_OWNERDRAW | WS_TABSTOP,
+                  150,
                   222,
-                  90,
+                  106,
                   28,
                   kIdTypical,
                   dpi);
     createControl(
-        context, 0, L"BUTTON", L"SDK", BS_PUSHBUTTON | WS_TABSTOP, 232, 222, 90, 28, kIdSDK, dpi);
+        context, 0, L"BUTTON", L"SDK", BS_OWNERDRAW | WS_TABSTOP, 264, 222, 106, 28, kIdSDK, dpi);
     createControl(context,
                   0,
                   L"BUTTON",
                   L"Complete",
-                  BS_PUSHBUTTON | WS_TABSTOP,
-                  330,
+                  BS_OWNERDRAW | WS_TABSTOP,
+                  378,
                   222,
-                  90,
+                  106,
                   28,
                   kIdComplete,
                   dpi);
@@ -1181,7 +1150,7 @@ bool showCustomDialog(HINSTANCE instance,
                                 0,
                                 L"BUTTON",
                                 L"Continue",
-                                BS_DEFPUSHBUTTON | WS_TABSTOP,
+                                BS_OWNERDRAW | WS_TABSTOP,
                                 438,
                                 bottom + 52,
                                 100,
@@ -1195,7 +1164,7 @@ bool showCustomDialog(HINSTANCE instance,
                   0,
                   L"BUTTON",
                   L"Cancel",
-                  BS_PUSHBUTTON | WS_TABSTOP,
+                  BS_OWNERDRAW | WS_TABSTOP,
                   548,
                   bottom + 52,
                   100,
@@ -1264,64 +1233,6 @@ std::wstring selectedComponentSummary(const HostPackage &package,
     return result;
 }
 
-struct ProgressContext {
-    std::function<int()> work;
-    Logger *logger{nullptr};
-    std::thread worker;
-    std::exception_ptr failure;
-    int result{kExitFatalError};
-    std::atomic<bool> cancellationRequested{false};
-    std::atomic<bool> completed{false};
-};
-
-HRESULT CALLBACK
-progressCallback(HWND window, UINT notification, WPARAM wParam, LPARAM, LONG_PTR data) {
-    auto &context = *reinterpret_cast<ProgressContext *>(data);
-    if (notification == TDN_CREATED) {
-        try {
-            context.logger->setProgressCallback([window](std::wstring_view message) {
-                const std::wstring text(message);
-                SendMessageW(window,
-                             TDM_SET_ELEMENT_TEXT,
-                             TDE_CONTENT,
-                             reinterpret_cast<LPARAM>(text.c_str()));
-            });
-            context.logger->setCancellationCallback(
-                [&context] { return context.cancellationRequested.load(); });
-            SendMessageW(window, TDM_ENABLE_BUTTON, IDOK, FALSE);
-            SendMessageW(window, TDM_SET_MARQUEE_PROGRESS_BAR, TRUE, 0);
-            SendMessageW(window, TDM_SET_PROGRESS_BAR_MARQUEE, TRUE, 35);
-            context.worker = std::thread([window, &context] {
-                try {
-                    context.result = context.work();
-                } catch (...) {
-                    context.failure = std::current_exception();
-                }
-                context.completed.store(true);
-                SendMessageW(window, TDM_ENABLE_BUTTON, IDCANCEL, FALSE);
-                SendMessageW(window, TDM_ENABLE_BUTTON, IDOK, TRUE);
-                SendMessageW(window, TDM_CLICK_BUTTON, IDOK, 0);
-            });
-        } catch (...) {
-            context.failure = std::current_exception();
-            context.completed.store(true);
-            if (!PostMessageW(window, TDM_CLICK_BUTTON, IDOK, 0))
-                EndDialog(window, IDOK);
-        }
-    } else if (notification == TDN_BUTTON_CLICKED && static_cast<int>(wParam) == IDCANCEL &&
-               !context.completed.load()) {
-        context.cancellationRequested.store(true);
-        SendMessageW(window, TDM_ENABLE_BUTTON, IDCANCEL, FALSE);
-        SendMessageW(window,
-                     TDM_SET_ELEMENT_TEXT,
-                     TDE_CONTENT,
-                     reinterpret_cast<LPARAM>(
-                         L"Cancelling safely and restoring the previous installation..."));
-        return S_FALSE;
-    }
-    return S_OK;
-}
-
 } // namespace
 
 bool configureInstallerWizard(HINSTANCE instance,
@@ -1336,27 +1247,38 @@ bool configureInstallerWizard(HINSTANCE instance,
     for (;;) {
         const std::wstring title = utf8ToWide(package.metadata.displayName) + L" Setup";
         if (package.metadata.packageMode == "maintenance") {
-            std::vector<TASKDIALOG_BUTTON> actions = {
+            BrandedInstallerPage maintenance;
+            maintenance.windowTitle = title;
+            maintenance.eyebrow = L"// TOOLCHAIN CONTROL";
+            maintenance.heading = L"Keep the stack sharp.";
+            maintenance.body =
+                L"Change the installed developer surface, restore it from the signed package, "
+                L"or remove only the files and registrations Zanna owns.";
+            maintenance.metadata = L"VERSION " + utf8ToWide(package.metadata.version) + L"  |  " +
+                                   utf8ToWide(package.metadata.architecture) + L"  |  " +
+                                   utf8ToWide(package.metadata.channel);
+            maintenance.actions = {
                 {kMaintenanceModify,
-                 L"Modify installed features\nChoose components and developer integrations."},
+                 L"MODIFY THE TOOLCHAIN",
+                 L"Choose components and developer integrations.",
+                 InstallerAccent::Green},
                 {kMaintenanceRepair,
-                 L"Repair Zanna\nVerify and restore all selected files and registrations."},
+                 L"REPAIR ZANNA",
+                 L"Verify and atomically restore the selected installation.",
+                 InstallerAccent::Steel},
                 {kMaintenanceRemove,
-                 L"Uninstall Zanna\nRemove every Zanna-owned file and registration."}};
+                 L"UNINSTALL ZANNA",
+                 L"Remove Zanna-owned files and registrations; preserve everything else.",
+                 InstallerAccent::Danger}};
             if (!package.metadata.updateManifestUrl.empty())
-                actions.push_back({kMaintenanceUpdate,
-                                   L"Check for updates\nQuery the pinned signed update service."});
-            const int selected = showTaskDialog(instance,
-                                                title,
-                                                L"Maintain your Zanna installation",
-                                                L"Choose an operation. Files you added inside the "
-                                                L"installation folder are preserved during repair "
-                                                L"and removal.",
-                                                actions,
-                                                TDCBF_CANCEL_BUTTON,
-                                                TDF_USE_COMMAND_LINKS,
-                                                nullptr,
-                                                dependencySummary());
+                maintenance.actions.push_back({kMaintenanceUpdate,
+                                               L"CHECK FOR UPDATES",
+                                               L"Query the pinned, signed Zanna update service.",
+                                               InstallerAccent::Teal});
+            maintenance.defaultAction = kMaintenanceModify;
+            maintenance.detailsLabel = L"SYSTEM PROFILE";
+            maintenance.detailsText = dependencySummary();
+            const int selected = showBrandedInstallerPage(instance, maintenance).action;
             if (selected == IDCANCEL)
                 return false;
             if (selected == kMaintenanceUpdate) {
@@ -1379,37 +1301,43 @@ bool configureInstallerWizard(HINSTANCE instance,
                 options.operation = Operation::Uninstall;
             }
         } else {
-            const std::wstring verb = installationPresent ? L"Update" : L"Install";
-            const std::wstring recommendedText =
-                verb + L" recommended\nCore tools, IDE, SDK, and available integrations.";
-            const std::wstring completeText =
-                verb + L" everything\nInclude every packaged component and sample.";
-            const std::wstring sdkText =
-                verb + L" SDK tools\nCore command-line tools and native development files.";
-            std::vector<TASKDIALOG_BUTTON> choices = {
-                {kWelcomeRecommended, recommendedText.c_str()},
-                {kWelcomeSDK, sdkText.c_str()},
-                {kWelcomeComplete, completeText.c_str()},
-                {kWelcomeCustom, L"Customize\nChoose scope, folder, and individual components."}};
+            const std::wstring verb = installationPresent ? L"UPDATE" : L"INSTALL";
+            BrandedInstallerPage welcome;
+            welcome.windowTitle = title;
+            welcome.eyebrow = L"// ZANNA TOOLCHAIN · WINDOWS";
+            welcome.heading = L"Source in. Native code out.";
+            welcome.body =
+                L"A complete game-development toolchain, built from scratch. Choose a build "
+                L"profile and setup will wire the compiler, Studio, SDK, PATH, file actions, "
+                L"shortcuts, docs, and samples for you.";
+            welcome.metadata = L"VERSION " + utf8ToWide(package.metadata.version) + L"  |  " +
+                               utf8ToWide(package.metadata.architecture) + L"  |  " +
+                               utf8ToWide(package.metadata.channel);
+            welcome.actions = {{kWelcomeRecommended,
+                                verb + L" RECOMMENDED",
+                                L"Core tools, Studio, SDK, and available developer integrations.",
+                                InstallerAccent::Green},
+                               {kWelcomeSDK,
+                                verb + L" SDK TOOLS",
+                                L"Command-line toolchain and native development files.",
+                                InstallerAccent::Steel},
+                               {kWelcomeComplete,
+                                verb + L" EVERYTHING",
+                                L"Every packaged component, documentation set, and sample.",
+                                InstallerAccent::Teal},
+                               {kWelcomeCustom,
+                                L"CUSTOM BUILD",
+                                L"Choose scope, destination, components, and integrations.",
+                                InstallerAccent::Teal}};
             if (!package.metadata.updateManifestUrl.empty())
-                choices.push_back({kWelcomeUpdate,
-                                   L"Check for updates\nQuery the pinned signed update service."});
-            std::wstring content = utf8ToWide(package.metadata.description) + L"\r\n\r\nVersion " +
-                                   utf8ToWide(package.metadata.version) + L"  |  " +
-                                   utf8ToWide(package.metadata.architecture) + L"  |  " +
-                                   utf8ToWide(package.metadata.publisher);
-            if (!package.metadata.homepage.empty())
-                content += L"\r\n<a href=\"" + utf8ToWide(package.metadata.homepage) +
-                           L"\">Project website</a>";
-            const int selected = showTaskDialog(instance,
-                                                title,
-                                                L"Welcome to Zanna",
-                                                content,
-                                                choices,
-                                                TDCBF_CANCEL_BUTTON,
-                                                TDF_USE_COMMAND_LINKS,
-                                                nullptr,
-                                                dependencySummary());
+                welcome.actions.push_back({kWelcomeUpdate,
+                                           L"CHECK FOR UPDATES",
+                                           L"Query the pinned, signed Zanna update service.",
+                                           InstallerAccent::Steel});
+            welcome.defaultAction = kWelcomeRecommended;
+            welcome.detailsLabel = L"DEVELOPER READINESS";
+            welcome.detailsText = dependencySummary();
+            const int selected = showBrandedInstallerPage(instance, welcome).action;
             if (selected == IDCANCEL)
                 return false;
             if (selected == kWelcomeUpdate) {
@@ -1435,67 +1363,59 @@ bool configureInstallerWizard(HINSTANCE instance,
             }
         }
 
-        std::wstring instruction;
-        std::wstring content;
-        PCWSTR icon = nullptr;
+        BrandedInstallerPage ready;
+        ready.windowTitle = title;
+        ready.eyebrow = L"// TRANSACTION READY";
         if (options.operation == Operation::Uninstall) {
-            instruction = L"Ready to remove " + utf8ToWide(package.metadata.displayName);
-            content = L"Zanna-owned files, shortcuts, PATH registration, and Open With entries "
-                      L"will be removed. Unowned files are preserved.";
-            icon = TD_WARNING_ICON;
+            ready.heading = L"Ready to remove Zanna.";
+            ready.body =
+                L"Setup will remove Zanna-owned files, shortcuts, PATH registration, and Open "
+                L"With entries. Files you added to the installation remain untouched.";
+            ready.metadata = L"RECOVERABLE · OWNERSHIP-AWARE · NO UNOWNED FILE DELETION";
+            ready.actions.push_back({kReadyContinue,
+                                     L"UNINSTALL ZANNA",
+                                     L"Begin the reversible removal transaction.",
+                                     InstallerAccent::Danger});
         } else if (options.operation == Operation::Repair) {
-            instruction = L"Ready to repair " + utf8ToWide(package.metadata.displayName);
-            content = L"Setup will verify and atomically restore the selected installation.";
+            ready.heading = L"Ready to restore the stack.";
+            ready.body = L"Setup will verify installed hashes and atomically restore the selected "
+                         L"toolchain from this signed, self-contained package.";
+            ready.metadata = L"VERIFY · STAGE · COMMIT · ROLLBACK-SAFE";
+            ready.actions.push_back({kReadyContinue,
+                                     L"REPAIR ZANNA",
+                                     L"Verify and restore the installed developer surface.",
+                                     InstallerAccent::Green});
         } else {
-            instruction = L"Ready to " +
-                          std::wstring(installationPresent ? L"update " : L"install ") +
-                          utf8ToWide(package.metadata.displayName);
-            content = L"Location: " + options.destination.wstring() + L"\r\nScope: " +
-                      std::wstring(*options.scope == InstallScope::User ? L"Current user"
-                                                                        : L"All users") +
-                      L"\r\nComponents: " +
-                      selectedComponentSummary(package, options, initialComponents);
+            ready.heading = installationPresent ? L"Ready to evolve the toolchain."
+                                                : L"Ready to bring Zanna online.";
+            ready.body = L"Location: " + options.destination.wstring() + L"\r\nScope: " +
+                         std::wstring(*options.scope == InstallScope::User ? L"Current user"
+                                                                           : L"All users") +
+                         L"\r\nComponents: " +
+                         selectedComponentSummary(package, options, initialComponents);
+            ready.metadata = L"SOURCE → IL → NATIVE · ATOMIC INSTALL · ZERO DOWNLOADS";
+            ready.actions.push_back(
+                {kReadyContinue,
+                 installationPresent ? L"UPDATE ZANNA" : L"INSTALL ZANNA",
+                 L"Stage, verify, and commit the complete developer setup.",
+                 InstallerAccent::Green,
+                 options.operation == Operation::Install && !package.licenseText.empty()});
         }
-        const std::vector<TASKDIALOG_BUTTON> readyButtons = {
-            {kReadyContinue,
-             options.operation == Operation::Uninstall ? L"Uninstall" : L"Continue"},
-            {kReadyBack, L"Back"}};
-        TASKDIALOG_FLAGS flags = TDF_USE_COMMAND_LINKS;
-        std::wstring expanded;
+        ready.actions.push_back({kReadyBack,
+                                 L"GO BACK",
+                                 L"Return to the setup choices without changing the machine.",
+                                 InstallerAccent::Steel});
+        ready.defaultAction = kReadyContinue;
         if (options.operation == Operation::Install && !package.licenseText.empty()) {
-            flags |= TDF_EXPANDED_BY_DEFAULT;
-            expanded = L"License\r\n\r\n" + utf8ToWide(package.licenseText);
+            ready.detailsLabel = L"LICENSE TERMS";
+            ready.detailsText = utf8ToWide(package.licenseText);
+            ready.verificationText = L"I have read and accept the Zanna license terms.";
         }
-        for (;;) {
-            bool licenseAccepted = false;
-            const std::wstring verification =
-                options.operation == Operation::Install && !package.licenseText.empty()
-                    ? L"I have read and accept the Zanna license terms."
-                    : L"";
-            const int ready = showTaskDialog(instance,
-                                             title,
-                                             instruction,
-                                             content,
-                                             readyButtons,
-                                             TDCBF_CANCEL_BUTTON,
-                                             flags,
-                                             icon,
-                                             expanded,
-                                             verification,
-                                             verification.empty() ? nullptr : &licenseAccepted);
-            if (ready == kReadyContinue && (verification.empty() || licenseAccepted))
-                return true;
-            if (ready == kReadyContinue) {
-                MessageBoxW(nullptr,
-                            L"Please review and accept the license terms before continuing.",
-                            title.c_str(),
-                            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-                continue;
-            }
-            if (ready == IDCANCEL)
-                return false;
-            break;
-        }
+        const int selected = showBrandedInstallerPage(instance, ready).action;
+        if (selected == kReadyContinue)
+            return true;
+        if (selected == IDCANCEL)
+            return false;
     }
 }
 
@@ -1507,55 +1427,37 @@ int runInstallerProgress(HINSTANCE instance,
                          const std::function<int()> &work) {
     if (uiLevel == UiLevel::Quiet)
         return work();
+    std::wstring eyebrow;
     std::wstring action;
+    std::wstring body;
     switch (operation) {
         case Operation::Uninstall:
-            action = L"Removing Zanna";
+            eyebrow = L"// OWNERSHIP-AWARE REMOVAL";
+            action = L"Taking Zanna offline.";
+            body = L"Removing owned files and registrations while preserving everything you "
+                   L"added. If interrupted, setup restores the previous installation.";
             break;
         case Operation::Repair:
-            action = L"Repairing Zanna";
+            eyebrow = L"// VERIFY · STAGE · RESTORE";
+            action = L"Restoring the toolchain.";
+            body = L"Checking every installed hash and atomically restoring the developer "
+                   L"surface from this self-contained package.";
             break;
         case Operation::Modify:
-            action = L"Updating selected features";
+            eyebrow = L"// RECONFIGURE THE STACK";
+            action = L"Shaping your Zanna build.";
+            body = L"Applying the selected components and integrations as one recoverable "
+                   L"transaction.";
             break;
         default:
-            action = L"Installing Zanna";
+            eyebrow = L"// SOURCE → IL → NATIVE";
+            action = L"Bringing Zanna online.";
+            body = L"Staging, verifying, and committing the compiler, Studio, SDK, developer "
+                   L"integrations, documentation, and samples.";
             break;
     }
-    ProgressContext context{work, &logger};
-    const std::array<TASKDIALOG_BUTTON, 2> progressButtons = {
-        TASKDIALOG_BUTTON{IDOK, L"Close"}, TASKDIALOG_BUTTON{IDCANCEL, L"Cancel"}};
-    TASKDIALOGCONFIG config{sizeof(config)};
-    config.hInstance = instance;
     const std::wstring title = utf8ToWide(package.metadata.displayName) + L" Setup";
-    config.pszWindowTitle = title.c_str();
-    config.pszMainInstruction = action.c_str();
-    config.pszContent = L"Setup is verifying and committing a recoverable transaction. "
-                        L"This window will close automatically.";
-    config.dwFlags = TDF_SHOW_MARQUEE_PROGRESS_BAR | TDF_CAN_BE_MINIMIZED | TDF_SIZE_TO_CONTENT |
-                     TDF_USE_HICON_MAIN;
-    config.hMainIcon = static_cast<HICON>(LoadImageW(instance,
-                                                     MAKEINTRESOURCEW(IDI_ZANNA_INSTALLER),
-                                                     IMAGE_ICON,
-                                                     0,
-                                                     0,
-                                                     LR_DEFAULTSIZE | LR_SHARED));
-    config.cButtons = static_cast<UINT>(progressButtons.size());
-    config.pButtons = progressButtons.data();
-    config.nDefaultButton = IDOK;
-    config.pfCallback = progressCallback;
-    config.lpCallbackData = reinterpret_cast<LONG_PTR>(&context);
-    int selected = 0;
-    const HRESULT dialogResult = TaskDialogIndirect(&config, &selected, nullptr, nullptr);
-    if (context.worker.joinable())
-        context.worker.join();
-    logger.setProgressCallback({});
-    logger.setCancellationCallback({});
-    if (FAILED(dialogResult))
-        throw std::runtime_error("cannot create the installer progress window");
-    if (context.failure)
-        std::rethrow_exception(context.failure);
-    return context.result;
+    return runBrandedInstallerProgress(instance, title, eyebrow, action, body, logger, work);
 }
 
 void showInstallerFinish(HINSTANCE instance,
@@ -1563,9 +1465,8 @@ void showInstallerFinish(HINSTANCE instance,
                          const fs::path &installRoot,
                          const std::set<std::string> &,
                          HostOptions &options) {
-    std::vector<TASKDIALOG_BUTTON> actions;
-    std::vector<std::wstring> actionLabels;
-    actionLabels.reserve(4U);
+    std::vector<BrandedInstallerAction> actions;
+    actions.reserve(7U);
     const std::string launchRelative = package.metadata.productKind == "toolchain" &&
                                                !package.metadata.associationExecutable.empty()
                                            ? package.metadata.associationExecutable
@@ -1573,34 +1474,55 @@ void showInstallerFinish(HINSTANCE instance,
     const fs::path primary = installRoot / utf8ToWide(launchRelative);
     std::error_code fileError;
     if (fs::is_regular_file(primary, fileError) && !fileError) {
-        actionLabels.push_back(package.metadata.productKind == "toolchain"
-                                   ? L"Launch Zanna Studio"
-                                   : L"Launch " + utf8ToWide(package.metadata.displayName));
-        actions.push_back({kFinishLaunch, actionLabels.back().c_str()});
+        actions.push_back({kFinishLaunch,
+                           package.metadata.productKind == "toolchain"
+                               ? L"LAUNCH ZANNA STUDIO"
+                               : L"LAUNCH " + utf8ToWide(package.metadata.displayName),
+                           L"Start creating with the newly installed toolchain.",
+                           InstallerAccent::Green});
     }
     if (package.metadata.productKind == "toolchain") {
-        actions.push_back({kFinishPrompt, L"Open Zanna Developer Prompt"});
-        actions.push_back({kFinishQuickstart, L"Open the Windows quick start"});
+        actions.push_back({kFinishPrompt,
+                           L"OPEN DEVELOPER PROMPT",
+                           L"Start a terminal with the Zanna environment ready.",
+                           InstallerAccent::Steel});
+        actions.push_back({kFinishQuickstart,
+                           L"READ THE QUICK START",
+                           L"Open the Windows developer setup guide.",
+                           InstallerAccent::Teal});
         fileError.clear();
         if (fs::is_directory(installRoot / L"share" / L"zanna" / L"samples", fileError) &&
             !fileError) {
-            actions.push_back({kFinishSamples, L"Explore installed samples"});
+            actions.push_back({kFinishSamples,
+                               L"EXPLORE THE SAMPLES",
+                               L"Open the installed source and game examples.",
+                               InstallerAccent::Teal});
         }
-        actions.push_back(
-            {kFinishCopyVerification, L"Copy verification command\nUse it in any new terminal."});
+        actions.push_back({kFinishCopyVerification,
+                           L"COPY VERIFICATION COMMAND",
+                           L"Verify this installation from any new terminal.",
+                           InstallerAccent::Steel});
     }
-    actions.push_back({kFinishClose, L"Finish"});
+    actions.push_back({kFinishClose,
+                       L"FINISH",
+                       L"Close setup. Your developer environment is ready.",
+                       InstallerAccent::Green});
     std::wstring content = L"The installation completed successfully. PATH and Open With "
                            L"changes are available to new applications.";
     for (;;) {
-        const int selected = showTaskDialog(instance,
-                                            utf8ToWide(package.metadata.displayName) + L" Setup",
-                                            L"Zanna is ready",
-                                            content,
-                                            actions,
-                                            static_cast<TASKDIALOG_COMMON_BUTTON_FLAGS>(0),
-                                            TDF_USE_COMMAND_LINKS,
-                                            nullptr);
+        BrandedInstallerPage finish;
+        finish.windowTitle = utf8ToWide(package.metadata.displayName) + L" Setup";
+        finish.eyebrow = L"// TOOLCHAIN ONLINE";
+        finish.heading = L"Build something impossible.";
+        finish.body = content;
+        finish.metadata = L"VERSION " + utf8ToWide(package.metadata.version) + L"  |  " +
+                          utf8ToWide(package.metadata.architecture) +
+                          L"  |  READY FOR NEW TERMINALS";
+        finish.actions = actions;
+        finish.defaultAction = actions.empty() ? kFinishClose : actions.front().id;
+        finish.closeAction = kFinishClose;
+        finish.showCancel = false;
+        const int selected = showBrandedInstallerPage(instance, finish).action;
         if (selected == kFinishCopyVerification) {
             const fs::path zanna = installRoot / L"bin" / L"zanna.exe";
             try {

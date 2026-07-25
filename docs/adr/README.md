@@ -204,3 +204,4 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0073](0073-cross-platform-installer-release-pipeline.md) — Cross-Platform Installer Release Pipeline
 - [ADR 0103](0103-windows-developer-installer-v2.md) — Windows Developer Installer v2
 - [ADR 0149](0149-macos-zanna-studio-application-identity.md) — Preserve Zanna Studio Identity in the macOS Application Menu
+- [ADR 0175](0175-zanna-games-windows-installer-experience.md) — Give Windows Setup a Native Zanna Games Experience
