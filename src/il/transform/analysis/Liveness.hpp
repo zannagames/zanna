@@ -31,7 +31,9 @@ namespace il::transform {
 
 /// @brief Cached control-flow information for a function.
 struct CFGInfo {
+    /// Outgoing block edges keyed by source block.
     std::unordered_map<const core::BasicBlock *, std::vector<const core::BasicBlock *>> successors;
+    /// Incoming block edges keyed by target block.
     std::unordered_map<const core::BasicBlock *, std::vector<const core::BasicBlock *>>
         predecessors;
 };
@@ -42,6 +44,7 @@ class LivenessInfo {
     /// @brief Lightweight view over the live value bitset for a block edge.
     class SetView {
       public:
+        /// @brief Construct an unattached empty view.
         SetView() = default;
 
         /// @brief Query whether the set contains @p valueId.
@@ -49,6 +52,9 @@ class LivenessInfo {
         /// @return True when live; false otherwise.
         bool contains(unsigned valueId) const;
 
+        /// @brief Invoke a callback once for every set SSA id.
+        /// @tparam Fn Callable accepting an unsigned id.
+        /// @param fn Callback forwarded for each live value.
         template <typename Fn> void forEach(Fn &&fn) const {
             if (!bits_)
                 return;
@@ -59,6 +65,7 @@ class LivenessInfo {
         }
 
         /// @brief Check whether the set is empty.
+        /// @return True for an unattached view or one with no set bits.
         bool empty() const;
 
         /// @brief Access the underlying bitset representation.
@@ -74,16 +81,25 @@ class LivenessInfo {
     };
 
     /// @brief Live-in set for @p block.
+    /// @param block Block represented in this analysis snapshot.
+    /// @return View of values live before the block.
     SetView liveIn(const core::BasicBlock &block) const;
-    /// @overload
+    /// @brief Live-in set for an optional block pointer.
+    /// @param block Block pointer, or null.
+    /// @return Corresponding view, or an empty view for null/unknown blocks.
     SetView liveIn(const core::BasicBlock *block) const;
 
     /// @brief Live-out set for @p block.
+    /// @param block Block represented in this analysis snapshot.
+    /// @return View of values live after the block.
     SetView liveOut(const core::BasicBlock &block) const;
-    /// @overload
+    /// @brief Live-out set for an optional block pointer.
+    /// @param block Block pointer, or null.
+    /// @return Corresponding view, or an empty view for null/unknown blocks.
     SetView liveOut(const core::BasicBlock *block) const;
 
     /// @brief Total number of SSA value IDs tracked by the analysis.
+    /// @return Dense bitset capacity.
     std::size_t valueCount() const;
 
   private:
@@ -102,12 +118,22 @@ class LivenessInfo {
 };
 
 /// @brief Build CFG adjacency information for a function.
+/// @param module Module used to construct the shared CFG context.
+/// @param fn Function whose edges are indexed.
+/// @return Self-contained successor and predecessor maps.
 CFGInfo buildCFG(core::Module &module, core::Function &fn);
 
 /// @brief Compute liveness sets for @p fn by building a CFG internally.
+/// @param module Module containing @p fn.
+/// @param fn Function analyzed.
+/// @return Live-in and live-out bitsets for every block.
 LivenessInfo computeLiveness(core::Module &module, core::Function &fn);
 
 /// @brief Compute liveness sets for @p fn using a precomputed CFG.
+/// @param module Module containing @p fn.
+/// @param fn Function analyzed.
+/// @param cfg Stable adjacency snapshot for @p fn.
+/// @return Live-in and live-out bitsets for every block.
 LivenessInfo computeLiveness(core::Module &module, core::Function &fn, const CFGInfo &cfg);
 
 } // namespace il::transform

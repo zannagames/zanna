@@ -44,6 +44,7 @@ class SceneLightInspector3D {
     expose GUI.GroupBox group;
     expose GUI.Label summary;
     expose GUI.Dropdown typeDropdown;
+    expose GUI.Checkbox colorOverride;
     expose GUI.ColorPicker colorPicker;
     expose GUI.Spinner intensity;
     expose GUI.Checkbox enabledCheck;
@@ -73,6 +74,7 @@ class SceneLightInspector3D {
         group = null;
         summary = null;
         typeDropdown = null;
+        colorOverride = null;
         colorPicker = null;
         intensity = null;
         enabledCheck = null;
@@ -121,7 +123,11 @@ class SceneLightInspector3D {
         var appearance = GUI.HBox.New();
         appearance.SetSpacing(4.0);
         group.AddChild(appearance);
-        GUI.Label.New(appearance, "Color");
+        colorOverride = GUI.Checkbox.New(appearance, "Color");
+        colorOverride.SetTooltip(
+            "Determinate applies this color to the selection; mixed "
+            + "preserves each node's color");
+        colorOverride.SetChecked(true);
         colorPicker = GUI.ColorPicker.New(appearance);
         colorPicker.SetFlex(1.0);
         colorPicker.SetAccessibleName("Node light color");
@@ -205,56 +211,339 @@ class SceneLightInspector3D {
             "Remove the light while keeping the node and its other components");
 
         UpdateTypeControls();
-        UpdateControls(false, false, 0);
+        var noNodes: List[SceneNode] = [];
+        UpdateSelectionControls(false, noNodes, 0);
     }
 
-    /// @brief Refresh controls from one selected node without mutating it.
-    expose func Refresh(node: SceneNode,
-                        selectionCount: Integer,
-                        editorEnabled: Boolean) {
-        var light: Light3D = null;
-        if node != null { light = node.Light; }
-        var state = scene_light_3d.FromLight(light);
-        typeDropdown.SetSelected(state.kind);
-        colorPicker.SetColor(scene_light_3d.PackedRgb(light));
-        intensity.SetValue(state.intensity);
-        enabledCheck.SetChecked(state.enabled);
-        castsShadowsCheck.SetChecked(state.castsShadows);
-        positionX.SetValue(state.positionX);
-        positionY.SetValue(state.positionY);
-        positionZ.SetValue(state.positionZ);
-        directionX.SetValue(state.directionX);
-        directionY.SetValue(state.directionY);
-        directionZ.SetValue(state.directionZ);
-        attenuation.SetValue(state.attenuation);
-        decayType.SetSelected(state.decayType);
-        range.SetValue(state.range);
-        width.SetValue(state.width);
-        height.SetValue(state.height);
-        radius.SetValue(state.radius);
-        innerCone.SetValue(state.innerConeDegrees);
-        outerCone.SetValue(state.outerConeDegrees);
+    /// @brief Refresh truthful common/mixed fields for one node selection.
+    /// @details Mixed detection spans light-bearing nodes only; nodes
+    ///          without lights participate in coverage counts (ADR 0186).
+    expose func RefreshSelection(nodes: List[SceneNode],
+                                 primary: SceneNode,
+                                 editorEnabled: Boolean) {
+        if typeDropdown == null { return; }
+        var primaryLight: Light3D = null;
+        if primary != null { primaryLight = primary.Light; }
+        var lightCount = 0;
+        var reference: Light3D = null;
+        var index = 0;
+        while index < nodes.count() {
+            var candidate = nodes.get(index).Light;
+            if candidate != null {
+                lightCount = lightCount + 1;
+                if reference == null { reference = candidate; }
+            }
+            index = index + 1;
+        }
+        if primaryLight == null { primaryLight = reference; }
+        var state = scene_light_3d.FromLight(primaryLight);
 
-        if selectionCount == 0 {
-            summary.SetText("Select one node to author a light component.");
-        } else if selectionCount > 1 {
+        var kindMixed = false;
+        var colorMixed = false;
+        var intensityMixed = false;
+        var enabledMixed = false;
+        var shadowsMixed = false;
+        var positionXMixed = false;
+        var positionYMixed = false;
+        var positionZMixed = false;
+        var directionXMixed = false;
+        var directionYMixed = false;
+        var directionZMixed = false;
+        var attenuationMixed = false;
+        var decayMixed = false;
+        var rangeMixed = false;
+        var widthMixed = false;
+        var heightMixed = false;
+        var radiusMixed = false;
+        var innerMixed = false;
+        var outerMixed = false;
+        index = 0;
+        while index < nodes.count() {
+            var candidate = nodes.get(index).Light;
+            if candidate != null and candidate != primaryLight {
+                var other = scene_light_3d.FromLight(candidate);
+                if other.kind != state.kind { kindMixed = true; }
+                if MixedNumber(other.red, state.red)
+                   or MixedNumber(other.green, state.green)
+                   or MixedNumber(other.blue, state.blue) {
+                    colorMixed = true;
+                }
+                if MixedNumber(other.intensity, state.intensity) {
+                    intensityMixed = true;
+                }
+                if other.enabled != state.enabled { enabledMixed = true; }
+                if other.castsShadows != state.castsShadows {
+                    shadowsMixed = true;
+                }
+                if MixedNumber(other.positionX, state.positionX) {
+                    positionXMixed = true;
+                }
+                if MixedNumber(other.positionY, state.positionY) {
+                    positionYMixed = true;
+                }
+                if MixedNumber(other.positionZ, state.positionZ) {
+                    positionZMixed = true;
+                }
+                if MixedNumber(other.directionX, state.directionX) {
+                    directionXMixed = true;
+                }
+                if MixedNumber(other.directionY, state.directionY) {
+                    directionYMixed = true;
+                }
+                if MixedNumber(other.directionZ, state.directionZ) {
+                    directionZMixed = true;
+                }
+                if MixedNumber(other.attenuation, state.attenuation) {
+                    attenuationMixed = true;
+                }
+                if other.decayType != state.decayType {
+                    decayMixed = true;
+                }
+                if MixedNumber(other.range, state.range) {
+                    rangeMixed = true;
+                }
+                if MixedNumber(other.width, state.width) {
+                    widthMixed = true;
+                }
+                if MixedNumber(other.height, state.height) {
+                    heightMixed = true;
+                }
+                if MixedNumber(other.radius, state.radius) {
+                    radiusMixed = true;
+                }
+                if MixedNumber(
+                       other.innerConeDegrees, state.innerConeDegrees) {
+                    innerMixed = true;
+                }
+                if MixedNumber(
+                       other.outerConeDegrees, state.outerConeDegrees) {
+                    outerMixed = true;
+                }
+            }
+            index = index + 1;
+        }
+
+        typeDropdown.SetSelected(state.kind);
+        if kindMixed { typeDropdown.SetSelected(-1); }
+        colorPicker.SetColor(scene_light_3d.PackedRgb(primaryLight));
+        colorOverride.SetChecked(lightCount > 0);
+        if colorMixed { colorOverride.SetIndeterminate(true); }
+        intensity.SetValue(state.intensity);
+        if intensityMixed { intensity.SetIndeterminate(true); }
+        enabledCheck.SetChecked(state.enabled);
+        if enabledMixed { enabledCheck.SetIndeterminate(true); }
+        castsShadowsCheck.SetChecked(state.castsShadows);
+        if shadowsMixed { castsShadowsCheck.SetIndeterminate(true); }
+        positionX.SetValue(state.positionX);
+        if positionXMixed { positionX.SetIndeterminate(true); }
+        positionY.SetValue(state.positionY);
+        if positionYMixed { positionY.SetIndeterminate(true); }
+        positionZ.SetValue(state.positionZ);
+        if positionZMixed { positionZ.SetIndeterminate(true); }
+        directionX.SetValue(state.directionX);
+        if directionXMixed { directionX.SetIndeterminate(true); }
+        directionY.SetValue(state.directionY);
+        if directionYMixed { directionY.SetIndeterminate(true); }
+        directionZ.SetValue(state.directionZ);
+        if directionZMixed { directionZ.SetIndeterminate(true); }
+        attenuation.SetValue(state.attenuation);
+        if attenuationMixed { attenuation.SetIndeterminate(true); }
+        decayType.SetSelected(state.decayType);
+        if decayMixed { decayType.SetSelected(-1); }
+        range.SetValue(state.range);
+        if rangeMixed { range.SetIndeterminate(true); }
+        width.SetValue(state.width);
+        if widthMixed { width.SetIndeterminate(true); }
+        height.SetValue(state.height);
+        if heightMixed { height.SetIndeterminate(true); }
+        radius.SetValue(state.radius);
+        if radiusMixed { radius.SetIndeterminate(true); }
+        innerCone.SetValue(state.innerConeDegrees);
+        if innerMixed { innerCone.SetIndeterminate(true); }
+        outerCone.SetValue(state.outerConeDegrees);
+        if outerMixed { outerCone.SetIndeterminate(true); }
+        // Programmatic refresh must not look like user color intent.
+        colorPicker.WasChanged();
+
+        if nodes.count() == 0 {
             summary.SetText(
-                selectionCount
-                + " nodes selected. Light editing requires one unambiguous node.");
-        } else if light == null {
+                "Select one or more nodes to author light components.");
+        } else if nodes.count() > 1 {
+            var coverage = lightCount + " of " + nodes.count()
+                + " nodes carry lights";
+            if lightCount == 0 {
+                coverage = "No selected nodes carry lights";
+            } else if lightCount == nodes.count() {
+                coverage = "All " + nodes.count()
+                    + " selected nodes carry lights";
+            }
+            summary.SetText(
+                coverage
+                + ". Mixed fields preserve each node's value; choosing a "
+                + "concrete kind rebuilds each light, keeping compatible "
+                + "fields and defaulting the rest.");
+        } else if primaryLight == null {
             summary.SetText(
                 "No light component. Create a Point light or choose another type.");
         } else {
             var stateText = "enabled";
-            if light.IsEnabled == false { stateText = "disabled"; }
+            if primaryLight.IsEnabled == false { stateText = "disabled"; }
             summary.SetText(
-                scene_light_3d.TypeName(light.Type)
+                scene_light_3d.TypeName(primaryLight.Type)
                 + " light • " + stateText
                 + " • light-local fields follow the node world transform.");
         }
         UpdateTypeControls();
-        UpdateControls(
-            editorEnabled, light != null, selectionCount);
+        UpdateSelectionControls(editorEnabled, nodes, lightCount);
+    }
+
+    /// @brief Return whether two field values disagree beyond the epsilon.
+    hide func MixedNumber(a: Number, b: Number) -> Boolean {
+        var difference = a - b;
+        if difference < 0.0 { difference = 0.0 - difference; }
+        return difference >= scene_light_3d.LIGHT_VALUE_EPSILON;
+    }
+
+    /// @brief Resolve mixed color intent when the picker itself changes.
+    expose func PumpDraftIntent() {
+        if colorPicker != null and colorPicker.WasChanged() {
+            colorOverride.SetChecked(true);
+        }
+    }
+
+    /// @brief Build a sparse patch from every currently determined control.
+    expose func BuildPatch() -> scene_light_3d.LightPatch3D {
+        var patch = new scene_light_3d.LightPatch3D();
+        if typeDropdown == null { return patch; }
+        patch.applyKind = typeDropdown.Selected >= 0;
+        patch.kind = typeDropdown.Selected;
+        patch.applyColor = colorOverride.IsIndeterminate() == false
+            and colorOverride.IsChecked();
+        patch.red = scene_light_3d.UnitFromByte(colorPicker.GetRed());
+        patch.green =
+            scene_light_3d.UnitFromByte(colorPicker.GetGreen());
+        patch.blue = scene_light_3d.UnitFromByte(colorPicker.GetBlue());
+        patch.applyIntensity = intensity.IsIndeterminate() == false;
+        patch.intensity = intensity.Value;
+        patch.applyEnabled = enabledCheck.IsIndeterminate() == false;
+        patch.enabled = enabledCheck.IsChecked();
+        patch.applyCastsShadows =
+            castsShadowsCheck.IsIndeterminate() == false;
+        patch.castsShadows = castsShadowsCheck.IsChecked();
+        patch.applyPositionX = positionX.IsIndeterminate() == false;
+        patch.positionX = positionX.Value;
+        patch.applyPositionY = positionY.IsIndeterminate() == false;
+        patch.positionY = positionY.Value;
+        patch.applyPositionZ = positionZ.IsIndeterminate() == false;
+        patch.positionZ = positionZ.Value;
+        patch.applyDirectionX = directionX.IsIndeterminate() == false;
+        patch.directionX = directionX.Value;
+        patch.applyDirectionY = directionY.IsIndeterminate() == false;
+        patch.directionY = directionY.Value;
+        patch.applyDirectionZ = directionZ.IsIndeterminate() == false;
+        patch.directionZ = directionZ.Value;
+        patch.applyAttenuation = attenuation.IsIndeterminate() == false;
+        patch.attenuation = attenuation.Value;
+        patch.applyDecayType = decayType.Selected >= 0;
+        patch.decayType = decayType.Selected;
+        patch.applyRange = range.IsIndeterminate() == false;
+        patch.range = range.Value;
+        patch.applyWidth = width.IsIndeterminate() == false;
+        patch.width = width.Value;
+        patch.applyHeight = height.IsIndeterminate() == false;
+        patch.height = height.Value;
+        patch.applyRadius = radius.IsIndeterminate() == false;
+        patch.radius = radius.Value;
+        patch.applyInnerCone = innerCone.IsIndeterminate() == false;
+        patch.innerConeDegrees = innerCone.Value;
+        patch.applyOuterCone = outerCone.IsIndeterminate() == false;
+        patch.outerConeDegrees = outerCone.Value;
+        return patch;
+    }
+
+    /// @brief Keep actions truthful for multi-node coverage (ADR 0186).
+    expose func UpdateSelectionControls(editorEnabled: Boolean,
+                                        nodes: List[SceneNode],
+                                        lightCount: Integer) {
+        if typeDropdown == null { return; }
+        var hasSelection = editorEnabled and nodes.count() > 0;
+        group.SetEnabled(editorEnabled);
+        typeDropdown.SetEnabled(hasSelection);
+        colorOverride.SetEnabled(hasSelection);
+        colorPicker.SetEnabled(hasSelection);
+        intensity.SetEnabled(hasSelection);
+        enabledCheck.SetEnabled(hasSelection);
+        applyButton.SetEnabled(hasSelection);
+        removeButton.SetEnabled(hasSelection and lightCount > 0);
+        positionX.SetEnabled(hasSelection);
+        positionY.SetEnabled(hasSelection);
+        positionZ.SetEnabled(hasSelection);
+        directionX.SetEnabled(hasSelection);
+        directionY.SetEnabled(hasSelection);
+        directionZ.SetEnabled(hasSelection);
+        if hasSelection == false {
+            applyButton.SetText("Apply Light");
+            applyButton.SetTooltip(
+                "Select one or more nodes before editing lights");
+        } else if lightCount == 0 {
+            applyButton.SetText("Create Light");
+            applyButton.SetTooltip(
+                "Create these light components in one undoable VSCN edit");
+        } else if lightCount < nodes.count() {
+            applyButton.SetText(
+                "Apply To " + lightCount + " Light(s)");
+            applyButton.SetTooltip(
+                "Apply determined fields to light-bearing nodes; nodes "
+                + "without lights are skipped (Create first)");
+        } else {
+            applyButton.SetText("Apply Light");
+            applyButton.SetTooltip(
+                "Apply determined fields to every selected light in one "
+                + "undoable edit; mixed fields preserve node values");
+        }
+        if lightCount > 1 {
+            removeButton.SetText("Remove (" + lightCount + ")");
+        } else {
+            removeButton.SetText("Remove");
+        }
+        UpdateTypeControls();
+        var kindKnown = typeDropdown.Selected >= 0;
+        if kindKnown {
+            castsShadowsCheck.SetEnabled(
+                hasSelection
+                and scene_light_3d.SupportsShadows(
+                        typeDropdown.Selected));
+            attenuation.SetEnabled(
+                hasSelection
+                and scene_light_3d.HasAttenuation(
+                        typeDropdown.Selected));
+            decayType.SetEnabled(
+                hasSelection
+                and scene_light_3d.HasDecay(typeDropdown.Selected));
+            range.SetEnabled(
+                hasSelection
+                and scene_light_3d.HasRange(typeDropdown.Selected));
+            width.SetEnabled(
+                hasSelection
+                and typeDropdown.Selected
+                    == scene_light_3d.LIGHT_AREA_RECTANGLE);
+            height.SetEnabled(
+                hasSelection
+                and typeDropdown.Selected
+                    == scene_light_3d.LIGHT_AREA_RECTANGLE);
+            radius.SetEnabled(
+                hasSelection
+                and (typeDropdown.Selected
+                        == scene_light_3d.LIGHT_AREA_SPHERE
+                     or typeDropdown.Selected
+                        == scene_light_3d.LIGHT_VOLUME));
+            innerCone.SetEnabled(
+                hasSelection
+                and typeDropdown.Selected == scene_light_3d.LIGHT_SPOT);
+            outerCone.SetEnabled(
+                hasSelection
+                and typeDropdown.Selected == scene_light_3d.LIGHT_SPOT);
+        }
     }
 
     /// @brief Build one complete normalized draft from visible controls.
@@ -291,8 +580,24 @@ class SceneLightInspector3D {
     expose func UpdateTypeControls() {
         if typeDropdown == null { return; }
         var kind = typeDropdown.Selected;
-        if kind < scene_light_3d.LIGHT_DIRECTIONAL
-           or kind > scene_light_3d.LIGHT_VOLUME {
+        if kind < 0 {
+            // Mixed kinds: every group stays reachable so concrete edits
+            // to shared fields remain possible without forcing one kind.
+            positionGroup.SetVisible(true);
+            directionGroup.SetVisible(true);
+            falloffGroup.SetVisible(true);
+            shapeGroup.SetVisible(true);
+            attenuation.SetEnabled(true);
+            range.SetEnabled(true);
+            width.SetEnabled(true);
+            height.SetEnabled(true);
+            radius.SetEnabled(true);
+            innerCone.SetEnabled(true);
+            outerCone.SetEnabled(true);
+            castsShadowsCheck.SetEnabled(true);
+            return;
+        }
+        if kind > scene_light_3d.LIGHT_VOLUME {
             kind = scene_light_3d.LIGHT_POINT;
             typeDropdown.SetSelected(kind);
         }
@@ -316,72 +621,6 @@ class SceneLightInspector3D {
         }
     }
 
-    /// @brief Keep actions truthful for selection and component state.
-    expose func UpdateControls(editorEnabled: Boolean,
-                               hasLight: Boolean,
-                               selectionCount: Integer) {
-        if typeDropdown == null { return; }
-        var hasSingle = editorEnabled and selectionCount == 1;
-        group.SetEnabled(editorEnabled);
-        typeDropdown.SetEnabled(hasSingle);
-        colorPicker.SetEnabled(hasSingle);
-        intensity.SetEnabled(hasSingle);
-        enabledCheck.SetEnabled(hasSingle);
-        applyButton.SetEnabled(hasSingle);
-        removeButton.SetEnabled(hasSingle and hasLight);
-        if hasSingle == false {
-            applyButton.SetText("Apply Light");
-            applyButton.SetTooltip(
-                "Select exactly one node before editing its light");
-        } else if hasLight {
-            applyButton.SetText("Apply Light");
-            applyButton.SetTooltip(
-                "Replace this component with an independent light in one edit");
-        } else {
-            applyButton.SetText("Create Light");
-            applyButton.SetTooltip(
-                "Create this light component in one undoable VSCN edit");
-        }
-        UpdateTypeControls();
-        // Type visibility is independent from selection. Reapply the single
-        // selection gate after type-specific enabling.
-        castsShadowsCheck.SetEnabled(
-            hasSingle
-            and scene_light_3d.SupportsShadows(typeDropdown.Selected));
-        positionX.SetEnabled(hasSingle);
-        positionY.SetEnabled(hasSingle);
-        positionZ.SetEnabled(hasSingle);
-        directionX.SetEnabled(hasSingle);
-        directionY.SetEnabled(hasSingle);
-        directionZ.SetEnabled(hasSingle);
-        attenuation.SetEnabled(
-            hasSingle
-            and scene_light_3d.HasAttenuation(typeDropdown.Selected));
-        decayType.SetEnabled(
-            hasSingle and scene_light_3d.HasDecay(typeDropdown.Selected));
-        range.SetEnabled(
-            hasSingle and scene_light_3d.HasRange(typeDropdown.Selected));
-        width.SetEnabled(
-            hasSingle
-            and typeDropdown.Selected
-                == scene_light_3d.LIGHT_AREA_RECTANGLE);
-        height.SetEnabled(
-            hasSingle
-            and typeDropdown.Selected
-                == scene_light_3d.LIGHT_AREA_RECTANGLE);
-        radius.SetEnabled(
-            hasSingle
-            and (typeDropdown.Selected
-                    == scene_light_3d.LIGHT_AREA_SPHERE
-                 or typeDropdown.Selected
-                    == scene_light_3d.LIGHT_VOLUME));
-        innerCone.SetEnabled(
-            hasSingle
-            and typeDropdown.Selected == scene_light_3d.LIGHT_SPOT);
-        outerCone.SetEnabled(
-            hasSingle
-            and typeDropdown.Selected == scene_light_3d.LIGHT_SPOT);
-    }
 
     hide func AddSignedSpinner(parent: GUI.HBox,
                                label: String,

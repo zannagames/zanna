@@ -67,6 +67,10 @@ namespace zanna::analysis {
 // MemorySSA query implementation
 // -------------------------------------------------------------------------
 
+/// @brief Query the precomputed dead-store set by source instruction position.
+/// @param block Block containing the candidate instruction.
+/// @param instrIdx Zero-based instruction index.
+/// @return True when the mapped MemoryAccess ID was proven to be a dead store.
 bool MemorySSA::isDeadStore(const Block *block, size_t instrIdx) const {
     auto bit = instrToAccess_.find(block);
     if (bit == instrToAccess_.end())
@@ -77,6 +81,10 @@ bool MemorySSA::isDeadStore(const Block *block, size_t instrIdx) const {
     return deadStoreIds_.count(iit->second) != 0;
 }
 
+/// @brief Look up a dense MemoryAccess node by source instruction position.
+/// @param block Block containing the instruction or phi.
+/// @param instrIdx Instruction index, with `size_t(-1)` reserved for a block phi.
+/// @return Borrowed node pointer, or nullptr for an absent/invalid mapping.
 const MemoryAccess *MemorySSA::accessFor(const Block *block, size_t instrIdx) const {
     auto bit = instrToAccess_.find(block);
     if (bit == instrToAccess_.end())
@@ -96,7 +104,11 @@ const MemoryAccess *MemorySSA::accessFor(const Block *block, size_t instrIdx) co
 
 namespace {
 
-/// True if @p ptr refers to a non-escaping alloca, directly or via GEP.
+/// @brief Test whether a pointer has exactly one proven non-escaping alloca root.
+/// @param ptr Pointer value to classify.
+/// @param nonEsc Set of non-escaping alloca result IDs.
+/// @param roots Temporary-to-alloca-root propagation map.
+/// @return True for a temporary whose unique root belongs to @p nonEsc.
 inline bool isNonEscapingAlloca(const Value &ptr,
                                 const std::unordered_set<unsigned> &nonEsc,
                                 const AllocaRootMap &roots) {
@@ -108,6 +120,14 @@ inline bool isNonEscapingAlloca(const Value &ptr,
     return nonEsc.count(*rootIt->second.begin()) != 0;
 }
 
+/// @brief Determine whether a later store completely covers an earlier store.
+/// @param laterPtr Address written by the later store.
+/// @param laterSize Known later-store width.
+/// @param earlierPtr Address written by the earlier store.
+/// @param earlierSize Known earlier-store width.
+/// @param AA Alias analysis used to prove identical bases/offsets.
+/// @return True when both sizes are known, the later write is at least as wide,
+///         and the locations must alias.
 bool fullyOverwrites(const Value &laterPtr,
                      std::optional<unsigned> laterSize,
                      const Value &earlierPtr,
@@ -120,6 +140,9 @@ bool fullyOverwrites(const Value &laterPtr,
     return AA.alias(laterPtr, earlierPtr, laterSize, earlierSize) == AliasResult::MustAlias;
 }
 
+/// @brief Detect exception-handling opcodes unsupported by this MemorySSA model.
+/// @param F Function to scan.
+/// @return True when any block contains an EH stack, entry, or resume opcode.
 bool hasExceptionHandling(const Function &F) {
     for (const auto &B : F.blocks) {
         for (const auto &I : B.instructions) {
@@ -141,6 +164,10 @@ bool hasExceptionHandling(const Function &F) {
 
 /// @brief Compute a reverse-post-order block listing via DFS over the CFG
 ///        (successors follow terminator labels). Used to drive forward dataflow.
+/// @param F Function whose blocks are ordered; must be non-empty.
+/// @param labelToBlock Label lookup used to resolve terminator targets.
+/// @return Every block once, with entry-reachable blocks in reverse post-order
+///         followed by deterministic DFS coverage of unreachable components.
 std::vector<Block *> buildReversePostOrder(
     Function &F, const std::unordered_map<std::string, Block *> &labelToBlock) {
     std::vector<Block *> rpo;
@@ -184,6 +211,10 @@ std::vector<Block *> buildReversePostOrder(
 
 } // namespace
 
+/// @brief Build coarse memory def-use nodes and precise non-escaping-alloca dead-store facts.
+/// @param F Function to analyze; exception-handling functions produce an empty result.
+/// @param AA Function-compatible alias and ModRef analysis.
+/// @return Value-owned MemorySSA result referencing stable blocks in @p F.
 MemorySSA computeMemorySSA(Function &F, BasicAA &AA) {
     MemorySSA mssa;
 

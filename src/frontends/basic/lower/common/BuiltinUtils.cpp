@@ -16,6 +16,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements one-time builtin callback registration and call dispatch.
+
 #include "frontends/basic/lower/common/BuiltinUtils.hpp"
 
 #include "frontends/basic/BuiltinRegistry.hpp"
@@ -30,8 +33,9 @@ namespace il::frontends::basic::lower::common {
 namespace {
 constexpr std::string_view kDiagMissingBuiltinEmitter = "B4004";
 
-/// @brief Register all builtin lowering handlers exactly once per process (thread-safe via a
-///        function-local static).
+/// @brief Registers all builtin lowering handlers once per process.
+/// @details Function-local static initialization provides thread-safe
+///          initialization and preserves the declared family override order.
 void ensureBuiltinHandlers() {
     static const bool initialized = [] {
         builtins::registerDefaultBuiltins();

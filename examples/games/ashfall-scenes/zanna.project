@@ -1,0 +1,15 @@
+project ashfall-scenes
+version 0.1.0
+lang zia
+entry main.zia
+
+# === Package Metadata ===
+package-name "ASHFALL: SCENES"
+package-description "The Ashfall campaign rebuilt from Zanna Studio scene files"
+package-identifier org.zanna-lang.ashfall-scenes
+package-author "Zanna Project"
+package-license GPL-3.0
+min-os-windows 10.0
+windows-install-scope user
+windows-install-dir ASHFALL-SCENES
+shortcut-desktop on

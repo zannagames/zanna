@@ -1,0 +1,151 @@
+// =============================================================================
+// core/devtools.zia — diagnostics overlay + asserted budgets + cheat flags
+// =============================================================================
+//
+// Collects per-frame telemetry (draws, culled, lights, shadow slots, awake
+// bodies, pool watermarks, ...) and checks it against config budgets. In a
+// probe, any budget violation flips `failed` and is reported; in a dev build the
+// overlay row flashes. This is how "budgets are asserted, not hoped" is enforced.
+// =============================================================================
+module devtools;
+
+bind "../config" as config;
+bind "../core/strings" as S;
+bind "../core/mathutil" as M;
+
+class Diagnostics {
+    hide Boolean enabled;         // F3 overlay visible
+    hide Float fps;
+    hide Float frameMs;
+    hide Integer draws;
+    hide Integer culled;
+    hide Integer lightsActive;
+    hide Integer lightsDropped;
+    hide Integer clusterOverflow;
+    hide Integer shadowSlots;
+    hide Integer shadowDropped;
+    hide Integer awakeBodies;
+    hide Integer ccdToi;
+    hide Integer activeEnemies;
+    hide Integer projectiles;
+    hide Integer particles;
+    hide Integer mixerVoices;
+    hide Integer poolPeakEnemies;
+    hide Integer poolPeakProjectiles;
+    hide Boolean failed;
+    hide String lastViolation;
+
+    // Cheats (behind config.DEV_CHEATS).
+    hide Boolean cheatGod;
+    hide Boolean cheatNoclip;
+
+    expose func init() {
+        enabled = false;
+        fps = 0.0;
+        frameMs = 0.0;
+        draws = 0;
+        culled = 0;
+        lightsActive = 0;
+        lightsDropped = 0;
+        clusterOverflow = 0;
+        shadowSlots = 0;
+        shadowDropped = 0;
+        awakeBodies = 0;
+        ccdToi = 0;
+        activeEnemies = 0;
+        projectiles = 0;
+        particles = 0;
+        mixerVoices = 0;
+        poolPeakEnemies = 0;
+        poolPeakProjectiles = 0;
+        failed = false;
+        lastViolation = "";
+        cheatGod = false;
+        cheatNoclip = false;
+    }
+
+    expose func toggle() { enabled = enabled == false; }
+    expose func isEnabled() -> Boolean { return enabled; }
+    expose func setEnabled(v: Boolean) { enabled = v; }
+
+    expose func setTiming(f: Float, ms: Float) { fps = f; frameMs = ms; }
+    expose func setDraws(d: Integer, c: Integer) { draws = d; culled = c; }
+    expose func setLights(active: Integer, dropped: Integer, overflow: Integer) {
+        lightsActive = active;
+        lightsDropped = dropped;
+        clusterOverflow = overflow;
+    }
+    expose func setShadows(slots: Integer, dropped: Integer) {
+        shadowSlots = slots;
+        shadowDropped = dropped;
+    }
+    expose func setPhysics(awake: Integer, toi: Integer) { awakeBodies = awake; ccdToi = toi; }
+    expose func setCounts(enemies: Integer, projs: Integer, parts: Integer, voices: Integer) {
+        activeEnemies = enemies;
+        projectiles = projs;
+        particles = parts;
+        mixerVoices = voices;
+        if enemies > poolPeakEnemies { poolPeakEnemies = enemies; }
+        if projs > poolPeakProjectiles { poolPeakProjectiles = projs; }
+    }
+
+    hide func violate(msg: String) {
+        failed = true;
+        lastViolation = msg;
+    }
+
+    // Assert every budget. Returns true if clean this frame.
+    expose func checkBudgets() -> Boolean {
+        var ok = true;
+        if activeEnemies > config.BUDGET_ACTIVE_ENEMIES {
+            violate("active enemies " + S.intStr(activeEnemies) + " > " + S.intStr(config.BUDGET_ACTIVE_ENEMIES));
+            ok = false;
+        }
+        if projectiles > config.BUDGET_PROJECTILES {
+            violate("projectiles " + S.intStr(projectiles) + " > " + S.intStr(config.BUDGET_PROJECTILES));
+            ok = false;
+        }
+        if lightsActive > config.BUDGET_LIGHTS {
+            violate("lights " + S.intStr(lightsActive) + " > " + S.intStr(config.BUDGET_LIGHTS));
+            ok = false;
+        }
+        if shadowSlots > config.BUDGET_SHADOW_SLOTS {
+            violate("shadow slots " + S.intStr(shadowSlots) + " > " + S.intStr(config.BUDGET_SHADOW_SLOTS));
+            ok = false;
+        }
+        if draws > config.BUDGET_DRAWS {
+            violate("draws " + S.intStr(draws) + " > " + S.intStr(config.BUDGET_DRAWS));
+            ok = false;
+        }
+        if particles > config.BUDGET_PARTICLES {
+            violate("particles " + S.intStr(particles) + " > " + S.intStr(config.BUDGET_PARTICLES));
+            ok = false;
+        }
+        return ok;
+    }
+
+    expose func hasFailed() -> Boolean { return failed; }
+    expose func getViolation() -> String { return lastViolation; }
+    expose func resetFailure() { failed = false; lastViolation = ""; }
+
+    // HUD overlay lines (called only when enabled). Precomposed strings.
+    expose func line1() -> String {
+        return "FPS " + S.fixed1(fps) + "  frame " + S.fixed2(frameMs) + "ms  draws " +
+               S.intStr(draws) + " culled " + S.intStr(culled);
+    }
+    expose func line2() -> String {
+        return "lights " + S.intStr(lightsActive) + " drop " + S.intStr(lightsDropped) +
+               "  shadows " + S.intStr(shadowSlots) + " drop " + S.intStr(shadowDropped) +
+               "  bodies " + S.intStr(awakeBodies) + " toi " + S.intStr(ccdToi);
+    }
+    expose func line3() -> String {
+        return "enemies " + S.intStr(activeEnemies) + "  proj " + S.intStr(projectiles) +
+               "  part " + S.intStr(particles) + "  voices " + S.intStr(mixerVoices);
+    }
+
+    // Cheats
+    expose func toggleGod() { if config.DEV_CHEATS { cheatGod = cheatGod == false; } }
+    expose func toggleNoclip() { if config.DEV_CHEATS { cheatNoclip = cheatNoclip == false; } }
+    expose func isGod() -> Boolean { return cheatGod; }
+    expose func isNoclip() -> Boolean { return cheatNoclip; }
+}

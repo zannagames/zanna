@@ -1,0 +1,313 @@
+// =============================================================================
+// weapons/weapon_base.zia — the weapon controller (ammo, fire, reload, ADS, beam)
+// =============================================================================
+//
+// Owns the active weapon, per-weapon ammo (mag + reserve), fire-rate timing,
+// reload state, and the beam heat model. Fire dispatches to ballistics (hitscan/
+// ricochet), projectiles (arc/rivet/EMP), or the per-tick beam, and drives the
+// recoil feel (camera kick + view-model kick + shake) and the EV_GUNSHOT noise
+// the AI hears.
+// =============================================================================
+module weapon_base;
+
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+bind "../core/rng" as rng;
+bind "./weapon_defs" as weapon_defs;
+bind "./ballistics" as ballistics;
+bind "./projectiles" as projectiles;
+bind "../player/camera_rig" as camera_rig;
+bind "../player/viewmodel" as viewmodel;
+bind "../meta/economy" as economy;
+
+class WeaponController {
+    hide weapon_defs.WeaponDefs defs;
+    hide ballistics.Ballistics ball;
+    hide projectiles.Projectiles proj;
+    hide camera_rig.CameraRig camRig;
+    hide viewmodel.ViewModel vm;
+    hide events.EventBus bus;
+    hide rng.RngStream recoilRng;
+    hide economy.Economy upgrades;
+    hide List[Integer] mag;
+    hide List[Integer] reserve;
+    hide List[Integer] owned;
+    hide Integer current;
+    hide Float cooldown;
+    hide Boolean reloading;
+    hide Float reloadTimer;
+    hide Float heat;               // beam overheat 0..1
+    hide Boolean overheated;
+    hide Float beamChargeAccum;
+    hide Float beamFxTimer;
+    hide Float bloom;             // sustained-fire spread bloom (deg)
+    hide Integer shotCounter;
+
+    expose func init() {
+        mag = []; reserve = []; owned = [];
+        current = config.W_BOLT;
+        cooldown = 0.0;
+        reloading = false;
+        reloadTimer = 0.0;
+        heat = 0.0;
+        overheated = false;
+        beamChargeAccum = 0.0;
+        beamFxTimer = 0.0;
+        bloom = 0.0;
+        shotCounter = 0;
+    }
+
+    expose func setup(d: weapon_defs.WeaponDefs, b: ballistics.Ballistics, p: projectiles.Projectiles,
+                      cr: camera_rig.CameraRig, v: viewmodel.ViewModel, bus0: events.EventBus,
+                      rr: rng.RngStream, up: economy.Economy) {
+        defs = d; ball = b; proj = p; camRig = cr; vm = v; bus = bus0; recoilRng = rr;
+        upgrades = up;
+        var i = 0;
+        while i < config.WEAPON_COUNT {
+            mag.Add(0); reserve.Add(0); owned.Add(0);
+            i = i + 1;
+        }
+    }
+
+    /// Remove all owned weapons and reset transient weapon state.
+    ///
+    /// Campaign loading uses this to grant a level-appropriate kit without
+    /// leaking late-game equipment backward into early missions. Probes and the
+    /// arena can still call `give` for the full sandbox loadout.
+    expose func clearLoadout() {
+        var i = 0;
+        while i < config.WEAPON_COUNT {
+            mag[i] = 0;
+            reserve[i] = 0;
+            owned[i] = 0;
+            i = i + 1;
+        }
+        current = config.W_BOLT;
+        cooldown = 0.0;
+        reloading = false;
+        reloadTimer = 0.0;
+        heat = 0.0;
+        overheated = false;
+        beamChargeAccum = 0.0;
+        beamFxTimer = 0.0;
+        bloom = 0.0;
+    }
+
+    // Grant a weapon and top up its ammo.
+    expose func give(w: Integer) {
+        owned[w] = 1;
+        mag[w] = defs.magOf(w);
+        reserve[w] = defs.reserveMaxOf(w);
+    }
+    expose func isOwned(w: Integer) -> Boolean { return owned[w] == 1; }
+    expose func current3() -> Integer { return current; }
+    expose func getCurrent() -> Integer { return current; }
+    expose func getMag() -> Integer { return mag[current]; }
+    expose func getMagFor(w: Integer) -> Integer { return mag[w]; }
+    expose func getMagCapacity() -> Integer { return defs.magOf(current); }
+    expose func getReserve() -> Integer { return reserve[current]; }
+    expose func getReserveFor(w: Integer) -> Integer { return reserve[w]; }
+    expose func getHeat() -> Float { return heat; }
+    expose func isOverheated() -> Boolean { return overheated; }
+    expose func restoreSlot(w: Integer, own: Boolean, magNow: Integer, reserveNow: Integer) {
+        if w < 0 || w >= config.WEAPON_COUNT { return; }
+        if own { owned[w] = 1; } else { owned[w] = 0; }
+        mag[w] = M.clampi(magNow, 0, defs.magOf(w));
+        reserve[w] = M.clampi(reserveNow, 0, defs.reserveMaxOf(w));
+    }
+    expose func isReloading() -> Boolean { return reloading; }
+    expose func currentBloom() -> Float { return bloom; }
+    expose func adsFov() -> Float { return defs.adsFovOf(current); }
+    // Reload progress 0..1 (0 when idle) — drives the view-model reload curve.
+    expose func reloadFrac() -> Float {
+        if reloading == false { return 0.0; }
+        var total = defs.reloadOf(current);
+        if total < 0.01 { return 0.0; }
+        return M.clampf(1.0 - reloadTimer / total, 0.0, 1.0);
+    }
+    expose func weaponName() -> String { return defs.nameOf(current); }
+
+    expose func switchTo(w: Integer) {
+        if w < 0 || w >= config.WEAPON_COUNT { return; }
+        if owned[w] == 0 { return; }
+        if w == current { return; }
+        current = w;
+        reloading = false;
+        reloadTimer = 0.0;
+        cooldown = 0.15;   // switch delay
+        bloom = 0.0;
+        beamChargeAccum = 0.0;
+        beamFxTimer = 0.0;
+    }
+
+    expose func nextWeapon() {
+        var w = current;
+        var tries = 0;
+        while tries < config.WEAPON_COUNT {
+            w = (w + 1) % config.WEAPON_COUNT;
+            if owned[w] == 1 { switchTo(w); return; }
+            tries = tries + 1;
+        }
+    }
+    expose func prevWeapon() {
+        var w = current;
+        var tries = 0;
+        while tries < config.WEAPON_COUNT {
+            w = (w - 1 + config.WEAPON_COUNT) % config.WEAPON_COUNT;
+            if owned[w] == 1 { switchTo(w); return; }
+            tries = tries + 1;
+        }
+    }
+
+    expose func beginReload() {
+        if reloading { return; }
+        if mag[current] >= defs.magOf(current) { return; }
+        if reserve[current] <= 0 { return; }
+        reloading = true;
+        reloadTimer = defs.reloadOf(current);
+    }
+
+    // Main fixed-tick update. `firing`/`ads`/`reloadReq` are input; fire origin +
+    // direction are the camera eye + forward.
+    expose func update(dt: Float, firing: Boolean, ads: Boolean, reloadReq: Boolean,
+                       ox: Float, oy: Float, oz: Float, dirX: Float, dirY: Float, dirZ: Float) {
+        if cooldown > 0.0 { cooldown = cooldown - dt; }
+        if beamFxTimer > 0.0 { beamFxTimer = beamFxTimer - dt; }
+
+        // Bloom recovery.
+        bloom = bloom - bloom * M.clampf(4.0 * dt, 0.0, 1.0);
+
+        // Reload progression.
+        if reloading {
+            reloadTimer = reloadTimer - dt;
+            if reloadTimer <= 0.0 {
+                finishReload();
+            }
+        } else if reloadReq {
+            beginReload();
+        }
+
+        // Beam heat belongs to the shared power pack, so it must also cool while
+        // another weapon is equipped. Otherwise swapping away from an overheated
+        // Lance could preserve the lockout forever.
+        var beamActive = defs.isBeam(current) && firing && reloading == false &&
+                         cooldown <= 0.0 && overheated == false && mag[current] > 0;
+        if beamActive == false {
+            heat = heat - dt * 0.5;
+            if heat < 0.0 { heat = 0.0; }
+            if heat <= 0.2 { overheated = false; }
+        }
+
+        if firing && canFire() {
+            fire(ads, ox, oy, oz, dirX, dirY, dirZ, dt);
+        }
+    }
+
+    hide func canFire() -> Boolean {
+        if reloading { return false; }
+        if cooldown > 0.0 { return false; }
+        if defs.isBeam(current) {
+            if overheated { return false; }
+            return mag[current] > 0;
+        }
+        return mag[current] > 0;
+    }
+
+    hide func fire(ads: Boolean, ox: Float, oy: Float, oz: Float,
+                   dirX: Float, dirY: Float, dirZ: Float, dt: Float) {
+        var w = current;
+        var spread = defs.spreadHipOf(w);
+        if ads { spread = defs.spreadADSOf(w); }
+        spread = spread * upgrades.handlingMult(w);
+        spread = spread + bloom;
+        var damage = defs.damageOf(w) * upgrades.damageMult(w);
+
+        if defs.isBeam(w) {
+            // Beam: continuous per-tick damage; consumes mag as a charge, heats up.
+            ball.fireHitscan(ox, oy, oz, dirX, dirY, dirZ, 1, spread * 0.3,
+                             damage * dt, 1, defs.rangeOf(w), config.DMG_BEAM);
+            heat = heat + dt * 0.65;
+            if heat >= 1.0 { overheated = true; }
+            // Charge is time-based: 20 units/s gives a five-second full cell,
+            // while heat forces a recovery break before the cell is exhausted.
+            beamChargeAccum = beamChargeAccum + dt * 20.0;
+            while beamChargeAccum >= 1.0 && mag[w] > 0 {
+                mag[w] = mag[w] - 1;
+                beamChargeAccum = beamChargeAccum - 1.0;
+            }
+            camRig.addShake(0.01);
+            if beamFxTimer <= 0.0 {
+                bus.pushAt(config.EV_GUNSHOT, w, 6, ox, oy, oz);
+                beamFxTimer = 0.08;
+            }
+            return;
+        }
+
+        // Consume ammo + set cooldown.
+        mag[w] = mag[w] - 1;
+        cooldown = defs.intervalOf(w);
+        shotCounter = shotCounter + 1;
+
+        if defs.isProjectile(w) {
+            var grav = 0.0;
+            var bounces = 0;
+            if w == config.W_ARC { grav = -14.0; bounces = 3; }
+            var dk = config.DMG_PROJECTILE;
+            if w == config.W_EMP { dk = config.DMG_EMP; }
+            var pdir = ball.spreadVector(dirX, dirY, dirZ, spread);
+            proj.spawn(ox, oy, oz, Math.Vec3.get_X(pdir), Math.Vec3.get_Y(pdir),
+                       Math.Vec3.get_Z(pdir), defs.projSpeedOf(w),
+                       damage, defs.blastRadiusOf(w),
+                       defs.dotDPSOf(w) * upgrades.damageMult(w), defs.dotTimeOf(w),
+                       grav, bounces, 4.0, dk);
+        } else if defs.isRicochet(w) {
+            ball.fireRicochet(ox, oy, oz, dirX, dirY, dirZ, spread,
+                              damage, 3, defs.rangeOf(w), config.DMG_HITSCAN);
+        } else {
+            var pen = defs.penetrationOf(w);
+            ball.fireHitscan(ox, oy, oz, dirX, dirY, dirZ, defs.pelletsOf(w), spread,
+                             damage, pen, defs.rangeOf(w), config.DMG_HITSCAN);
+        }
+
+        // Recoil feel.
+        var kick = defs.recoilOf(w) * upgrades.handlingMult(w);
+        camRig.addRecoil(kick * 0.35, recoilRng.jitter(kick * 0.12));
+        camRig.addShake(kick * 0.01);
+        vm.addKick(kick);
+        bloom = M.minf(bloom + spread * 0.3, spread * 3.0 + 4.0);
+
+        // AI hearing + visual feedback: a loud gunshot at the muzzle (a=weapon).
+        bus.pushAt(config.EV_GUNSHOT, w, 20, ox, oy, oz);
+    }
+
+    hide func finishReload() {
+        var w = current;
+        reloading = false;
+        var need = defs.magOf(w) - mag[w];
+        var take = need;
+        if take > reserve[w] { take = reserve[w]; }
+        mag[w] = mag[w] + take;
+        reserve[w] = reserve[w] - take;
+    }
+
+    // Ammo pickup: top up reserve on every owned weapon (clamped to max).
+    expose func addReserveAll(amt: Integer) {
+        var w = 0;
+        while w < config.WEAPON_COUNT {
+            if owned[w] == 1 {
+                reserve[w] = reserve[w] + amt;
+                if reserve[w] > defs.reserveMaxOf(w) { reserve[w] = defs.reserveMaxOf(w); }
+            }
+            w = w + 1;
+        }
+    }
+
+    // Auto-reload when the mag empties (feel nicety; can be disabled).
+    expose func autoReloadIfEmpty() {
+        if mag[current] <= 0 && reserve[current] > 0 && reloading == false {
+            beginReload();
+        }
+    }
+}

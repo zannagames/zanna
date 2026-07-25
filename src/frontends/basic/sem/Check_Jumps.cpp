@@ -5,6 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/sem/Check_Jumps.cpp
+// Purpose: Validate BASIC non-local control-flow statements and keep label,
+//          procedure, and error-handler state synchronized during semantic
+//          analysis.
+// Key invariants:
+//   * Every referenced line label is recorded even when it is not yet known, so
+//     the analyzer retains complete cross-scope reference information.
+//   * ON ERROR and RESUME update or query the active handler state through the
+//     shared control-check context.
+//   * RETURN is distinguished between procedure return and legacy GOSUB return
+//     before later lowering consumes the statement.
+// References: docs/tutorials/basic-tutorial.md#error-handling,
+//             docs/internals/codemap/basic.md#semantic-analyzer
+//
+//===----------------------------------------------------------------------===//
+//
 /// @file
 /// @brief Semantic checks for jump-oriented constructs (GOTO, GOSUB, ON ERROR,
 ///        RESUME, RETURN).

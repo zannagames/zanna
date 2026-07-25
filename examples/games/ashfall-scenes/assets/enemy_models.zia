@@ -1,0 +1,662 @@
+// =============================================================================
+// assets/enemy_models.zia — enemy visuals: GLB rigs + composite fallbacks
+// =============================================================================
+//
+// Owns everything the player SEES of an enemy; ai_core keeps simulation and
+// colliders (kill timing, EV_KILL, salvage, probe expectations unchanged).
+// Two render paths per pool slot:
+//   GLB     — registry template → Instantiate() → entity.Anim crossfades real
+//             clips by intent (idle/move/attack/hit/death). Interactive builds
+//             with assets_src/ present.
+//   Fallback— baked composite meshes (MeshKit): distinct silhouette per
+//             archetype, turn-to-face, locomotion bob, state-emissive accents.
+//             Always available; probes/headless run this path.
+// The "it's alive" layer is shared: yaw facing, state emissive language
+// (patrol blue → suspicious amber → combat red → EMP sputter), telegraph
+// surges, hit flashes, and death choreography via a fixed dying pool that
+// animates AFTER the slot is freed (visual-only; colliders unregister at the
+// kill instant).
+// =============================================================================
+module enemy_models;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+bind Zanna.String as Str;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "./meshkit" as meshkit;
+bind "./textures" as textures;
+bind "./registry" as registry;
+
+// Animation intents (registry.resolveClip order).
+var INTENT_IDLE: Integer = 0;
+var INTENT_MOVE: Integer = 1;
+var INTENT_ATTACK: Integer = 2;
+var INTENT_HIT: Integer = 3;
+var INTENT_DEATH: Integer = 4;
+
+// Death choreography kinds.
+var DEATH_TILT: Integer = 0;      // bipeds: keel over, then sink
+var DEATH_SPIRAL: Integer = 1;    // flyers: spin down to impact
+var DEATH_FOLD: Integer = 2;      // wraith: alpha glitch, fold to nothing
+var DEATH_POP: Integer = 3;       // turret: head launches, chassis stays
+var DEATH_COLLAPSE: Integer = 4;  // hulls: crush down and sink
+
+var DYING_POOL: Integer = 8;
+
+class EnemyModels {
+    hide Game3D.World3D world;
+    hide textures.TextureLib texLib;
+    hide registry.AssetRegistry reg;
+    hide meshkit.MeshKit mk;
+    hide Integer cap;
+    // Archetype mesh cache (composite fallback).
+    hide List[Integer] meshArch;
+    hide List[G3D.Mesh3D] meshChassis;
+    hide List[G3D.Mesh3D] meshAccent;
+    // Per-slot composite entities + per-slot mutable materials.
+    hide List[Game3D.Entity3D] chassisNode;
+    hide List[Game3D.Entity3D] accentNode;
+    hide List[G3D.Material3D] chassisMat;
+    hide List[G3D.Material3D] accentMat;
+    // Per-slot GLB instance.
+    hide List[Game3D.Entity3D] glbNode;
+    hide List[Integer] glbArch;           // -1 = none
+    hide List[Integer] usingGlb;
+    // Per-slot animation state.
+    hide List[Integer] slotArch;
+    hide List[Integer] curIntent;
+    hide List[Float] flashT;
+    hide List[Float] distAccum;
+    hide List[Float] lastX; hide List[Float] lastZ;
+    hide List[Float] accentSpin;
+    hide List[Float] lastYawV;      // flyer banking: roll follows turn rate
+    hide Float animTime;
+    // Dying pool (visual-only corpses).
+    hide List[Integer] dyKind;
+    hide List[Float] dyT;
+    hide List[Float] dyX; hide List[Float] dyY; hide List[Float] dyZ;
+    hide List[Float] dyYaw;
+    hide List[Integer] dyActive;
+    hide List[Game3D.Entity3D] dyNodeA;
+    hide List[Game3D.Entity3D] dyNodeB;
+    hide List[Game3D.Entity3D] dyGlb;     // transferred GLB corpse (or null)
+    hide List[Integer] dyHasGlb;
+    hide Integer nextDying;
+
+    expose func init() {
+        mk = new meshkit.MeshKit();
+        meshArch = []; meshChassis = []; meshAccent = [];
+        chassisNode = []; accentNode = []; chassisMat = []; accentMat = [];
+        glbNode = []; glbArch = []; usingGlb = [];
+        slotArch = []; curIntent = []; flashT = []; distAccum = [];
+        lastX = []; lastZ = []; accentSpin = []; lastYawV = [];
+        dyKind = []; dyT = []; dyX = []; dyY = []; dyZ = []; dyYaw = [];
+        dyActive = []; dyNodeA = []; dyNodeB = []; dyGlb = []; dyHasGlb = [];
+        nextDying = 0;
+        animTime = 0.0;
+        cap = 0;
+    }
+
+    expose func setup(w: Game3D.World3D, t: textures.TextureLib, r: registry.AssetRegistry,
+                      poolCap: Integer) {
+        world = w; texLib = t; reg = r; cap = poolCap;
+        var i = 0;
+        while i < cap {
+            var cm = G3D.Material3D.PBR(0.5, 0.5, 0.5);
+            cm.Roughness = 0.55;
+            cm.Metallic = 0.55;
+            var am = G3D.Material3D.FromColor(0.5, 0.7, 1.0);
+            am.EmissiveIntensity = 0.8;
+            var cn = Game3D.Entity3D.New();
+            cn.Material = cm;
+            cn.SetPosition(0.0, -100.0, 0.0);
+            world.Spawn(cn);
+            var an = Game3D.Entity3D.New();
+            an.Material = am;
+            an.SetPosition(0.0, -100.0, 0.0);
+            world.Spawn(an);
+            chassisNode.Add(cn); accentNode.Add(an);
+            chassisMat.Add(cm); accentMat.Add(am);
+            glbNode.Add(null); glbArch.Add(-1); usingGlb.Add(0);
+            slotArch.Add(-1); curIntent.Add(-1); flashT.Add(0.0); distAccum.Add(0.0);
+            lastX.Add(0.0); lastZ.Add(0.0); accentSpin.Add(0.0); lastYawV.Add(0.0);
+            i = i + 1;
+        }
+        i = 0;
+        while i < DYING_POOL {
+            var da = Game3D.Entity3D.New();
+            da.SetPosition(0.0, -100.0, 0.0);
+            world.Spawn(da);
+            var db = Game3D.Entity3D.New();
+            db.SetPosition(0.0, -100.0, 0.0);
+            world.Spawn(db);
+            dyKind.Add(0); dyT.Add(0.0); dyX.Add(0.0); dyY.Add(0.0); dyZ.Add(0.0);
+            dyYaw.Add(0.0); dyActive.Add(0);
+            dyNodeA.Add(da); dyNodeB.Add(db);
+            dyGlb.Add(null); dyHasGlb.Add(0);
+            i = i + 1;
+        }
+        // Placeholder meshes so parked entities have valid geometry.
+        var park = G3D.Mesh3D.Box(0.05, 0.05, 0.05);
+        i = 0;
+        while i < cap {
+            chassisNode[i].Mesh = park;
+            accentNode[i].Mesh = park;
+            i = i + 1;
+        }
+        i = 0;
+        while i < DYING_POOL {
+            dyNodeA[i].Mesh = park;
+            dyNodeB[i].Mesh = park;
+            i = i + 1;
+        }
+    }
+
+    // --- Spawn / despawn -------------------------------------------------------
+    expose func onSpawn(s: Integer, a: Integer, colR: Float, colG: Float, colB: Float) {
+        slotArch[s] = a;
+        curIntent[s] = -1;
+        flashT[s] = 0.0;
+        distAccum[s] = 0.0;
+        accentSpin[s] = 0.0;
+        usingGlb[s] = 0;
+        // GLB path (Turret + HELIX stay procedural by design).
+        if a != config.EN_TURRET && a != config.BOSS_HELIX {
+            var t = reg.enemyTemplateFor(a);
+            if t != null {
+                if glbArch[s] != a {
+                    // Different rig than last occupant: replace the instance.
+                    if glbNode[s] != null { world.Despawn(glbNode[s]); }
+                    glbNode[s] = t.Instantiate();
+                    glbArch[s] = a;
+                    if glbNode[s] != null {
+                        var sc = reg.enemyScaleOf(a);
+                        glbNode[s].SetScale(sc);
+                        world.Spawn(glbNode[s]);
+                    }
+                }
+                if glbNode[s] != null { usingGlb[s] = 1; }
+            }
+        }
+        if usingGlb[s] == 1 {
+            // Park the composite bodies; the rig carries the silhouette.
+            chassisNode[s].SetPosition(0.0, -100.0, 0.0);
+            accentNode[s].SetPosition(0.0, -100.0, 0.0);
+            return;
+        }
+        // Composite path: swap in the archetype meshes + tint.
+        ensureMeshes(a);
+        var mi = meshIndex(a);
+        chassisNode[s].Mesh = meshChassis[mi];
+        accentNode[s].Mesh = meshAccent[mi];
+        G3D.Material3D.SetColor(chassisMat[s], colR, colG, colB);
+        chassisMat[s].Alpha = 1.0;
+        setAccent(s, 0.5, 0.7, 1.0, 0.8);
+    }
+
+    expose func onDespawn(s: Integer) {
+        slotArch[s] = -1;
+        chassisNode[s].SetPosition(0.0, -100.0, 0.0);
+        accentNode[s].SetPosition(0.0, -100.0, 0.0);
+        if glbNode[s] != null && usingGlb[s] == 1 {
+            glbNode[s].SetPosition(0.0, -100.0, 0.0);
+        }
+        usingGlb[s] = 0;
+    }
+
+    hide func setAccent(s: Integer, r: Float, g: Float, b: Float, inten: Float) {
+        G3D.Material3D.SetColor(accentMat[s], r, g, b);
+        G3D.Material3D.SetEmissiveColor(accentMat[s], r, g, b);
+        accentMat[s].EmissiveIntensity = inten;
+        accentNode[s].Material = accentMat[s];
+    }
+
+    // --- Per-frame placement (called from ai_core.placeBodies) ------------------
+    // yawDeg follows ai_core's convention (forward = local -Z).
+    expose func place(s: Integer, a: Integer, px: Float, py: Float, pz: Float, yawDeg: Float,
+                      st: Integer, telegraphKind: Integer, hpFrac: Float, ph: Integer) {
+        if slotArch[s] < 0 { return; }
+        var yawRad = M.toRad(yawDeg);
+        // Locomotion accumulator (bob + intent detection).
+        var moved = M.distXZ(px, pz, lastX[s], lastZ[s]);
+        lastX[s] = px; lastZ[s] = pz;
+        distAccum[s] = distAccum[s] + moved;
+        // Intent from FSM state + motion.
+        var intent = INTENT_IDLE;
+        if telegraphKind == 1 { intent = INTENT_ATTACK; }
+        else if moved > 0.003 { intent = INTENT_MOVE; }
+        if st == 7 { intent = INTENT_DEATH; }
+        // Flyers bank into turns (roll follows yaw rate, max ~12 deg).
+        var bank = 0.0;
+        if a == config.EN_DRONE || a == config.EN_SHRIKE || a == config.BOSS_SHRIKE {
+            var dy = yawRad - lastYawV[s];
+            if dy > 3.1415927 { dy = dy - 6.2831853; }
+            if dy < -3.1415927 { dy = dy + 6.2831853; }
+            bank = M.clampf(dy * 4.0, -0.21, 0.21);
+        }
+        lastYawV[s] = yawRad;
+        if usingGlb[s] == 1 {
+            var n = glbNode[s];
+            n.SetPosition(px, py, pz);
+            // Quaternius rigs face +Z; our forward is -Z.
+            n.SetRotationEuler(0.0, yawRad + 3.1415927, bank);
+            if intent != curIntent[s] {
+                curIntent[s] = intent;
+                var anim = n.Anim;
+                if anim != null {
+                    var clip = reg.templateClip(reg.enemyTemplateFor(a), intent);
+                    if Str.get_Length(clip) > 0 { anim.Crossfade(clip, 0.22); }
+                }
+            }
+            return;
+        }
+        // Composite: ground bob for walkers (flyers hover via ai_core's y).
+        var bob = 0.0;
+        if a != config.EN_DRONE && a != config.EN_SHRIKE && a != config.BOSS_SHRIKE &&
+           a != config.EN_TURRET && a != config.BOSS_HELIX {
+            bob = M.absf(Sin(distAccum[s] * 3.2)) * 0.05;
+        }
+        chassisNode[s].SetPosition(px, py + bob, pz);
+        chassisNode[s].SetRotationEuler(0.0, yawRad, bank);
+        // Accent: spinning rotors/rings get their own yaw.
+        var ay = yawRad;
+        if a == config.EN_DRONE || a == config.EN_SHRIKE || a == config.BOSS_SHRIKE {
+            ay = accentSpin[s];
+        } else if a == config.BOSS_HELIX {
+            ay = accentSpin[s];
+        }
+        accentNode[s].SetPosition(px, py + bob, pz);
+        accentNode[s].SetRotationEuler(0.0, ay, 0.0);
+        curIntent[s] = intent;
+        // State emissive language.
+        applyStateGlow(s, a, st, telegraphKind, hpFrac, ph);
+        // Wraith cloak: translucent until it commits to combat.
+        if a == config.EN_WRAITH {
+            if st == 4 { chassisMat[s].Alpha = 0.9; }
+            else { chassisMat[s].Alpha = 0.35; }
+        }
+    }
+
+    hide func applyStateGlow(s: Integer, a: Integer, st: Integer, telegraphKind: Integer,
+                             hpFrac: Float, ph: Integer) {
+        // Flash overrides everything for its 0.1 s.
+        if flashT[s] > 0.0 {
+            setAccent(s, 1.0, 1.0, 1.0, 3.0);
+            return;
+        }
+        // HELIX rings speak in phase hues.
+        if a == config.BOSS_HELIX {
+            if ph == 0 { setAccent(s, 0.3, 0.85, 0.9, 2.0); }
+            else if ph == 1 { setAccent(s, 1.0, 0.7, 0.25, 2.3); }
+            else { setAccent(s, 1.0, 0.25, 0.2, 2.6); }
+            return;
+        }
+        if st == 6 {
+            // EMP-disabled: dark with a 3 Hz sputter.
+            var sput = 0.1 + M.absf(Sin(animTime * 9.42)) * 0.25;
+            setAccent(s, 0.4, 0.5, 0.8, sput);
+            return;
+        }
+        if telegraphKind == 1 {
+            setAccent(s, 1.0, 0.3, 0.15, 2.5);
+            return;
+        }
+        if st == 4 {
+            setAccent(s, 1.0, 0.25, 0.2, 2.0);
+        } else if st == 2 || st == 3 {
+            setAccent(s, 1.0, 0.7, 0.3, 1.4);
+        } else {
+            setAccent(s, 0.5, 0.7, 1.0, 0.8);
+        }
+        // Damage state: the glow dims as the machine fails.
+        accentMat[s].EmissiveIntensity =
+            accentMat[s].EmissiveIntensity * (0.45 + 0.55 * M.clampf(hpFrac, 0.0, 1.0));
+    }
+
+    // --- Feedback hooks ----------------------------------------------------------
+    expose func hitFlash(s: Integer) {
+        if s >= 0 && s < cap { flashT[s] = 0.1; }
+    }
+
+    // --- Death choreography --------------------------------------------------
+    hide func deathKindOf(a: Integer) -> Integer {
+        if a == config.EN_DRONE || a == config.EN_SHRIKE || a == config.BOSS_SHRIKE {
+            return DEATH_SPIRAL;
+        }
+        if a == config.EN_WRAITH { return DEATH_FOLD; }
+        if a == config.EN_TURRET { return DEATH_POP; }
+        if a == config.EN_HUSK || a == config.EN_RANGER || a == config.EN_VANGUARD {
+            return DEATH_TILT;
+        }
+        return DEATH_COLLAPSE;
+    }
+
+    expose func startDeath(s: Integer, a: Integer, px: Float, py: Float, pz: Float,
+                           yawDeg: Float, colR: Float, colG: Float, colB: Float) {
+        var d = nextDying;
+        nextDying = (nextDying + 1) % DYING_POOL;
+        // Recycle whatever corpse occupied this record.
+        retireDying(d);
+        dyKind[d] = deathKindOf(a);
+        dyT[d] = 0.0;
+        dyX[d] = px; dyY[d] = py; dyZ[d] = pz;
+        dyYaw[d] = M.toRad(yawDeg);
+        dyActive[d] = 1;
+        if usingGlb[s] == 1 && glbNode[s] != null {
+            // Transfer the rig to the corpse record and play its death clip.
+            dyGlb[d] = glbNode[s];
+            dyHasGlb[d] = 1;
+            glbNode[s] = null;
+            glbArch[s] = -1;
+            usingGlb[s] = 0;
+            var anim = dyGlb[d].Anim;
+            if anim != null {
+                var clip = reg.templateClip(reg.enemyTemplateFor(a), INTENT_DEATH);
+                if Str.get_Length(clip) > 0 { anim.Crossfade(clip, 0.12); }
+            }
+            return;
+        }
+        // Composite corpse: copy the slot's look into the dying entities.
+        ensureMeshes(a);
+        var mi = meshIndex(a);
+        var cm = G3D.Material3D.PBR(colR * 0.8, colG * 0.8, colB * 0.8);
+        cm.Roughness = 0.7;
+        var am = G3D.Material3D.FromColor(1.0, 0.35, 0.2);
+        am.EmissiveIntensity = 2.2;
+        dyNodeA[d].Mesh = meshChassis[mi];
+        dyNodeA[d].Material = cm;
+        dyNodeB[d].Mesh = meshAccent[mi];
+        dyNodeB[d].Material = am;
+        dyNodeA[d].SetScaleXYZ(1.0, 1.0, 1.0);
+        dyNodeB[d].SetScaleXYZ(1.0, 1.0, 1.0);
+        dyNodeA[d].SetPosition(px, py, pz);
+        dyNodeB[d].SetPosition(px, py, pz);
+        dyNodeA[d].SetRotationEuler(0.0, dyYaw[d], 0.0);
+        dyNodeB[d].SetRotationEuler(0.0, dyYaw[d], 0.0);
+    }
+
+    hide func retireDying(d: Integer) {
+        dyActive[d] = 0;
+        dyNodeA[d].SetPosition(0.0, -100.0, 0.0);
+        dyNodeB[d].SetPosition(0.0, -100.0, 0.0);
+        dyNodeA[d].SetScaleXYZ(1.0, 1.0, 1.0);
+        dyNodeB[d].SetScaleXYZ(1.0, 1.0, 1.0);
+        if dyHasGlb[d] == 1 && dyGlb[d] != null {
+            world.Despawn(dyGlb[d]);
+            dyGlb[d] = null;
+        }
+        dyHasGlb[d] = 0;
+    }
+
+    // --- Per-tick ------------------------------------------------------------
+    expose func update(dt: Float) {
+        animTime = animTime + dt;
+        var i = 0;
+        while i < cap {
+            if flashT[i] > 0.0 { flashT[i] = flashT[i] - dt; }
+            // Rotor / ring spin rates.
+            var a = slotArch[i];
+            if a == config.EN_DRONE { accentSpin[i] = accentSpin[i] + dt * 14.0; }
+            else if a == config.EN_SHRIKE || a == config.BOSS_SHRIKE {
+                accentSpin[i] = accentSpin[i] + dt * 9.0;
+            } else if a == config.BOSS_HELIX {
+                accentSpin[i] = accentSpin[i] + dt * 0.8;
+            }
+            i = i + 1;
+        }
+        // Dying pool animation.
+        i = 0;
+        while i < DYING_POOL {
+            if dyActive[i] == 1 { tickDying(i, dt); }
+            i = i + 1;
+        }
+    }
+
+    hide func tickDying(d: Integer, dt: Float) {
+        dyT[d] = dyT[d] + dt;
+        var t = dyT[d];
+        if dyHasGlb[d] == 1 {
+            // Rig plays its death clip in place, then sinks away.
+            if t > 1.6 {
+                var g = dyGlb[d];
+                g.SetPosition(dyX[d], dyY[d] - (t - 1.6) * 1.2, dyZ[d]);
+            }
+            if t > 2.6 { retireDying(d); }
+            return;
+        }
+        if dyKind[d] == DEATH_TILT {
+            // Keel over 85 degrees in 0.5 s, rest, then sink.
+            var roll = M.clampf(t / 0.5, 0.0, 1.0) * 1.48;
+            var sink = 0.0;
+            if t > 1.2 { sink = (t - 1.2) * 1.4; }
+            dyNodeA[d].SetPosition(dyX[d], dyY[d] - sink, dyZ[d]);
+            dyNodeB[d].SetPosition(dyX[d], dyY[d] - sink, dyZ[d]);
+            dyNodeA[d].SetRotationEuler(0.0, dyYaw[d], roll);
+            dyNodeB[d].SetRotationEuler(0.0, dyYaw[d], roll);
+            if t > 2.2 { retireDying(d); }
+        } else if dyKind[d] == DEATH_SPIRAL {
+            // Spin down to the deck.
+            var fallT = M.clampf(t / 0.9, 0.0, 1.0);
+            var yy = dyY[d] * (1.0 - fallT * fallT);
+            var spin = dyYaw[d] + t * 9.0;
+            dyNodeA[d].SetPosition(dyX[d], yy, dyZ[d]);
+            dyNodeB[d].SetPosition(dyX[d], yy, dyZ[d]);
+            dyNodeA[d].SetRotationEuler(0.35 * fallT, spin, 0.3 * fallT);
+            dyNodeB[d].SetRotationEuler(0.35 * fallT, spin, 0.3 * fallT);
+            if t > 1.6 { retireDying(d); }
+        } else if dyKind[d] == DEATH_FOLD {
+            // Glitch-flicker, then fold to nothing.
+            var sc = 1.0;
+            if t > 0.4 { sc = M.clampf(1.0 - (t - 0.4) / 0.35, 0.02, 1.0); }
+            dyNodeA[d].SetScaleXYZ(1.0, sc, 1.0);
+            dyNodeB[d].SetScaleXYZ(1.0, sc, 1.0);
+            dyNodeA[d].SetPosition(dyX[d], dyY[d], dyZ[d]);
+            dyNodeB[d].SetPosition(dyX[d], dyY[d], dyZ[d]);
+            if t > 1.0 { retireDying(d); }
+        } else if dyKind[d] == DEATH_POP {
+            // The head (accent) launches up and tumbles; the base stays put.
+            var hy = dyY[d] + t * 4.2 - t * t * 5.0;
+            dyNodeA[d].SetPosition(dyX[d], dyY[d], dyZ[d]);
+            dyNodeB[d].SetPosition(dyX[d], hy, dyZ[d]);
+            dyNodeB[d].SetRotationEuler(t * 6.0, dyYaw[d], t * 4.0);
+            if t > 1.8 { retireDying(d); }
+        } else {
+            // Collapse: crush down and sink.
+            var cs = M.clampf(1.0 - t / 0.8, 0.15, 1.0);
+            dyNodeA[d].SetScaleXYZ(1.0, cs, 1.0);
+            dyNodeB[d].SetScaleXYZ(1.0, cs, 1.0);
+            var sink2 = 0.0;
+            if t > 0.8 { sink2 = (t - 0.8) * 1.5; }
+            dyNodeA[d].SetPosition(dyX[d], dyY[d] - sink2, dyZ[d]);
+            dyNodeB[d].SetPosition(dyX[d], dyY[d] - sink2, dyZ[d]);
+            if t > 1.6 { retireDying(d); }
+        }
+    }
+
+    // --- Composite mesh bakers -------------------------------------------------
+    // Forward = local -Z (matches ai_core's yaw convention). Ground origin at
+    // y=0 for walkers; flyers bake centered so ai_core's altitude places them.
+    hide func meshIndex(a: Integer) -> Integer {
+        var i = 0;
+        while i < meshArch.Count {
+            if meshArch[i] == a { return i; }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    hide func ensureMeshes(a: Integer) {
+        var i = 0;
+        while i < meshArch.Count {
+            if meshArch[i] == a { return; }
+            i = i + 1;
+        }
+        mk.begin();
+        bakeChassis(a);
+        var chassis = mk.take();
+        mk.begin();
+        bakeAccent(a);
+        var accent = mk.take();
+        meshArch.Add(a);
+        meshChassis.Add(chassis);
+        meshAccent.Add(accent);
+    }
+
+    // Shared humanoid frame (Husk-class), scaled by k.
+    hide func humanoid(k: Float) {
+        mk.box(0.0, 1.1 * k, 0.0, 0.25 * k, 0.35 * k, 0.15 * k);       // torso
+        mk.box(0.0, 1.38 * k, -0.02 * k, 0.32 * k, 0.08 * k, 0.18 * k); // shoulder yoke
+        mk.box(0.0, 0.98 * k, 0.16 * k, 0.16 * k, 0.24 * k, 0.04 * k);  // rear power spine
+        mk.box(0.0, 0.72 * k, 0.0, 0.2 * k, 0.125 * k, 0.13 * k);      // pelvis
+        mk.box(-0.12 * k, 0.32 * k, 0.0, 0.08 * k, 0.35 * k, 0.08 * k); // legs
+        mk.box(0.12 * k, 0.32 * k, 0.0, 0.08 * k, 0.35 * k, 0.08 * k);
+        mk.box(-0.12 * k, 0.04 * k, -0.08 * k, 0.12 * k, 0.045 * k, 0.18 * k); // feet
+        mk.box(0.12 * k, 0.04 * k, -0.08 * k, 0.12 * k, 0.045 * k, 0.18 * k);
+        mk.box(-0.36 * k, 1.12 * k, 0.0, 0.065 * k, 0.3 * k, 0.065 * k); // arms
+        mk.box(0.36 * k, 1.12 * k, 0.0, 0.065 * k, 0.3 * k, 0.065 * k);
+        mk.box(0.0, 1.62 * k, 0.0, 0.13 * k, 0.13 * k, 0.13 * k);      // head
+        mk.box(0.0, 1.76 * k, 0.05 * k, 0.08 * k, 0.05 * k, 0.08 * k);  // sensor crown
+    }
+
+    hide func bakeChassis(a: Integer) {
+        if a == config.EN_HUSK {
+            humanoid(1.0);
+        } else if a == config.EN_SAPPER {
+            mk.sphere(0.0, 0.42, 0.0, 0.35, 0.25, 8);
+            mk.box(0.0, 0.68, -0.08, 0.18, 0.08, 0.20);
+            mk.box(-0.22, 0.12, -0.18, 0.05, 0.12, 0.05);
+            mk.box(0.22, 0.12, -0.18, 0.05, 0.12, 0.05);
+            mk.box(-0.22, 0.12, 0.18, 0.05, 0.12, 0.05);
+            mk.box(0.22, 0.12, 0.18, 0.05, 0.12, 0.05);
+        } else if a == config.EN_DRONE {
+            mk.sphere(0.0, 0.0, 0.0, 0.28, 0.22, 8);
+            mk.box(0.0, 0.18, 0.14, 0.03, 0.12, 0.1);      // sensor fin
+            mk.box(-0.42, 0.0, 0.0, 0.18, 0.03, 0.10);      // side pods
+            mk.box(0.42, 0.0, 0.0, 0.18, 0.03, 0.10);
+        } else if a == config.EN_RANGER {
+            humanoid(1.05);
+            mk.box(-0.3, 1.42, 0.0, 0.12, 0.06, 0.12);     // shoulder pads
+            mk.box(0.3, 1.42, 0.0, 0.12, 0.06, 0.12);
+            mk.box(0.4, 1.12, -0.3, 0.07, 0.07, 0.35);     // gun arm forward
+            mk.box(0.4, 1.12, -0.68, 0.035, 0.035, 0.23);  // barrel
+            mk.box(0.4, 1.22, -0.42, 0.08, 0.035, 0.08);   // optic
+        } else if a == config.EN_MARAUDER {
+            mk.box(0.0, 1.0, 0.0, 0.45, 0.5, 0.3);         // hull
+            mk.box(-0.4, 0.28, 0.0, 0.16, 0.28, 0.45);     // treads
+            mk.box(0.4, 0.28, 0.0, 0.16, 0.28, 0.45);
+            mk.box(-0.24, 1.05, -0.34, 0.15, 0.2, 0.03);   // front plates
+            mk.box(0.24, 1.05, -0.34, 0.15, 0.2, 0.03);
+            mk.box(-0.5, 1.05, 0.0, 0.03, 0.2, 0.15);      // side plates
+            mk.box(0.5, 1.05, 0.0, 0.03, 0.2, 0.15);
+        } else if a == config.EN_VANGUARD {
+            humanoid(1.15);
+            mk.box(-0.35, 0.75, -0.35, 0.45, 0.65, 0.04);  // tower shield
+            mk.box(-0.35, 1.24, -0.40, 0.42, 0.06, 0.04);
+            mk.box(-0.35, 0.28, -0.40, 0.42, 0.06, 0.04);
+            mk.box(0.42, 1.05, -0.18, 0.08, 0.42, 0.08);   // shock baton
+        } else if a == config.EN_STALKER {
+            mk.box(0.0, 0.45, 0.0, 0.35, 0.15, 0.45);      // low body
+            mk.box(0.0, 0.62, 0.16, 0.22, 0.08, 0.24);     // raised shoulder shell
+            mk.boxRot(-0.4, 0.25, -0.3, 0.05, 0.3, 0.05, 0.0, 0.0, 0.5);
+            mk.boxRot(0.4, 0.25, -0.3, 0.05, 0.3, 0.05, 0.0, 0.0, -0.5);
+            mk.boxRot(-0.4, 0.25, 0.3, 0.05, 0.3, 0.05, 0.0, 0.0, 0.5);
+            mk.boxRot(0.4, 0.25, 0.3, 0.05, 0.3, 0.05, 0.0, 0.0, -0.5);
+            mk.boxRot(0.0, 0.5, -0.5, 0.12, 0.1, 0.15, 0.0, -0.3, 0.0); // wedge head
+        } else if a == config.EN_WRAITH {
+            mk.box(0.0, 1.05, 0.0, 0.17, 0.8, 0.13);       // slim shroud
+            mk.box(0.0, 1.95, 0.0, 0.09, 0.13, 0.09);      // narrow head
+            mk.boxRot(-0.22, 1.2, 0.0, 0.04, 0.65, 0.04, 0.0, 0.0, 0.28);
+            mk.boxRot(0.22, 1.2, 0.0, 0.04, 0.65, 0.04, 0.0, 0.0, -0.28);
+        } else if a == config.EN_TURRET {
+            mk.cyl(0.0, 0.0, 0.0, 0.3, 0.35, 10, 1);       // base
+            mk.cyl(0.0, 0.35, 0.0, 0.38, 0.08, 10, 0);
+            mk.box(0.0, 0.5, 0.0, 0.12, 0.15, 0.12);       // yoke
+        } else if a == config.EN_MITE {
+            mk.box(0.0, 0.14, 0.0, 0.11, 0.07, 0.15);
+            mk.box(-0.14, 0.06, -0.08, 0.03, 0.06, 0.03);
+            mk.box(0.14, 0.06, -0.08, 0.03, 0.06, 0.03);
+            mk.box(-0.14, 0.06, 0.08, 0.03, 0.06, 0.03);
+            mk.box(0.14, 0.06, 0.08, 0.03, 0.06, 0.03);
+        } else if a == config.EN_SHRIKE {
+            mk.box(0.0, 0.0, 0.0, 0.25, 0.1, 0.4);         // hull (flyer center)
+            mk.boxRot(-0.5, 0.05, 0.1, 0.35, 0.03, 0.2, 0.5, 0.0, 0.15);  // swept wings
+            mk.boxRot(0.5, 0.05, 0.1, 0.35, 0.03, 0.2, -0.5, 0.0, -0.15);
+            mk.box(0.0, 0.08, 0.45, 0.05, 0.12, 0.12);     // tail
+        } else if a == config.BOSS_WARDEN {
+            mk.box(0.0, 2.2, 0.0, 1.0, 1.1, 0.66);         // Marauder x2.2
+            mk.box(-0.9, 0.6, 0.0, 0.35, 0.6, 1.0);
+            mk.box(0.9, 0.6, 0.0, 0.35, 0.6, 1.0);
+            mk.box(-1.35, 1.35, 0.0, 0.14, 0.8, 0.18);     // hydraulic shoulders
+            mk.box(1.35, 1.35, 0.0, 0.14, 0.8, 0.18);
+            mk.box(-0.5, 2.3, -0.75, 0.33, 0.45, 0.07);
+            mk.box(0.5, 2.3, -0.75, 0.33, 0.45, 0.07);
+            mk.box(-1.1, 2.3, 0.0, 0.07, 0.45, 0.33);
+            mk.box(1.1, 2.3, 0.0, 0.07, 0.45, 0.33);
+            mk.box(-0.5, 2.3, 0.75, 0.33, 0.45, 0.07);
+            mk.box(0.5, 2.3, 0.75, 0.33, 0.45, 0.07);
+        } else if a == config.BOSS_SHRIKE {
+            mk.box(0.0, 0.0, 0.0, 0.6, 0.24, 0.96);
+            mk.boxRot(-1.2, 0.12, 0.24, 0.84, 0.07, 0.48, 0.5, 0.0, 0.15);
+            mk.boxRot(1.2, 0.12, 0.24, 0.84, 0.07, 0.48, -0.5, 0.0, -0.15);
+            mk.box(0.0, 0.19, 1.08, 0.12, 0.29, 0.29);
+            mk.box(-0.55, -0.12, -0.3, 0.12, 0.1, 0.3);    // pods
+            mk.box(0.55, -0.12, -0.3, 0.12, 0.1, 0.3);
+            mk.box(-0.85, -0.12, 0.2, 0.12, 0.1, 0.3);
+            mk.box(0.85, -0.12, 0.2, 0.12, 0.1, 0.3);
+        } else if a == config.BOSS_HELIX {
+            mk.cyl(0.0, 0.0, 0.0, 0.5, 2.4, 12, 1);        // monolith core
+            mk.cyl(0.0, 2.35, 0.0, 0.68, 0.12, 12, 0);
+            mk.sphere(0.0, 2.9, 0.0, 0.42, 0.42, 8);       // eye
+        } else {
+            humanoid(1.0);
+        }
+    }
+
+    hide func bakeAccent(a: Integer) {
+        if a == config.EN_HUSK {
+            mk.box(0.0, 1.64, -0.135, 0.1, 0.025, 0.01);   // eye strip
+        } else if a == config.EN_SAPPER {
+            mk.cyl(0.0, 0.3, 0.22, 0.16, 0.5, 8, 1);       // back tank (pulses)
+        } else if a == config.EN_DRONE {
+            mk.box(0.0, 0.26, 0.0, 0.45, 0.01, 0.03);      // rotor cross (spins)
+            mk.box(0.0, 0.26, 0.0, 0.03, 0.01, 0.45);
+        } else if a == config.EN_RANGER {
+            mk.box(0.0, 1.72, -0.14, 0.09, 0.018, 0.01);   // visor slit
+        } else if a == config.EN_MARAUDER {
+            mk.box(0.0, 1.05, -0.36, 0.1, 0.03, 0.01);     // core slit
+        } else if a == config.EN_VANGUARD {
+            mk.box(-0.35, 0.75, -0.36, 0.46, 0.03, 0.01);  // shield edge glow
+            mk.box(0.0, 1.86, -0.155, 0.1, 0.025, 0.01);
+        } else if a == config.EN_STALKER {
+            mk.box(0.0, 0.62, 0.1, 0.03, 0.08, 0.25);      // spine spikes
+            mk.box(0.0, 0.66, -0.15, 0.03, 0.06, 0.1);
+        } else if a == config.EN_WRAITH {
+            mk.box(-0.035, 1.97, -0.095, 0.018, 0.018, 0.01); // twin eyes
+            mk.box(0.035, 1.97, -0.095, 0.018, 0.018, 0.01);
+        } else if a == config.EN_TURRET {
+            mk.box(0.0, 0.72, -0.1, 0.25, 0.11, 0.35);     // gun head
+            mk.cylRot(0.0, 0.72, -0.45, 0.05, 0.4, 8, 2, 0.0, 1.5707963, 0.0);
+            mk.box(0.0, 0.6, 0.28, 0.1, 0.14, 0.06);       // rear power cell
+        } else if a == config.EN_MITE {
+            mk.box(0.0, 0.16, -0.16, 0.03, 0.02, 0.01);    // eye dot
+        } else if a == config.EN_SHRIKE {
+            mk.box(0.0, 0.0, 0.42, 0.14, 0.05, 0.05);      // engine glow
+            mk.box(-0.3, -0.04, -0.2, 0.07, 0.05, 0.15);   // rocket pods
+            mk.box(0.3, -0.04, -0.2, 0.07, 0.05, 0.15);
+        } else if a == config.BOSS_WARDEN {
+            mk.sphere(0.0, 2.3, 0.0, 0.3, 0.3, 8);         // exposed core
+        } else if a == config.BOSS_SHRIKE {
+            mk.box(0.0, 0.26, 0.0, 0.5, 0.03, 0.08);       // siren strip
+            mk.box(0.0, -0.06, 1.0, 0.2, 0.06, 0.06);
+        } else if a == config.BOSS_HELIX {
+            // Three orbiting ring segments (spin via accent yaw).
+            mk.boxRot(1.05, 0.8, 0.0, 0.4, 0.06, 0.1, 0.0, 0.0, 0.0);
+            mk.boxRot(-0.52, 1.5, 0.9, 0.4, 0.06, 0.1, 2.094, 0.0, 0.0);
+            mk.boxRot(-0.52, 2.2, -0.9, 0.4, 0.06, 0.1, 4.189, 0.0, 0.0);
+        } else {
+            mk.box(0.0, 1.64, -0.135, 0.1, 0.025, 0.01);
+        }
+    }
+}

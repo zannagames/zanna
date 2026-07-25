@@ -5,10 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Bridges the lowering driver with the reusable emitter utilities that
-// manipulate BASIC array temporaries.  The helpers provided here forward the
-// procedural interface exposed on `Lowerer` to the stateful emitter instance so
-// that ownership bookkeeping remains encapsulated in one component.
+// File: src/frontends/basic/lower/Emit_Builtin.cpp
+// Purpose: Forwards Lowerer array storage, array cleanup, and temporary-value
+//          lifetime operations to the stateful Emitter.
+// Key invariants:
+//   - Array ownership bookkeeping remains centralized in Emitter.
+//   - Deferred temporary releases retain source order until emitted or cleared.
+// Ownership/Lifetime:
+//   - Value handles are copied into emitter bookkeeping; this layer owns no
+//     runtime allocations itself.
+//   - The Lowerer owns the Emitter used by every forwarding function.
+// Links: src/frontends/basic/lower/Emitter.hpp,
+//        src/frontends/basic/Lowerer.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,10 +48,17 @@ namespace il::frontends::basic {
 ///
 /// @param slot Address where the array handle should be written.
 /// @param value Array value produced by the lowering routine.
+/// @param elementType BASIC element type used to select ownership behavior.
 void Lowerer::storeArray(Value slot, Value value, AstType elementType) {
     emitter().storeArray(slot, value, elementType, /*isObjectArray=*/false);
 }
 
+/// @brief Records an array handle and explicitly identifies object arrays.
+/// @param slot Address where the array handle is stored.
+/// @param value Array handle produced by lowering.
+/// @param elementType BASIC element type used for runtime metadata.
+/// @param isObjectArray True when elements are object references requiring
+///        object-aware ownership handling.
 void Lowerer::storeArray(Value slot, Value value, AstType elementType, bool isObjectArray) {
     emitter().storeArray(slot, value, elementType, isObjectArray);
 }
@@ -75,18 +90,28 @@ void Lowerer::releaseArrayParams(const std::unordered_set<std::string> &paramNam
     emitter().releaseArrayParams(paramNames);
 }
 
+/// @brief Defers release of a temporary string until the statement boundary.
+/// @param v Runtime string handle whose ownership must be relinquished later.
 void Lowerer::deferReleaseStr(Value v) {
     emitter().deferReleaseStr(v);
 }
 
+/// @brief Defers release of a temporary object until the statement boundary.
+/// @param v Runtime object handle whose ownership must be relinquished later.
+/// @param className Canonical class name used for destructor dispatch; may be
+///        empty when no class-specific destruction is required.
 void Lowerer::deferReleaseObj(Value v, const std::string &className) {
     emitter().deferReleaseObj(v, className);
 }
 
+/// @brief Emits releases for every deferred temporary and clears the queue.
 void Lowerer::releaseDeferredTemps() {
     emitter().releaseDeferredTemps();
 }
 
+/// @brief Clears deferred-temporary bookkeeping without emitting releases.
+/// @warning Callers use this only when ownership has been transferred or
+///          cleanup is otherwise handled by a different control-flow path.
 void Lowerer::clearDeferredTemps() {
     emitter().clearDeferredTemps();
 }

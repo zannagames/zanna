@@ -1,0 +1,104 @@
+// =============================================================================
+// core/mathutil.zia — pure numeric helpers (no engine dependency)
+// =============================================================================
+module mathutil;
+
+bind Zanna.Math;
+bind Zanna.Core.Convert as Convert;
+
+func clampf(v: Float, lo: Float, hi: Float) -> Float {
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+func clampi(v: Integer, lo: Integer, hi: Integer) -> Integer {
+    if v < lo { return lo; }
+    if v > hi { return hi; }
+    return v;
+}
+
+func absf(v: Float) -> Float {
+    if v < 0.0 { return 0.0 - v; }
+    return v;
+}
+
+func maxf(a: Float, b: Float) -> Float {
+    if a > b { return a; }
+    return b;
+}
+
+func minf(a: Float, b: Float) -> Float {
+    if a < b { return a; }
+    return b;
+}
+
+func maxi(a: Integer, b: Integer) -> Integer {
+    if a > b { return a; }
+    return b;
+}
+
+func mini(a: Integer, b: Integer) -> Integer {
+    if a < b { return a; }
+    return b;
+}
+
+func lerpf(a: Float, b: Float, t: Float) -> Float {
+    return a + (b - a) * t;
+}
+
+func roundi(v: Float) -> Integer {
+    return Convert.NumToInt(Floor(v + 0.5));
+}
+
+func signf(v: Float) -> Float {
+    if v > 0.0 { return 1.0; }
+    if v < 0.0 { return -1.0; }
+    return 0.0;
+}
+
+// Frame-rate-independent exponential approach: moves `cur` toward `target` so
+// that `rate` fraction of the remaining gap closes per second.
+func approach(cur: Float, target: Float, rate: Float, dt: Float) -> Float {
+    var t = 1.0 - Pow(1.0 - clampf(rate, 0.0, 1.0), dt * 60.0);
+    return cur + (target - cur) * t;
+}
+
+func smoothstep(edge0: Float, edge1: Float, v: Float) -> Float {
+    if edge1 <= edge0 {
+        if v >= edge1 { return 1.0; }
+        return 0.0;
+    }
+    var t = clampf((v - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+func toRad(deg: Float) -> Float {
+    return deg * 0.0174532925199433;
+}
+
+func toDeg(rad: Float) -> Float {
+    return rad * 57.2957795130823;
+}
+
+// Planar (XZ) distance between two points — the common gameplay-range check.
+func distXZ(ax: Float, az: Float, bx: Float, bz: Float) -> Float {
+    var dx = ax - bx;
+    var dz = az - bz;
+    return Sqrt(dx * dx + dz * dz);
+}
+
+func dist3(ax: Float, ay: Float, az: Float, bx: Float, by: Float, bz: Float) -> Float {
+    var dx = ax - bx;
+    var dy = ay - by;
+    var dz = az - bz;
+    return Sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// Wrap an angle in degrees into (-180, 180].
+func wrapDeg(a: Float) -> Float {
+    var x = a;
+    while x > 180.0 { x = x - 360.0; }
+    while x <= -180.0 { x = x + 360.0; }
+    return x;
+}

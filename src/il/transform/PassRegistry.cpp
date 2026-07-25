@@ -274,6 +274,7 @@ bool PreservedAnalyses::preservesAllFunctionAnalyses() const {
     return preserveAllFunctions_;
 }
 
+/// @copydoc PreservedAnalyses::preservesAllAnalyses()
 bool PreservedAnalyses::preservesAllAnalyses() const {
     return preserveAllModules_ && preserveAllFunctions_ && changedFunctions_.empty();
 }
@@ -314,35 +315,43 @@ bool PreservedAnalyses::hasFunctionPreservations() const {
     return !functionAnalyses_.empty();
 }
 
+/// @copydoc PreservedAnalyses::preserveCFG()
 PreservedAnalyses &PreservedAnalyses::preserveCFG() {
     return preserveFunction(kAnalysisCFG);
 }
 
+/// @copydoc PreservedAnalyses::preserveDominators()
 PreservedAnalyses &PreservedAnalyses::preserveDominators() {
     return preserveFunction(kAnalysisDominators);
 }
 
+/// @copydoc PreservedAnalyses::preserveLoopInfo()
 PreservedAnalyses &PreservedAnalyses::preserveLoopInfo() {
     return preserveFunction(kAnalysisLoopInfo);
 }
 
+/// @copydoc PreservedAnalyses::preserveLiveness()
 PreservedAnalyses &PreservedAnalyses::preserveLiveness() {
     return preserveFunction(kAnalysisLiveness);
 }
 
+/// @copydoc PreservedAnalyses::preserveBasicAA()
 PreservedAnalyses &PreservedAnalyses::preserveBasicAA() {
     return preserveFunction(kAnalysisBasicAA);
 }
 
+/// @copydoc PreservedAnalyses::markChangedFunction()
 PreservedAnalyses &PreservedAnalyses::markChangedFunction(const std::string &name) {
     changedFunctions_.insert(name);
     return *this;
 }
 
+/// @copydoc PreservedAnalyses::hasChangedFunctions()
 bool PreservedAnalyses::hasChangedFunctions() const {
     return !changedFunctions_.empty();
 }
 
+/// @copydoc PreservedAnalyses::isChangedFunction()
 bool PreservedAnalyses::isChangedFunction(const std::string &name) const {
     return changedFunctions_.contains(name);
 }
@@ -423,6 +432,7 @@ class LambdaFunctionPass : public FunctionPass {
 ///          program lifetime.
 /// @param id Identifier used to reference the pass from pipelines.
 /// @param factory Callable producing unique @ref ModulePass instances.
+/// @param parallelSafe Whether execution is audited for parallel mode.
 void PassRegistry::registerModulePass(const std::string &id,
                                       ModulePassFactory factory,
                                       bool parallelSafe) {
@@ -436,10 +446,12 @@ void PassRegistry::registerModulePass(const std::string &id,
 ///          keeping registration sites terse.
 /// @param id Identifier used to reference the pass from pipelines.
 /// @param callback Callback implementing the pass behaviour.
+/// @param parallelSafe Whether execution is audited for parallel mode.
 void PassRegistry::registerModulePass(const std::string &id,
                                       ModulePassCallback callback,
                                       bool parallelSafe) {
     auto cb = ModulePassCallback(callback);
+    /// Construct a fresh polymorphic wrapper while retaining the registered id.
     registry_[id] = detail::PassFactory{
         detail::PassKind::Module,
         [passId = std::string(id), cb]() { return std::make_unique<LambdaModulePass>(passId, cb); },
@@ -453,11 +465,13 @@ void PassRegistry::registerModulePass(const std::string &id,
 ///          passes to participate in the framework.
 /// @param id Identifier used to reference the pass from pipelines.
 /// @param fn Callback executed when the pass runs.
+/// @param parallelSafe Whether execution is audited for parallel mode.
 void PassRegistry::registerModulePass(const std::string &id,
                                       const std::function<void(core::Module &)> &fn,
                                       bool parallelSafe) {
     registerModulePass(
         id,
+        /// Adapt a void callback to the preservation-reporting interface.
         [fn](core::Module &module, AnalysisManager &) {
             fn(module);
             return PreservedAnalyses::none();
@@ -471,6 +485,7 @@ void PassRegistry::registerModulePass(const std::string &id,
 ///          identifier.
 /// @param id Identifier used to reference the pass from pipelines.
 /// @param factory Callable producing unique @ref FunctionPass instances.
+/// @param parallelSafe Permit concurrent invocations across functions.
 void PassRegistry::registerFunctionPass(const std::string &id,
                                         FunctionPassFactory factory,
                                         bool parallelSafe) {
@@ -484,10 +499,12 @@ void PassRegistry::registerFunctionPass(const std::string &id,
 ///          objects.
 /// @param id Identifier used to reference the pass from pipelines.
 /// @param callback Callback implementing the pass behaviour.
+/// @param parallelSafe Permit concurrent invocations across functions.
 void PassRegistry::registerFunctionPass(const std::string &id,
                                         FunctionPassCallback callback,
                                         bool parallelSafe) {
     auto cb = FunctionPassCallback(callback);
+    /// Construct a fresh polymorphic wrapper while retaining the registered id.
     registry_[id] = detail::PassFactory{detail::PassKind::Function,
                                         {},
                                         [passId = std::string(id), cb]() {
@@ -502,11 +519,13 @@ void PassRegistry::registerFunctionPass(const std::string &id,
 ///          the pipeline infrastructure.
 /// @param id Identifier used to reference the pass from pipelines.
 /// @param fn Callback executed when the pass runs.
+/// @param parallelSafe Permit concurrent invocations across functions.
 void PassRegistry::registerFunctionPass(const std::string &id,
                                         const std::function<void(core::Function &)> &fn,
                                         bool parallelSafe) {
     registerFunctionPass(
         id,
+        /// Adapt a void callback to the preservation-reporting interface.
         [fn](core::Function &function, AnalysisManager &) {
             fn(function);
             return PreservedAnalyses::none();
@@ -528,24 +547,32 @@ const detail::PassFactory *PassRegistry::lookup(std::string_view id) const {
     return &it->second;
 }
 
+/// @copydoc registerLoopSimplifyPass()
 void registerLoopSimplifyPass(PassRegistry &registry) {
     // Sequential: recomputes whole-module CFG/loop info while mutating block edges.
+    /// Construct a stateless loop simplifier for sequential execution.
     registry.registerFunctionPass(
         "loop-simplify", []() { return std::make_unique<LoopSimplify>(); }, false);
 }
 
+/// @copydoc registerLICMPass()
 void registerLICMPass(PassRegistry &registry) {
     // Sequential: analysis dependencies scan the whole module while this pass moves instructions.
+    /// Construct LICM with memory hoisting enabled.
     registry.registerFunctionPass("licm", []() { return std::make_unique<LICM>(); }, false);
 }
 
+/// @copydoc registerLICMSafePass()
 void registerLICMSafePass(PassRegistry &registry) {
     // Sequential for the same whole-module analysis reason as the default LICM pass.
+    /// Construct LICM with all memory hoisting disabled.
     registry.registerFunctionPass(
         "licm-safe", []() { return std::make_unique<LICM>(false); }, false);
 }
 
+/// @copydoc registerSCCPPass()
 void registerSCCPPass(PassRegistry &registry) {
+    /// Run SCCP per function and report exactly which function caches became stale.
     registry.registerModulePass("sccp", [](core::Module &module, AnalysisManager &) {
         PreservedAnalyses preserved;
         const std::size_t functionCount = module.functions.size();
@@ -567,32 +594,46 @@ void registerSCCPPass(PassRegistry &registry) {
     });
 }
 
+/// @copydoc registerConstFoldPass()
 void registerConstFoldPass(PassRegistry &registry) {
+    /// Adapt legacy module constant folding through semantic change detection.
     registry.registerModulePass("constfold", [](core::Module &module, AnalysisManager &) {
+        /// Invoke the legacy void-returning constant folder.
         return runVoidModulePass(module, [](core::Module &m) { constFold(m); });
     });
 }
 
+/// @copydoc registerPeepholePass()
 void registerPeepholePass(PassRegistry &registry) {
+    /// Adapt legacy module peephole optimization through semantic change detection.
     registry.registerModulePass("peephole", [](core::Module &module, AnalysisManager &) {
+        /// Invoke the legacy void-returning peephole pass.
         return runVoidModulePass(module, [](core::Module &m) { peephole(m); });
     });
 }
 
+/// @copydoc registerDCEPass()
 void registerDCEPass(PassRegistry &registry) {
+    /// Adapt legacy module DCE through semantic change detection.
     registry.registerModulePass("dce", [](core::Module &module, AnalysisManager &) {
+        /// Invoke the legacy void-returning DCE pass.
         return runVoidModulePass(module, [](core::Module &m) { dce(m); });
     });
 }
 
+/// @copydoc registerMem2RegPass()
 void registerMem2RegPass(PassRegistry &registry) {
+    /// Adapt deterministic module mem2reg through semantic change detection.
     registry.registerModulePass("mem2reg", [](core::Module &module, AnalysisManager &) {
+        /// Invoke mem2reg without statistics or internal parallelism.
         return runVoidModulePass(module,
                                  [](core::Module &m) { zanna::passes::mem2reg(m, nullptr); });
     });
 }
 
+/// @copydoc registerDSEPass()
 void registerDSEPass(PassRegistry &registry) {
+    /// Combine local and MemorySSA DSE while preserving unaffected structural analyses.
     registry.registerFunctionPass(
         "dse",
         [](core::Function &fn, AnalysisManager &am) {
@@ -615,9 +656,11 @@ void registerDSEPass(PassRegistry &registry) {
         true);
 }
 
+/// @copydoc registerEarlyCSEPass()
 void registerEarlyCSEPass(PassRegistry &registry) {
     // Each invocation indexes and mutates only its assigned function. Identifier
     // sidecars are synchronized by PipelineExecutor before parallel dispatch.
+    /// Run EarlyCSE on one assigned function and report structural preservation.
     registry.registerFunctionPass(
         "earlycse",
         [](core::Function &fn, AnalysisManager &am) {
@@ -634,20 +677,28 @@ void registerEarlyCSEPass(PassRegistry &registry) {
         true);
 }
 
+/// @copydoc registerReassociatePass()
 void registerReassociatePass(PassRegistry &registry) {
+    /// Adapt legacy reassociation through semantic change detection.
     registry.registerModulePass("reassociate", [](core::Module &module, AnalysisManager &) {
+        /// Invoke the legacy void-returning reassociation pass.
         return runVoidModulePass(module, [](core::Module &m) { reassociate(m); });
     });
 }
 
+/// @copydoc registerEHOptPass()
 void registerEHOptPass(PassRegistry &registry) {
+    /// Adapt legacy exception cleanup through semantic change detection.
     registry.registerModulePass("eh-opt", [](core::Module &module, AnalysisManager &) {
+        /// Invoke the legacy void-returning exception optimization pass.
         return runVoidModulePass(module, [](core::Module &m) { ehOpt(m); });
     });
 }
 
+/// @copydoc registerLoopRotatePass()
 void registerLoopRotatePass(PassRegistry &registry) {
     // Sequential: rewrites loop edges and recomputes whole-module loop info.
+    /// Construct a stateless loop-rotation pass for sequential execution.
     registry.registerFunctionPass(
         "loop-rotate", []() { return std::make_unique<LoopRotate>(); }, false);
 }

@@ -15,6 +15,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines shared side-effect classifications for runtime helpers.
+
 #pragma once
 
 #include <array>
@@ -24,6 +27,12 @@ namespace il::runtime {
 
 /// @brief Describe behavioural flags associated with a runtime helper.
 struct HelperEffects {
+    /// @brief Construct an effect classification from individual flags.
+    /// @param nothrowIn Whether the helper cannot throw or trap.
+    /// @param readonlyIn Whether the helper may read but cannot write memory.
+    /// @param pureIn Whether the helper has no observable side effects.
+    /// @param knownIn Whether the helper is explicitly classified even when all
+    ///                effect flags are false.
     constexpr HelperEffects(bool nothrowIn = false,
                             bool readonlyIn = false,
                             bool pureIn = false,
@@ -47,8 +56,11 @@ struct HelperEffects {
 ///          - readonly: May read memory but no writes; can reorder with stores
 ///          - nothrow: Cannot throw or trap; can hoist across exception boundaries
 inline HelperEffects classifyHelperEffects(std::string_view name) {
+    /// @brief One symbol-to-effects row in the local classification table.
     struct Entry {
+        /// Runtime C symbol spelling.
         std::string_view name;
+        /// Known effects for @ref name.
         HelperEffects effects;
     };
 

@@ -52,10 +52,14 @@ struct Extern {
     /// @brief Optional semantic effect metadata for optimizers and call validation.
     EffectAttrs Attrs{};
 
+    /// @brief Access mutable semantic effect attributes.
+    /// @return Reference to metadata owned by this declaration.
     [[nodiscard]] EffectAttrs &attrs() {
         return Attrs;
     }
 
+    /// @brief Access semantic effect attributes without mutation.
+    /// @return Const reference to metadata owned by this declaration.
     [[nodiscard]] const EffectAttrs &attrs() const {
         return Attrs;
     }

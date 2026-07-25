@@ -1,0 +1,271 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/material_library_3d.zia
+// Purpose: Load and persist the per-root materials.scene3d project library.
+// Key invariants:
+//   - The library is an ordinary VSCN scene: each top-level node carries one
+//     named material (unique case-insensitively, no mesh) — ADR 0189.
+//   - Loading is fail-closed: byte budgets, parse failures, and naming-rule
+//     violations publish an error instead of a partial list.
+//   - Persisting stages a temp file and atomically replaces the library only
+//     when the on-disk bytes still match the loaded snapshot, mirroring the
+//     asset-library.json transaction model (ADR 0180).
+//   - Library operations never touch scene documents.
+// Ownership/Lifetime: Returned libraries own value lists; materials are
+//                     independent runtime objects owned by their entries.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/services/asset_library.zia,
+//        docs/adr/0189-project-material-library.md
+//
+//===----------------------------------------------------------------------===//
+
+module material_library_3d;
+
+bind "safe_io";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+
+// ============================================================================
+// MODULE: material_library_3d
+// PURPOSE: Keep the project material-library storage contract outside the
+//          SceneEditor3D controller.
+//
+// WHERE-THIS-FITS: SceneEditor3D owns the Library UI, staging clones, and
+//          batch application; this module owns load/validate/persist.
+//
+// TEACHING-NOTE: The library file is deliberately a plain scene so the
+//          complete VSCN pipeline (embedded maps, round-trip, the 3D editor
+//          itself) applies with zero new formats.
+// ============================================================================
+
+final MATERIAL_LIBRARY_FILE_NAME: String = "materials.scene3d";
+final MAX_MATERIAL_LIBRARY_BYTES: Integer = 16777216;
+final MAX_MATERIAL_LIBRARY_ENTRIES: Integer = 256;
+final MAX_NAME_CHARS: Integer = 64;
+
+/// @brief One named library material.
+class MaterialLibraryEntry3D {
+    expose String name;
+    expose Material3D material;
+
+    expose func init() {
+        name = "";
+        material = null;
+    }
+}
+
+/// @brief Complete fail-closed result of loading one material library.
+class MaterialLibrary3D {
+    expose Boolean found;
+    expose Boolean valid;
+    expose String sourcePath;
+    expose String error;
+    expose String diskText;
+    expose List[MaterialLibraryEntry3D] entries;
+
+    expose func init() {
+        found = false;
+        valid = true;
+        sourcePath = "";
+        error = "";
+        diskText = "";
+        entries = [];
+    }
+
+    /// @brief Find one entry by case-insensitive name, or null.
+    expose func EntryNamed(name: String) -> MaterialLibraryEntry3D {
+        var folded = Str.ToLower(Str.Trim(name));
+        var index = 0;
+        while index < entries.count() {
+            var entry = entries.get(index);
+            if Str.ToLower(entry.name) == folded { return entry; }
+            index = index + 1;
+        }
+        return null;
+    }
+}
+
+/// @brief Return the fixed library path beneath one workspace root.
+expose func PathForRoot(root: String) -> String {
+    if Str.Trim(root) == "" { return ""; }
+    return Path.Join(root, MATERIAL_LIBRARY_FILE_NAME);
+}
+
+/// @brief Return whether one candidate name satisfies the naming rules.
+expose func NameIsValid(name: String) -> Boolean {
+    var clean = Str.Trim(name);
+    if clean == "" { return false; }
+    if Str.get_Length(clean) > MAX_NAME_CHARS { return false; }
+    return true;
+}
+
+/// @brief Fail-closed load of one materials.scene3d library.
+expose func LoadPath(path: String) -> MaterialLibrary3D {
+    var library = new MaterialLibrary3D();
+    library.sourcePath = path;
+    if path == "" { return library; }
+    var exists = false;
+    try {
+        exists = File.Exists(path);
+    } catch {
+        library.valid = false;
+        library.error = "The material library path is unreadable.";
+        return library;
+    }
+    if exists == false { return library; }
+    library.found = true;
+    var read = safe_io.ReadAllTextBounded(path, MAX_MATERIAL_LIBRARY_BYTES);
+    if read.ok == false {
+        library.valid = false;
+        library.error =
+            "materials.scene3d exceeds the 16 MB library budget or "
+            + "could not be read.";
+        return library;
+    }
+    library.diskText = read.text;
+    var scene = SceneGraph.Load(path);
+    if scene == null {
+        library.valid = false;
+        library.error = "materials.scene3d is not a loadable VSCN scene.";
+        return library;
+    }
+    var root = scene.Root;
+    if root.ChildCount > MAX_MATERIAL_LIBRARY_ENTRIES {
+        library.valid = false;
+        library.error = "materials.scene3d exceeds "
+            + MAX_MATERIAL_LIBRARY_ENTRIES + " materials.";
+        return library;
+    }
+    var index = 0;
+    while index < root.ChildCount {
+        var node = root.GetChild(index);
+        var name = Str.Trim(node.Name);
+        if NameIsValid(name) == false {
+            library.valid = false;
+            library.error = "Library node " + (index + 1)
+                + " needs a non-empty name of at most "
+                + MAX_NAME_CHARS + " characters.";
+            library.entries = [];
+            return library;
+        }
+        if node.Material == null {
+            library.valid = false;
+            library.error = "Library material \"" + name
+                + "\" carries no material component.";
+            library.entries = [];
+            return library;
+        }
+        var duplicate = 0;
+        while duplicate < library.entries.count() {
+            if Str.ToLower(library.entries.get(duplicate).name)
+               == Str.ToLower(name) {
+                library.valid = false;
+                library.error = "Library name \"" + name
+                    + "\" is duplicated (names are case-insensitive).";
+                library.entries = [];
+                return library;
+            }
+            duplicate = duplicate + 1;
+        }
+        var entry = new MaterialLibraryEntry3D();
+        entry.name = name;
+        entry.material = node.Material;
+        library.entries.add(entry);
+        index = index + 1;
+    }
+    return library;
+}
+
+/// @brief Atomically persist one entry list as materials.scene3d.
+/// @details Refuses when the on-disk bytes no longer match @p library's
+///          loaded snapshot (external conflict) and never leaves a partial
+///          file behind. On success the library snapshot is refreshed.
+expose func SaveEntries(library: MaterialLibrary3D,
+                        entries: List[MaterialLibraryEntry3D]) -> Boolean {
+    if library == null or library.sourcePath == "" { return false; }
+    if entries.count() > MAX_MATERIAL_LIBRARY_ENTRIES {
+        library.error = "The library is limited to "
+            + MAX_MATERIAL_LIBRARY_ENTRIES + " materials.";
+        return false;
+    }
+    var exists = false;
+    try {
+        exists = File.Exists(library.sourcePath);
+    } catch {
+        library.error = "The material library path is unreadable.";
+        return false;
+    }
+    if exists != library.found {
+        library.error =
+            "materials.scene3d changed on disk; reload the library "
+            + "before saving.";
+        return false;
+    }
+    if exists {
+        var current = safe_io.ReadAllTextBounded(
+            library.sourcePath, MAX_MATERIAL_LIBRARY_BYTES);
+        if current.ok == false or current.text != library.diskText {
+            library.error =
+                "materials.scene3d changed on disk; reload the library "
+                + "before saving.";
+            return false;
+        }
+    }
+
+    var scene = SceneGraph.New();
+    var index = 0;
+    while index < entries.count() {
+        var entry = entries.get(index);
+        if NameIsValid(entry.name) == false or entry.material == null {
+            library.error = "Library entry " + (index + 1)
+                + " is incomplete.";
+            return false;
+        }
+        var node = SceneNode.New();
+        node.Name = Str.Trim(entry.name);
+        node.Material = entry.material;
+        scene.Add(node);
+        index = index + 1;
+    }
+
+    var staged = library.sourcePath + ".tmp";
+    if scene.Save(staged) == 0 {
+        library.error = "The library replacement could not be staged.";
+        return false;
+    }
+    var stagedRead = safe_io.ReadAllTextBounded(
+        staged, MAX_MATERIAL_LIBRARY_BYTES);
+    if stagedRead.ok == false {
+        safe_io.DeleteFile(staged);
+        library.error =
+            "The staged library exceeds the 16 MB budget.";
+        return false;
+    }
+    var moved = false;
+    try {
+        File.MoveOver(staged, library.sourcePath);
+        moved = true;
+    } catch {}
+    if moved == false {
+        safe_io.DeleteFile(library.sourcePath + ".tmp");
+        library.error =
+            "Could not atomically replace materials.scene3d.";
+        return false;
+    }
+    library.found = true;
+    library.valid = true;
+    library.error = "";
+    library.diskText = stagedRead.text;
+    library.entries = entries;
+    return true;
+}

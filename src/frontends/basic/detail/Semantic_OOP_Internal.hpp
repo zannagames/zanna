@@ -3,12 +3,20 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE in the project root for license information.
 //
-// File: frontends/basic/detail/Semantic_OOP_Internal.hpp
-//
-// Summary:
-//   Internal declarations shared across the Semantic_OOP translation units.
-//   This header is NOT part of the public API and should only be included
-//   by Semantic_OOP_*.cpp files within the BASIC frontend.
+// File: src/frontends/basic/detail/Semantic_OOP_Internal.hpp
+// Purpose: Declares internal OOP semantic-analysis helpers and the phased
+//          builder that populates OopIndex from a parsed BASIC program.
+// Key invariants:
+//   - OopIndexBuilder phases execute in their documented order.
+//   - Declaration and lookup keys use canonical qualified names.
+//   - A null DiagnosticEmitter suppresses diagnostics without changing index
+//     construction.
+// Ownership/Lifetime:
+//   - OopIndexBuilder borrows its index and optional diagnostic emitter.
+//   - AST declarations and statement bodies are borrowed during analysis.
+// Links: src/frontends/basic/Semantic_OOP_Builder.cpp,
+//        src/frontends/basic/Semantic_OOP_Helpers.cpp,
+//        src/frontends/basic/OopIndex.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,6 +33,12 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+/// @file
+/// @brief Declares implementation-only OOP semantic-analysis facilities.
+/// @details This header is not part of the BASIC frontend's public API. It is
+///          shared by the Semantic_OOP translation units so their validation,
+///          name-resolution, and index-building phases use one contract.
 
 namespace il::frontends::basic::detail {
 
@@ -84,11 +98,18 @@ void emitMissingReturn(const ClassDecl &klass,
 ///          resolving base classes, building vtables, and checking conformance.
 class OopIndexBuilder {
   public:
+    /// @brief Creates a phased builder for a caller-owned OOP index.
+    /// @param index Index populated by @ref build.
+    /// @param emitter Optional diagnostic sink; may be nullptr.
+    /// @pre @p index remains alive for the lifetime of this builder.
     OopIndexBuilder(OopIndex &index, DiagnosticEmitter *emitter)
         : index_(index), emitter_(emitter) {}
 
     /// @brief Build the complete OOP index from a parsed program.
     /// @param program The parsed BASIC program.
+    /// @post @ref index_ contains registered declarations, resolved
+    ///       inheritance, vtables, and interface-conformance information for
+    ///       the declarations reachable from @p program.
     void build(const Program &program);
 
   private:
@@ -110,6 +131,7 @@ class OopIndexBuilder {
     // Helper methods
 
     /// @brief Join @ref nsStack_ into a dot-qualified namespace prefix.
+    /// @return Current namespace path, or an empty string at file scope.
     [[nodiscard]] std::string joinNamespace() const;
 
     // Phase methods (run in this declared order by build()).
@@ -155,10 +177,21 @@ class OopIndexBuilder {
     // Resolution helpers
 
     /// @brief Resolve a raw base name relative to @p classQ's scope/USINGs.
+    /// @param classQ Canonical qualified name of the derived class.
+    /// @param raw Source spelling of the requested base type.
+    /// @return Canonical qualified base name, or an empty string when no
+    ///         declaration can be resolved.
     [[nodiscard]] std::string resolveBase(const std::string &classQ, const std::string &raw) const;
     /// @brief Expand a leading alias segment of @p q to its qualified target.
+    /// @param q Candidate qualified name.
+    /// @return Expanded qualified name, or @p q unchanged when its first
+    ///         segment is not an active alias.
     [[nodiscard]] std::string expandAlias(const std::string &q) const;
     /// @brief Resolve a raw interface name relative to @p classQ's scope.
+    /// @param classQ Canonical qualified name of the implementing class.
+    /// @param raw Source spelling of the requested interface.
+    /// @return Canonical qualified interface name, or an empty string when no
+    ///         declaration can be resolved.
     [[nodiscard]] std::string resolveInterface(const std::string &classQ,
                                                const std::string &raw) const;
 };

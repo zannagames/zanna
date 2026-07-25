@@ -19,6 +19,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares structural and type checks for IL branch-family terminators.
+/// @details Each verifier returns the first local diagnostic through
+///          `Expected<void>`. Target-resolution failures are intentionally left
+///          to the verifier component that owns block-label existence checks.
+
 #pragma once
 
 #include "il/verify/BlockMap.hpp"

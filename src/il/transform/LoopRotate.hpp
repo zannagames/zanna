@@ -36,7 +36,14 @@ namespace il::transform {
 ///          condition is initially false.
 class LoopRotate : public FunctionPass {
   public:
+    /// @brief Return the stable pass-pipeline identifier.
+    /// @return The pass name `"loop-rotate"`.
     std::string_view id() const override;
+
+    /// @brief Rotate eligible outermost loops in a function.
+    /// @param function Function whose loop CFG is rewritten in place.
+    /// @param analysis Analysis manager used to recompute loop information after each rewrite.
+    /// @return All analyses when unchanged; otherwise module analyses only are preserved.
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 };
 

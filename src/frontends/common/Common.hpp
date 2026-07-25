@@ -5,11 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/Common.hpp
+// File: src/frontends/common/Common.hpp
 // Purpose: Aggregate header for common frontend infrastructure.
+// Key invariants:
+//   * This header contributes aliases and shared frontend utilities only.
+//   * Included facilities remain language-agnostic and depend on IL core APIs,
+//     not on a concrete source-language frontend.
+// Ownership: Aggregate header; introduces no runtime state.
+// References: docs/internals/architecture.md
 //
-// This header includes all shared components used by language frontends.
-// Include this for convenient access to the common library.
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Convenience aggregate for language-agnostic frontend infrastructure.
 //
 //===----------------------------------------------------------------------===//
 #pragma once

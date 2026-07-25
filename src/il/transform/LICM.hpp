@@ -37,12 +37,17 @@ namespace il::transform {
 class LICM : public FunctionPass {
   public:
     /// @brief Configure whether memory reads may be hoisted.
+    /// @param allowMemoryHoisting Permit proven-safe loads and readonly calls when true.
     explicit LICM(bool allowMemoryHoisting = true);
 
     /// @brief Identifier used when registering the pass.
+    /// @return `"licm"` when memory hoisting is enabled, otherwise `"licm-safe"`.
     std::string_view id() const override;
 
     /// @brief Run loop-invariant code motion over @p function.
+    /// @param function Function whose natural loops are optimized in place.
+    /// @param analysis Manager providing loop, CFG, dominance, and alias results.
+    /// @return All analyses when unchanged, otherwise no preserved analyses.
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 
   private:
@@ -50,9 +55,11 @@ class LICM : public FunctionPass {
 };
 
 /// @brief Register the LICM pass with the provided registry.
+/// @param registry Registry that receives the memory-hoisting pass entry.
 void registerLICMPass(PassRegistry &registry);
 
 /// @brief Register the memory-safe LICM subset with the provided registry.
+/// @param registry Registry that receives the computation-only pass entry.
 void registerLICMSafePass(PassRegistry &registry);
 
 } // namespace il::transform

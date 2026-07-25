@@ -8,6 +8,12 @@
 /// @file Parser_Stmt.cpp
 /// @brief Statement parsing implementation for the Zia parser.
 ///
+/// @details Dispatches lexical blocks, bindings, conditionals, C-style and
+///          iterable loops, returns, defers, guards, matches, exception
+///          handling, jumps, throws, and expression statements. Ambiguous
+///          `for` and match-arm shapes use bounded lookahead, while malformed
+///          blocks resynchronize at statement boundaries.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Parser.hpp"
@@ -530,6 +536,7 @@ StmtPtr Parser::parseReturnStmt() {
 
 /// @brief Parse a defer statement.
 /// @details Supports `defer { ... }` and `defer expr;`.
+/// @return The parsed DeferStmt, or nullptr on error.
 StmtPtr Parser::parseDeferStmt() {
     Token deferTok = advance(); // consume 'defer'
     SourceLoc loc = deferTok.loc;
@@ -701,6 +708,7 @@ StmtPtr Parser::parseMatchStmt() {
 ///   [catch(varName) { catchBody }]*
 ///   [finally { finallyBody }]
 /// At least one of catch or finally must be present.
+/// @return The parsed TryStmt, or nullptr on error.
 StmtPtr Parser::parseTryStmt() {
     Token tryTok = advance(); // consume 'try'
     SourceLoc loc = tryTok.loc;
@@ -762,6 +770,7 @@ StmtPtr Parser::parseTryStmt() {
 }
 
 /// @brief Parse a throw statement: throw expr;
+/// @return The parsed ThrowStmt, or nullptr on error.
 StmtPtr Parser::parseThrowStmt() {
     Token throwTok = advance(); // consume 'throw'
     SourceLoc loc = throwTok.loc;

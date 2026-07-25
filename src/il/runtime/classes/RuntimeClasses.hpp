@@ -752,11 +752,13 @@ struct ParsedSignature {
     std::string objectTypeName;
 
     /// @brief Check if the signature was parsed successfully.
+    /// @return True when the return token mapped to a known scalar category.
     [[nodiscard]] bool isValid() const {
         return returnType != ILScalarType::Unknown;
     }
 
     /// @brief Get the number of parameters (excluding receiver).
+    /// @return Number of explicit ABI parameters.
     [[nodiscard]] std::size_t arity() const {
         return params.size();
     }
@@ -851,12 +853,29 @@ class RuntimeRegistry {
     [[nodiscard]] const std::vector<RuntimeClass> &rawCatalog() const;
 
   private:
+    /// @brief Build the singleton's lookup indexes from the immutable catalog.
     RuntimeRegistry();
+    /// @brief Populate all method, property, and canonical-function indexes.
     void buildIndexes();
 
+    /// @brief Build a case-insensitive method-overload lookup key.
+    /// @param cls Qualified runtime class name.
+    /// @param method Method name.
+    /// @param arity Number of explicit parameters.
+    /// @return Lowercase `class|method#arity` key.
     static std::string methodKey(std::string_view cls, std::string_view method, std::size_t arity);
+    /// @brief Build a case-insensitive property lookup key.
+    /// @param cls Qualified runtime class name.
+    /// @param prop Property name.
+    /// @return Lowercase `class.property` key.
     static std::string propertyKey(std::string_view cls, std::string_view prop);
+    /// @brief Build a case-insensitive canonical function lookup key.
+    /// @param name Canonical runtime function name.
+    /// @return Lowercase copy of @p name.
     static std::string functionKey(std::string_view name);
+    /// @brief Convert an ASCII lookup component to lowercase.
+    /// @param s Text to normalize.
+    /// @return Owned lowercase key component.
     static std::string toLower(std::string_view s);
 
     std::unordered_map<std::string, ParsedMethod> methodIndex_;

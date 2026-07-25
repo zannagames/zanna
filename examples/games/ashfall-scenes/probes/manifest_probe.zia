@@ -1,0 +1,80 @@
+// =============================================================================
+// probes/manifest_probe.zia — P4 gate: JSON level-manifest round-trip
+// =============================================================================
+//
+// Builds each campaign level, serializes it to a JSON manifest, loads it into a
+// fresh builder, and asserts the spec survives the round trip (name, ambient,
+// start, and box/light/spawn/pickup counts + a sampled value). Also checks that
+// malformed JSON is rejected without a trap.
+// =============================================================================
+module manifest_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../world/level_base" as level_base;
+bind "../world/objectives" as objectives;
+bind "../world/levels" as levels;
+bind "../world/loader" as loader;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func start() {
+    var obj = new objectives.Objectives();
+
+    var lv = config.LV_L1;
+    while lv <= config.LV_HUB {
+        var a = new level_base.LevelBuilder();
+        levels.build(lv, a, obj);
+        var text = loader.serialize(a);
+
+        var b = new level_base.LevelBuilder();
+        if loader.load(text, b) == false { fail("load failed for level " + toString(lv)); return; }
+
+        if a.getName() != b.getName() { fail("name mismatch L" + toString(lv)); return; }
+        if a.boxCount() != b.boxCount() { fail("box count L" + toString(lv) + ": " + toString(a.boxCount()) + " vs " + toString(b.boxCount())); return; }
+        if a.lightCount() != b.lightCount() { fail("light count L" + toString(lv)); return; }
+        if a.spawnCount() != b.spawnCount() { fail("spawn count L" + toString(lv)); return; }
+        if a.pickupCount() != b.pickupCount() { fail("pickup count L" + toString(lv)); return; }
+        if a.coverCount() != b.coverCount() { fail("cover count L" + toString(lv)); return; }
+        if a.flankCount() != b.flankCount() { fail("flank count L" + toString(lv)); return; }
+        if a.routeMarkerCount() != b.routeMarkerCount() { fail("route count L" + toString(lv)); return; }
+        if a.landmarkCount() != b.landmarkCount() { fail("landmark count L" + toString(lv)); return; }
+        if a.encounterBeatCount() != b.encounterBeatCount() { fail("beat count L" + toString(lv)); return; }
+        if a.gateCount() != b.gateCount() { fail("gate count L" + toString(lv)); return; }
+        if M.absf(a.startZv() - b.startZv()) > 0.01 { fail("start Z mismatch L" + toString(lv)); return; }
+        if a.boxCount() > 0 {
+            if M.absf(a.boxCXat(0) - b.boxCXat(0)) > 0.01 { fail("box[0] cx mismatch L" + toString(lv)); return; }
+        }
+        if a.spawnCount() > 0 {
+            if a.spawnArchAt(0) != b.spawnArchAt(0) { fail("spawn[0] arch mismatch L" + toString(lv)); return; }
+        }
+        if a.coverCount() > 0 {
+            if M.absf(a.coverXat(0) - b.coverXat(0)) > 0.01 { fail("cover[0] x mismatch L" + toString(lv)); return; }
+        }
+        if a.flankCount() > 0 {
+            if M.absf(a.flankXat(0) - b.flankXat(0)) > 0.01 { fail("flank[0] x mismatch L" + toString(lv)); return; }
+        }
+        if a.routeMarkerCount() > 0 {
+            if a.routeMarkerKindAt(0) != b.routeMarkerKindAt(0) { fail("route[0] kind mismatch L" + toString(lv)); return; }
+        }
+        if a.landmarkCount() > 0 {
+            if a.landmarkKindAt(0) != b.landmarkKindAt(0) { fail("landmark[0] kind mismatch L" + toString(lv)); return; }
+        }
+        if a.encounterBeatCount() > 0 {
+            if a.encounterBeatWaveAt(0) != b.encounterBeatWaveAt(0) { fail("beat[0] wave mismatch L" + toString(lv)); return; }
+        }
+        if a.gateCount() > 0 {
+            if a.gateUnlockAt(0) != b.gateUnlockAt(0) { fail("gate[0] unlock mismatch L" + toString(lv)); return; }
+        }
+        lv = lv + 1;
+    }
+
+    // Malformed JSON is rejected without a trap.
+    var junk = new level_base.LevelBuilder();
+    if loader.load("{not valid json", junk) { fail("malformed manifest accepted"); return; }
+
+    Terminal.Say("roundTrip=ok levels=" + toString(config.LV_HUB - config.LV_L1 + 1));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

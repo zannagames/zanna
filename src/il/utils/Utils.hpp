@@ -13,6 +13,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares shared queries and rewrites over core IL containers.
+/// @details These helpers centralize terminator classification, temporary
+///          allocation, dominance-scoped replacement, and label lookup without
+///          transferring ownership of any function, block, instruction, or
+///          value supplied by a caller.
+
 #pragma once
 
 #include <cstddef>
@@ -53,6 +60,8 @@ bool isTerminator(const Instruction &I);
 /// @brief Determine whether block @p B currently ends in a terminator.
 /// @details This derives the answer from the instruction list so callers do not
 ///          depend on a stale BasicBlock::terminated flag after vector edits.
+/// @param B Block whose final instruction is inspected.
+/// @return `true` when @p B is nonempty and its final opcode is a terminator.
 bool isTerminated(const Block &B);
 
 /// @brief Replace all uses of a temporary identifier with a new value.
@@ -103,6 +112,8 @@ void replaceUsesDominatedBy(::il::core::Function &F,
 ///          Returns one greater than the maximum, ensuring no collision.
 /// @param F Function to analyze.
 /// @return First unused temporary identifier.
+/// @throws std::overflow_error If an observed identifier is `UINT_MAX`, leaving
+///         no representable successor identifier.
 unsigned nextTempId(const ::il::core::Function &F);
 
 /// @brief Find a basic block by label in @p F.

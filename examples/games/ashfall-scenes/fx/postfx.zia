@@ -1,0 +1,67 @@
+// =============================================================================
+// fx/postfx.zia — the tiered post-processing chain (tonemap-led)
+// =============================================================================
+//
+// House chain (ridgebound/3dbowling recipe): optional SSAO + SSR (GPU backends)
+// → ACES tonemap → restrained bloom → color grade (brightness is ADDITIVE
+// around 0; contrast/saturation multiplicative around 1) → soft vignette →
+// FXAA. Never TAA: mouse-look ghosting (ridgebound's explicit finding). The
+// exposure floor is deliberately high enough that combat silhouettes stay
+// readable in the caverns/foundry instead of disappearing into crushed blacks.
+// Rebuildable when the options menu changes the quality tier.
+// =============================================================================
+module postfx;
+
+bind Zanna.Graphics3D as G3D;
+
+var TIER_PERFORMANCE: Integer = 0;
+var TIER_BALANCED: Integer = 1;
+var TIER_CINEMATIC: Integer = 2;
+
+class PostFX {
+    hide G3D.PostFX3D chain;
+    hide Boolean enabled;
+    hide Integer tier;
+
+    expose func init() {
+        enabled = false;
+        tier = TIER_BALANCED;
+    }
+
+    expose func getTier() -> Integer { return tier; }
+    expose func isEnabled() -> Boolean { return enabled; }
+
+    // Build (or rebuild) the chain for a tier and bind it.
+    expose func setup(canvas: G3D.Canvas3D, t: Integer) {
+        tier = t;
+        chain = G3D.PostFX3D.New();
+        if t >= TIER_CINEMATIC {
+            if G3D.Canvas3D.BackendSupports(canvas, "gpu_postfx") {
+                G3D.PostFX3D.AddSsao(chain, 0.58, 0.88, 16);
+            }
+            if G3D.Canvas3D.BackendSupports(canvas, "ssr") {
+                G3D.PostFX3D.AddSsr(chain, 0.42, 0.32);
+            }
+            G3D.PostFX3D.AddTonemap(chain, 2, 1.22);
+            G3D.PostFX3D.AddBloom(chain, 0.88, 0.30, 4);
+            G3D.PostFX3D.AddColorGrade(chain, 0.03, 1.03, 1.08);
+            G3D.PostFX3D.AddVignette(chain, 0.98, 0.15);
+            G3D.PostFX3D.AddFxaa(chain);
+        } else if t == TIER_BALANCED {
+            if G3D.Canvas3D.BackendSupports(canvas, "gpu_postfx") {
+                G3D.PostFX3D.AddSsao(chain, 0.48, 0.84, 12);
+            }
+            G3D.PostFX3D.AddTonemap(chain, 2, 1.17);
+            G3D.PostFX3D.AddBloom(chain, 0.90, 0.25, 3);
+            G3D.PostFX3D.AddColorGrade(chain, 0.03, 1.03, 1.07);
+            G3D.PostFX3D.AddVignette(chain, 0.98, 0.12);
+            G3D.PostFX3D.AddFxaa(chain);
+        } else {
+            G3D.PostFX3D.AddTonemap(chain, 2, 1.12);
+            G3D.PostFX3D.AddColorGrade(chain, 0.02, 1.02, 1.04);
+            G3D.PostFX3D.AddFxaa(chain);
+        }
+        G3D.Canvas3D.SetPostFX(canvas, chain);
+        enabled = true;
+    }
+}

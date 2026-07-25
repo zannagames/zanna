@@ -91,7 +91,7 @@ inline constexpr const char *kBoxF64 = kCoreBoxF64;
 inline constexpr const char *kBoxI1 = kCoreBoxI1;
 /// @brief Box a string pointer into a heap-allocated Box object.
 inline constexpr const char *kBoxStr = kCoreBoxStr;
-/// @brief Query the struct type tag stored in a Box object.
+/// @brief Allocate a runtime-managed box for inline value-type storage.
 inline constexpr const char *kBoxValueType = kRuntimeUnsafeValueType;
 /// @brief Register an owned field inside a boxed value-type object.
 inline constexpr const char *kBoxValueTypeAddField = kRuntimeUnsafeValueTypeAddField;
@@ -342,8 +342,8 @@ inline constexpr size_t kClassFieldsOffset = kObjectHeaderSize + kVtablePtrSize;
 /// @brief Low-level runtime functions not in the Zanna.* namespace.
 /// @{
 
-/// @brief Allocate memory for a runtime object.
-/// @details Signature: rt_alloc(i64 classId, i64 size) -> ptr
+/// @brief Allocate zero-initialized raw runtime storage.
+/// @details Signature: rt_alloc(i64 bytes) -> ptr
 inline constexpr const char *kRtAlloc = "rt_alloc";
 
 /// @brief Get the class ID from a runtime object's header.

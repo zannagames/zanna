@@ -30,6 +30,13 @@
 // whether runtime calls can be reordered, eliminated, or moved.
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares the canonical runtime ABI descriptor and lookup registry.
+/// @details The registry joins textual IL signatures, VM invocation adapters,
+///          lowering requirements, trap behavior, and ownership/effect metadata
+///          for runtime-call consumers.
+
 #pragma once
 
 #include "il/core/Type.hpp"
@@ -152,8 +159,7 @@ struct RuntimeLowering {
 /// @brief Handler invocation adapter signature used by the VM bridge.
 using RuntimeHandler = void (*)(void **args, void *result);
 
-/// @brief Describes the IL signature for a runtime helper function.
-/// @notes Parameter order matches the runtime C ABI.
+/// @brief Enumerates hidden bridge-argument categories.
 enum class RuntimeHiddenParamKind {
     None,
     PowStatusPointer,
@@ -171,6 +177,9 @@ enum class RuntimeTrapClass {
     PowDomainOverflow,
 };
 
+/// @brief Describes the complete IL-visible and bridge-visible runtime ABI.
+/// @details Parameter order matches the runtime C ABI. Hidden parameters are
+///          appended by the bridge and are not included in ownership bitmasks.
 struct RuntimeSignature {
     il::core::Type retType;                       ///< Return type of the helper.
     std::vector<il::core::Type> paramTypes;       ///< Parameter types in declaration order.
@@ -207,10 +216,12 @@ struct RuntimeDescriptor {
 const std::vector<RuntimeDescriptor> &runtimeRegistry();
 
 /// @brief Lookup runtime descriptor by exported symbol name.
+/// @param name Canonical or native exported runtime symbol.
 /// @return Descriptor pointer when registered, nullptr otherwise.
 const RuntimeDescriptor *findRuntimeDescriptor(std::string_view name);
 
 /// @brief Lookup runtime descriptor by lowering feature identifier.
+/// @param feature Lowering feature whose providing helper is requested.
 /// @return Descriptor pointer when @p feature is published, nullptr otherwise.
 const RuntimeDescriptor *findRuntimeDescriptor(RuntimeFeature feature);
 

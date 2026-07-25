@@ -36,6 +36,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Emits BASIC class constructors, destructors, methods, properties,
+///        static initialization, and interface bindings.
+
 #include "frontends/basic/ILTypeUtils.hpp"
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/NameMangler_OOP.hpp"

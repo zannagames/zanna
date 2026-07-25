@@ -4,18 +4,15 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Parser_Expr_Pattern.cpp
-// Purpose: Match pattern parsing for the Zia parser — structured patterns
-//          (wildcard, constructor, binding, or-pattern, tuple, literal)
-//          and speculative disambiguation from expression patterns.
-// Key invariants:
-//   - All methods are member functions of Parser declared in Parser.hpp
-//   - Pattern nesting depth is bounded by kMaxPatternDepth (256)
-// Ownership/Lifetime:
-//   - Parser borrows Lexer and DiagnosticEngine references
-// Links: src/frontends/zia/Parser.hpp, src/frontends/zia/Parser_Expr.cpp
-//
+///
+/// @file Parser_Expr_Pattern.cpp
+/// @brief Parses structured and expression patterns for Zia match arms.
+///
+/// @details Bounded speculation distinguishes wildcard, constructor, binding,
+///          alternative, tuple, and literal patterns from general expressions
+///          without committing diagnostics or token progress prematurely.
+///          Recursive pattern parsing enforces the parser's nesting limit.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Parser.hpp"
@@ -83,6 +80,7 @@ bool Parser::parsePatternCore(MatchArm::Pattern &out) {
     struct DepthGuard {
         unsigned &d;
 
+        /// @brief Restore the pattern-recursion counter on every exit path.
         ~DepthGuard() {
             --d;
         }

@@ -19,6 +19,9 @@
 
 #include "frontends/basic/ast/NodeFwd.hpp"
 
+/// @file
+/// @brief Declares the minimal AST visitor interface used by lowering helpers.
+
 namespace il::frontends::basic::lower {
 
 namespace AST = ::il::frontends::basic;
@@ -27,14 +30,17 @@ namespace AST = ::il::frontends::basic;
 /// @details Implementations forward to AST-specific visitors while keeping
 ///          the Lowerer orchestration decoupled from concrete traversal logic.
 struct AstVisitor {
+    /// @brief Destroys a lowering visitor through the abstract interface.
     virtual ~AstVisitor() = default;
 
     /// @brief Visit an expression node and translate it through the bound
     ///        lowering helper.
+    /// The expression is borrowed for the duration of the call.
     virtual void visitExpr(const AST::Expr &) = 0;
 
     /// @brief Visit a statement node and translate it through the bound
     ///        lowering helper.
+    /// The statement is borrowed for the duration of the call.
     virtual void visitStmt(const AST::Stmt &) = 0;
 };
 

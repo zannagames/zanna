@@ -1,0 +1,101 @@
+// =============================================================================
+// probes/smoke_probe.zia — P1a skeleton gate (headless, deterministic)
+// =============================================================================
+//
+// Exercises the pure-logic core without a window: state-machine walk, event bus
+// round-trip, entity registry alloc/free/stale, RNG stream stability across a
+// tick run, save round-trip in a temp DataDir, and zero budget assertions over
+// 120 fixed ticks. VM==native by construction (no wall clock, no graphics).
+// =============================================================================
+module smoke_probe;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.IO.Path as Path;
+bind Zanna.Collections.Map as Map;
+bind "../config" as config;
+bind "../game" as game;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func start() {
+    var g = new game.Game();
+    game.setGame(g);
+    g.setHeadless(true);
+    g.initCore(0xABCDEF01);
+
+    var reg = g.getReg();
+    var bus = g.getBus();
+    var save = g.getSave();
+
+    // --- 1. State machine walk: BOOT->TITLE->HUB->LOADING->PLAYING->PAUSED->PLAYING
+    if g.getState() != config.ST_BOOT { fail("initial state"); return; }
+    g.forceState(config.ST_TITLE);
+    g.tickLogic(config.FIXED_DT);
+    if g.inState(config.ST_TITLE) == false { fail("to TITLE"); return; }
+    g.requestState(config.ST_HUB);
+    g.tickLogic(config.FIXED_DT);
+    if g.inState(config.ST_HUB) == false { fail("to HUB"); return; }
+    g.requestState(config.ST_LOADING);
+    g.tickLogic(config.FIXED_DT);
+    g.requestState(config.ST_PLAYING);
+    g.tickLogic(config.FIXED_DT);
+    if g.inState(config.ST_PLAYING) == false { fail("to PLAYING"); return; }
+    g.requestState(config.ST_PAUSED);
+    g.tickLogic(config.FIXED_DT);
+    if g.inState(config.ST_PAUSED) == false { fail("to PAUSED"); return; }
+    // Illegal transition is ignored (PAUSED cannot jump straight to DEATH).
+    g.requestState(config.ST_DEATH);
+    g.tickLogic(config.FIXED_DT);
+    if g.inState(config.ST_PAUSED) == false { fail("illegal transition applied"); return; }
+    g.requestState(config.ST_PLAYING);
+    g.tickLogic(config.FIXED_DT);
+    if g.inState(config.ST_PLAYING) == false { fail("resume PLAYING"); return; }
+
+    // --- 2. Event bus round-trip (state changes were posted above)
+    bus.pushAt(config.EV_GUNSHOT, 0, 10, 4.0, 1.0, 9.0);
+    if bus.countKind(config.EV_GUNSHOT) != 1 { fail("event round-trip"); return; }
+    bus.drain();
+    if bus.getCount() != 0 { fail("event drain"); return; }
+
+    // --- 3. Registry alloc/free/stale
+    var h = reg.alloc(config.ARCH_PROJECTILE);
+    if reg.valid(h) == false { fail("alloc"); return; }
+    reg.free(h);
+    if reg.valid(h) { fail("stale handle valid"); return; }
+
+    // --- 4. RNG stream stability: golden values from a fixed seed
+    var s = new game.Game();
+    s.initCore(0xABCDEF01);
+    var goldA = s.getRng().getGameplay().next();
+    var goldB = s.getRng().getGameplay().next();
+    var s2 = new game.Game();
+    s2.initCore(0xABCDEF01);
+    if s2.getRng().getGameplay().next() != goldA { fail("rng golden A"); return; }
+    if s2.getRng().getGameplay().next() != goldB { fail("rng golden B"); return; }
+
+    // --- 5. Save round-trip in a temp DataDir
+    save.setup(Path.DataDir("ashfall_probe"));
+    var prof = Map.New();
+    Map.SetInt(prof, "level", 3);
+    Map.SetInt(prof, "salvage", 1250);
+    Map.SetStr(prof, "name", "Rook");
+    if save.saveProfile(prof) == false { fail("save write"); return; }
+    var back = save.loadProfile();
+    if Map.GetIntOr(back, "level", -1) != 3 { fail("save level"); return; }
+    if Map.GetIntOr(back, "salvage", -1) != 1250 { fail("save salvage"); return; }
+    if Map.GetStr(back, "name") != "Rook" { fail("save name"); return; }
+    // Missing key -> default (corrupt/absent recovery contract).
+    if Map.GetIntOr(back, "nonexistent", 77) != 77 { fail("missing key default"); return; }
+
+    // --- 6. 120 fixed ticks with zero budget assertions
+    var i = 0;
+    while i < 120 {
+        g.tickLogic(config.FIXED_DT);
+        i = i + 1;
+    }
+    if g.getDiag().hasFailed() { fail("budget assert: " + g.getDiag().getViolation()); return; }
+
+    Terminal.Say("ticks=" + toString(g.getTickCount()));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

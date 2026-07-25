@@ -18,6 +18,11 @@
 //        src/frontends/zia/Sema_Expr_Call.cpp
 //
 //===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares frontend-neutral runtime method lookup and overload ranking.
+//
+//===----------------------------------------------------------------------===//
 
 #pragma once
 
@@ -40,12 +45,19 @@ namespace il::frontends::common {
  * time.
  */
 struct RuntimeMethodInfo {
+    /// @brief Return type expressed in shared IL scalar terms.
     il::runtime::ILScalarType ret{il::runtime::ILScalarType::Unknown};
+    /// @brief Concrete class name for object returns, or empty when unknown.
     std::string returnClassQName;
+    /// @brief Explicit parameter types, excluding the implicit receiver.
     std::vector<il::runtime::ILScalarType> args;
+    /// @brief True when the runtime signature returns an untyped pointer.
     bool rawPointerReturn{false};
+    /// @brief Raw-pointer flags corresponding to @ref args.
     std::vector<bool> rawPointerParams;
+    /// @brief True when the physical extern signature expects a receiver argument.
     bool hasReceiver{true};
+    /// @brief Canonical extern target used by IL call emission.
     std::string target;
 };
 
@@ -56,6 +68,9 @@ struct RuntimeMethodInfo {
  * `Zanna.GUI.Widget`; frontends use this predicate to offer and resolve those
  * methods for concrete widget handles without copying the methods into every
  * public class surface.
+ *
+ * @param classQName Qualified runtime class name to inspect.
+ * @return True when a base-class chain reaches `Zanna.GUI.Widget`.
  */
 [[nodiscard]] bool isGuiWidgetSubclass(std::string_view classQName);
 

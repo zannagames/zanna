@@ -203,6 +203,7 @@ static void rt_scene_node3d_finalize(void *obj) {
     node->variant_materials = NULL;
     node->variant_material_count = 0;
     scene_node_release_string_slot(&node->name);
+    scene_node_release_string_slot(&node->prefab_path);
     rt_scene_node3d_metadata_clear_internal(node);
 }
 
@@ -1200,6 +1201,68 @@ rt_string rt_scene_node3d_get_name(void *obj) {
     if (node && node->name)
         return rt_string_ref(node->name);
     return rt_const_cstr("");
+}
+
+/// @brief VSCN v7 prefab source path; empty for ordinary nodes (ADR 0187).
+rt_string rt_scene_node3d_get_prefab_path(void *obj) {
+    rt_scene_node3d *node = scene_node3d_checked(obj);
+    if (node && node->prefab_path)
+        return rt_string_ref(node->prefab_path);
+    return rt_const_cstr("");
+}
+
+/// @brief True for nodes grafted from a prefab reference (ADR 0187).
+int8_t rt_scene_node3d_get_is_instance_content(void *obj) {
+    rt_scene_node3d *node = scene_node3d_checked(obj);
+    return node && node->is_instance_content ? 1 : 0;
+}
+
+/// @brief True for "/..." (POSIX) and "X:/" / "X:\\" / "\\\\server" (Windows) paths.
+static int scene_node_path_is_absolute(const char *path) {
+    if (!path || !path[0])
+        return 0;
+    if (path[0] == '/' || path[0] == '\\')
+        return 1;
+    if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
+        path[1] == ':')
+        return 1;
+    return 0;
+}
+
+/// @brief Author one portable prefab reference on a node (ADR 0187).
+/// @details Absolute paths are rejected at authoring time so references stay
+///          portable; loading still tolerates them with a diagnostic. The
+///          call never grafts — reloading the owning scene resolves content.
+int8_t rt_scene_node3d_set_prefab_reference(void *obj, rt_string path) {
+    rt_scene_node3d *node = scene_node3d_checked(obj);
+    const char *path_cstr = path ? rt_string_cstr(path) : NULL;
+    if (!node || !path_cstr || !path_cstr[0])
+        return 0;
+    if (scene_node_path_is_absolute(path_cstr))
+        return 0;
+    scene_node_release_string_slot(&node->prefab_path);
+    node->prefab_path = rt_string_ref(path);
+    return 1;
+}
+
+/// @brief Recursively clear the transient instance-content flag (unpack).
+static void scene_node_clear_instance_flags(rt_scene_node3d *node) {
+    if (!node)
+        return;
+    node->is_instance_content = 0;
+    for (int32_t i = 0; i < scene3d_node_child_count(node); ++i)
+        scene_node_clear_instance_flags(scene_node3d_checked(node->children[i]));
+}
+
+/// @brief Remove a node's prefab reference, unpacking grafted content into
+///        plain editable nodes (ADR 0187 Unpack).
+int8_t rt_scene_node3d_clear_prefab_reference(void *obj) {
+    rt_scene_node3d *node = scene_node3d_checked(obj);
+    if (!node || !node->prefab_path)
+        return 0;
+    scene_node_release_string_slot(&node->prefab_path);
+    scene_node_clear_instance_flags(node);
+    return 1;
 }
 
 /// @brief Local-space minimum corner of this node subtree's AABB (origin if empty).

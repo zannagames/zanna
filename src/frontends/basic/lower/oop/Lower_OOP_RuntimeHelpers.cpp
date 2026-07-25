@@ -14,6 +14,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements reusable parameter, field-array, epilogue, body, and
+///        dispatch-table helpers for BASIC OOP emission.
+
 #include "frontends/basic/lower/oop/Lower_OOP_RuntimeHelpers.hpp"
 #include "frontends/basic/ILTypeUtils.hpp"
 #include "frontends/basic/Lowerer.hpp"
@@ -30,6 +34,7 @@ using Opcode = il::core::Opcode;
 } // namespace
 
 /// @brief Bind an OOP emission helper to its lowering context (non-owning).
+/// @param lowerer Lowerer that outlives this helper.
 OopEmitHelper::OopEmitHelper(Lowerer &lowerer) noexcept : lowerer_(lowerer) {}
 
 // -------------------------------------------------------------------------

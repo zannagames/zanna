@@ -15,6 +15,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the statement visitor and top-level statement lowering
+///        entry points for the BASIC frontend.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/Lowerer.hpp"
@@ -215,6 +219,7 @@ class LowererStmtVisitor final : public lower::AstVisitor, public StmtVisitor {
     /// @brief Lower a TRY/CATCH statement.
     /// @details Delegates to Lowerer helper that maps to eh.push/eh.pop and a handler with
     /// resume.label.
+    /// @param stmt TRY/CATCH/FINALLY statement node.
     void visit(const TryCatchStmt &stmt) override {
         lowerer_.lowerTryCatch(stmt);
     }
@@ -381,8 +386,8 @@ class LowererStmtVisitor final : public lower::AstVisitor, public StmtVisitor {
     }
 
     /// @brief Lower a DELETE statement.
-    /// @details Uses @ref Lowerer::lowerDelete to emit runtime calls for removing
-    ///          files.
+    /// @details Uses @ref Lowerer::lowerDelete to emit object destruction and
+    ///          release behavior.
     /// @param stmt DELETE statement node.
     void visit(const DeleteStmt &stmt) override {
         lowerer_.lowerDelete(stmt);
@@ -423,6 +428,7 @@ class LowererStmtVisitor final : public lower::AstVisitor, public StmtVisitor {
 
     /// @brief Lower a USING resource statement with automatic cleanup.
     /// @details Implements TRY/FINALLY semantics to guarantee destructor invocation.
+    /// @param stmt Resource-lifetime statement to lower.
     void visit(const UsingStmt &stmt) override {
         lowerer_.lowerUsingStmt(stmt);
     }
@@ -430,6 +436,7 @@ class LowererStmtVisitor final : public lower::AstVisitor, public StmtVisitor {
     /// @brief Handle NAMESPACE blocks by adjusting the qualification stack.
     /// @details Pushes the namespace segments, lowers the nested body, then pops
     ///          the same number of segments to restore the previous scope.
+    /// @param stmt Namespace declaration containing the qualified path and body.
     void visit(const NamespaceDecl &stmt) override {
         lowerer_.pushNamespace(stmt.path);
         for (const auto &child : stmt.body) {
@@ -440,6 +447,7 @@ class LowererStmtVisitor final : public lower::AstVisitor, public StmtVisitor {
     }
 
   private:
+    /// Borrowed lowering context receiving all statement side effects.
     Lowerer &lowerer_;
 };
 

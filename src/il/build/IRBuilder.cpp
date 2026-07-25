@@ -380,6 +380,10 @@ il::core::BasicBlock &IRBuilder::addBlock(il::core::Function &fn, const std::str
 /// @details Useful for ensuring new blocks appear before a known position (e.g.,
 ///          the function's synthetic exit block). Does not update the current
 ///          insertion point.
+/// @param fn Function receiving the block.
+/// @param idx Requested zero-based insertion position; values past the end are clamped.
+/// @param label Unique non-empty block label.
+/// @return Reference to the inserted block.
 il::core::BasicBlock &IRBuilder::insertBlock(il::core::Function &fn,
                                              size_t idx,
                                              const std::string &label) {
@@ -811,6 +815,11 @@ unsigned IRBuilder::reserveTempId() {
     return id;
 }
 
+/// @brief Associate an SSA ID with a source-facing debugger name.
+/// @param id Value identifier whose name-table slot is written.
+/// @param name Non-empty name stored verbatim.
+/// @details Does nothing without an active function or when @p name is empty;
+///          otherwise grows the active function's value-name table as needed.
 void IRBuilder::setValueName(unsigned id, const std::string &name) {
     if (!curFunc || name.empty())
         return;

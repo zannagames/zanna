@@ -138,6 +138,10 @@ void Sema::registerBuiltins() {
 // Namespace Support
 //===----------------------------------------------------------------------===//
 
+/// @brief Precompute collision-safe semantic names for top-level declarations.
+/// @param module Flattened module compilation unit.
+/// @details Declarations with the same source spelling in different files are qualified by their
+///          declared file-module name; unique spellings remain unqualified for compatibility.
 void Sema::prepareModuleScopedTypeNames(const ModuleDecl &module) {
     semanticDeclNames_.clear();
     fileScopedDeclNames_.clear();
@@ -170,6 +174,9 @@ void Sema::prepareModuleScopedTypeNames(const ModuleDecl &module) {
     }
 }
 
+/// @brief Find the declared module name associated with a source file.
+/// @param fileId Source manager file identifier.
+/// @return Recorded module name, the current module's name when applicable, or an empty string.
 std::string Sema::moduleNameForFile(uint32_t fileId) const {
     if (fileId == 0)
         return "";
@@ -181,6 +188,10 @@ std::string Sema::moduleNameForFile(uint32_t fileId) const {
     return "";
 }
 
+/// @brief Return the precomputed semantic name of a declaration.
+/// @param decl Declaration whose collision-aware identity is requested.
+/// @param name Unqualified fallback name.
+/// @return Precomputed file-qualified name, or the namespace-qualified fallback.
 std::string Sema::semanticNameForDecl(const Decl &decl, const std::string &name) const {
     auto it = semanticDeclNames_.find(&decl);
     if (it != semanticDeclNames_.end())
@@ -188,6 +199,10 @@ std::string Sema::semanticNameForDecl(const Decl &decl, const std::string &name)
     return qualifyName(name);
 }
 
+/// @brief Resolve a top-level spelling as seen from one source file.
+/// @param fileId Source file containing the use.
+/// @param name Unqualified declaration spelling.
+/// @return Collision-safe semantic name, or @p name when no remapping exists.
 std::string Sema::fileScopedDeclName(uint32_t fileId, const std::string &name) const {
     auto fileIt = fileScopedDeclNames_.find(fileId);
     if (fileIt == fileScopedDeclNames_.end())
@@ -196,6 +211,11 @@ std::string Sema::fileScopedDeclName(uint32_t fileId, const std::string &name) c
     return nameIt != fileIt->second.end() ? nameIt->second : name;
 }
 
+/// @brief Resolve a top-level type spelling as seen from one source file.
+/// @param fileId Source file containing the type use.
+/// @param name Unqualified type spelling.
+/// @return Collision-safe semantic name, or @p name when no remapping exists.
+/// @details Type and value declarations currently share the same file-scoped naming map.
 std::string Sema::fileScopedTypeName(uint32_t fileId, const std::string &name) const {
     return fileScopedDeclName(fileId, name);
 }

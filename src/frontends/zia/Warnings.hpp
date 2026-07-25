@@ -8,7 +8,7 @@
 /// @file Warnings.hpp
 /// @brief Warning codes, names, and policy for the Zia compiler.
 ///
-/// @details Defines individual warning codes (W001–W016) with human-readable
+/// @details Defines individual warning codes (W001–W019) with human-readable
 /// names, plus a WarningPolicy struct that controls which warnings are enabled,
 /// whether warnings are treated as errors, and per-warning suppression.
 ///

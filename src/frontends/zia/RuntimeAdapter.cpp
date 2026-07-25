@@ -16,9 +16,8 @@
 /// ## Implementation Notes
 ///
 /// The conversion functions use direct switch-case mapping rather than lookup
-/// tables for optimal performance and compile-time verification that all
-/// cases are handled. The compiler will warn if new ILScalarType values are
-/// added but not handled here.
+/// tables. Unknown and future unrecognized scalar values conservatively map
+/// to the Zia `Unknown` sentinel.
 ///
 /// ## Type System Alignment
 ///
@@ -48,10 +47,13 @@ namespace il::frontends::zia {
 // toZiaType Implementation
 //===----------------------------------------------------------------------===//
 
+/// @brief Map a frontend-neutral runtime scalar to a Zia semantic type.
+/// @param t Scalar type parsed from a runtime signature.
+/// @return Canonical Zia type, or `Unknown` for an unrecognized scalar.
 TypeRef toZiaType(il::runtime::ILScalarType t) {
     // Map each IL scalar type to its Zia semantic equivalent.
-    // This switch is exhaustive—the compiler will warn if new
-    // ILScalarType values are added but not handled here.
+    // The default preserves a safe Unknown result for malformed or future
+    // signature kinds that do not yet have a Zia mapping.
     switch (t) {
         case il::runtime::ILScalarType::I64:
             // 64-bit signed integer. This is the only integer width at the IL
@@ -95,6 +97,9 @@ TypeRef toZiaType(il::runtime::ILScalarType t) {
 // toZiaParamTypes Implementation
 //===----------------------------------------------------------------------===//
 
+/// @brief Convert explicit runtime parameter scalars to Zia types.
+/// @param sig Parsed runtime signature.
+/// @return Parameter types in ABI order, excluding any implicit receiver.
 std::vector<TypeRef> toZiaParamTypes(const il::runtime::ParsedSignature &sig) {
     // Pre-allocate the result vector to avoid reallocations.
     // The signature's params vector contains one ILScalarType per parameter,
@@ -111,6 +116,10 @@ std::vector<TypeRef> toZiaParamTypes(const il::runtime::ParsedSignature &sig) {
     return result;
 }
 
+/// @brief Convert a runtime return signature with parameterized-type metadata.
+/// @param sig Parsed runtime signature.
+/// @return Runtime-class type for annotated objects, typed Seq for element-
+///         annotated sequences, or the scalar mapping of the return token.
 TypeRef toZiaReturnType(const il::runtime::ParsedSignature &sig) {
     if (!sig.objectTypeName.empty())
         return types::runtimeClass(sig.objectTypeName);

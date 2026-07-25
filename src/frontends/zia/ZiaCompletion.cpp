@@ -7,6 +7,9 @@
 ///
 /// @file ZiaCompletion.cpp
 /// @brief Implementation of the Zia code-completion engine.
+/// @details Extracts cursor context, maintains a one-entry semantic-analysis cache, gathers
+///          completion candidates from lexical/module/runtime providers, ranks and deduplicates
+///          them, and computes signature help with error-tolerant source fallbacks.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -28,11 +31,15 @@ namespace il::frontends::zia {
 
 /// @brief True if @p c can appear in an identifier (alphanumeric or '_') —
 ///        used to scan the identifier under the completion cursor.
+/// @param c Candidate source byte.
+/// @return True for an ASCII-compatible alphanumeric byte or underscore.
 static bool isIdentChar(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
 }
 
 /// @brief Map a Symbol::Kind to the corresponding CompletionKind.
+/// @param sym Semantic symbol.
+/// @return UI completion category, distinguishing extern fields as properties.
 static CompletionKind kindFromSymbol(const Symbol &sym) {
     switch (sym.kind) {
         case Symbol::Kind::Variable:
@@ -55,6 +62,8 @@ static CompletionKind kindFromSymbol(const Symbol &sym) {
 }
 
 /// @brief Build a human-readable detail string for a symbol's type.
+/// @param type Semantic type.
+/// @return Developer-facing spelling, or an empty string for null.
 static std::string typeDetail(const TypeRef &type) {
     if (!type)
         return {};
@@ -62,6 +71,8 @@ static std::string typeDetail(const TypeRef &type) {
 }
 
 /// @brief Combine authored runtime class summary/details for tooling display.
+/// @param runtimeClass Runtime catalog entry.
+/// @return Summary and details separated by a blank line, omitting missing portions.
 static std::string runtimeClassDocumentation(const il::runtime::RuntimeClass &runtimeClass) {
     std::string documentation = runtimeClass.summary ? runtimeClass.summary : "";
     if (runtimeClass.details && *runtimeClass.details) {
@@ -72,8 +83,9 @@ static std::string runtimeClassDocumentation(const il::runtime::RuntimeClass &ru
     return documentation;
 }
 
-/// @brief Convert a CompletionItem to its tab-delimited serialized form.
 /// @brief Escape a field for the tab/newline-delimited wire rows (VDOC-111).
+/// @param field Unescaped field contents.
+/// @return Escaped text safe for one tab-delimited record.
 /// @details Multiline snippet insertion text would otherwise split one item
 ///          across several apparent rows. Backslash, tab, newline, and CR are
 ///          escaped as \\, \t, \n, \r; consumers unescape in reverse.
@@ -102,11 +114,18 @@ static std::string escapeField(const std::string &field) {
     return out;
 }
 
+/// @brief Serialize one completion item to the runtime bridge's core four-field row.
+/// @param item Completion item to encode.
+/// @return Escaped, tab-delimited row ending with a newline.
 static std::string serializeItem(const CompletionItem &item) {
     return escapeField(item.label) + '\t' + escapeField(item.insertText) + '\t' +
            std::to_string(static_cast<int>(item.kind)) + '\t' + escapeField(item.detail) + '\n';
 }
 
+/// @brief Compare two byte strings case-insensitively using character folding.
+/// @param a Left string.
+/// @param b Right string.
+/// @return True when lengths and all folded bytes match.
 static bool equalsIgnoreCase(std::string_view a, std::string_view b) {
     if (a.size() != b.size())
         return false;
@@ -118,6 +137,9 @@ static bool equalsIgnoreCase(std::string_view a, std::string_view b) {
     return true;
 }
 
+/// @brief Split a dotted expression into nonempty identifier components.
+/// @param expr Dotted expression text.
+/// @return Components in left-to-right order.
 static std::vector<std::string> splitDotted(std::string_view expr) {
     std::vector<std::string> parts;
     std::string token;
@@ -135,10 +157,18 @@ static std::vector<std::string> splitDotted(std::string_view expr) {
     return parts;
 }
 
+/// @brief Test whether a byte may participate in a simple call-target expression.
+/// @param c Candidate source byte.
+/// @return True for identifier bytes or a period.
 static bool isCallExprChar(char c) {
     return isIdentChar(c) || c == '.';
 }
 
+/// @brief Convert a one-based line and zero-based column to a clamped byte offset.
+/// @param src Full source buffer.
+/// @param line Requested line.
+/// @param col Requested column.
+/// @return Offset no later than the requested line's end.
 static size_t offsetForLineCol(std::string_view src, int line, int col) {
     if (line < 1)
         line = 1;
@@ -162,6 +192,7 @@ static size_t offsetForLineCol(std::string_view src, int line, int col) {
     return offset > lineEnd ? lineEnd : offset;
 }
 
+/// @brief Syntactic call context immediately surrounding a signature-help cursor.
 struct SignatureCallContext {
     bool valid{false};
     std::string calleeExpr;
@@ -170,6 +201,11 @@ struct SignatureCallContext {
     int activeParameter{0};
 };
 
+/// @brief Extract the innermost open call and active parameter at a cursor.
+/// @param src Full source buffer.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Parsed call context; `valid` is false when no simple open call is found.
 static SignatureCallContext extractSignatureCallContext(std::string_view src, int line, int col) {
     SignatureCallContext ctx;
     size_t cursor = offsetForLineCol(src, line, col);
@@ -240,6 +276,12 @@ static SignatureCallContext extractSignatureCallContext(std::string_view src, in
     return ctx;
 }
 
+/// @brief Format a semantic function type for signature-help display.
+/// @param name Source-visible callable name.
+/// @param type Semantic function type.
+/// @param activeParameter Zero-based active argument index.
+/// @param paramNames Optional declared parameter names.
+/// @return Signature plus active-parameter summary, or an empty string for a non-function type.
 static std::string formatFunctionSignature(const std::string &name,
                                            const TypeRef &type,
                                            int activeParameter,
@@ -273,6 +315,9 @@ static std::string formatFunctionSignature(const std::string &name,
     return out.str();
 }
 
+/// @brief Assign the base ranking priority for a scope symbol.
+/// @param sym Candidate semantic symbol.
+/// @return Lower-is-better priority favoring local parameters, variables, and fields.
 static int sortPriorityForScopeSymbol(const Symbol &sym) {
     switch (sym.kind) {
         case Symbol::Kind::Parameter:
@@ -293,6 +338,9 @@ static int sortPriorityForScopeSymbol(const Symbol &sym) {
     return 50;
 }
 
+/// @brief Trim leading and trailing character-class whitespace.
+/// @param text Text view to trim.
+/// @return Owning trimmed copy.
 static std::string trimCopy(std::string_view text) {
     size_t start = 0;
     while (start < text.size() && std::isspace(static_cast<unsigned char>(text[start])))
@@ -303,10 +351,18 @@ static std::string trimCopy(std::string_view text) {
     return std::string(text.substr(start, end - start));
 }
 
+/// @brief Test a string-view prefix.
+/// @param text Candidate full text.
+/// @param prefix Prefix to match.
+/// @return True when @p text begins with @p prefix.
 static bool startsWith(std::string_view text, std::string_view prefix) {
     return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
 }
 
+/// @brief Collect contiguous `///` documentation immediately before a location.
+/// @param sm Source manager containing the file text.
+/// @param loc Declaration location.
+/// @return Comment text in source order with markers removed, or an empty string.
 static std::string docCommentBefore(const il::support::SourceManager &sm,
                                     il::support::SourceLoc loc) {
     if (!loc.isValid() || loc.line <= 1)
@@ -334,6 +390,10 @@ static std::string docCommentBefore(const il::support::SourceManager &sm,
     return doc;
 }
 
+/// @brief Resolve authored documentation for a semantic symbol.
+/// @param sm Optional source manager for declaration-comment fallback.
+/// @param sym Symbol carrying runtime or source declaration metadata.
+/// @return Explicit symbol documentation, preceding source comment, or an empty string.
 static std::string documentationForSymbol(const il::support::SourceManager *sm, const Symbol &sym) {
     if (!sym.documentation.empty())
         return sym.documentation;
@@ -345,6 +405,11 @@ static std::string documentationForSymbol(const il::support::SourceManager *sm, 
     return docCommentBefore(*sm, loc);
 }
 
+/// @brief Test that a keyword occurrence is not embedded in an identifier.
+/// @param source Full source buffer.
+/// @param start Candidate keyword offset.
+/// @param len Keyword byte length.
+/// @return True when both surrounding boundaries are non-identifier bytes or buffer edges.
 static bool hasKeywordBoundary(std::string_view source, size_t start, size_t len) {
     if (start > 0 && isIdentChar(source[start - 1]))
         return false;
@@ -352,6 +417,10 @@ static bool hasKeywordBoundary(std::string_view source, size_t start, size_t len
     return end >= source.size() || !isIdentChar(source[end]);
 }
 
+/// @brief Find the closing parenthesis matching an opening one.
+/// @param source Source buffer.
+/// @param open Offset of the opening parenthesis.
+/// @return Matching offset, or npos; parentheses inside quoted strings are ignored.
 static size_t findMatchingParen(std::string_view source, size_t open) {
     int depth = 0;
     bool inString = false;
@@ -381,6 +450,10 @@ static size_t findMatchingParen(std::string_view source, size_t open) {
     return std::string_view::npos;
 }
 
+/// @brief Recover direct-function signatures from source when semantic analysis is incomplete.
+/// @param source Full source buffer.
+/// @param call Parsed call context.
+/// @return Newline-delimited matching declarations with active-parameter summary, or empty.
 static std::string fallbackSignatureFromSource(std::string_view source,
                                                const SignatureCallContext &call) {
     if (!call.valid || !call.receiverExpr.empty() || call.name.empty())
@@ -492,6 +565,9 @@ static std::string fallbackSignatureFromSource(std::string_view source,
 // serialize
 // ---------------------------------------------------------------------------
 
+/// @brief Serialize completion items for the runtime bridge.
+/// @param items Ranked completion items.
+/// @return Concatenated escaped records, each ending in a newline.
 std::string serialize(const std::vector<CompletionItem> &items) {
     std::string out;
     out.reserve(items.size() * 40);
@@ -504,6 +580,9 @@ std::string serialize(const std::vector<CompletionItem> &items) {
 // FNV-1a hash
 // ---------------------------------------------------------------------------
 
+/// @brief Compute a 64-bit FNV-1a source hash.
+/// @param data Source bytes.
+/// @return Deterministic hash used to recognize unchanged cached input.
 uint64_t CompletionEngine::fnv1a(std::string_view data) {
     uint64_t h = 14695981039346656037ULL;
     for (unsigned char c : data) {
@@ -586,10 +665,13 @@ static const SnippetData kSnippets[] = {
 // Constructor / Destructor
 // ---------------------------------------------------------------------------
 
+/// @brief Initialize an empty completion engine and source manager.
 CompletionEngine::CompletionEngine() : sm_(std::make_unique<il::support::SourceManager>()) {}
 
+/// @brief Destroy cached analysis and source-management state.
 CompletionEngine::~CompletionEngine() = default;
 
+/// @brief Discard cached analysis and recreate the source manager.
 void CompletionEngine::clearCache() {
     cache_.hash = 0;
     cache_.filePath.clear();
@@ -602,6 +684,11 @@ void CompletionEngine::clearCache() {
 // Context extraction
 // ---------------------------------------------------------------------------
 
+/// @brief Classify a completion trigger and calculate its replacement span.
+/// @param src Full source buffer.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Trigger, receiver expression, typed prefix, and cursor coordinates.
 CompletionEngine::Context CompletionEngine::extractContext(std::string_view src,
                                                            int line,
                                                            int col) const {
@@ -703,6 +790,13 @@ CompletionEngine::Context CompletionEngine::extractContext(std::string_view src,
 // Type resolution for dotted expressions
 // ---------------------------------------------------------------------------
 
+/// @brief Resolve a dotted receiver expression to its semantic type at the cursor.
+/// @param sema Completed semantic analyzer.
+/// @param expr Dotted receiver text.
+/// @param fileId Cursor file identifier.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Resolved member-chain type, or nullptr when the root/member cannot be found.
 TypeRef CompletionEngine::resolveExprType(
     const Sema &sema, const std::string &expr, uint32_t fileId, int line, int col) const {
     if (expr.empty())
@@ -804,6 +898,9 @@ TypeRef CompletionEngine::resolveExprType(
 // Providers
 // ---------------------------------------------------------------------------
 
+/// @brief Provide language keyword completions.
+/// @param prefix Typed prefix.
+/// @return Filtered keyword items.
 std::vector<CompletionItem> CompletionEngine::provideKeywords(const std::string &prefix) const {
     std::vector<CompletionItem> items;
     for (int i = 0; kKeywords[i]; ++i) {
@@ -819,6 +916,9 @@ std::vector<CompletionItem> CompletionEngine::provideKeywords(const std::string 
     return items;
 }
 
+/// @brief Provide built-in code-template completions.
+/// @param prefix Typed prefix.
+/// @return Filtered snippet items with cursor offsets.
 std::vector<CompletionItem> CompletionEngine::provideSnippets(const std::string &prefix) const {
     std::vector<CompletionItem> items;
     for (int i = 0; kSnippets[i].label; ++i) {
@@ -837,6 +937,13 @@ std::vector<CompletionItem> CompletionEngine::provideSnippets(const std::string 
     return items;
 }
 
+/// @brief Provide symbols visible at a source position.
+/// @param sema Completed semantic analyzer.
+/// @param prefix Typed prefix.
+/// @param fileId Cursor file identifier.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @return Filtered items with scope-aware priorities and source documentation.
 std::vector<CompletionItem> CompletionEngine::provideScopeSymbols(
     const Sema &sema, const std::string &prefix, uint32_t fileId, int line, int col) const {
     std::vector<CompletionItem> items;
@@ -878,6 +985,10 @@ std::vector<CompletionItem> CompletionEngine::provideScopeSymbols(
     return items;
 }
 
+/// @brief Provide members for the receiver captured in a member-access context.
+/// @param sema Completed semantic analyzer.
+/// @param ctx Member-access context.
+/// @return File-module exports, runtime namespace/classes, or semantic type members.
 std::vector<CompletionItem> CompletionEngine::provideMemberCompletions(const Sema &sema,
                                                                        const Context &ctx) const {
     std::vector<CompletionItem> items;
@@ -974,6 +1085,10 @@ std::vector<CompletionItem> CompletionEngine::provideMemberCompletions(const Sem
     return items;
 }
 
+/// @brief Provide declared semantic type names.
+/// @param sema Completed semantic analyzer.
+/// @param prefix Typed prefix.
+/// @return Filtered type completion items.
 std::vector<CompletionItem> CompletionEngine::provideTypeNames(const Sema &sema,
                                                                const std::string &prefix) const {
     std::vector<CompletionItem> items;
@@ -991,6 +1106,11 @@ std::vector<CompletionItem> CompletionEngine::provideTypeNames(const Sema &sema,
     return items;
 }
 
+/// @brief Provide exports from a bound file module.
+/// @param sema Completed semantic analyzer.
+/// @param moduleAlias Visible module root or alias.
+/// @param prefix Typed member prefix.
+/// @return Filtered exported-symbol items.
 std::vector<CompletionItem> CompletionEngine::provideModuleMembers(
     const Sema &sema, const std::string &moduleAlias, const std::string &prefix) const {
     std::vector<CompletionItem> items;
@@ -1012,6 +1132,10 @@ std::vector<CompletionItem> CompletionEngine::provideModuleMembers(
     return items;
 }
 
+/// @brief Provide visible bound file-module roots.
+/// @param sema Completed semantic analyzer.
+/// @param prefix Typed module prefix.
+/// @return Filtered module completion items.
 std::vector<CompletionItem> CompletionEngine::provideBoundFileModules(
     const Sema &sema, const std::string &prefix) const {
     std::vector<CompletionItem> items;
@@ -1030,6 +1154,11 @@ std::vector<CompletionItem> CompletionEngine::provideBoundFileModules(
     return items;
 }
 
+/// @brief Provide methods and properties of a runtime class.
+/// @param sema Completed semantic analyzer.
+/// @param fullClassName Fully qualified runtime class name.
+/// @param prefix Typed member prefix.
+/// @return Filtered runtime member items.
 std::vector<CompletionItem> CompletionEngine::provideRuntimeMembers(
     const Sema &sema, const std::string &fullClassName, const std::string &prefix) const {
     std::vector<CompletionItem> items;
@@ -1055,6 +1184,11 @@ std::vector<CompletionItem> CompletionEngine::provideRuntimeMembers(
     return items;
 }
 
+/// @brief Provide immediate runtime classes below a namespace.
+/// @param sema Completed semantic analyzer.
+/// @param nsPrefix Fully qualified runtime namespace.
+/// @param prefix Typed child prefix.
+/// @return Filtered runtime-class items with catalog documentation.
 std::vector<CompletionItem> CompletionEngine::provideNamespaceMembers(
     const Sema &sema, const std::string &nsPrefix, const std::string &prefix) const {
     std::vector<CompletionItem> items;
@@ -1081,6 +1215,9 @@ std::vector<CompletionItem> CompletionEngine::provideNamespaceMembers(
 // Filtering, ranking, deduplication
 // ---------------------------------------------------------------------------
 
+/// @brief Remove completion items that do not case-insensitively begin with a prefix.
+/// @param items Mutable completion list.
+/// @param prefix Typed prefix; an empty prefix leaves the list unchanged.
 void CompletionEngine::filterByPrefix(std::vector<CompletionItem> &items,
                                       const std::string &prefix) const {
     if (prefix.empty())
@@ -1103,6 +1240,9 @@ void CompletionEngine::filterByPrefix(std::vector<CompletionItem> &items,
         items.end());
 }
 
+/// @brief Stable-sort completion items by textual match and provider priority.
+/// @param items Mutable completion list.
+/// @param prefix Typed prefix.
 void CompletionEngine::rank(std::vector<CompletionItem> &items, const std::string &prefix) const {
     if (prefix.empty()) {
         std::stable_sort(
@@ -1130,6 +1270,8 @@ void CompletionEngine::rank(std::vector<CompletionItem> &items, const std::strin
         });
 }
 
+/// @brief Retain the first completion item for each label.
+/// @param items Ranked completion list to deduplicate in place.
 void CompletionEngine::deduplicate(std::vector<CompletionItem> &items) const {
     std::unordered_set<std::string> seen;
     items.erase(
@@ -1143,6 +1285,10 @@ void CompletionEngine::deduplicate(std::vector<CompletionItem> &items) const {
 // Primary entry point
 // ---------------------------------------------------------------------------
 
+/// @brief Return cached analysis for unchanged input or perform a new partial compilation.
+/// @param source Full source buffer.
+/// @param filePath Virtual source path.
+/// @return Borrowed cached analysis result, possibly null only if analysis allocation fails.
 AnalysisResult *CompletionEngine::analyze(std::string_view source, std::string_view filePath) {
     uint64_t hash = fnv1a(source);
     if (hash == cache_.hash && cache_.filePath == filePath && cache_.result)
@@ -1168,6 +1314,13 @@ AnalysisResult *CompletionEngine::analyze(std::string_view source, std::string_v
     return cache_.result.get();
 }
 
+/// @brief Compute ranked completion items at a cursor.
+/// @param source Full source buffer.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @param filePath Virtual source path.
+/// @param maxResults Maximum returned items, or zero for unlimited.
+/// @return Provider results with replacement ranges and snippet metadata populated.
 std::vector<CompletionItem> CompletionEngine::complete(
     std::string_view source, int line, int col, std::string_view filePath, int maxResults) {
     AnalysisResult *analysis = analyze(source, filePath);
@@ -1278,6 +1431,12 @@ std::vector<CompletionItem> CompletionEngine::complete(
     return items;
 }
 
+/// @brief Compute display signatures for the call active at a cursor.
+/// @param source Full source buffer.
+/// @param line One-based cursor line.
+/// @param col Zero-based cursor column.
+/// @param filePath Virtual source path.
+/// @return Newline-delimited unique signatures with documentation, or an empty string.
 std::string CompletionEngine::signatureHelp(std::string_view source,
                                             int line,
                                             int col,

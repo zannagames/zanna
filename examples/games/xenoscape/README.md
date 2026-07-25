@@ -4,7 +4,7 @@ XENOSCAPE is an active-development ten-region science-fiction action
 Metroidvania and a substantial Zanna/Zia game example.
 
 > **Scene-driven recreation:** every campaign region also exists as an
-> authored `.scene` file in
+> authored `.scene2d` file in
 > [`examples/games/xenoscape-scenes`](../xenoscape-scenes/README.md), editable
 > in Zanna Studio's 2D scene editor. `tools/export_scenes.zia` regenerates
 > those scenes from this game's builders and

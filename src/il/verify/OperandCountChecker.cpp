@@ -40,7 +40,7 @@ namespace il::verify::detail {
 ///          constructed on the stack for every instruction.
 ///
 /// @param ctx Verification context describing the instruction under inspection.
-/// @param info Opcode metadata supplying operand bounds.
+/// @param spec Opcode specification supplying operand bounds.
 OperandCountChecker::OperandCountChecker(const VerifyCtx &ctx, const InstructionSpec &spec)
     : ctx_(ctx), spec_(spec) {}
 

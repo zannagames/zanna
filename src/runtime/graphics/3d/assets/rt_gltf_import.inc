@@ -538,6 +538,12 @@ static rt_scene_node3d *gltf_clone_scene_node_shallow(const rt_scene_node3d *src
         rt_obj_retain_maybe(src->name);
         dst->name = src->name;
     }
+    /* Prefab identity survives glTF-path clones too (ADR 0187). */
+    if (src->prefab_path) {
+        rt_obj_retain_maybe(src->prefab_path);
+        dst->prefab_path = src->prefab_path;
+    }
+    dst->is_instance_content = src->is_instance_content ? 1 : 0;
     if (!rt_scene_node3d_copy_variant_materials(dst, src)) {
         gltf_release_local(dst);
         return NULL;

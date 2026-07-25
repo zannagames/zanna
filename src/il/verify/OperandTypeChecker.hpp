@@ -32,6 +32,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares table-driven operand type and literal-range validation.
+/// @details The checker combines generated operand categories with inferred
+///          value types and instruction annotations, returning a contextual
+///          diagnostic for the first mismatch.
+
 #pragma once
 
 #include "il/verify/SpecTables.hpp"
@@ -46,6 +52,9 @@ namespace il::verify::detail {
 /// @brief Ensures an instruction's operands satisfy the metadata type requirements.
 class OperandTypeChecker {
   public:
+    /// @brief Bind a checker to one instruction and its generated specification.
+    /// @param ctx Verification context that must outlive the checker.
+    /// @param spec Opcode specification that must outlive the checker.
     OperandTypeChecker(const VerifyCtx &ctx, const InstructionSpec &spec);
 
     /// @brief Validates operand types described by opcode metadata.
@@ -53,9 +62,15 @@ class OperandTypeChecker {
     [[nodiscard]] il::support::Expected<void> run() const;
 
   private:
+    /// @brief Format a type failure in the current instruction context.
+    /// @param message Specific mismatch text.
+    /// @return Structured failure anchored to the instruction.
     il::support::Expected<void> report(std::string_view message) const;
 
+    /// @brief Borrowed verification and type-inference context.
     const VerifyCtx &ctx_;
+
+    /// @brief Borrowed generated operand type specification.
     const InstructionSpec &spec_;
 };
 

@@ -21,21 +21,37 @@ namespace il::frontends::zia {
 class Lowerer;
 
 /// @brief RAII helper to set and restore source location context in Lowerer.
-/// @details Automatically sets Lowerer::curLoc_ to a new location on
-///          construction and restores the previous location on destruction.
+/// @details Changes the lowerer's public source-location context on construction
+///          and restores the captured value on destruction. The guard is
+///          deliberately immobile so restoration always targets one lexical scope.
 /// @invariant Restores original location on scope exit.
 class ZiaLocationScope {
   public:
+    /// @brief Install a temporary source location.
+    /// @param lowerer Lowerer whose source-location context is changed.
+    /// @param loc Location to expose until this guard is destroyed.
     ZiaLocationScope(Lowerer &lowerer, il::support::SourceLoc loc);
+
+    /// @brief Restore the location that was active at construction.
     ~ZiaLocationScope();
 
+    /// @brief Prevent copying a guard that owns a restoration obligation.
     ZiaLocationScope(const ZiaLocationScope &) = delete;
+
+    /// @brief Prevent replacing a guard's lowerer and saved location by copy.
     ZiaLocationScope &operator=(const ZiaLocationScope &) = delete;
+
+    /// @brief Prevent transferring the restoration obligation to another scope.
     ZiaLocationScope(ZiaLocationScope &&) = delete;
+
+    /// @brief Prevent replacing a guard's lowerer and saved location by move.
     ZiaLocationScope &operator=(ZiaLocationScope &&) = delete;
 
   private:
+    /// Lowerer whose location is restored when the guard leaves scope.
     Lowerer &lowerer_;
+
+    /// Source location that was active before construction.
     il::support::SourceLoc previousLoc_;
 };
 

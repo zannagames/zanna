@@ -13,6 +13,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements method target resolution and reusable array bounds checks
+///        for BASIC OOP lowering.
+
 #include "MethodDispatchHelpers.hpp"
 
 #include "frontends/basic/DiagnosticEmitter.hpp"
@@ -31,6 +35,7 @@ namespace il::frontends::basic {
 // ============================================================================
 
 /// @brief Bind a dispatch resolver to its lowering context (non-owning).
+/// @param lowerer Lowerer that outlives this resolver.
 MethodDispatchResolver::MethodDispatchResolver(Lowerer &lowerer) noexcept : lowerer_(lowerer) {}
 
 /// @brief Check whether a method is accessible from the current class.
@@ -294,6 +299,8 @@ std::optional<MethodDispatchResolver::Resolution> MethodDispatchResolver::tryRun
 // ============================================================================
 
 /// @brief Bind a bounds-check emitter to its lowering context (non-owning).
+/// @brief Binds a bounds-check emitter to its lowering context.
+/// @param lowerer Lowerer that owns the active function and emission helpers.
 BoundsCheckEmitter::BoundsCheckEmitter(Lowerer &lowerer) noexcept : lowerer_(lowerer) {}
 
 /// @brief Emit a runtime array bounds check for an index access.

@@ -170,6 +170,7 @@ namespace {
 /// @note The returned reference is valid for the lifetime of the program.
 ///
 const std::vector<RuntimeClass> &runtimeClassCatalog() {
+    /// Expand the generated runtime class table into its owning vector.
     static const std::vector<RuntimeClass> catalog_init = [] {
         std::vector<RuntimeClass> catalog;
         catalog.reserve(8); // Initial capacity; grows as classes are added
@@ -217,6 +218,7 @@ const RuntimeClass *findRuntimeClassByQName(std::string_view qname) {
         }
 
         // Case-insensitive comparison using std::equal with a custom comparator
+        /// Compare class-name bytes case-insensitively.
         bool match =
             std::equal(qname.begin(), qname.end(), cname.begin(), cname.end(), [](char a, char b) {
                 return std::toupper(static_cast<unsigned char>(a)) ==
@@ -293,14 +295,26 @@ ILScalarType mapILToken(std::string_view tok) {
 
 namespace {
 
+/// @brief Parsed scalar shape and optional generic type annotation.
 struct ParsedTypeToken {
+    /// Frontend-independent scalar category.
     ILScalarType scalar{ILScalarType::Unknown};
+    /// Whether the spelling explicitly used the raw `ptr` form.
     bool rawPointer{false};
+    /// Parameterized `seq` or `list` outer name.
     std::string containerTypeName;
+    /// Element annotation carried by a parameterized container.
     std::string elementTypeName;
+    /// Qualified class annotation carried by `obj` or `ptr`.
     std::string objectTypeName;
 };
 
+/// @brief Parse one scalar or parameterized runtime signature token.
+/// @details Extracts container element or concrete object annotations before
+///          mapping the outer token through @ref mapILToken.
+/// @param tok Type token with optional surrounding whitespace.
+/// @return Parsed scalar shape and annotations; the scalar is Unknown when the
+///         outer token is unsupported.
 ParsedTypeToken parseTypeToken(std::string_view tok) {
     ParsedTypeToken result;
 
@@ -455,6 +469,10 @@ ParsedSignature parseRuntimeSignature(std::string_view sig) {
     return result;
 }
 
+/// @brief Recover the runtime class represented by an object-shaped return.
+/// @param sig Parsed signature carrying optional object/container annotations.
+/// @return Explicit object class, standard Seq/List class, or an empty string
+///         when the return remains opaque.
 std::string concreteRuntimeReturnClassQName(const ParsedSignature &sig) {
     if (!sig.objectTypeName.empty())
         return sig.objectTypeName;

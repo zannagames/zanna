@@ -29,6 +29,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares validation and lookup indexing for module globals.
+/// @details `GlobalVerifier` validates symbol names, supported types, linkage
+///          rules, and textual initializer compatibility before exposing
+///          borrowed global declarations through a name index.
+
 #pragma once
 
 #include "il/verify/DiagSink.hpp"
@@ -48,18 +54,25 @@ namespace il::verify {
 /// @brief Ensures module global declarations obey uniqueness rules.
 class GlobalVerifier {
   public:
+    /// @brief Name-to-declaration index whose pointers borrow module storage.
     using GlobalMap = std::unordered_map<std::string, const il::core::Global *>;
 
     /// @brief Access the verified global lookup table.
+    /// @details After a failed run the table may retain valid declarations that
+    ///          preceded the first error.
+    /// @return Const reference to the verifier-owned map.
     [[nodiscard]] const GlobalMap &globals() const;
 
     /// @brief Verify globals in @p module and populate the lookup table.
+    /// @details Clears prior state, validates every declaration and initializer,
+    ///          and rejects duplicate global names.
     /// @param module Module to inspect.
     /// @param sink Diagnostic sink receiving advisory output (currently unused).
     /// @return Empty Expected on success; diagnostic payload when verification fails.
     [[nodiscard]] il::support::Expected<void> run(const il::core::Module &module, DiagSink &sink);
 
   private:
+    /// @brief Current borrowed global index, rebuilt by each call to @ref run.
     GlobalMap globals_;
 };
 

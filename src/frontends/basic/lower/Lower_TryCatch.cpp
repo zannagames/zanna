@@ -162,6 +162,8 @@ void Lowerer::lowerResume(const Resume &stmt) {
 /// Note: The finally code is duplicated between the normal path and exception path
 /// because `resume.label` must be the terminator of the handler block, and we cannot
 /// branch to a shared finally block and then return to emit the resume.
+/// @param stmt TRY statement containing ordered try, catch, and finally bodies,
+///        plus the optional catch variable.
 void Lowerer::lowerTryCatch(const TryCatchStmt &stmt) {
     ProcedureContext &ctx = context();
     Function *func = ctx.function();

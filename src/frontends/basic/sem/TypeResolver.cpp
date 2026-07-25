@@ -4,14 +4,24 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
 // File: src/frontends/basic/sem/TypeResolver.cpp
 // Purpose: Implements compile-time type resolution with namespace/using context.
 // Key invariants:
-//   - Qualified names bypass USING imports.
-//   - Simple names use precedence: current NS chain → USING imports.
-//   - Ambiguity produces sorted contender lists for stable diagnostics.
-// Ownership/Lifetime: TypeResolver does not own registry or context.
-// Links: docs/internals/codemap.md, CLAUDE.md
+//   * Qualified names bypass ordinary USING imports, except that an alias in
+//     the first segment is expanded.
+//   * Simple names use precedence: current namespace chain, then USING imports.
+//   * Ambiguity produces sorted contender lists for stable diagnostics.
+// Ownership: TypeResolver borrows NamespaceRegistry and UsingContext references;
+//            both must outlive it.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Implements namespace- and USING-aware BASIC type-name resolution.
+/// @details Resolves qualified, alias-qualified, and simple names while
+///          preserving deterministic ambiguity diagnostics.
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,11 +33,15 @@
 namespace il::frontends::basic {
 
 /// @brief Construct a resolver over a namespace registry and USING import context.
+/// @param ns Registry containing namespace and declared-type metadata.
+/// @param uc File-scoped USING imports and aliases.
 /// @note Neither argument is owned; both must outlive the resolver.
 TypeResolver::TypeResolver(const NamespaceRegistry &ns, const UsingContext &uc)
     : registry_(ns), using_(uc) {}
 
 /// @brief Lowercase a string (used for case-insensitive ambiguity ordering).
+/// @param str Spelling to normalize.
+/// @return Lowercase copy of @p str.
 std::string TypeResolver::toLower(const std::string &str) {
     std::string result;
     result.reserve(str.size());
@@ -38,6 +52,8 @@ std::string TypeResolver::toLower(const std::string &str) {
 }
 
 /// @brief Join path segments into a dotted qualified name (`A.B.C`).
+/// @param segments Ordered namespace or qualified-name segments.
+/// @return Dot-separated path, or an empty string when @p segments is empty.
 std::string TypeResolver::joinPath(const std::vector<std::string> &segments) {
     if (segments.empty())
         return "";
@@ -51,6 +67,10 @@ std::string TypeResolver::joinPath(const std::vector<std::string> &segments) {
 }
 
 /// @brief Split a dotted path into its non-empty segments.
+/// @details Consecutive, leading, and trailing dots do not produce empty
+///          segments.
+/// @param path Dotted path to tokenize.
+/// @return Ordered vector of non-empty path segments.
 std::vector<std::string> TypeResolver::splitPath(std::string_view path) {
     std::vector<std::string> segments;
     std::string current;
@@ -107,11 +127,11 @@ TypeResolver::Kind TypeResolver::convertKind(NamespaceRegistry::TypeKind nsk) {
     return Kind::Unknown;
 }
 
-/// @brief Resolve a type name to its canonical qualified form.
+/// @brief Resolve a type name to a qualified form recognized by the registry.
 /// @param name The type name as written (qualified or simple, possibly alias-prefixed).
 /// @param currentNsChain The enclosing namespace chain, outermost first.
-/// @return A Result with `found`/`qname`/`kind` set, or (for simple names) a sorted
-///         `contenders` list when the name is ambiguous.
+/// @return A Result with `found`, resolved `qname`, and `kind` set, or (for
+///         simple names) a sorted `contenders` list when the name is ambiguous.
 /// @details Qualified names bypass USING imports: an alias first segment is expanded, otherwise
 ///          the name is treated as fully qualified. Simple names are resolved by walking the
 ///          namespace chain from innermost to global first, then USING imports in declaration

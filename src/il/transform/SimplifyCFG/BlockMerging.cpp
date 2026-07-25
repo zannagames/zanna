@@ -48,6 +48,8 @@ struct PredInfo {
 ///          the total edge count and first non-self predecessor.  Self-loop
 ///          edges are counted so that loop headers (which have a self-loop)
 ///          correctly show edgeCount > 1 and are never merged.
+/// @param F Function whose successor edges are indexed.
+/// @return Predecessor summary keyed by target block label.
 std::unordered_map<std::string, PredInfo> buildPredMap(il::core::Function &F) {
     std::unordered_map<std::string, PredInfo> predMap;
     predMap.reserve(F.blocks.size());
@@ -91,6 +93,7 @@ bool mergeSinglePred(SimplifyCFG::SimplifyCFGPassContext &ctx,
                      const std::unordered_map<std::string, PredInfo> &predMap) {
     il::core::Function &F = ctx.function;
 
+    /// Relocate the candidate block in current vector storage before mutation.
     auto blockIt =
         std::find_if(F.blocks.begin(), F.blocks.end(), [&](il::core::BasicBlock &candidate) {
             return &candidate == &block;
@@ -163,6 +166,7 @@ bool mergeSinglePred(SimplifyCFG::SimplifyCFGPassContext &ctx,
     }
 
     auto &predInstrs = predBlock->instructions;
+    /// Relocate the borrowed predecessor terminator in its instruction vector.
     auto predTermIt = std::find_if(predInstrs.begin(),
                                    predInstrs.end(),
                                    [&](il::core::Instr &instr) { return &instr == predTerm; });
@@ -170,6 +174,7 @@ bool mergeSinglePred(SimplifyCFG::SimplifyCFGPassContext &ctx,
         return false;
 
     auto &blockInstrs = block.instructions;
+    /// Relocate the candidate block's borrowed terminator before moving instructions.
     auto blockTermIt = std::find_if(blockInstrs.begin(),
                                     blockInstrs.end(),
                                     [&](il::core::Instr &instr) { return &instr == blockTerm; });

@@ -14,6 +14,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares canonical-to-C runtime symbol alias lookup.
+
 #pragma once
 
 #include <optional>
@@ -41,6 +44,7 @@ inline const RuntimeNameAlias kRuntimeNameAliases[] = {
 };
 
 /// @brief Resolve a canonical Zanna.* runtime name to the C runtime symbol.
+/// @param name Fully qualified canonical runtime symbol.
 /// @return Mapped symbol when present; std::nullopt otherwise.
 inline std::optional<std::string_view> mapCanonicalRuntimeName(std::string_view name) {
     for (const auto &alias : kRuntimeNameAliases) {

@@ -14,6 +14,11 @@
 // Links: src/frontends/common/CollectionMethodCatalog.hpp
 //
 //===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Implements shared collection method descriptors and lookup tables.
+//
+//===----------------------------------------------------------------------===//
 
 #include "frontends/common/CollectionMethodCatalog.hpp"
 
@@ -130,6 +135,14 @@ const std::unordered_map<std::string, CollectionMethodId> &dispatchTable() {
     return table;
 }
 
+/**
+ * @brief Return the per-collection descriptor lookup tables.
+ *
+ * @details Builds one lowercase-name map for each CollectionKind on first use.
+ * Array indices intentionally match the contiguous CollectionKind enumerators.
+ *
+ * @return Immutable array of descriptor maps indexed by CollectionKind.
+ */
 const std::array<std::unordered_map<std::string, CollectionMethodDescriptor>, 4> &descriptorTables() {
     static const auto tables = [] {
         std::array<std::unordered_map<std::string, CollectionMethodDescriptor>, 4> out;
@@ -149,6 +162,11 @@ const std::array<std::unordered_map<std::string, CollectionMethodDescriptor>, 4>
 
 } // namespace
 
+/**
+ * @brief Normalize a source method spelling for catalog lookup.
+ * @param name Source-level method name.
+ * @return Lowercase ASCII copy of @p name.
+ */
 std::string normalizeCollectionMethodName(std::string_view name) {
     std::string lower;
     lower.reserve(name.size());
@@ -158,6 +176,12 @@ std::string normalizeCollectionMethodName(std::string_view name) {
     return lower;
 }
 
+/**
+ * @brief Find a method descriptor supported by a collection family.
+ * @param kind Receiver collection family.
+ * @param methodName Source-level method spelling.
+ * @return Matching descriptor, or std::nullopt when unsupported.
+ */
 std::optional<CollectionMethodDescriptor> findCollectionMethod(CollectionKind kind,
                                                                std::string_view methodName) {
     const auto &table = descriptorTables()[static_cast<std::size_t>(kind)];
@@ -167,6 +191,11 @@ std::optional<CollectionMethodDescriptor> findCollectionMethod(CollectionKind ki
     return std::nullopt;
 }
 
+/**
+ * @brief Resolve a collection-kind-independent dispatch identifier.
+ * @param methodName Source-level method spelling.
+ * @return Stable method ID, or CollectionMethodId::Unknown when absent.
+ */
 CollectionMethodId lookupCollectionMethod(std::string_view methodName) {
     const auto &table = dispatchTable();
     auto it = table.find(normalizeCollectionMethodName(methodName));

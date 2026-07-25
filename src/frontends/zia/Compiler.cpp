@@ -4,8 +4,23 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/Compiler.cpp
+// Purpose: Orchestrate the Zia lexing, parsing, bind resolution, semantic
+//          analysis, lowering, verification, and optimization pipeline.
+// Key invariants:
+//   * A phase does not run after a fatal failure in an earlier phase.
+//   * CompilerResult::moduleVerified reflects verification since the module's
+//     most recent mutation.
+//   * Error-tolerant analysis keeps its DiagnosticEngine at a stable address
+//     while Sema borrows it.
+// Ownership: CompilerResult owns diagnostics and IL output; parseAndAnalyze()
+//            returns a heap-owned aggregate whose Sema borrows its diagnostics.
+// References: docs/languages/zia-reference.md, docs/tools/cli.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file Compiler.cpp
+/// @file
 /// @brief Implementation of Zia compiler driver.
 ///
 /// @details This file implements the compile() and compileFile() functions
@@ -13,7 +28,7 @@
 ///
 /// ## Import Resolution
 ///
-/// The processImports() function recursively resolves imports:
+/// ImportResolver recursively resolves file binds:
 /// 1. Resolves import paths relative to the importing file
 /// 2. Parses each imported file
 /// 3. Recursively processes that file's imports
@@ -27,7 +42,7 @@
 ///
 /// To prevent runaway compilation:
 /// - Maximum import depth: 50 levels
-/// - Maximum imported files: 100
+/// - Maximum imported files: 256
 /// - Circular import detection via processedFiles set
 ///
 /// ## Compilation Phases
@@ -65,6 +80,9 @@ namespace il::frontends::zia {
 
 namespace {
 /// @brief Report all verifier diagnostics and return whether verification had no errors.
+/// @param module IL module to verify without modification.
+/// @param diagnostics Engine that receives every verifier diagnostic.
+/// @return True when no error-severity verifier diagnostic was produced.
 bool reportVerifierDiagnostics(const il::core::Module &module,
                                il::support::DiagnosticEngine &diagnostics) {
     bool hasError = false;
@@ -79,6 +97,9 @@ bool reportVerifierDiagnostics(const il::core::Module &module,
 /// @brief Print every token from the source to stderr.
 /// @details Creates a fresh lexer and iterates until EOF, printing each token
 ///          with its location, kind, text, and literal values.
+/// @param source Source buffer to lex independently of the compiler parser.
+/// @param fileId SourceManager identifier associated with @p source.
+/// @param diag Diagnostic sink used by the temporary lexer.
 void dumpTokenStream(const std::string &source,
                      uint32_t fileId,
                      il::support::DiagnosticEngine &diag) {
@@ -101,10 +122,20 @@ void dumpTokenStream(const std::string &source,
 }
 } // namespace
 
+/// @brief Check whether compilation completed without error diagnostics.
+/// @return True when diagnostics.errorCount() is zero.
 bool CompilerResult::succeeded() const {
     return diagnostics.errorCount() == 0;
 }
 
+/// @brief Compile one Zia source buffer through the configured pipeline.
+/// @details Registers the source, parses its AST, resolves file binds, performs
+///          semantic analysis and lowering, then optionally verifies, optimizes,
+///          times, or dumps intermediate representations according to @p options.
+/// @param input Source buffer, path, optional existing file ID, and import provider.
+/// @param options Frontend, diagnostic, verification, and optimization controls.
+/// @param sm Source manager that owns file identities and source text.
+/// @return Compilation artifacts and all diagnostics accumulated before return.
 CompilerResult compile(const CompilerInput &input,
                        const CompilerOptions &options,
                        il::support::SourceManager &sm) {
@@ -284,6 +315,13 @@ CompilerResult compile(const CompilerInput &input,
     return result;
 }
 
+/// @brief Read and compile a Zia source file.
+/// @details Loads the complete file in binary mode, reports I/O failures as
+///          compiler diagnostics, and delegates the source buffer to compile().
+/// @param path UTF-8 path to the root `.zia` file.
+/// @param options Frontend and pipeline controls.
+/// @param sm Source manager that receives the loaded root file.
+/// @return Compilation result, including I/O or pipeline diagnostics.
 CompilerResult compileFile(const std::string &path,
                            const CompilerOptions &options,
                            il::support::SourceManager &sm) {
@@ -333,6 +371,14 @@ CompilerResult compileFile(const std::string &path,
     return compile(input, options, sm);
 }
 
+/// @brief Parse and semantically analyze a source buffer for tooling.
+/// @details Preserves partial AST and Sema state after recoverable errors, runs
+///          bind resolution best-effort, and deliberately omits IL lowering.
+/// @param input Source buffer and import-provider information.
+/// @param options Warning and semantic-analysis controls.
+/// @param sm Source manager that owns file identities and source text.
+/// @return Stable heap-owned partial analysis result; the pointer is non-null
+///         even when diagnostics contain errors.
 std::unique_ptr<AnalysisResult> parseAndAnalyze(const CompilerInput &input,
                                                 const CompilerOptions &options,
                                                 il::support::SourceManager &sm) {

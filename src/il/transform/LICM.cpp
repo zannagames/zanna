@@ -82,6 +82,11 @@ enum class CallHoistKind {
     ReadOnly,     ///< Call only reads memory (safe if no aliasing stores).
 };
 
+/// @brief Determine whether a direct call is pure or read-only enough to hoist.
+/// @param module Module used to resolve callee and runtime effect metadata.
+/// @param instr Candidate call instruction.
+/// @return Hoisting classification, with @ref CallHoistKind::NotHoistable for
+///         non-calls, throwing calls, and calls that may mutate memory.
 CallHoistKind classifyCallForHoist(const Module &module, const Instr &instr) {
     if (instr.op != Opcode::Call)
         return CallHoistKind::NotHoistable;
@@ -227,6 +232,7 @@ void seedInvariants(const Loop &loop,
 /// @param invariants Set of invariant temporary ids.
 /// @return True if every operand and branch argument is invariant.
 bool operandsInvariant(const Instr &instr, const std::unordered_set<unsigned> &invariants) {
+    /// Return whether a literal or known loop-external temporary is invariant.
     auto isInvariantValue = [&invariants](const Value &value) {
         if (value.kind != Value::Kind::Temp)
             return true;
@@ -319,6 +325,7 @@ BasicBlock *findPreheader(const Loop &loop,
     return preheader;
 }
 
+/// @copydoc LICM::LICM()
 LICM::LICM(bool allowMemoryHoisting) : allowMemoryHoisting_(allowMemoryHoisting) {}
 
 /// @brief Return the unique identifier for this pass.

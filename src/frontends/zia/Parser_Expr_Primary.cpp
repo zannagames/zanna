@@ -4,24 +4,26 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Parser_Expr_Primary.cpp
-// Purpose: Primary expression parsing for the Zia parser — literals,
-//          identifiers, parenthesized exprs, lambdas, list/map/set
-//          literals, string interpolation, if/match expressions.
-// Key invariants:
-//   - All methods are member functions of Parser declared in Parser.hpp
-//   - Precedence climbing flows: parsePrimary -> parsePostfix -> parseUnary -> ...
-// Ownership/Lifetime:
-//   - Parser borrows Lexer and DiagnosticEngine references
-// Links: src/frontends/zia/Parser.hpp, src/frontends/zia/Parser_Expr.cpp
-//
+///
+/// @file Parser_Expr_Primary.cpp
+/// @brief Parses Zia primary expressions, literals, lambdas, match arms, and
+///        collection/block literal forms.
+///
+/// @details Primary parsing resolves ambiguous identifier/struct-literal,
+///          parenthesized/tuple/lambda, map/set/block, and contextual `match`
+///          forms before postfix and precedence parsing continue. It also
+///          constructs interpolated-string concatenations and validates named
+///          versus positional call arguments.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Parser.hpp"
 
 namespace il::frontends::zia {
 
+/// @brief Parse one primary expression.
+/// @return Parsed literal, identifier, grouping, lambda, collection, block,
+///         allocation, `if`, or `match` expression; null on error.
 ExprPtr Parser::parsePrimary() {
     SourceLoc loc = peek().loc;
 
@@ -232,6 +234,12 @@ ExprPtr Parser::parsePrimary() {
     return nullptr;
 }
 
+/// @brief Parse an identifier-like primary or enabled struct literal.
+/// @param loc Source location of the leading identifier.
+/// @return Identifier/qualified field chain or StructLiteralExpr.
+/// @details Struct-literal recognition uses lookahead for a qualified type
+///          followed by an empty or named-field body and is attempted only in
+///          contexts that explicitly permit the otherwise ambiguous syntax.
 ExprPtr Parser::parseIdentifierOrStructLiteral(SourceLoc loc) {
     {
         // Struct literals are only attempted when explicitly enabled
@@ -305,6 +313,9 @@ ExprPtr Parser::parseIdentifierOrStructLiteral(SourceLoc loc) {
     }
 }
 
+/// @brief Parse the contents following an already-consumed `(`.
+/// @param loc Source location of the opening parenthesis.
+/// @return Unit, grouped, tuple, or lambda expression; null on error.
 ExprPtr Parser::parseParenthesizedExpr(SourceLoc loc) {
     {
         // Check for unit literal () or lambda () => ...
@@ -404,6 +415,9 @@ ExprPtr Parser::parseParenthesizedExpr(SourceLoc loc) {
     }
 }
 
+/// @brief Parse a value-producing `match` expression.
+/// @param loc Source location of the consumed `match` keyword.
+/// @return Match expression containing ordered patterns, guards, and bodies.
 ExprPtr Parser::parseMatchExpression(SourceLoc loc) {
     ExprPtr scrutinee = parseExpression();
     if (!scrutinee)
@@ -453,6 +467,8 @@ ExprPtr Parser::parseMatchExpression(SourceLoc loc) {
 
 /// @brief Parse a list literal expression ([elem, elem, ...]).
 /// @return The parsed ListLiteralExpr, or nullptr on error.
+/// @brief Parse a bracketed list literal.
+/// @return ListLiteralExpr with elements in source order, or null on error.
 ExprPtr Parser::parseListLiteral() {
     SourceLoc loc = peek().loc;
     advance(); // consume '['
@@ -478,6 +494,10 @@ ExprPtr Parser::parseListLiteral() {
     return std::make_unique<ListLiteralExpr>(loc, std::move(elements));
 }
 
+/// @brief Parse a lambda body after its parameters and fat arrow.
+/// @param loc Source location of the lambda start.
+/// @param params Parsed parameter declarations transferred into the AST.
+/// @return LambdaExpr with block or expression body.
 ExprPtr Parser::parseLambdaBody(SourceLoc loc, std::vector<LambdaParam> params) {
     ExprPtr body;
     // Check for block body: => { ... }
@@ -491,6 +511,9 @@ ExprPtr Parser::parseLambdaBody(SourceLoc loc, std::vector<LambdaParam> params) 
     return std::make_unique<LambdaExpr>(loc, std::move(params), nullptr, std::move(body));
 }
 
+/// @brief Parse a value-producing braced block expression.
+/// @return BlockExpr containing leading statements and an optional trailing
+///         value, or null on error.
 ExprPtr Parser::parseBlockExpression() {
     SourceLoc loc = peek().loc;
     if (!expect(TokenKind::LBrace, "{"))
@@ -548,6 +571,9 @@ ExprPtr Parser::parseBlockExpression() {
 /// @details Consumes StringStart, alternates between expressions and StringMid tokens,
 ///          and builds a chain of BinaryExpr(Add) concatenations ending with StringEnd.
 /// @return The concatenated string expression, or nullptr on error.
+/// @brief Parse an interpolated string token sequence.
+/// @return String expression, represented as concatenations of literal
+///         segments and `toString` calls for interpolations.
 ExprPtr Parser::parseInterpolatedString() {
     SourceLoc loc = peek().loc;
 
@@ -623,6 +649,9 @@ ExprPtr Parser::parseInterpolatedString() {
 /// @details Disambiguates maps from sets by checking for a colon after the first element.
 ///          An empty brace pair {} is parsed as an empty map.
 /// @return The parsed MapLiteralExpr or SetLiteralExpr, or nullptr on error.
+/// @brief Parse an implicit braced map or set literal.
+/// @return MapLiteralExpr when entries contain `:`, otherwise SetLiteralExpr;
+///         null on error.
 ExprPtr Parser::parseMapOrSetLiteral() {
     SourceLoc loc = peek().loc;
     advance(); // consume '{'
@@ -692,6 +721,11 @@ ExprPtr Parser::parseMapOrSetLiteral() {
     }
 }
 
+/// @brief Parse positional and named call arguments up to `)`.
+/// @param[out] args Destination vector populated in source order.
+/// @return True on success.
+/// @details Rejects positional arguments after the first named argument and
+///          leaves the closing parenthesis for the caller.
 bool Parser::parseCallArgs(std::vector<CallArg> &args) {
     if (check(TokenKind::RParen)) {
         return true;
@@ -722,6 +756,8 @@ bool Parser::parseCallArgs(std::vector<CallArg> &args) {
     return true;
 }
 
+/// @brief Parse and return call arguments.
+/// @return Parsed argument vector, or an empty vector on error.
 std::vector<CallArg> Parser::parseCallArgs() {
     std::vector<CallArg> args;
     if (!parseCallArgs(args))

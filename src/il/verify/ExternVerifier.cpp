@@ -5,11 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// @file
-// @brief Implement verification of module extern declarations.
-// @details Builds lookup tables for extern signatures, checks duplicate
-//          declarations, and validates consistency with the runtime signature
-//          database.
+/// @file
+/// @brief Implements verification of module extern declarations.
+/// @details Builds lookup tables for extern signatures, checks duplicate
+///          declarations, and validates consistency with the runtime signature
+///          database.
 
 #include "il/verify/ExternVerifier.hpp"
 
@@ -62,10 +62,22 @@ bool signaturesMatch(const Extern &decl, const il::runtime::RuntimeSignature &ru
     return true;
 }
 
+/// @brief Determine whether an IL type is valid in an extern parameter list.
+/// @details Void and verifier-only exception values cannot cross the extern ABI.
+/// @param kind Type kind to classify.
+/// @return `true` for supported parameter kinds; otherwise `false`.
 bool isExternParamTypeSupported(Type::Kind kind) {
     return kind != Type::Kind::Void && kind != Type::Kind::Error && kind != Type::Kind::ResumeTok;
 }
 
+/// @brief Check claimed extern attributes against canonical runtime metadata.
+/// @details A declaration may omit guarantees exposed by the runtime but may
+///          not claim `pure`, `readonly`, or `nothrow` when the runtime does not
+///          provide the corresponding guarantee. Purity satisfies readonly.
+/// @param decl IL extern declaration whose attributes are checked.
+/// @param runtime Canonical metadata for the same runtime symbol.
+/// @param why Output attribute name set on incompatibility.
+/// @return `true` when every claimed attribute is supported.
 bool attrsCompatibleWithRuntime(const Extern &decl,
                                 const il::runtime::RuntimeSignature &runtime,
                                 std::string &why) {

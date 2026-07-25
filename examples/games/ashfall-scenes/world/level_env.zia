@@ -1,0 +1,244 @@
+// =============================================================================
+// world/level_env.zia — the per-level environment table (single source of truth)
+// =============================================================================
+//
+// One row per level id: sky palette (zenith/horizon/ground + sun), the light rig
+// (ambient + key + fill), fog range, accent hue, atmosphere kind, and the intro
+// camera vantage. Sky generation (fx/sky), the light rig applier (fx/lighting),
+// materials (accent hues), the game's clear color, and cinematics all read this
+// table — art direction lives HERE, not scattered through level builders.
+//
+// House recipe: ambient floor 0.16-0.26, key 1.0-1.35 warm, fill 0.5-0.85 cool,
+// fog color == sky horizon == clear color.
+// =============================================================================
+module level_env;
+
+bind "../config" as config;
+bind Zanna.Graphics3D as SceneG3D;
+
+// Atmosphere particle kinds (fx/effects ambient loops).
+var ATMO_NONE: Integer = 0;
+var ATMO_ASH: Integer = 1;
+var ATMO_EMBERS: Integer = 2;
+var ATMO_SPORES: Integer = 3;
+var ATMO_DUST: Integer = 4;
+var ATMO_ENERGY: Integer = 5;
+
+class LevelEnv {
+    // Sky palette (0..1)
+    hide List[Float] zenR; hide List[Float] zenG; hide List[Float] zenB;
+    hide List[Float] horR; hide List[Float] horG; hide List[Float] horB;
+    hide List[Float] grdR; hide List[Float] grdG; hide List[Float] grdB;
+    hide List[Float] cloud;          // cloud density 0..1
+    hide List[Integer] stars;        // starfield on dark skies
+    // Sun / key light
+    hide List[Float] sunX; hide List[Float] sunY; hide List[Float] sunZ;   // direction
+    hide List[Float] sunR; hide List[Float] sunG; hide List[Float] sunB;
+    hide List[Float] sunI;           // intensity (0 = no key)
+    // Fill light
+    hide List[Float] filX; hide List[Float] filY; hide List[Float] filZ;
+    hide List[Float] filR; hide List[Float] filG; hide List[Float] filB;
+    hide List[Float] filI;
+    // Ambient
+    hide List[Float] ambR; hide List[Float] ambG; hide List[Float] ambB;
+    // Fog
+    hide List[Float] fogNear; hide List[Float] fogFar;
+    hide List[Integer] heightFog;    // ash-floor levels
+    // Extras
+    hide List[Integer] flare;        // lens flare on sun
+    hide List[Float] accR; hide List[Float] accG; hide List[Float] accB;   // accent hue
+    hide List[Integer] atmo;         // atmosphere particle kind
+    hide List[Integer] terrain;      // sculpted terrain visual (exterior)
+    // Intro-cam vantage offset from spawn (fly-in start).
+    hide List[Float] vanX; hide List[Float] vanY; hide List[Float] vanZ;
+
+    expose func init() {
+        zenR = []; zenG = []; zenB = []; horR = []; horG = []; horB = [];
+        grdR = []; grdG = []; grdB = []; cloud = []; stars = [];
+        sunX = []; sunY = []; sunZ = []; sunR = []; sunG = []; sunB = []; sunI = [];
+        filX = []; filY = []; filZ = []; filR = []; filG = []; filB = []; filI = [];
+        ambR = []; ambG = []; ambB = [];
+        fogNear = []; fogFar = []; heightFog = [];
+        flare = []; accR = []; accG = []; accB = []; atmo = []; terrain = [];
+        vanX = []; vanY = []; vanZ = [];
+    }
+
+    // One row. Sky colors passed 0-255 for readability; stored 0..1.
+    hide func row(zr: Float, zg: Float, zb: Float, hr: Float, hg: Float, hb: Float,
+                  gr: Float, gg: Float, gb: Float, cl: Float, st: Integer,
+                  sx: Float, sy: Float, sz: Float, sr: Float, sg: Float, sb: Float, si: Float,
+                  fx: Float, fy: Float, fz: Float, fr: Float, fg: Float, fb: Float, fi: Float,
+                  ar: Float, ag: Float, ab: Float,
+                  fn: Float, ff: Float, hf: Integer, fl: Integer,
+                  car: Float, cag: Float, cab: Float, at: Integer, terr: Integer,
+                  vx: Float, vy: Float, vz: Float) {
+        zenR.Add(zr / 255.0); zenG.Add(zg / 255.0); zenB.Add(zb / 255.0);
+        horR.Add(hr / 255.0); horG.Add(hg / 255.0); horB.Add(hb / 255.0);
+        grdR.Add(gr / 255.0); grdG.Add(gg / 255.0); grdB.Add(gb / 255.0);
+        cloud.Add(cl); stars.Add(st);
+        sunX.Add(sx); sunY.Add(sy); sunZ.Add(sz);
+        sunR.Add(sr); sunG.Add(sg); sunB.Add(sb); sunI.Add(si);
+        filX.Add(fx); filY.Add(fy); filZ.Add(fz);
+        filR.Add(fr); filG.Add(fg); filB.Add(fb); filI.Add(fi);
+        ambR.Add(ar); ambG.Add(ag); ambB.Add(ab);
+        fogNear.Add(fn); fogFar.Add(ff); heightFog.Add(hf); flare.Add(fl);
+        accR.Add(car / 255.0); accG.Add(cag / 255.0); accB.Add(cab / 255.0);
+        atmo.Add(at); terrain.Add(terr);
+        vanX.Add(vx); vanY.Add(vy); vanZ.Add(vz);
+    }
+
+    // Rows indexed by level id: LV_ARENA=0, LV_L1..LV_L9=1..9, LV_HUB=10.
+    // The arena keeps its code row; campaign rows 1..10 load from each
+    // authored scene's root `lenv.*` metadata (single source: the scenes).
+    expose func setup() {
+        // ARENA — clean noon test sky.
+        row(120.0,140.0,170.0, 190.0,200.0,215.0, 80.0,84.0,90.0, 0.20, 0,
+            -0.4,-1.0,-0.3, 1.05,1.00,0.92, 1.10,
+            0.4,-0.6,0.5, 0.48,0.56,0.68, 0.70,
+            0.24,0.26,0.29, 35.0,180.0, 0, 0,
+            190.0,200.0,215.0, ATMO_NONE, 0, 0.0,6.0,14.0);
+        var id = config.LV_L1;
+        while id <= config.LV_HUB {
+            loadSceneRow(id);
+            id = id + 1;
+        }
+    }
+
+    /// Return the authored scene path for one campaign level id.
+    hide func scenePathFor(levelId: Integer) -> String {
+        if levelId == config.LV_HUB { return "assets/scenes/hub.scene3d"; }
+        return "assets/scenes/mission-0" + levelId + ".scene3d";
+    }
+
+    /// Append one row from a scene's root metadata (raw 0..1 values).
+    hide func loadSceneRow(levelId: Integer) {
+        var scene = SceneG3D.SceneGraph.Load(scenePathFor(levelId));
+        if scene == null {
+            // A broken scene keeps the table aligned with a neutral row.
+            sceneRowRaw(0.3,0.3,0.35, 0.5,0.5,0.55, 0.2,0.2,0.22, 0.2, 0,
+                        -0.3,-0.8,-0.3, 0.9,0.9,0.9, 1.0,
+                        0.4,-0.5,0.4, 0.5,0.5,0.6, 0.5,
+                        0.2,0.2,0.22, 30.0,160.0, 0, 0,
+                        0.7,0.7,0.8, ATMO_NONE, 0, 0.0,6.0,14.0);
+            return;
+        }
+        var r = scene.Root;
+        sceneRowRaw(
+            r.MetadataGetFloat("lenv.zenR", 0.3),
+            r.MetadataGetFloat("lenv.zenG", 0.3),
+            r.MetadataGetFloat("lenv.zenB", 0.35),
+            r.MetadataGetFloat("lenv.horR", 0.5),
+            r.MetadataGetFloat("lenv.horG", 0.5),
+            r.MetadataGetFloat("lenv.horB", 0.55),
+            r.MetadataGetFloat("lenv.grdR", 0.2),
+            r.MetadataGetFloat("lenv.grdG", 0.2),
+            r.MetadataGetFloat("lenv.grdB", 0.22),
+            r.MetadataGetFloat("lenv.cloud", 0.2),
+            boolToInt(r.MetadataGetBool("lenv.stars", false)),
+            r.MetadataGetFloat("lenv.sunX", -0.3),
+            r.MetadataGetFloat("lenv.sunY", -0.8),
+            r.MetadataGetFloat("lenv.sunZ", -0.3),
+            r.MetadataGetFloat("lenv.sunR", 0.9),
+            r.MetadataGetFloat("lenv.sunG", 0.9),
+            r.MetadataGetFloat("lenv.sunB", 0.9),
+            r.MetadataGetFloat("lenv.sunI", 1.0),
+            r.MetadataGetFloat("lenv.filX", 0.4),
+            r.MetadataGetFloat("lenv.filY", -0.5),
+            r.MetadataGetFloat("lenv.filZ", 0.4),
+            r.MetadataGetFloat("lenv.filR", 0.5),
+            r.MetadataGetFloat("lenv.filG", 0.5),
+            r.MetadataGetFloat("lenv.filB", 0.6),
+            r.MetadataGetFloat("lenv.filI", 0.5),
+            r.MetadataGetFloat("lenv.ambR", 0.2),
+            r.MetadataGetFloat("lenv.ambG", 0.2),
+            r.MetadataGetFloat("lenv.ambB", 0.22),
+            r.MetadataGetFloat("lenv.fogNear", 30.0),
+            r.MetadataGetFloat("lenv.fogFar", 160.0),
+            boolToInt(r.MetadataGetBool("lenv.heightFog", false)),
+            boolToInt(r.MetadataGetBool("lenv.flare", false)),
+            r.MetadataGetFloat("lenv.accR", 0.7),
+            r.MetadataGetFloat("lenv.accG", 0.7),
+            r.MetadataGetFloat("lenv.accB", 0.8),
+            r.MetadataGetInt("lenv.atmo", ATMO_NONE),
+            boolToInt(r.MetadataGetBool("lenv.terrain", false)),
+            r.MetadataGetFloat("lenv.vanX", 0.0),
+            r.MetadataGetFloat("lenv.vanY", 6.0),
+            r.MetadataGetFloat("lenv.vanZ", 14.0));
+    }
+
+    hide func boolToInt(v: Boolean) -> Integer {
+        if v { return 1; }
+        return 0;
+    }
+
+    // Raw-value row append: scene metadata already stores converted 0..1
+    // colors, so no /255 conversion applies here.
+    hide func sceneRowRaw(zr: Float, zg: Float, zb: Float, hr: Float, hg: Float, hb: Float,
+                          gr: Float, gg: Float, gb: Float, cl: Float, st: Integer,
+                          sx: Float, sy: Float, sz: Float, sr: Float, sg: Float, sb: Float, si: Float,
+                          fx: Float, fy: Float, fz: Float, fr: Float, fg: Float, fb: Float, fi: Float,
+                          ar: Float, ag: Float, ab: Float,
+                          fn: Float, ff: Float, hf: Integer, fl: Integer,
+                          car: Float, cag: Float, cab: Float, at: Integer, terr: Integer,
+                          vx: Float, vy: Float, vz: Float) {
+        zenR.Add(zr); zenG.Add(zg); zenB.Add(zb);
+        horR.Add(hr); horG.Add(hg); horB.Add(hb);
+        grdR.Add(gr); grdG.Add(gg); grdB.Add(gb);
+        cloud.Add(cl); stars.Add(st);
+        sunX.Add(sx); sunY.Add(sy); sunZ.Add(sz);
+        sunR.Add(sr); sunG.Add(sg); sunB.Add(sb); sunI.Add(si);
+        filX.Add(fx); filY.Add(fy); filZ.Add(fz);
+        filR.Add(fr); filG.Add(fg); filB.Add(fb); filI.Add(fi);
+        ambR.Add(ar); ambG.Add(ag); ambB.Add(ab);
+        fogNear.Add(fn); fogFar.Add(ff); heightFog.Add(hf); flare.Add(fl);
+        accR.Add(car); accG.Add(cag); accB.Add(cab);
+        atmo.Add(at); terrain.Add(terr);
+        vanX.Add(vx); vanY.Add(vy); vanZ.Add(vz);
+    }
+
+    // --- Accessors (levelId is config.LV_*) -----------------------------------
+    hide func idx(levelId: Integer) -> Integer {
+        if levelId < 0 || levelId >= zenR.Count { return 0; }
+        return levelId;
+    }
+    expose func zenithR(l: Integer) -> Float { return zenR[idx(l)]; }
+    expose func zenithG(l: Integer) -> Float { return zenG[idx(l)]; }
+    expose func zenithB(l: Integer) -> Float { return zenB[idx(l)]; }
+    expose func horizonR(l: Integer) -> Float { return horR[idx(l)]; }
+    expose func horizonG(l: Integer) -> Float { return horG[idx(l)]; }
+    expose func horizonB(l: Integer) -> Float { return horB[idx(l)]; }
+    expose func groundR(l: Integer) -> Float { return grdR[idx(l)]; }
+    expose func groundG(l: Integer) -> Float { return grdG[idx(l)]; }
+    expose func groundB(l: Integer) -> Float { return grdB[idx(l)]; }
+    expose func cloudDensity(l: Integer) -> Float { return cloud[idx(l)]; }
+    expose func hasStars(l: Integer) -> Boolean { return stars[idx(l)] == 1; }
+    expose func sunDirX(l: Integer) -> Float { return sunX[idx(l)]; }
+    expose func sunDirY(l: Integer) -> Float { return sunY[idx(l)]; }
+    expose func sunDirZ(l: Integer) -> Float { return sunZ[idx(l)]; }
+    expose func sunColR(l: Integer) -> Float { return sunR[idx(l)]; }
+    expose func sunColG(l: Integer) -> Float { return sunG[idx(l)]; }
+    expose func sunColB(l: Integer) -> Float { return sunB[idx(l)]; }
+    expose func sunIntensity(l: Integer) -> Float { return sunI[idx(l)]; }
+    expose func fillDirX(l: Integer) -> Float { return filX[idx(l)]; }
+    expose func fillDirY(l: Integer) -> Float { return filY[idx(l)]; }
+    expose func fillDirZ(l: Integer) -> Float { return filZ[idx(l)]; }
+    expose func fillColR(l: Integer) -> Float { return filR[idx(l)]; }
+    expose func fillColG(l: Integer) -> Float { return filG[idx(l)]; }
+    expose func fillColB(l: Integer) -> Float { return filB[idx(l)]; }
+    expose func fillIntensity(l: Integer) -> Float { return filI[idx(l)]; }
+    expose func ambientR(l: Integer) -> Float { return ambR[idx(l)]; }
+    expose func ambientG(l: Integer) -> Float { return ambG[idx(l)]; }
+    expose func ambientB(l: Integer) -> Float { return ambB[idx(l)]; }
+    expose func fogNearOf(l: Integer) -> Float { return fogNear[idx(l)]; }
+    expose func fogFarOf(l: Integer) -> Float { return fogFar[idx(l)]; }
+    expose func hasHeightFog(l: Integer) -> Boolean { return heightFog[idx(l)] == 1; }
+    expose func hasFlare(l: Integer) -> Boolean { return flare[idx(l)] == 1; }
+    expose func accentR(l: Integer) -> Float { return accR[idx(l)]; }
+    expose func accentG(l: Integer) -> Float { return accG[idx(l)]; }
+    expose func accentB(l: Integer) -> Float { return accB[idx(l)]; }
+    expose func atmoKind(l: Integer) -> Integer { return atmo[idx(l)]; }
+    expose func hasTerrain(l: Integer) -> Boolean { return terrain[idx(l)] == 1; }
+    expose func vantageX(l: Integer) -> Float { return vanX[idx(l)]; }
+    expose func vantageY(l: Integer) -> Float { return vanY[idx(l)]; }
+    expose func vantageZ(l: Integer) -> Float { return vanZ[idx(l)]; }
+}

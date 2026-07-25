@@ -1,0 +1,510 @@
+// =============================================================================
+// assets/textures.zia — procedural texture library + material factory
+// =============================================================================
+//
+// Every world surface gets a generated albedo + derived normal map: Perlin
+// octaves + drawn features (panel seams, rivets, strata, stripes) written into
+// Pixels, then a Sobel height→normal pass (ridgebound terrain.zia recipe).
+// Textures are cached by (generator, tint) and materials by surface class, so a
+// level shares a handful of Material3D instances no matter how many boxes use
+// them. Solids carry a tiny emissive floor (~0.02) so shadow sides never crush
+// to black, and metallic classes bind the level skybox as their env map.
+//
+// Sizes: 256px interactive, 32px headless (probe wall-time). EmissiveIntensity
+// is a PROPERTY assignment (never a set_ call — compiler gotcha).
+// =============================================================================
+module textures;
+
+bind Zanna.Graphics as Gfx;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+
+// Surface classes (level_base.addBoxMat + props use these).
+var SURF_DEFAULT: Integer = 0;    // plain matte structural
+var SURF_METAL: Integer = 1;      // metal wall panels
+var SURF_HULL: Integer = 2;       // ship hull plating
+var SURF_ROCK: Integer = 3;       // canyon/cavern rock
+var SURF_CONCRETE: Integer = 4;   // arcology/terraces
+var SURF_GRATE: Integer = 5;      // catwalks/vents
+var SURF_HAZARD: Integer = 6;     // hazard stripes
+var SURF_ACCENT: Integer = 7;     // emissive accent strip (level hue)
+var SURF_SCREEN: Integer = 8;     // console screens (emissive glyphs)
+var SURF_MOSS: Integer = 9;       // biolume moss rock (L5)
+var SURF_COUNT: Integer = 10;
+
+class TextureLib {
+    hide Integer size;
+    hide PerlinNoise noise;
+    hide Boolean ready;
+    // Material cache: key = surfClass*1000 + levelId (accent hue varies by level).
+    hide List[Integer] matKey;
+    hide List[G3D.Material3D] matVal;
+    // Texture cache by generator id (tint-independent gray maps, tinted via material color).
+    hide List[Integer] texKey;
+    hide List[Gfx.Pixels] texVal;
+    hide List[Gfx.Pixels] nrmVal;
+    hide G3D.CubeMap3D envMap;
+    hide Boolean hasEnv;
+    // Terrain splat layers (colored; terrain material is white so they read true).
+    hide List[Integer] terrKey;
+    hide List[Gfx.Pixels] terrVal;
+    hide G3D.Material3D terrMat;
+    hide Boolean hasTerrMat;
+    hide Float accR; hide Float accG; hide Float accB;
+
+    expose func init() {
+        size = 256;
+        ready = false;
+        matKey = []; matVal = [];
+        texKey = []; texVal = []; nrmVal = [];
+        terrKey = []; terrVal = [];
+        hasEnv = false;
+        hasTerrMat = false;
+        hasWaterTex = false;
+        accR = 1.0; accG = 0.7; accB = 0.3;
+    }
+
+    expose func setup(headless: Boolean) {
+        if headless { size = 32; }
+        noise = PerlinNoise.New(1337);
+        ready = true;
+    }
+
+    // Level context: accent hue + env map; clears the material cache (new hue).
+    expose func setLevelContext(aR: Float, aG: Float, aB: Float, env: G3D.CubeMap3D) {
+        accR = aR; accG = aG; accB = aB;
+        envMap = env;
+        hasEnv = true;
+        matKey = []; matVal = [];
+    }
+
+    // --- Material factory ------------------------------------------------------
+    // Get (cached) the material for a surface class tinted toward (r,g,b).
+    expose func mat(surf: Integer, r: Float, g: Float, b: Float) -> G3D.Material3D {
+        var key = surf * 1024 + M.clampi(M.roundi(r * 9.0), 0, 9) * 100 +
+                  M.clampi(M.roundi(g * 9.0), 0, 9) * 10 + M.clampi(M.roundi(b * 9.0), 0, 9);
+        var i = 0;
+        while i < matKey.Count {
+            if matKey[i] == key { return matVal[i]; }
+            i = i + 1;
+        }
+        var m = buildMat(surf, r, g, b);
+        matKey.Add(key);
+        matVal.Add(m);
+        return m;
+    }
+
+    hide func buildMat(surf: Integer, r: Float, g: Float, b: Float) -> G3D.Material3D {
+        var m = G3D.Material3D.PBR(r, g, b);
+        // Class parameters.
+        var rough = 0.85;
+        var metal = 0.05;
+        if surf == SURF_METAL { rough = 0.55; metal = 0.55; }
+        else if surf == SURF_HULL { rough = 0.6; metal = 0.5; }
+        else if surf == SURF_ROCK { rough = 0.95; metal = 0.0; }
+        else if surf == SURF_CONCRETE { rough = 0.9; metal = 0.0; }
+        else if surf == SURF_GRATE { rough = 0.5; metal = 0.6; }
+        else if surf == SURF_HAZARD { rough = 0.7; metal = 0.2; }
+        else if surf == SURF_MOSS { rough = 0.9; metal = 0.0; }
+        m.Roughness = rough;
+        m.Metallic = metal;
+        // Albedo + normal maps (skip for pure accent/screen which are emissive-led).
+        if surf != SURF_ACCENT {
+            var t = albedoFor(surf);
+            if t != null { G3D.Material3D.SetAlbedoMap(m, t); }
+            var n = normalFor(surf);
+            if n != null { G3D.Material3D.SetNormalMap(m, n); }
+        }
+        // Env reflections on metallic classes. SSR is an opt-in material flag;
+        // it remains inert without the capability-gated Cinematic pass and uses
+        // this cubemap as the miss/fallback term when that pass is active.
+        if metal >= 0.4 {
+            if hasEnv { G3D.Material3D.SetEnvMap(m, envMap); }
+            m.SsrEnabled = true;
+        }
+        // Emissive: accent strips + screens glow in the level hue; solids get the
+        // anti-crush floor.
+        if surf == SURF_ACCENT {
+            G3D.Material3D.SetEmissiveColor(m, accR, accG, accB);
+            m.EmissiveIntensity = 2.2;
+        } else if surf == SURF_SCREEN {
+            var t2 = albedoFor(surf);
+            if t2 != null { G3D.Material3D.SetEmissiveMap(m, t2); }
+            G3D.Material3D.SetEmissiveColor(m, accR, accG, accB);
+            m.EmissiveIntensity = 1.6;
+        } else if surf == SURF_MOSS {
+            G3D.Material3D.SetEmissiveColor(m, accR * 0.5, accG * 0.5, accB * 0.5);
+            m.EmissiveIntensity = 0.8;
+        } else {
+            G3D.Material3D.SetEmissiveColor(m, 0.02, 0.024, 0.026);
+            m.EmissiveIntensity = 1.0;
+        }
+        return m;
+    }
+
+    // Raw albedo Pixels for a surface class (water/terrain/decal reuse).
+    expose func rawAlbedo(surf: Integer) -> Gfx.Pixels { return cachedTex(surf, 0); }
+    expose func rawNormal(surf: Integer) -> Gfx.Pixels { return cachedTex(surf, 1); }
+
+    // Still-water surface texture: deep teal with faint caustic bands.
+    hide Gfx.Pixels waterTex;
+    hide Boolean hasWaterTex;
+    expose func waterTexture() -> Gfx.Pixels {
+        if hasWaterTex { return waterTex; }
+        waterTex = Gfx.Pixels.New(size, size);
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var n = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.06, (y + 0.0) * 0.06, 3, 0.5) + 1.0) * 0.5;
+                var band = Sin((x + y * 0.6) * 0.2 + n * 6.0) * 0.04;
+                Gfx.Pixels.Set(waterTex, x, y,
+                    packRGB(0.05 + n * 0.05, 0.22 + n * 0.14 + band, 0.20 + n * 0.12 + band));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        hasWaterTex = true;
+        return waterTex;
+    }
+
+    // --- Terrain surface (splat layers + white base material) -------------------
+    // The renderer multiplies material color by the splat-blended texture, so the
+    // terrain material stays white and the layers carry the color.
+    expose func terrainMat() -> G3D.Material3D {
+        if hasTerrMat { return terrMat; }
+        terrMat = G3D.Material3D.PBR(1.0, 1.0, 1.0);
+        terrMat.Roughness = 0.95;
+        terrMat.Metallic = 0.0;
+        terrMat.EmissiveIntensity = 1.0;
+        G3D.Material3D.SetEmissiveColor(terrMat, 0.015, 0.016, 0.018);
+        hasTerrMat = true;
+        return terrMat;
+    }
+
+    // Colored splat layer: 0=rock brown, 1=ash sand, 2=dark rock, 3=snow/ice.
+    expose func terrainLayer(which: Integer) -> Gfx.Pixels {
+        var i = 0;
+        while i < terrKey.Count {
+            if terrKey[i] == which { return terrVal[i]; }
+            i = i + 1;
+        }
+        var px2 = Gfx.Pixels.New(size, size);
+        genTerrainLayer(which, px2);
+        terrKey.Add(which);
+        terrVal.Add(px2);
+        return px2;
+    }
+
+    hide func genTerrainLayer(which: Integer, dst: Gfx.Pixels) {
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var n = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.05 + which * 17.0,
+                                              (y + 0.0) * 0.05, 3, 0.55) + 1.0) * 0.5;
+                var f = (PerlinNoise.Noise2D(noise, (x + 0.0) * 0.22, (y + 0.0) * 0.22 + which * 9.0) + 1.0) * 0.5;
+                if which == 0 {
+                    // Rock brown: strata + grain.
+                    var v = 0.34 + n * 0.22 + f * 0.06;
+                    Gfx.Pixels.Set(dst, x, y, packRGB(v * 1.12, v * 0.96, v * 0.82));
+                } else if which == 1 {
+                    // Ash sand: fine pale noise with faint ripple bands.
+                    var v2 = 0.30 + n * 0.10 + f * 0.05;
+                    var rip = Sin((y + 0.0) * 0.35 + n * 5.0) * 0.02;
+                    Gfx.Pixels.Set(dst, x, y, packRGB(v2 + rip, v2 + rip * 0.6, v2 + rip * 0.8));
+                } else if which == 2 {
+                    // Dark rock: crushed shadow tone.
+                    var v3 = 0.16 + n * 0.14;
+                    Gfx.Pixels.Set(dst, x, y, packRGB(v3, v3 * 0.98, v3 * 1.02));
+                } else {
+                    // Snow/ice: bright with sparkle flecks.
+                    var v4 = 0.72 + n * 0.16;
+                    if f > 0.93 { v4 = v4 + 0.1; }
+                    Gfx.Pixels.Set(dst, x, y, packRGB(v4 * 0.96, v4, v4 * 1.06));
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // --- Texture generators (cached, grayscale-ish detail; tint via material) --
+    hide func albedoFor(surf: Integer) -> Gfx.Pixels {
+        return cachedTex(surf, 0);
+    }
+    hide func normalFor(surf: Integer) -> Gfx.Pixels {
+        return cachedTex(surf, 1);
+    }
+
+    hide func cachedTex(surf: Integer, kind: Integer) -> Gfx.Pixels {
+        if ready == false { return null; }
+        var i = 0;
+        while i < texKey.Count {
+            if texKey[i] == surf {
+                if kind == 0 { return texVal[i]; }
+                return nrmVal[i];
+            }
+            i = i + 1;
+        }
+        // Build the height field + albedo together, derive the normal map.
+        var alb = Gfx.Pixels.New(size, size);
+        var hgt = buildSurface(surf, alb);      // returns height Pixels (grayscale)
+        var nrm = sobelNormal(hgt, 2.0);
+        texKey.Add(surf);
+        texVal.Add(alb);
+        nrmVal.Add(nrm);
+        if kind == 0 { return alb; }
+        return nrm;
+    }
+
+    // Fill `alb` and return a grayscale height map for normal derivation.
+    hide func buildSurface(surf: Integer, alb: Gfx.Pixels) -> Gfx.Pixels {
+        var hgt = Gfx.Pixels.New(size, size);
+        if surf == SURF_METAL { genMetalPanels(alb, hgt); }
+        else if surf == SURF_HULL { genHullPlating(alb, hgt); }
+        else if surf == SURF_ROCK { genRock(alb, hgt); }
+        else if surf == SURF_CONCRETE { genConcrete(alb, hgt); }
+        else if surf == SURF_GRATE { genGrate(alb, hgt); }
+        else if surf == SURF_HAZARD { genHazard(alb, hgt); }
+        else if surf == SURF_SCREEN { genScreen(alb, hgt); }
+        else if surf == SURF_MOSS { genMoss(alb, hgt); }
+        else { genDefault(alb, hgt); }
+        return hgt;
+    }
+
+    hide func px(v: Float) -> Integer {
+        return M.clampi(M.roundi(v * 255.0), 0, 255);
+    }
+    hide func packGray(v: Float) -> Integer {
+        var g = px(v);
+        return (((g * 256) + g) * 256 + g) * 256 + 255;
+    }
+    hide func packRGB(r: Float, g: Float, b: Float) -> Integer {
+        return (((px(r) * 256) + px(g)) * 256 + px(b)) * 256 + 255;
+    }
+
+    // Panel grid + wear noise + rivets.
+    hide func genMetalPanels(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var panel = size / 4;
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var wear = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.05, (y + 0.0) * 0.05, 3, 0.5) + 1.0) * 0.5;
+                var v = 0.62 + wear * 0.18;
+                var h = 0.5 + wear * 0.1;
+                // Panel seams: dark grooves every `panel` px.
+                var sx = x % panel;
+                var sy = y % panel;
+                if sx < 2 || sy < 2 { v = v * 0.55; h = 0.2; }
+                // Rivets near seam corners.
+                if sx >= 4 && sx <= 6 && sy >= 4 && sy <= 6 { v = v * 0.8; h = 0.85; }
+                Gfx.Pixels.Set(alb, x, y, packGray(v));
+                Gfx.Pixels.Set(hgt, x, y, packGray(h));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // Large horizontal bands + scorch streaks.
+    hide func genHullPlating(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var band = size / 3;
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var n = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.02, (y + 0.0) * 0.08, 3, 0.55) + 1.0) * 0.5;
+                var v = 0.55 + n * 0.2;
+                var h = 0.5;
+                if y % band < 3 { v = v * 0.5; h = 0.15; }
+                // Scorch streak along x driven by low-frequency noise.
+                var scorch = (PerlinNoise.Noise2D(noise, (y + 0.0) * 0.015, 7.7) + 1.0) * 0.5;
+                if scorch > 0.62 { v = v * (1.0 - (scorch - 0.62) * 1.4); }
+                Gfx.Pixels.Set(alb, x, y, packGray(v));
+                Gfx.Pixels.Set(hgt, x, y, packGray(h + n * 0.2));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // Strata bands + cracks.
+    hide func genRock(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var n = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.04, (y + 0.0) * 0.04, 4, 0.55) + 1.0) * 0.5;
+                var strata = Sin((y + 0.0) * 0.18 + n * 4.0) * 0.08;
+                var v = 0.42 + n * 0.3 + strata;
+                var h = n;
+                // Cracks: thin dark walks where a second noise crosses zero.
+                var c = PerlinNoise.Noise2D(noise, (x + 0.0) * 0.09 + 31.0, (y + 0.0) * 0.09);
+                if M.absf(c) < 0.02 { v = v * 0.45; h = h * 0.3; }
+                Gfx.Pixels.Set(alb, x, y, packGray(v));
+                Gfx.Pixels.Set(hgt, x, y, packGray(h));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    hide func genConcrete(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var pour = size / 2;
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var n = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.08, (y + 0.0) * 0.08, 3, 0.45) + 1.0) * 0.5;
+                var v = 0.6 + n * 0.12;
+                var h = 0.5 + n * 0.08;
+                if y % pour < 2 { v = v * 0.72; h = 0.3; }
+                Gfx.Pixels.Set(alb, x, y, packGray(v));
+                Gfx.Pixels.Set(hgt, x, y, packGray(h));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // Diagonal bar lattice.
+    hide func genGrate(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var period = size / 8;
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var d = (x + y) % period;
+                var bar = d < period / 2;
+                var v = 0.28;
+                var h = 0.2;
+                if bar { v = 0.6; h = 0.8; }
+                Gfx.Pixels.Set(alb, x, y, packGray(v));
+                Gfx.Pixels.Set(hgt, x, y, packGray(h));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // 45-degree yellow/black bands + wear (colored albedo).
+    hide func genHazard(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var period = size / 4;
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var d = (x + y) % period;
+                var wear = (PerlinNoise.Noise2D(noise, (x + 0.0) * 0.1, (y + 0.0) * 0.1) + 1.0) * 0.5;
+                var h = 0.5 + wear * 0.05;
+                if d < period / 2 {
+                    Gfx.Pixels.Set(alb, x, y, packRGB(0.85 - wear * 0.2, 0.7 - wear * 0.2, 0.1));
+                } else {
+                    Gfx.Pixels.Set(alb, x, y, packRGB(0.12, 0.12, 0.13));
+                }
+                Gfx.Pixels.Set(hgt, x, y, packGray(h));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // Console screen: dark panel + glyph rows + scanline (used as emissive map too).
+    hide func genScreen(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var rowH = size / 12;
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var v = 0.05;
+                var row = y / rowH;
+                var inRow = y % rowH;
+                if inRow > 2 && inRow < rowH - 3 && row > 0 && row < 11 {
+                    // Glyph blocks: hashed on/off cells along x.
+                    var cell = x / 6;
+                    var hsh = (cell * 73 + row * 137) % 10;
+                    if hsh > 3 && x % 6 < 4 { v = 0.55 + ((hsh + 0.0) / 10.0) * 0.4; }
+                }
+                if y % 3 == 0 { v = v * 0.8; }     // scanlines
+                Gfx.Pixels.Set(alb, x, y, packGray(v));
+                Gfx.Pixels.Set(hgt, x, y, packGray(0.5));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // Rock + thresholded biolume clumps (colored albedo).
+    hide func genMoss(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var n = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.04, (y + 0.0) * 0.04, 4, 0.55) + 1.0) * 0.5;
+                var clump = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.07 + 53.0, (y + 0.0) * 0.07, 3, 0.5) + 1.0) * 0.5;
+                var base = 0.22 + n * 0.18;
+                if clump > 0.62 {
+                    var glow = M.clampf((clump - 0.62) * 2.6, 0.0, 1.0);
+                    Gfx.Pixels.Set(alb, x, y, packRGB(base * 0.5 + 0.05, base + glow * 0.5, base + glow * 0.4));
+                } else {
+                    Gfx.Pixels.Set(alb, x, y, packGray(base));
+                }
+                Gfx.Pixels.Set(hgt, x, y, packGray(n));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    hide func genDefault(alb: Gfx.Pixels, hgt: Gfx.Pixels) {
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var n = (PerlinNoise.Octave2D(noise, (x + 0.0) * 0.06, (y + 0.0) * 0.06, 2, 0.5) + 1.0) * 0.5;
+                Gfx.Pixels.Set(alb, x, y, packGray(0.62 + n * 0.1));
+                Gfx.Pixels.Set(hgt, x, y, packGray(0.5 + n * 0.06));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    // Sobel height→normal (tangent-space, +Z out; ridgebound recipe).
+    hide func sobelNormal(hgt: Gfx.Pixels, strength: Float) -> Gfx.Pixels {
+        var nrm = Gfx.Pixels.New(size, size);
+        var y = 0;
+        while y < size {
+            var x = 0;
+            while x < size {
+                var xl = hAt(hgt, x - 1, y);
+                var xr = hAt(hgt, x + 1, y);
+                var yu = hAt(hgt, x, y - 1);
+                var yd = hAt(hgt, x, y + 1);
+                var dx = (xl - xr) * strength;
+                var dy = (yu - yd) * strength;
+                var len = Sqrt(dx * dx + dy * dy + 1.0);
+                var nx = dx / len * 0.5 + 0.5;
+                var ny = dy / len * 0.5 + 0.5;
+                var nz = 1.0 / len * 0.5 + 0.5;
+                Gfx.Pixels.Set(nrm, x, y, packRGB(nx, ny, nz));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        return nrm;
+    }
+
+    hide func hAt(hgt: Gfx.Pixels, x: Integer, y: Integer) -> Float {
+        var xi = (x + size) % size;
+        var yi = (y + size) % size;
+        var v = Gfx.Pixels.Get(hgt, xi, yi);
+        // Packed 0xRRGGBBAA; red channel as height.
+        var r = (v / 16777216) % 256;
+        return (r + 0.0) / 255.0;
+    }
+}

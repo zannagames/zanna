@@ -8,6 +8,13 @@
 /// @file Lowerer_Expr_Match.cpp
 /// @brief Pattern matching expression lowering for the Zia IL lowerer.
 ///
+/// @details Pattern tests and bindings recursively cover literals, ranges,
+///          tuples, constructors, alternatives, optionals, Results, structs,
+///          and classes. Match expressions evaluate the scrutinee once,
+///          isolate arm-local bindings, merge coerced results through shared
+///          storage, and select an integer switch fast path when every tested
+///          arm is compatible with direct dispatch.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"

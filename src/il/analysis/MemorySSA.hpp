@@ -80,15 +80,26 @@ struct MemoryAccess {
 ///
 /// Usage:
 /// @code
-///   MemorySSA mssa = computeMemorySSA(module, fn, aa);
+///   MemorySSA mssa = computeMemorySSA(fn, aa);
 ///   if (mssa.isDeadStore(&block, instrIdx)) { /* eliminate store */ }
 /// @endcode
 class MemorySSA {
   public:
+    /// @brief Construct an empty analysis result.
     MemorySSA() = default;
+
+    /// @brief Copy MemorySSA nodes, instruction mappings, and dead-store facts.
     MemorySSA(const MemorySSA &) = default;
+
+    /// @brief Replace this result with a copy of another result.
+    /// @return This object.
     MemorySSA &operator=(const MemorySSA &) = default;
+
+    /// @brief Transfer MemorySSA-owned containers from another result.
     MemorySSA(MemorySSA &&) = default;
+
+    /// @brief Replace this result by moving another result.
+    /// @return This object.
     MemorySSA &operator=(MemorySSA &&) = default;
 
     /// @brief Return true if the store at @p block[instrIdx] is provably dead.
@@ -97,13 +108,20 @@ class MemorySSA {
     /// a function exit reads from the stored address before another store
     /// overwrites it.  Calls to external functions do not count as reads for
     /// non-escaping allocas.
+    /// @param block Block containing the candidate store.
+    /// @param instrIdx Zero-based instruction index within @p block.
+    /// @return True only when the indexed instruction's access was marked dead.
     [[nodiscard]] bool isDeadStore(const il::core::Block *block, size_t instrIdx) const;
 
     /// @brief Return the MemoryAccess assigned to a given instruction, if any.
+    /// @param block Block containing the instruction or synthetic phi.
+    /// @param instrIdx Zero-based instruction index; `size_t(-1)` addresses a phi.
+    /// @return Borrowed access node, or nullptr when no valid mapping exists.
     [[nodiscard]] const MemoryAccess *accessFor(const il::core::Block *block,
                                                 size_t instrIdx) const;
 
     /// @brief Access the full node table (for diagnostics/testing).
+    /// @return Borrowed dense node vector whose index equals each node's ID.
     [[nodiscard]] const std::vector<MemoryAccess> &accesses() const {
         return accesses_;
     }

@@ -108,16 +108,28 @@ namespace il::frontends::zia {
 // Symbol, ScopedSymbol, and Scope types are defined in
 // frontends/zia/sema/SemaTypes.hpp, included above.
 
+/// @brief Owner-qualified identity for cached method-instantiation metadata.
+/// @details A generic method declaration may be resolved differently for each instantiated
+///          owner, so declaration pointer identity alone is insufficient for cache keys.
 struct MethodInstanceKey {
+    /// Concrete semantic owner type.
     std::string ownerType;
+    /// Shared source method declaration.
     const MethodDecl *decl = nullptr;
 
+    /// @brief Compare both the concrete owner and declaration identity.
+    /// @param other Key to compare.
+    /// @return True when both fields identify the same method instance.
     bool operator==(const MethodInstanceKey &other) const {
         return ownerType == other.ownerType && decl == other.decl;
     }
 };
 
+/// @brief Hash combiner for @ref MethodInstanceKey.
 struct MethodInstanceKeyHash {
+    /// @brief Hash an owner-qualified method identity.
+    /// @param key Method-instance key to hash.
+    /// @return Combined hash of the owner spelling and declaration pointer.
     size_t operator()(const MethodInstanceKey &key) const {
         size_t h1 = std::hash<std::string>{}(key.ownerType);
         size_t h2 = std::hash<const MethodDecl *>{}(key.decl);
@@ -141,7 +153,7 @@ struct MethodInstanceKeyHash {
 ///
 /// The analyze() method performs multi-pass analysis:
 /// 1. Register built-in types and functions
-/// 2. Process imports (bring runtime functions into scope)
+/// 2. Process binds (bring runtime functions or file-module exports into scope)
 /// 3. Register all type declarations
 /// 4. Analyze global variables
 /// 5. Analyze type members (fields, methods)
@@ -172,7 +184,9 @@ class Sema {
     /// parameter `i`, or -1 when the parameter is satisfied by a default.
     /// Variadic source arguments remain in source order.
     struct CallArgBinding {
+        /// Source index per fixed parameter, or -1 when the default is used.
         std::vector<int> fixedParamSources;
+        /// Source indexes packed into the variadic tail.
         std::vector<int> variadicSources;
     };
 
@@ -181,11 +195,17 @@ class Sema {
     ///          to IL pointers. This metadata preserves which parameters came
     ///          from explicit runtime `ptr` tokens so safe Zia can reject raw
     ///          pointer APIs while still allowing typed runtime objects.
+    /// `None` denotes an ordinary pointer parameter, `Callback` opens a function-reference
+    /// bridge, and `Payload` identifies data paired with a preceding validated callback.
     enum class RuntimePointerBridgeRole { None, Callback, Payload };
 
+    /// @brief Raw-pointer safety metadata retained from a runtime signature.
     struct RuntimePointerSafety {
+        /// Whether the result exposes a raw runtime handle.
         bool rawPointerReturn{false};
+        /// Raw-pointer flag for every runtime parameter.
         std::vector<bool> rawPointerParams;
+        /// Safe callback/payload role for every runtime parameter.
         std::vector<RuntimePointerBridgeRole> bridgeRoles;
     };
 
@@ -204,6 +224,7 @@ class Sema {
     void initWarnings(const WarningPolicy &policy);
 
     /// @brief Configure whether explicit unsafe pointer usage is allowed.
+    /// @param allow True to permit unsafe pointer syntax and raw runtime APIs.
     void setAllowUnsafePointers(bool allow) {
         allowUnsafePointers_ = allow;
     }
@@ -224,7 +245,7 @@ class Sema {
     ///
     /// @details Performs complete semantic analysis on the module:
     /// 1. Registers built-in symbols
-    /// 2. Processes imports
+    /// 2. Processes binds
     /// 3. Analyzes all declarations
     /// 4. Type-checks all bodies
     ///
@@ -272,12 +293,16 @@ class Sema {
     }
 
     /// @brief Get the auto-eval getter name for an identifier expression.
+    /// @param expr Identifier-like expression recorded during analysis.
+    /// @return Lowered getter symbol, or an empty string when auto-evaluation is not required.
     std::string autoEvalGetter(const Expr *expr) const {
         auto it = autoEvalGetters_.find(expr);
         return it != autoEvalGetters_.end() ? it->second : "";
     }
 
     /// @brief Get the semantic name resolved for an identifier expression.
+    /// @param expr Identifier expression to query.
+    /// @return Qualified semantic name, or an empty string when none was recorded.
     std::string resolvedIdentifierName(const IdentExpr *expr) const {
         auto it = resolvedIdentNames_.find(expr);
         return it != resolvedIdentNames_.end() ? it->second : "";
@@ -329,70 +354,98 @@ class Sema {
     }
 
     /// @brief Get the resolved symbol name for a module-qualified field expression.
+    /// @param expr Field expression to query.
+    /// @return Qualified semantic symbol name, or an empty string when unresolved.
     std::string resolvedFieldSymbolName(const FieldExpr *expr) const {
         auto it = resolvedFieldSymbolNames_.find(expr);
         return it != resolvedFieldSymbolNames_.end() ? it->second : "";
     }
 
     /// @brief Get the resolved setter function name for a field assignment.
+    /// @param expr Assigned field expression.
+    /// @return Lowered setter symbol, or an empty string when the field is not property-backed.
     std::string resolvedFieldSetter(const FieldExpr *expr) const {
         auto it = resolvedFieldSetters_.find(expr);
         return it != resolvedFieldSetters_.end() ? it->second : "";
     }
 
     /// @brief Look up a property declaration for lowering property-backed access.
+    /// @param ownerName Semantic receiver type where lookup begins.
+    /// @param propertyName Property identifier.
+    /// @param declaringOwner Optional destination for the type that declares the property.
+    /// @return Property declaration, or nullptr when no visible property matches.
     const PropertyDecl *propertyDeclForLowering(const std::string &ownerName,
                                                 const std::string &propertyName,
                                                 std::string *declaringOwner = nullptr) const;
 
     /// @brief Get the resolved direct-call target for a user-defined function call.
+    /// @param expr Call expression to query.
+    /// @return Lowered function symbol, or an empty string when no direct target was selected.
     std::string resolvedFunctionCallee(const CallExpr *expr) const {
         auto it = resolvedFunctionCallees_.find(expr);
         return it != resolvedFunctionCallees_.end() ? it->second : "";
     }
 
+    /// @brief Get the selected user-defined function declaration for a call.
+    /// @param expr Call expression to query.
+    /// @return Resolved declaration, or nullptr when the call is not a direct function call.
     FunctionDecl *resolvedFunctionDecl(const CallExpr *expr) const {
         auto it = resolvedFunctionDecls_.find(expr);
         return it != resolvedFunctionDecls_.end() ? it->second : nullptr;
     }
 
     /// @brief Get the resolved method declaration for a call site.
+    /// @param expr Call expression to query.
+    /// @return Selected method declaration, or nullptr when no method was resolved.
     MethodDecl *resolvedMethodDecl(const CallExpr *expr) const {
         auto it = resolvedMethodDecls_.find(expr);
         return it != resolvedMethodDecls_.end() ? it->second : nullptr;
     }
 
     /// @brief Get the concrete function type for a generic method call site.
+    /// @param expr Generic method call expression.
+    /// @return Instantiated callable type, or nullptr when the call is not generic.
     TypeRef genericMethodConcreteType(const CallExpr *expr) const {
         auto it = genericMethodConcreteTypes_.find(expr);
         return it != genericMethodConcreteTypes_.end() ? it->second : nullptr;
     }
 
     /// @brief Get the erased function type used by the lowered generic method body.
+    /// @param expr Generic method call expression.
+    /// @return Erased callable type, or nullptr when no erased body is involved.
     TypeRef genericMethodErasedType(const CallExpr *expr) const {
         auto it = genericMethodErasedTypes_.find(expr);
         return it != genericMethodErasedTypes_.end() ? it->second : nullptr;
     }
 
     /// @brief Get the owner type of a resolved method call.
+    /// @param expr Method call expression.
+    /// @return Semantic declaring-owner name, or an empty string when unresolved.
     std::string resolvedMethodOwnerType(const CallExpr *expr) const {
         auto it = resolvedMethodOwnerTypes_.find(expr);
         return it != resolvedMethodOwnerTypes_.end() ? it->second : "";
     }
 
     /// @brief Get the dispatch slot key of a resolved method call.
+    /// @param expr Method call expression.
+    /// @return Dispatch key, or an empty string for non-dispatched calls.
     std::string resolvedMethodSlotKey(const CallExpr *expr) const {
         auto it = resolvedMethodSlotKeys_.find(expr);
         return it != resolvedMethodSlotKeys_.end() ? it->second : "";
     }
 
     /// @brief Get the lowered symbol name for a method declaration.
+    /// @param decl Method declaration to query.
+    /// @return Lowered symbol, or an empty string before registration.
     std::string loweredMethodName(const MethodDecl *decl) const {
         auto it = loweredMethodNames_.find(decl);
         return it != loweredMethodNames_.end() ? it->second : "";
     }
 
     /// @brief Get the lowered symbol name for a method declaration in a specific owner type.
+    /// @param ownerType Concrete semantic owner.
+    /// @param decl Method declaration to query.
+    /// @return Owner-specific lowered symbol, falling back to declaration-only metadata.
     std::string loweredMethodName(const std::string &ownerType, const MethodDecl *decl) const {
         auto it = ownerLoweredMethodNames_.find(MethodInstanceKey{ownerType, decl});
         if (it != ownerLoweredMethodNames_.end())
@@ -401,12 +454,17 @@ class Sema {
     }
 
     /// @brief Get the dispatch slot key for a method declaration.
+    /// @param decl Method declaration to query.
+    /// @return Dispatch key, or an empty string before signature registration.
     std::string methodSlotKey(const MethodDecl *decl) const {
         auto it = methodDispatchKeys_.find(decl);
         return it != methodDispatchKeys_.end() ? it->second : "";
     }
 
     /// @brief Get the dispatch slot key for a method declaration in a specific owner type.
+    /// @param ownerType Concrete semantic owner.
+    /// @param decl Method declaration to query.
+    /// @return Owner-specific dispatch key, falling back to declaration-only metadata.
     std::string methodSlotKey(const std::string &ownerType, const MethodDecl *decl) const {
         auto it = ownerMethodDispatchKeys_.find(MethodInstanceKey{ownerType, decl});
         if (it != ownerMethodDispatchKeys_.end())
@@ -419,6 +477,9 @@ class Sema {
     ///          need a guaranteed key should fall back to the computing overload
     ///          @ref methodSignatureKey(const MethodDecl&). Named distinctly from
     ///          the computing overloads so the lookup-vs-compute intent is clear.
+    /// @param ownerType Concrete semantic owner.
+    /// @param decl Method declaration to query.
+    /// @return Cached semantic signature key, or an empty string on a cache miss.
     std::string cachedMethodSignatureKey(const std::string &ownerType, const MethodDecl *decl) const {
         auto it = ownerMethodSignatureKeys_.find(MethodInstanceKey{ownerType, decl});
         if (it != ownerMethodSignatureKeys_.end())
@@ -428,52 +489,64 @@ class Sema {
     }
 
     /// @brief Get the lowered symbol name for a function declaration.
+    /// @param decl Function declaration to query.
+    /// @return Lowered symbol, or an empty string before registration.
     std::string loweredFunctionName(const FunctionDecl *decl) const {
         auto it = loweredFunctionNames_.find(decl);
         return it != loweredFunctionNames_.end() ? it->second : "";
     }
 
     /// @brief Get the resolved init overload for a new-expression.
+    /// @param expr Allocation expression to query.
+    /// @return Selected initializer declaration, or nullptr when field initialization is used.
     MethodDecl *resolvedInitDecl(const NewExpr *expr) const {
         auto it = resolvedInitDecls_.find(expr);
         return it != resolvedInitDecls_.end() ? it->second : nullptr;
     }
 
     /// @brief Get the owner type of a resolved init overload for a new-expression.
+    /// @param expr Allocation expression to query.
+    /// @return Semantic initializer owner, or an empty string when no overload was selected.
     std::string resolvedInitOwnerType(const NewExpr *expr) const {
         auto it = resolvedInitOwnerTypes_.find(expr);
         return it != resolvedInitOwnerTypes_.end() ? it->second : "";
     }
 
     /// @brief Get the resolved init overload for a constructor-style type call.
+    /// @param expr Type call expression to query.
+    /// @return Selected initializer declaration, or nullptr when unresolved.
     MethodDecl *resolvedTypeCallInitDecl(const CallExpr *expr) const {
         auto it = resolvedTypeCallInitDecls_.find(expr);
         return it != resolvedTypeCallInitDecls_.end() ? it->second : nullptr;
     }
 
     /// @brief Get the owner type of a resolved constructor-style init overload.
+    /// @param expr Type call expression to query.
+    /// @return Semantic initializer owner, or an empty string when unresolved.
     std::string resolvedTypeCallInitOwnerType(const CallExpr *expr) const {
         auto it = resolvedTypeCallInitOwnerTypes_.find(expr);
         return it != resolvedTypeCallInitOwnerTypes_.end() ? it->second : "";
     }
 
     /// @brief Get the bound argument layout for a resolved call expression.
+    /// @param expr Call expression to query.
+    /// @return Stable pointer to the stored binding, or nullptr when no binding was recorded.
     const CallArgBinding *callArgBinding(const CallExpr *expr) const {
         auto it = callArgBindings_.find(expr);
         return it != callArgBindings_.end() ? &it->second : nullptr;
     }
 
     /// @brief Get the bound argument layout for a resolved new-expression.
+    /// @param expr Allocation expression to query.
+    /// @return Stable pointer to the stored binding, or nullptr when no binding was recorded.
     const CallArgBinding *newArgBinding(const NewExpr *expr) const {
         auto it = newArgBindings_.find(expr);
         return it != newArgBindings_.end() ? &it->second : nullptr;
     }
 
-    /// @brief Look up the return type of a function by name.
-    /// @param name The function name (e.g., "Zanna.Random.NextInt" or "MyLib.helper").
-    /// @return The return type, or nullptr if not found.
-    ///
-    /// @details Works for both runtime (extern) functions and user-defined functions.
+    /// @brief Normalize runtime container handles to their source-language surface types.
+    /// @param type Runtime-derived semantic type, possibly optional.
+    /// @return Normalized list, map, or set surface type; the original type otherwise.
     TypeRef normalizeRuntimeSurfaceType(TypeRef type) const {
         if (!type)
             return nullptr;
@@ -492,6 +565,11 @@ class Sema {
         return type;
     }
 
+    /// @brief Look up and normalize the return type of a function by name.
+    /// @param name Function name such as `Zanna.Random.NextInt` or `MyLib.helper`.
+    /// @return Normalized return type, or nullptr when no function symbol exists.
+    /// @details Works for runtime externs and user-defined functions; non-function legacy
+    ///          symbols are normalized directly.
     TypeRef functionReturnType(const std::string &name) {
         Symbol *sym = lookupSymbol(name);
         if (!sym || sym->kind != Symbol::Kind::Function)
@@ -567,12 +645,17 @@ class Sema {
     }
 
     /// @brief Look up a method type by declaration.
+    /// @param decl Method declaration to query.
+    /// @return Cached function type, or nullptr when unregistered.
     TypeRef getMethodType(const MethodDecl *decl) const {
         auto it = methodDeclTypes_.find(decl);
         return it != methodDeclTypes_.end() ? it->second : nullptr;
     }
 
     /// @brief Look up a method type for a specific owner type and declaration.
+    /// @param ownerType Concrete semantic owner.
+    /// @param decl Method declaration to query.
+    /// @return Owner-specific callable type, falling back to declaration-only metadata.
     TypeRef getMethodType(const std::string &ownerType, const MethodDecl *decl) const {
         auto it = ownerMethodTypes_.find(MethodInstanceKey{ownerType, decl});
         if (it != ownerMethodTypes_.end())
@@ -581,17 +664,23 @@ class Sema {
     }
 
     /// @brief Look up a function type by declaration.
+    /// @param decl Function declaration to query.
+    /// @return Cached callable type, or nullptr when unregistered.
     TypeRef getFunctionType(const FunctionDecl *decl) const {
         auto it = functionDeclTypes_.find(decl);
         return it != functionDeclTypes_.end() ? it->second : nullptr;
     }
 
     /// @brief Look up a registered class declaration by semantic type name.
+    /// @param typeName Concrete or instantiated semantic class name.
+    /// @return Registered class declaration or generic origin, or nullptr.
     ClassDecl *findClassDecl(const std::string &typeName) const {
         return lookupClassDeclForType(typeName);
     }
 
     /// @brief Look up a registered struct declaration by semantic type name.
+    /// @param typeName Concrete or instantiated semantic struct name.
+    /// @return Registered struct declaration or generic origin, or nullptr.
     StructDecl *findStructDecl(const std::string &typeName) const {
         return lookupStructDeclForType(typeName);
     }
@@ -655,9 +744,9 @@ class Sema {
     /// @param decl The bind declaration (must have isNamespaceBind=true).
     ///
     /// @details Processes namespace binds like `bind Zanna.Terminal;`:
-    /// - Full import: imports all symbols from the namespace
-    /// - Alias import: creates module symbol for qualified access
-    /// - Selective import: imports only specified symbols
+    /// - Full bind: exposes all symbols from the namespace
+    /// - Alias bind: creates a module symbol for qualified access
+    /// - Selective bind: exposes only the selected symbols
     void analyzeNamespaceBind(BindDecl &decl);
 
     /// @brief Rebuild exported symbol maps for all bound file modules.

@@ -55,6 +55,10 @@ std::vector<std::string> paramNamesFor(const std::vector<Param> &params) {
     return names;
 }
 
+/// @brief Convert a semantic type spelling into a stable symbol-name fragment.
+/// @param input Human-readable type or signature text.
+/// @return A copy in which characters other than letters, digits, underscores, and periods
+///         are replaced with underscores.
 std::string sanitizeForSymbol(std::string_view input) {
     std::string out;
     out.reserve(input.size());
@@ -68,6 +72,9 @@ std::string sanitizeForSymbol(std::string_view input) {
     return out;
 }
 
+/// @brief Join semantic type spellings into an overload-mangling suffix.
+/// @param types Parameter types in declaration order; null entries are represented by `?`.
+/// @return Sanitized type keys separated by `__`, or `void` for an empty list.
 std::string joinTypeKeys(const std::vector<TypeRef> &types) {
     std::string result;
     bool first = true;
@@ -84,6 +91,8 @@ std::string joinTypeKeys(const std::vector<TypeRef> &types) {
 
 /// @brief Count the parameters that must be supplied at a call site
 ///        (excludes those with a default value or the variadic param).
+/// @param params Source declaration parameters.
+/// @return Number of fixed parameters without default values.
 size_t requiredParamCount(const std::vector<Param> &params) {
     size_t required = 0;
     for (const auto &param : params) {
@@ -96,6 +105,9 @@ size_t requiredParamCount(const std::vector<Param> &params) {
 /// @brief Return true when @p argCount can satisfy @p params by arity alone.
 /// @details Defaulted fixed parameters can be omitted, and a final variadic parameter
 ///          accepts any number of additional source arguments.
+/// @param params Source declaration parameters.
+/// @param argCount Number of supplied source arguments.
+/// @return True when the argument count is within the callable's permitted arity.
 bool callArityMatches(const std::vector<Param> &params, size_t argCount) {
     const size_t required = requiredParamCount(params);
     const bool hasVariadic = !params.empty() && params.back().isVariadic;
@@ -148,6 +160,9 @@ TypeRef contextualizeEmptyCollectionArg(const Expr *arg, TypeRef argType, TypeRe
 /// @brief True if @p argType may be implicitly coerced to a runtime object
 ///        pointer at a call boundary (excludes void/optional/function/tuple/
 ///        fixed-array/unknown/never/type-param/module, which never coerce).
+/// @param argType Candidate semantic argument type.
+/// @return True when the value has a runtime representation that may cross an opaque object
+///         pointer boundary.
 bool canRuntimeObjectCoerce(TypeRef argType) {
     if (!argType)
         return false;
@@ -171,6 +186,8 @@ bool canRuntimeObjectCoerce(TypeRef argType) {
 /// @brief Heuristic: does parameter @p name look like a callback slot
 ///        (fn/func/handler/callback/predicate/comparator/…)? Used to permit
 ///        a function-pointer argument where the signature is otherwise opaque.
+/// @param name Runtime parameter name to classify case-insensitively.
+/// @return True when the name denotes a recognized callback role.
 bool allowsFunctionPointerParam(std::string_view name) {
     std::string lower;
     lower.reserve(name.size());
@@ -192,6 +209,8 @@ bool allowsFunctionPointerParam(std::string_view name) {
 /// @brief True if @p type is safe to pass across the function bridge: bare
 ///        function types are rejected, and an unnamed (opaque) pointer is
 ///        rejected; everything else is allowed.
+/// @param type Payload type to validate; a null type is treated as unconstrained.
+/// @return True when the payload does not expose an untyped pointer or nested function value.
 bool isSafeFunctionBridgePayload(TypeRef type) {
     if (!type)
         return true;
@@ -205,6 +224,9 @@ bool isSafeFunctionBridgePayload(TypeRef type) {
 /// @brief Suggest a memory-safe replacement for a runtime call that returns a
 ///        raw pointer/buffer, for use in the
 ///        diagnostic when such a call is rejected. Empty if none is known.
+/// @param calleeName Fully qualified runtime function name.
+/// @return Suggested safe API or language construct, or an empty string when no tailored
+///         alternative is registered.
 std::string saferRuntimePointerAlternative(std::string_view calleeName) {
     static const std::unordered_map<std::string_view, std::string_view> alternatives = {
         {"Zanna.Core.Parse.TryInt", "Zanna.Core.Parse.IntOr"},
@@ -236,6 +258,11 @@ std::string saferRuntimePointerAlternative(std::string_view calleeName) {
 ///        ranking: 0 = exact, small positive = an implicit conversion
 ///        (optional-wrap, runtime-object coercion, …), 1000 = incompatible.
 ///        Lower is preferred; @ref resolveFunctionOverload sums these.
+/// @param paramType Target parameter type.
+/// @param argType Source argument type.
+/// @param allowRuntimeObjectCoercion Whether opaque runtime pointer parameters may accept
+///        representable Zia values.
+/// @return Nonnegative ranking cost, with 1000 denoting an invalid conversion.
 int conversionCost(TypeRef paramType, TypeRef argType, bool allowRuntimeObjectCoercion) {
     if (!paramType || !argType)
         return 1000;
@@ -272,12 +299,6 @@ int conversionCost(TypeRef paramType, TypeRef argType, bool allowRuntimeObjectCo
 //=============================================================================
 
 /// @brief Resolve the declaring owner for a field visible from a type.
-/// @param typeName The type whose member access is being analyzed.
-/// @param fieldName The field name to find.
-/// @return The owner that declares @p fieldName, or std::nullopt when absent.
-/// @details Structs only check their own field table entry. Classes walk the base-class chain
-///          and keep inherited field metadata attached to the declaring owner instead of
-///          duplicating it under each derived type.
 std::optional<Sema::FieldResolution> Sema::resolveFieldEntry(const std::string &typeName,
                                                              const std::string &fieldName) const {
     // Fast path: a directly-declared field needs no base-class walk and no
@@ -308,6 +329,10 @@ std::optional<Sema::FieldResolution> Sema::resolveFieldEntry(const std::string &
     return std::nullopt;
 }
 
+/// @brief Find the declaring type for a visible field.
+/// @param typeName Struct or class type from which lookup begins.
+/// @param fieldName Field identifier to resolve.
+/// @return Declaring owner name, or std::nullopt when the field is not visible in the hierarchy.
 std::optional<std::string> Sema::findFieldOwner(const std::string &typeName,
                                                 const std::string &fieldName) const {
     auto resolved = resolveFieldEntry(typeName, fieldName);
@@ -327,6 +352,10 @@ TypeRef Sema::getFieldType(const std::string &typeName, const std::string &field
     return resolved ? resolved->type : nullptr;
 }
 
+/// @brief Construct a semantic analyzer with a fresh root scope and builtin type state.
+/// @param diag Diagnostic sink that receives all semantic errors and warnings.
+/// @details Clears process-wide nominal relationship registries before builtins are registered,
+///          so each analyzer starts from an isolated module-analysis state.
 Sema::Sema(il::support::DiagnosticEngine &diag) : diag_(diag) {
     scopes_.push_back(std::make_unique<Scope>(nullptr, nextScopeId_, 0));
     currentScope_ = scopes_.back().get();
@@ -338,6 +367,10 @@ Sema::Sema(il::support::DiagnosticEngine &diag) : diag_(diag) {
     registerBuiltins();
 }
 
+/// @brief Build the callable semantic type declared by a top-level function.
+/// @param decl Function declaration whose parameter and result annotations are resolved.
+/// @return Function type with a `List[T]` variadic tail and a `Future[T]` result for async
+///         declarations.
 TypeRef Sema::functionTypeForDecl(const FunctionDecl &decl) const {
     TypeRef declaredReturn =
         decl.returnType ? resolveType(decl.returnType.get()) : types::voidType();
@@ -353,6 +386,11 @@ TypeRef Sema::functionTypeForDecl(const FunctionDecl &decl) const {
     return types::function(paramTypes, returnType);
 }
 
+/// @brief Build the callable semantic type declared by a method.
+/// @param decl Method declaration to resolve.
+/// @return Function type containing the explicit method parameters and result.
+/// @details Generic method parameters are temporarily installed as semantic type parameters
+///          while annotations are resolved.
 TypeRef Sema::methodTypeForDecl(const MethodDecl &decl) const {
     bool pushedParams = false;
     if (!decl.genericParams.empty()) {
@@ -374,16 +412,26 @@ TypeRef Sema::methodTypeForDecl(const MethodDecl &decl) const {
     return types::function(paramTypes, returnType);
 }
 
+/// @brief Produce the source-signature identity for a function overload.
+/// @param decl Function declaration to identify.
+/// @return Function name followed by sanitized semantic parameter-type keys.
 std::string Sema::functionSignatureKey(const FunctionDecl &decl) const {
     TypeRef funcType = functionTypeForDecl(decl);
     return decl.name + "#" + joinTypeKeys(funcType->paramTypes());
 }
 
+/// @brief Produce the source-signature identity for a method overload.
+/// @param decl Method declaration whose type is resolved for the key.
+/// @return Method identity including static/instance status and parameter types.
 std::string Sema::methodSignatureKey(const MethodDecl &decl) const {
     TypeRef methodType = methodTypeForDecl(decl);
     return methodSignatureKey(decl, methodType);
 }
 
+/// @brief Produce a method signature key from an already resolved callable type.
+/// @param decl Method declaration supplying its name and static/instance status.
+/// @param methodType Resolved function type, or null to use an empty parameter list.
+/// @return Stable method-overload identity used by semantic registries.
 std::string Sema::methodSignatureKey(const MethodDecl &decl, TypeRef methodType) const {
     const auto paramTypes = methodType && methodType->kind == TypeKindSem::Function
                                 ? methodType->paramTypes()
@@ -391,15 +439,30 @@ std::string Sema::methodSignatureKey(const MethodDecl &decl, TypeRef methodType)
     return decl.name + "#" + (decl.isStatic ? "static#" : "inst#") + joinTypeKeys(paramTypes);
 }
 
+/// @brief Produce the dispatch identity for a method declaration.
+/// @param decl Method declaration to resolve and identify.
+/// @return Dispatch key currently equivalent to the semantic signature key.
 std::string Sema::methodDispatchKey(const MethodDecl &decl) const {
     TypeRef methodType = methodTypeForDecl(decl);
     return methodDispatchKey(decl, methodType);
 }
 
+/// @brief Produce a dispatch identity from a pre-resolved method type.
+/// @param decl Method declaration supplying source identity.
+/// @param methodType Resolved callable type.
+/// @return Dispatch key used for override and lowered-name bookkeeping.
 std::string Sema::methodDispatchKey(const MethodDecl &decl, TypeRef methodType) const {
     return methodSignatureKey(decl, methodType);
 }
 
+/// @brief Register a top-level function in its overload family and assign its lowered name.
+/// @param name Semantic function name, including module qualification when applicable.
+/// @param decl Function declaration to register.
+/// @param funcType Resolved callable type for @p decl.
+/// @param loc Location used for duplicate or invalid-entry-point diagnostics.
+/// @return True on registration; false for duplicate signatures or an overloaded `start`.
+/// @details When a family gains its second overload, the first declaration is retroactively
+///          remangled so every member has an unambiguous lowered symbol.
 bool Sema::registerFunctionOverload(const std::string &name,
                                     FunctionDecl *decl,
                                     TypeRef funcType,
@@ -461,6 +524,14 @@ bool Sema::registerFunctionOverload(const std::string &name,
     return true;
 }
 
+/// @brief Register a method overload for one concrete owner type.
+/// @param ownerType Semantic owner name.
+/// @param decl Method declaration to register.
+/// @param methodType Resolved callable type for this owner instance.
+/// @param loc Location used for duplicate-signature diagnostics.
+/// @return True when the method was registered, or false for a duplicate signature.
+/// @details Owner-qualified caches preserve distinct instantiations of the same generic method
+///          declaration and remangle the first member when a family becomes overloaded.
 bool Sema::registerMethodOverload(const std::string &ownerType,
                                   MethodDecl *decl,
                                   TypeRef methodType,
@@ -520,6 +591,11 @@ bool Sema::registerMethodOverload(const std::string &ownerType,
     return true;
 }
 
+/// @brief Collect the visible overload family for a method name.
+/// @param typeName Owner type where lookup starts.
+/// @param methodName Source method name.
+/// @param includeInherited Whether base-class families participate.
+/// @return Declarations in nearest-owner-first order, deduplicated by semantic signature.
 std::vector<MethodDecl *> Sema::collectMethodOverloads(const std::string &typeName,
                                                        const std::string &methodName,
                                                        bool includeInherited) const {
@@ -553,6 +629,15 @@ std::vector<MethodDecl *> Sema::collectMethodOverloads(const std::string &typeNa
     return result;
 }
 
+/// @brief Resolve a positional function call against an overload family.
+/// @param name Semantic function name.
+/// @param argTypes Argument types in source order.
+/// @param loc Call location for access and ambiguity diagnostics.
+/// @param loweredName Optional destination for the selected lowered symbol.
+/// @param viaQualifiedModule Whether access occurs through an explicit module qualifier.
+/// @return Best accessible declaration, or nullptr when no unique viable overload exists.
+/// @details Candidates are ranked by conversion cost, with penalties for defaults and variadic
+///          packing. Equal best scores produce an ambiguity diagnostic.
 FunctionDecl *Sema::resolveFunctionOverload(const std::string &name,
                                             const std::vector<TypeRef> &argTypes,
                                             SourceLoc loc,
@@ -654,6 +739,14 @@ FunctionDecl *Sema::resolveFunctionOverload(const std::string &name,
     return best;
 }
 
+/// @brief Resolve a positional method call across an owner hierarchy.
+/// @param ownerType Receiver's semantic type name.
+/// @param methodName Source method name.
+/// @param argTypes Argument types in source order.
+/// @param loc Call location for ambiguity diagnostics.
+/// @param resolvedOwnerType Optional destination for the owner that declares the selected method.
+/// @param includeInherited Whether base-class overload families participate.
+/// @return Best declaration, or nullptr when no unique viable candidate exists.
 MethodDecl *Sema::resolveMethodOverload(const std::string &ownerType,
                                         const std::string &methodName,
                                         const std::vector<TypeRef> &argTypes,
@@ -741,6 +834,10 @@ MethodDecl *Sema::resolveMethodOverload(const std::string &ownerType,
     return best;
 }
 
+/// @brief Pair source parameters with their resolved semantic types for call binding.
+/// @param params Source parameter declarations.
+/// @param paramTypes Resolved types in matching order.
+/// @return Binding specifications carrying names, defaults, and variadic metadata.
 std::vector<Sema::CallParamSpec> Sema::makeParamSpecs(
     const std::vector<Param> &params, const std::vector<TypeRef> &paramTypes) const {
     std::vector<CallParamSpec> specs;
@@ -756,6 +853,10 @@ std::vector<Sema::CallParamSpec> Sema::makeParamSpecs(
     return specs;
 }
 
+/// @brief Build binding specifications for a runtime or external function symbol.
+/// @param sym Function symbol whose type and optional registry parameter names are used.
+/// @param skipLeadingParams Number of implementation-only leading parameters hidden from Zia.
+/// @return Exposed parameter specifications, or an empty list for a non-function symbol.
 std::vector<Sema::CallParamSpec> Sema::makeExternParamSpecs(const Symbol &sym,
                                                             size_t skipLeadingParams) const {
     std::vector<CallParamSpec> specs;
@@ -787,6 +888,11 @@ std::vector<Sema::CallParamSpec> Sema::makeExternParamSpecs(const Symbol &sym,
     return specs;
 }
 
+/// @brief Append constructor-style field parameters for a class hierarchy.
+/// @param typeName Class whose inherited and directly declared instance fields are collected.
+/// @param out Destination list; base-class fields are appended before derived fields.
+/// @details Private fields outside the current self type receive an empty binding name so they
+///          cannot be targeted by named arguments.
 void Sema::appendClassFieldSpecs(const std::string &typeName,
                                  std::vector<CallParamSpec> &out) const {
     auto classIt = classDecls_.find(typeName);
@@ -818,12 +924,18 @@ void Sema::appendClassFieldSpecs(const std::string &typeName,
     }
 }
 
+/// @brief Build constructor-style field parameters for a class.
+/// @param typeName Semantic class name.
+/// @return Inherited and directly declared instance-field specifications in layout order.
 std::vector<Sema::CallParamSpec> Sema::makeClassFieldSpecs(const std::string &typeName) const {
     std::vector<CallParamSpec> specs;
     appendClassFieldSpecs(typeName, specs);
     return specs;
 }
 
+/// @brief Build constructor-style field parameters for a struct.
+/// @param typeName Semantic struct name.
+/// @return Non-static field specifications in declaration order, or an empty list if unknown.
 std::vector<Sema::CallParamSpec> Sema::makeStructFieldSpecs(const std::string &typeName) const {
     std::vector<CallParamSpec> specs;
     auto structIt = structDecls_.find(typeName);
@@ -852,6 +964,18 @@ std::vector<Sema::CallParamSpec> Sema::makeStructFieldSpecs(const std::string &t
     return specs;
 }
 
+/// @brief Bind positional and named call arguments to a callable parameter list.
+/// @param args Source arguments in written order.
+/// @param params Target parameter specifications.
+/// @param loc Fallback call location for diagnostics.
+/// @param calleeName Display name used in diagnostics.
+/// @param binding Receives fixed-parameter source indexes and variadic source indexes.
+/// @param score Optional destination for the total overload-conversion cost.
+/// @param reportErrors Whether invalid binding emits diagnostics.
+/// @param allowRuntimeObjectCoercion Whether safe runtime object-boundary conversions are ranked.
+/// @return True when all arguments bind and their types are compatible.
+/// @details The routine enforces named-argument ordering and uniqueness, applies contextual typing
+///          to empty collections, accounts for omitted defaults, and scores variadic elements.
 bool Sema::bindCallArgs(const std::vector<CallArg> &args,
                         const std::vector<CallParamSpec> &params,
                         SourceLoc loc,
@@ -1001,6 +1125,17 @@ bool Sema::bindCallArgs(const std::vector<CallArg> &args,
     return true;
 }
 
+/// @brief Enforce safe-Zia restrictions on raw-pointer runtime APIs.
+/// @param calleeName Fully qualified runtime API name.
+/// @param args Source call arguments.
+/// @param params Exposed parameter specifications after hidden parameters are removed.
+/// @param binding Previously validated source-to-parameter binding.
+/// @param skipLeadingParams Number of hidden leading runtime parameters.
+/// @param loc Call location used when no argument-specific location is available.
+/// @return True when the call does not expose a raw handle, or when callback/payload bridge
+///         parameters form an explicitly safe pair.
+/// @details Safety metadata comes from the semantic override table first and the live runtime
+///          registry otherwise. Rejections include a tailored safer alternative when known.
 bool Sema::checkRuntimePointerSafety(const std::string &calleeName,
                                      const std::vector<CallArg> &args,
                                      const std::vector<CallParamSpec> &params,
@@ -1123,6 +1258,14 @@ bool Sema::checkRuntimePointerSafety(const std::string &calleeName,
     return true;
 }
 
+/// @brief Resolve a function overload using full named-argument binding.
+/// @param name Semantic function name.
+/// @param args Source call arguments.
+/// @param loc Call location for access and ambiguity diagnostics.
+/// @param loweredName Optional destination for the selected lowered symbol.
+/// @param bindingOut Optional destination for the winning argument mapping.
+/// @param viaQualifiedModule Whether the name was accessed through a module qualifier.
+/// @return Best accessible declaration, or nullptr when no unique candidate binds.
 FunctionDecl *Sema::resolveFunctionArgOverload(const std::string &name,
                                                const std::vector<CallArg> &args,
                                                SourceLoc loc,
@@ -1203,6 +1346,15 @@ FunctionDecl *Sema::resolveFunctionArgOverload(const std::string &name,
     return best;
 }
 
+/// @brief Resolve a method overload using full named-argument binding.
+/// @param ownerType Receiver's semantic type name.
+/// @param methodName Source method name.
+/// @param args Source call arguments.
+/// @param loc Call location for ambiguity diagnostics.
+/// @param resolvedOwnerType Optional destination for the declaring owner.
+/// @param includeInherited Whether base-class overload families participate.
+/// @param bindingOut Optional destination for the winning argument mapping.
+/// @return Best declaration, or nullptr when no unique candidate binds.
 MethodDecl *Sema::resolveMethodArgOverload(const std::string &ownerType,
                                            const std::string &methodName,
                                            const std::vector<CallArg> &args,
@@ -1279,6 +1431,14 @@ MethodDecl *Sema::resolveMethodArgOverload(const std::string &ownerType,
     return best;
 }
 
+/// @brief Resolve a function call expression and preserve its argument binding.
+/// @param name Semantic function name.
+/// @param expr Call expression whose argument list is examined.
+/// @param loc Call location for diagnostics.
+/// @param loweredName Optional destination for the selected lowered symbol.
+/// @param bindingOut Optional destination for the selected argument mapping.
+/// @param viaQualifiedModule Whether the call uses an explicit module qualifier.
+/// @return Selected declaration, or nullptr on failure or ambiguity.
 FunctionDecl *Sema::resolveFunctionCallOverload(const std::string &name,
                                                 CallExpr *expr,
                                                 SourceLoc loc,
@@ -1289,6 +1449,15 @@ FunctionDecl *Sema::resolveFunctionCallOverload(const std::string &name,
         name, expr->args, loc, loweredName, bindingOut, viaQualifiedModule);
 }
 
+/// @brief Resolve a method call expression and preserve its argument binding.
+/// @param ownerType Receiver's semantic type name.
+/// @param methodName Source method name.
+/// @param expr Call expression whose argument list is examined.
+/// @param loc Call location for diagnostics.
+/// @param resolvedOwnerType Optional destination for the declaring owner.
+/// @param includeInherited Whether base-class families participate.
+/// @param bindingOut Optional destination for the selected argument mapping.
+/// @return Selected method declaration, or nullptr on failure or ambiguity.
 MethodDecl *Sema::resolveMethodCallOverload(const std::string &ownerType,
                                             const std::string &methodName,
                                             CallExpr *expr,
@@ -1300,6 +1469,10 @@ MethodDecl *Sema::resolveMethodCallOverload(const std::string &ownerType,
         ownerType, methodName, expr->args, loc, resolvedOwnerType, includeInherited, bindingOut);
 }
 
+/// @brief Find an inherited method whose semantic signature exactly matches a declaration.
+/// @param ownerType Derived owner where the base-class search starts.
+/// @param decl Method whose cached owner-specific signature is matched.
+/// @return Nearest matching base declaration, or nullptr when none exists.
 MethodDecl *Sema::findInheritedExactMethod(const std::string &ownerType,
                                            const MethodDecl &decl) const {
     auto classIt = lookupClassDeclForType(ownerType);
@@ -1326,6 +1499,9 @@ MethodDecl *Sema::findInheritedExactMethod(const std::string &ownerType,
     return nullptr;
 }
 
+/// @brief Look up a class declaration for a concrete or generic-instantiated type.
+/// @param typeName Semantic type name.
+/// @return Registered class declaration, its generic origin declaration, or nullptr.
 ClassDecl *Sema::lookupClassDeclForType(const std::string &typeName) const {
     auto it = classDecls_.find(typeName);
     if (it != classDecls_.end())
@@ -1337,6 +1513,9 @@ ClassDecl *Sema::lookupClassDeclForType(const std::string &typeName) const {
     return nullptr;
 }
 
+/// @brief Look up a struct declaration for a concrete or generic-instantiated type.
+/// @param typeName Semantic type name.
+/// @return Registered struct declaration, its generic origin declaration, or nullptr.
 StructDecl *Sema::lookupStructDeclForType(const std::string &typeName) const {
     auto it = structDecls_.find(typeName);
     if (it != structDecls_.end())
@@ -1348,11 +1527,17 @@ StructDecl *Sema::lookupStructDeclForType(const std::string &typeName) const {
     return nullptr;
 }
 
+/// @brief Test whether a function name identifies a true overload family.
+/// @param name Semantic function name.
+/// @return True when more than one declaration is registered under @p name.
 bool Sema::hasOverloadedFunctionName(const std::string &name) const {
     auto it = functionOverloads_.find(name);
     return it != functionOverloads_.end() && it->second.size() > 1;
 }
 
+/// @brief Format lowered overload names for an ambiguity diagnostic.
+/// @param candidates Candidate symbol names in diagnostic order.
+/// @return Comma-separated candidate list.
 std::string Sema::formatOverloadCandidates(const std::vector<std::string> &candidates) const {
     std::string result;
     for (size_t i = 0; i < candidates.size(); ++i) {
@@ -1363,15 +1548,28 @@ std::string Sema::formatOverloadCandidates(const std::vector<std::string> &candi
     return result;
 }
 
+/// @brief Begin warning collection under a caller-owned policy.
+/// @param policy Warning policy that remains valid for the analysis lifetime.
+/// @details Replaces the current policy and clears all previously scanned source suppressions.
 void Sema::initWarnings(const WarningPolicy &policy) {
     warningPolicy_ = &policy;
     suppressions_.clear();
 }
 
+/// @brief Scan one source buffer for warning-suppression directives.
+/// @param fileId Diagnostic file identifier associated with @p source.
+/// @param source Complete source text to scan.
 void Sema::addWarningSuppressions(uint32_t fileId, std::string_view source) {
     suppressions_.scan(fileId, source);
 }
 
+/// @brief Register a nominal type declaration in the current semantic scope.
+/// @param decl Struct, class, interface, or enum declaration.
+/// @param semanticName Fully qualified name used by type and declaration registries.
+/// @return True when the type is registered or an existing entry for the same declaration is
+///         refreshed; false for unsupported declaration kinds or symbol conflicts.
+/// @details Generic declarations receive type-parameter placeholder arguments and are also
+///          recorded in the generic-type registry.
 bool Sema::registerTypeDeclarationSymbol(Decl &decl, const std::string &semanticName) {
     if (Symbol *existing = currentScope_->lookupLocal(semanticName)) {
         auto typeIt = typeRegistry_.find(semanticName);
@@ -1461,6 +1659,11 @@ bool Sema::registerTypeDeclarationSymbol(Decl &decl, const std::string &semantic
     return false;
 }
 
+/// @brief Install an unresolved type-alias symbol before alias targets are resolved.
+/// @param decl Alias declaration represented by the placeholder.
+/// @param semanticName Fully qualified alias name.
+/// @details The unknown placeholder permits forward references among aliases during the
+///          subsequent fixed-point resolution pass.
 void Sema::registerTypeAliasPlaceholder(TypeAliasDecl &decl, const std::string &semanticName) {
     Symbol sym;
     sym.kind = Symbol::Kind::Type;
@@ -1481,6 +1684,10 @@ void Sema::registerTypeAliasPlaceholder(TypeAliasDecl &decl, const std::string &
     typeAliases_[semanticName] = types::unknown();
 }
 
+/// @brief Resolve forward-referencing type aliases to a fixed point.
+/// @param aliases Alias declarations paired with their fully qualified semantic names.
+/// @details At most one pass per alias plus a final convergence pass is needed. Any placeholder
+///          that remains unknown receives an unresolved-target diagnostic.
 void Sema::resolvePendingTypeAliases(
     const std::vector<std::pair<TypeAliasDecl *, std::string>> &aliases) {
     for (size_t pass = 0; pass <= aliases.size(); ++pass) {
@@ -1513,6 +1720,11 @@ void Sema::resolvePendingTypeAliases(
     }
 }
 
+/// @brief Register concrete class inheritance and interface implementation relationships.
+/// @param declarations Top-level declarations whose non-generic nominal relationships are read.
+/// @details Base and interface names are resolved to canonical semantic names before the global
+///          assignability registries are populated. Generic relationships are deferred until
+///          instantiation.
 void Sema::registerNominalTypeRelationships(std::vector<DeclPtr> &declarations) {
     auto registerInterfaces = [this](const std::string &ownerName,
                                      const SourceLoc &loc,

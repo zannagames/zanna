@@ -4,8 +4,21 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/Lexer.hpp
+// Purpose: Declare the stateful Zia tokenizer and its error-recovery helpers.
+// Key invariants:
+//   * The lexer owns the source buffer but borrows its diagnostic sink.
+//   * Token lookahead caches at most one token.
+//   * Line and column values remain one-based while byte position is zero-based.
+//   * Interpolation depth and brace-depth state remain synchronized.
+// Ownership: Lexer owns source text, cached tokens, and interpolation vectors;
+//            DiagnosticEngine must outlive the lexer.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file Lexer.hpp
+/// @file
 /// @brief Lexical analyzer (tokenizer) for the Zia programming language.
 ///
 /// @details The lexer transforms source code text into a stream of tokens that
@@ -318,6 +331,7 @@ class Lexer {
     Token lexNumber();
 
     /// @brief Consume identifier-like characters following a malformed based literal.
+    /// @param tok Error token whose source spelling is extended for recovery.
     void consumeMalformedBasedLiteralTail(Token &tok);
 
     /// @brief Consume a backslash escape sequence into a string token.
@@ -350,6 +364,7 @@ class Lexer {
     /// @details Handles multi-char operators (`+=`, `->`, `==`, `..`, etc.),
     ///          single-char punctuation, and brace tracking for interpolated
     ///          strings. Emits an Error token for an unexpected character.
+    /// @param c Current leading character, not yet consumed.
     /// @return The lexed operator/punctuation token.
     Token lexOperatorOrPunctuation(char c);
 

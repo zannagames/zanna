@@ -5,35 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file defines the Token structure and TokenKind enumeration used by the
-// BASIC frontend lexer.
-//
-// Tokens are the fundamental units produced by lexical analysis and consumed by
-// the parser. Each token represents a classified lexeme (sequence of characters)
-// from the source code, along with its source location for diagnostic purposes.
-//
-// Token Categories:
-// - Markers: EOF, Unknown, Error
-// - Literals: Integer, Float, String
-// - Identifiers: Plain identifiers and those with type suffixes (%, &, !, #, $)
-// - Keywords: Language keywords (IF, THEN, FOR, DIM, SUB, FUNCTION, etc.)
-// - Operators: Arithmetic (+, -, *, /, ^), comparison (=, <, >, <=, >=, <>),
-//   logical (AND, OR, NOT), string (&)
-// - Punctuation: Parentheses, comma, colon, semicolon
-// - Structure: Newline (significant in BASIC's line-oriented syntax)
-//
-// Design Notes:
-// - Tokens are value types (copyable, movable) and own their lexeme string
-// - Source locations are stored as SourceLoc references to the source manager
-// - The TokenKind enumeration is generated from TokenKinds.def to enable
-//   table-driven parsing and easy maintenance
-// - Type suffixes (%, &, !, #, $) are part of identifier tokens, preserving
-//   BASIC's implicit type declaration semantics
-//
-// Integration:
-// - Produced by: Lexer::next()
-// - Consumed by: Parser for syntax analysis and AST construction
-// - Used throughout: Diagnostic messages for error reporting
+// File: src/frontends/basic/Token.hpp
+// Purpose: Declares BASIC lexical token classifications, owned lexeme values,
+//          source locations, and display-name conversion.
+// Key invariants:
+//   - TokenKind order is generated from TokenKinds.def and ends with Count.
+//   - Count is a sentinel rather than a lexable token.
+//   - A Token owns its exact lexeme and carries the location where it begins.
+// Ownership/Lifetime:
+//   - Token is a copyable value type owning its string.
+//   - SourceLoc is stored by value; any referenced source identity remains
+//     governed by the source-management layer.
+//   - tokenKindToString returns static storage.
+// Links: src/frontends/basic/Token.cpp,
+//        src/frontends/basic/TokenKinds.def,
+//        src/frontends/basic/Lexer.hpp,
+//        src/frontends/basic/Parser.hpp
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -41,10 +28,15 @@
 #include "support/source_location.hpp"
 #include <string>
 
+/// @file
+/// @brief Declares the token values exchanged by the BASIC lexer and parser.
+
 namespace il::frontends::basic {
+
 /// @brief All token kinds recognized by the BASIC lexer.
-/// @details Kinds are organized into markers, literals, identifiers,
-/// keywords, operators, and punctuation to guide later parsing stages.
+/// @details TokenKinds.def provides markers, literals, identifiers, keywords,
+///          operators, punctuation, and structural newline tokens in the exact
+///          order used by the display-name table.
 enum class TokenKind {
 #define TOKEN(K, S) K,
 #include "frontends/basic/TokenKinds.def"
@@ -55,20 +47,25 @@ enum class TokenKind {
 
 /// @brief A lexical token produced by the BASIC lexer.
 /// @details Tokens are value types that own their lexeme and track the
-/// starting source location.
+///          starting source location. Identifier lexemes retain any BASIC type
+///          suffix so later phases can apply implicit typing rules.
 struct Token {
     /// @brief Classification of this token.
     TokenKind kind{TokenKind::Unknown};
 
     /// @brief Exact character sequence for this token.
-    /// @ownership Owned by this token.
+    /// @details Owned by this token and preserved without canonicalization.
     std::string lexeme;
 
     /// @brief Source location where the token begins.
-    /// @ownership Borrowed from the source manager.
+    /// @details Stored by value for diagnostics and AST propagation.
     il::support::SourceLoc loc;
 };
 
+/// @brief Returns the generated display spelling for a token kind.
+/// @param k Token classification to describe.
+/// @return Static null-terminated spelling, or @c "?" for an out-of-range
+///         underlying value such as @ref TokenKind::Count.
 const char *tokenKindToString(TokenKind k);
 
 } // namespace il::frontends::basic

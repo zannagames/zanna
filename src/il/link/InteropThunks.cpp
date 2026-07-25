@@ -15,6 +15,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements link-time boolean representation adapter generation.
+/// @details Generated wrappers expose an import-side signature while calling an
+///          export-side implementation, inserting explicit I1/I64 conversions
+///          around parameters and return values without changing either module's
+///          original ABI declaration.
+
 #include "il/link/InteropThunks.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -43,12 +50,18 @@ using il::core::Value;
 namespace {
 
 /// @brief Check if two types differ only in boolean representation (i1 vs i64).
+/// @param a First type kind.
+/// @param b Second type kind.
+/// @return True exactly when one kind is I1 and the other is I64.
 bool isBooleanMismatch(Type::Kind a, Type::Kind b) {
     return (a == Type::Kind::I1 && b == Type::Kind::I64) ||
            (a == Type::Kind::I64 && b == Type::Kind::I1);
 }
 
 /// @brief Find an Export function by name in a module.
+/// @param mod Module whose functions are searched.
+/// @param name Exact exported symbol name to locate.
+/// @return Borrowed pointer to the matching export, or null when none exists.
 const Function *findExport(const Module &mod, const std::string &name) {
     for (const auto &fn : mod.functions) {
         if (fn.name == name && fn.linkage == Linkage::Export)
@@ -65,6 +78,8 @@ const Function *findExport(const Module &mod, const std::string &name) {
 /// @param importDecl The Import declaration (caller's expected signature).
 /// @param exportDef The Export definition (actual function signature).
 /// @param thunkName Name for the generated thunk function.
+/// @return Internal-linkage wrapper with fresh SSA temporaries and one entry
+///         block that performs the necessary conversions.
 Function generateThunk(const Function &importDecl,
                        const Function &exportDef,
                        const std::string &thunkName) {
@@ -202,6 +217,13 @@ Function generateThunk(const Function &importDecl,
 
 } // namespace
 
+/// @brief Generate adapters for compatible boolean-only ABI mismatches.
+/// @details Each fixed-arity import is matched to an export of the same name.
+///          Pairs with identical signatures, unsupported differences, variadic
+///          signatures, or calling-convention mismatches are ignored.
+/// @param importModule Module containing caller-facing import declarations.
+/// @param exportModule Module containing candidate exported definitions.
+/// @return Generated thunk descriptors in import declaration order.
 std::vector<ThunkInfo> generateBooleanThunks(const Module &importModule,
                                              const Module &exportModule) {
     std::vector<ThunkInfo> thunks;

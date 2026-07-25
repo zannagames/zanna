@@ -4,21 +4,25 @@
 // See LICENSE in the project root for license information.
 //
 // File: src/frontends/basic/lower/detail/ControlLoweringHelper.cpp
-//
-// Summary:
-//   Implements ControlLoweringHelper which coordinates control flow statement
-//   lowering. This helper delegates to the Lowerer's control flow methods and
-//   existing ControlStatementLowerer while providing a unified interface.
+// Purpose: Implements the internal control-flow forwarding facade.
+// Key invariants: Each operation delegates to the same Lowerer represented by
+//                 DetailAccess and preserves the callee's CFG contracts.
+// Ownership/Lifetime: Borrows Lowerer state; statement nodes remain caller-owned.
+// Links: src/frontends/basic/lower/detail/LowererDetail.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements internal forwarding for BASIC control-flow lowering.
 
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/lower/detail/LowererDetail.hpp"
 
 namespace il::frontends::basic::lower::detail {
 
+/// @brief Creates a control-flow helper over an authorized Lowerer facade.
+/// @param access Borrowed forwarding facade retained by value.
 ControlLoweringHelper::ControlLoweringHelper(Lowerer::DetailAccess access) noexcept
-    /// @brief Access_.
     : access_(access) {}
 
 /// @brief Lower If.

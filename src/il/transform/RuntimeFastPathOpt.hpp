@@ -7,6 +7,10 @@
 //
 // File: src/il/transform/RuntimeFastPathOpt.hpp
 // Purpose: Select specialized runtime helpers after simple provenance proofs.
+// Key invariants:
+//   - Only values returned by runtime signatures marked as known objects qualify.
+//   - The factory definition must dominate the rewritten ownership call.
+// Ownership/Lifetime: Stateless FunctionPass instantiated by the registry.
 //
 //===----------------------------------------------------------------------===//
 
@@ -16,13 +20,25 @@
 
 namespace il::transform {
 
+/// @brief Specialize generic object ownership helpers using proven provenance.
+/// @details Tracks direct calls whose runtime signatures guarantee an object
+///          result, then rewrites dominated retain/release calls to helpers that
+///          can omit dynamic object-versus-string discrimination.
 class RuntimeFastPathOpt : public FunctionPass {
   public:
+    /// @brief Return the stable pipeline identifier.
+    /// @return The pass name `"runtime-fastpath"`.
     std::string_view id() const override;
+
+    /// @brief Select known-object helper variants within one function.
+    /// @param function Function whose direct-call callee names may be rewritten.
+    /// @param analysis Manager supplying dominance information.
+    /// @return All analyses when unchanged; otherwise CFG-related analyses are preserved.
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 };
 
+/// @brief Register the runtime fast-path function-pass factory.
+/// @param registry Registry that receives the parallel-safe pass entry.
 void registerRuntimeFastPathOptPass(PassRegistry &registry);
 
 } // namespace il::transform
-

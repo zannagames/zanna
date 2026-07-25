@@ -43,11 +43,18 @@ using namespace il::core;
 namespace il::transform {
 
 namespace {
+/// @brief Maximum number of uses permitted for an otherwise eligible callee.
 constexpr unsigned kMaxCallSites = 8;
+
+/// @brief Separator that makes function/block depth keys unambiguous.
 constexpr char kDepthKeySep = '\0';
 
+/// @brief Inline nesting depth indexed by a composite function/block key.
 using BlockDepthMap = std::unordered_map<std::string, unsigned>;
 
+/// @brief Structural and size metrics used to judge an inline candidate.
+/// @details The record separates hard legality properties from adjustable cost
+///          inputs so individual call sites can apply constant-argument bonuses.
 struct InlineCost {
     unsigned instrCount = 0;
     unsigned blockCount = 0;
@@ -61,13 +68,17 @@ struct InlineCost {
     bool unsupportedCFG = false;
     bool hasReturn = false;
 
-    /// @brief Check if within basic structural constraints.
+    /// @brief Check whether the callee satisfies non-negotiable structural constraints.
+    /// @return `true` when the function is non-recursive, scalar, supported, and returns.
     bool isInlinable() const {
         return !recursive && !hasEH && !hasAlloca && !hasNonScalarSignature && !unsupportedCFG &&
                hasReturn;
     }
 
-    /// @brief Compute adjusted cost considering bonuses.
+    /// @brief Compute the site-specific cost after applying bonuses and penalties.
+    /// @param config Cost-model weights used for the calculation.
+    /// @param constArgCount Number of constant operands at the prospective call site.
+    /// @return Saturated signed cost, or `INT_MAX` when the callee is not inlinable.
     int adjustedCost(const InlineCostConfig &config, unsigned constArgCount) const {
         if (!isInlinable())
             return INT_MAX;
@@ -216,6 +227,8 @@ std::string lookupValueName(const Function &F, unsigned id, const std::string &f
 /// @details The textual IL parser resolves temps by printed name, so any new
 ///          names introduced by the inliner must be unique within the whole
 ///          function, not just within the inlined region.
+/// @param F Function whose parameter and value-name namespaces are scanned.
+/// @return Set containing every nonempty name already reserved by @p F.
 std::unordered_set<std::string> collectUsedValueNames(const Function &F) {
     std::unordered_set<std::string> names;
     names.reserve(F.params.size() + F.blocks.size() * 4 + F.valueNames.size());
@@ -321,11 +334,19 @@ void ensureValueName(Function &F, unsigned id, const std::string &name) {
     F.valueNames[id] = name;
 }
 
+/// @brief Measure a function and identify structural reasons it cannot be inlined.
+/// @param fn Candidate callee to inspect.
+/// @param cg Module call graph supplying call counts and recursion information.
+/// @return Populated metrics consumed by the per-call-site cost model.
+/// @details This evaluation rejects unsupported signatures, exception handling,
+///          stack allocation, malformed returns, and terminators the cloning
+///          routine cannot reproduce.
 InlineCost evaluateInlineCost(const Function &fn, const zanna::analysis::CallGraph &cg) {
     InlineCost cost;
     cost.instrCount = countInstructions(fn);
     cost.blockCount = static_cast<unsigned>(fn.blocks.size());
 
+    /// Return whether a signature type is supported by the current value remapper.
     auto isScalarType = [](const Type &type) {
         return type.kind == Type::Kind::I64 || type.kind == Type::Kind::I1 ||
                type.kind == Type::Kind::F64 || type.kind == Type::Kind::Void;
@@ -386,6 +407,8 @@ InlineCost evaluateInlineCost(const Function &fn, const zanna::analysis::CallGra
 }
 
 /// @brief Count constant arguments in a call instruction.
+/// @param callInstr Direct call whose operands are classified.
+/// @return Number of integer, floating-point, string, or null-pointer constants.
 unsigned countConstantArgs(const Instr &callInstr) {
     unsigned count = 0;
     for (const auto &op : callInstr.operands) {
@@ -458,6 +481,7 @@ void replaceUsesInBlock(BasicBlock &block, unsigned from, const Value &replaceme
 /// @brief Map each callee entry-block param to the index of the call operand
 ///        that supplies it. Prefers exact param-id matches, then falls back to
 ///        positional type-compatible mapping for canonical entry params.
+/// @param callee Function whose formal and entry-block parameters are correlated.
 /// @return The per-entry-param call-arg indices, or std::nullopt if any entry
 ///         param cannot be mapped (the call site must then be left un-inlined).
 std::optional<std::vector<size_t>> mapEntryParamsToCallArgs(const Function &callee) {
@@ -491,6 +515,8 @@ std::optional<std::vector<size_t>> mapEntryParamsToCallArgs(const Function &call
 
 /// @brief Map a fixed TypeCategory to a concrete Type, or Void when the category
 ///        is not a fixed type (None/Any/InstrType/Dynamic).
+/// @param cat Opcode metadata category to convert.
+/// @return Concrete IL type, or `void` for a category requiring contextual inference.
 Type fixedCategoryType(TypeCategory cat) {
     switch (cat) {
         case TypeCategory::Void: return Type(Type::Kind::Void);
@@ -507,6 +533,13 @@ Type fixedCategoryType(TypeCategory cat) {
     }
 }
 
+/// @brief Resolve a caller temporary's static type from parameters or its definition.
+/// @param caller Function whose SSA namespace contains the temporary.
+/// @param functionLookup Module function map used to type direct-call results.
+/// @param id Temporary id to resolve.
+/// @param memo Cache of previously resolved ids.
+/// @param active Recursion guard for operand-dependent type inference.
+/// @return Inferred type, conservatively falling back to `i64`.
 Type resolveTempType(const Function &caller,
                      const std::unordered_map<std::string, const Function *> &functionLookup,
                      unsigned id,
@@ -518,6 +551,12 @@ Type resolveTempType(const Function &caller,
 ///        F64 is stored, for register-class selection), so we recover the real
 ///        type from the opcode result-type model and, for `InstrType` ops (the
 ///        arithmetic / checked / bitwise / shift family), from the operands.
+/// @param caller Function containing @p ins and its operand definitions.
+/// @param functionLookup Module function map used to type direct-call results.
+/// @param ins Instruction whose result type is required.
+/// @param memo Temporary-type cache shared with recursive lookups.
+/// @param active Temporary ids currently being resolved.
+/// @return Recovered result type, with `i64` as the conservative fallback.
 Type resolveInstrResultType(const Function &caller,
                             const std::unordered_map<std::string, const Function *> &functionLookup,
                             const Instr &ins,
@@ -548,6 +587,12 @@ Type resolveInstrResultType(const Function &caller,
 
 /// @brief Resolve the static type of caller temporary @p id, recursing through
 ///        operand types as needed. Memoized, with a cycle guard.
+/// @param caller Function whose SSA namespace contains @p id.
+/// @param functionLookup Module function map used to type direct-call results.
+/// @param id Temporary id to resolve.
+/// @param memo Cache updated with the resolved type.
+/// @param active Set used to stop malformed recursive definition chains.
+/// @return Recovered static type, or `i64` if no more precise type is available.
 Type resolveTempType(const Function &caller,
                      const std::unordered_map<std::string, const Function *> &functionLookup,
                      unsigned id,
@@ -595,6 +640,20 @@ Type resolveTempType(const Function &caller,
     return result;
 }
 
+/// @brief Replace one direct call with cloned callee blocks and a continuation.
+/// @param caller Function containing the call and receiving the cloned CFG.
+/// @param callBlockIdx Index of the block containing the call.
+/// @param callIndex Instruction index of the call within that block.
+/// @param callee Function whose body is cloned.
+/// @param callDepth Inline depth associated with the original call block.
+/// @param maxDepth Maximum permitted nesting depth.
+/// @param depths Per-block depth map updated for cloned and continuation blocks.
+/// @param functionLookup Module function map used while recovering escaped-value types.
+/// @return `true` after committing the rewrite, or `false` when validation fails.
+/// @details All fallible structural and type analysis is completed before the
+///          original call block is truncated. The commit phase remaps SSA ids,
+///          threads values escaping into the continuation, converts returns to
+///          branches, and inserts the cloned region directly after the call block.
 bool inlineCallSite(Function &caller,
                     size_t callBlockIdx,
                     size_t callIndex,
@@ -970,10 +1029,12 @@ bool inlineCallSite(Function &caller,
 
 } // namespace
 
+/// @copydoc Inliner::id()
 std::string_view Inliner::id() const {
     return "inline";
 }
 
+/// @copydoc Inliner::run()
 PreservedAnalyses Inliner::run(Module &module, AnalysisManager &) {
     unsigned codeGrowth = 0;
 
@@ -1092,11 +1153,14 @@ PreservedAnalyses Inliner::run(Module &module, AnalysisManager &) {
     return preserved;
 }
 
+/// @copydoc registerInlinePass()
 void registerInlinePass(PassRegistry &registry) {
+    /// Run the default-cost inliner over a module.
     registry.registerModulePass("inline", [](core::Module &module, AnalysisManager &analysis) {
         Inliner inliner;
         return inliner.run(module, analysis);
     });
+    /// Run the aggressive O2 inliner with expanded budgets and fixpoint rounds.
     registry.registerModulePass("inline-o2", [](core::Module &module, AnalysisManager &analysis) {
         InlineCostConfig config;
         config.instrThreshold = 120;

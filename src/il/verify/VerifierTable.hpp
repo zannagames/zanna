@@ -32,6 +32,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares legacy verifier metadata views and side-effect queries.
+/// @details The compact arithmetic table coexists with schema-derived opcode
+///          metadata. Optional lookups distinguish covered arithmetic patterns
+///          from opcodes requiring other verification paths.
+
 #pragma once
 
 #include "il/core/Opcode.hpp"

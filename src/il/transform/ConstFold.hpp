@@ -18,13 +18,21 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares behavior-preserving IL constant folding.
+
 #pragma once
 
 #include "il/core/fwd.hpp"
 
 namespace il::transform {
 
-/// \brief Fold trivial constant computations in @p m.
+/// @brief Fold literal computations and selected deterministic runtime calls.
+/// @details Replaces uses of foldable instruction results, removes the original
+///          instructions after stable-storage substitution, and leaves any
+///          operation that could trap or vary by host math behavior untouched.
+/// @param m Module updated in place; all function identifiers are re-interned
+///          after compaction.
 void constFold(core::Module &m);
 
 } // namespace il::transform

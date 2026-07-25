@@ -4,8 +4,20 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/AST.hpp
+// Purpose: Provide the umbrella include for the complete Zia syntax tree model.
+// Key invariants:
+//   * Concrete node definitions remain split by declaration, expression,
+//     statement, and type categories.
+//   * Shared forward declarations and owning pointer aliases come from AST_Fwd.
+// Ownership: This aggregate declares no state; AST nodes own child nodes through
+//            the policies documented in the category headers.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file AST.hpp
+/// @file
 /// @brief Abstract Syntax Tree types for the Zia programming language.
 ///
 /// @details This file defines the complete Abstract Syntax Tree (AST) node

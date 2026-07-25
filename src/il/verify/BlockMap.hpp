@@ -18,6 +18,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the borrowed-label map used to resolve IL branch targets.
+/// @details The map supports allocation-free lookup with `std::string`,
+///          `std::string_view`, and compatible key forms. Its keys remain views
+///          into block-owned label storage and therefore inherit that storage's
+///          lifetime and invalidation constraints.
+
 #pragma once
 
 #include <functional>
@@ -38,10 +45,16 @@ namespace il::verify {
 struct BlockMapHash {
     using is_transparent = void;
 
+    /// @brief Hash a non-owning label view.
+    /// @param sv Label contents to hash.
+    /// @return Hash value produced by `std::hash<std::string_view>`.
     std::size_t operator()(std::string_view sv) const noexcept {
         return std::hash<std::string_view>{}(sv);
     }
 
+    /// @brief Hash an owning label without allocating a temporary string.
+    /// @param s Label contents to hash through a transient view.
+    /// @return Hash value compatible with the string-view overload.
     std::size_t operator()(const std::string &s) const noexcept {
         return std::hash<std::string_view>{}(std::string_view{s});
     }
@@ -53,6 +66,10 @@ struct BlockMapHash {
 struct BlockMapEqual {
     using is_transparent = void;
 
+    /// @brief Compare two label views by character content.
+    /// @param lhs First label.
+    /// @param rhs Second label.
+    /// @return `true` when both views contain the same sequence.
     bool operator()(std::string_view lhs, std::string_view rhs) const noexcept {
         return lhs == rhs;
     }

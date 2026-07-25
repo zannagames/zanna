@@ -4,18 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Emit.cpp
-// Purpose: Emit typed IL instructions and implement Zia value/ownership helpers.
-// Key invariants:
-//   - Managed temporaries are released exactly once or transferred to an owner.
-//   - Inline aggregate copies retain managed fields and release displaced fields.
-// Ownership/Lifetime:
-//   - Emitted values live in the current function owned by the module builder.
-//   - Deferred-release entries remain valid only within their originating CFG edge.
-// Links: src/frontends/zia/Lowerer.hpp, src/frontends/zia/Lowerer_Stmt.cpp,
-//        src/il/runtime/RuntimeOwnership.hpp
-//
+///
+/// @file Lowerer_Emit.cpp
+/// @brief Implements typed IL emission, representation conversion, aggregate
+///        storage, and managed-value ownership helpers for the Zia lowerer.
+///
+/// @details Emitted values and instructions belong to the current builder
+///          function. Managed temporaries are tracked until released or
+///          transferred to an owner, while inline aggregate operations retain
+///          copied managed fields and release displaced values. Deferred
+///          ownership records are valid only along the control-flow edge on
+///          which their values were produced.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -68,6 +68,12 @@ void Lowerer::setBlock(size_t blockIdx) {
 // Instruction Emission Helpers
 //=============================================================================
 
+/// @brief Emit a typed two-operand IL instruction.
+/// @param op Binary opcode to emit.
+/// @param ty Result type recorded on the instruction.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @return Fresh temporary containing the instruction result.
 Lowerer::Value Lowerer::emitBinary(Opcode op, Type ty, Value lhs, Value rhs) {
     unsigned id = nextTempId();
     il::core::Instr instr;
@@ -80,6 +86,11 @@ Lowerer::Value Lowerer::emitBinary(Opcode op, Type ty, Value lhs, Value rhs) {
     return Value::temp(id);
 }
 
+/// @brief Emit a typed one-operand IL instruction.
+/// @param op Unary opcode to emit.
+/// @param ty Result type recorded on the instruction.
+/// @param operand Input value.
+/// @return Fresh temporary containing the instruction result.
 Lowerer::Value Lowerer::emitUnary(Opcode op, Type ty, Value operand) {
     unsigned id = nextTempId();
     il::core::Instr instr;
@@ -92,6 +103,11 @@ Lowerer::Value Lowerer::emitUnary(Opcode op, Type ty, Value operand) {
     return Value::temp(id);
 }
 
+/// @brief Zero-extend the low 32 bits of a byte-representation value to `i64`.
+/// @param value Value represented as IL `i32`.
+/// @return Fresh `i64` temporary containing the zero-extended value.
+/// @details The conversion round-trips through zero-initialized stack storage
+///          and masks the loaded word to make the upper bits deterministic.
 Lowerer::Value Lowerer::widenByteToInteger(Value value) {
     // Zero-extend i32 to i64 via alloca/store/load pattern
     // Store i32 value, load as i64 (upper bits will be zero due to alloca zeroing)
@@ -114,6 +130,11 @@ Lowerer::Value Lowerer::widenByteToInteger(Value value) {
     return emitBinary(Opcode::And, Type(Type::Kind::I64), loaded, Value::constInt(0xFFFFFFFFLL));
 }
 
+/// @brief Widen a supported integral IL representation to `i64`.
+/// @param value Integral value to widen.
+/// @param valueType Current IL type of @p value.
+/// @return Zero-extended result for `i32` or `i1`; @p value unchanged for
+///         `i64` and unhandled kinds.
 Lowerer::Value Lowerer::widenIntegralToI64(Value value, Type valueType) {
     switch (valueType.kind) {
         case Type::Kind::I64:
@@ -171,6 +192,11 @@ Lowerer::Value Lowerer::emitPointerIsNonNull(Value ptr, Type ptrType) {
     return emitBinary(Opcode::ICmpNe, Type(Type::Kind::I1), ptrAsI64, Value::constInt(0));
 }
 
+/// @brief Emit an index-range check when bounds checks are enabled.
+/// @param index `i64` index to validate.
+/// @param lowerInclusive Inclusive lower bound.
+/// @param upperExclusive Exclusive upper bound.
+/// @return Checked index result, or @p index unchanged when checks are disabled.
 Lowerer::Value Lowerer::emitIndexCheck(Value index, Value lowerInclusive, Value upperExclusive) {
     if (!options_.boundsChecks)
         return index;
@@ -186,6 +212,13 @@ Lowerer::Value Lowerer::emitIndexCheck(Value index, Value lowerInclusive, Value 
     return Value::temp(id);
 }
 
+/// @brief Trap when a range step is less than one.
+/// @param stepValue `i64` range-step value to validate.
+/// @return @p stepValue on the success continuation, or unchanged immediately
+///         when bounds checks are disabled.
+/// @details With checks enabled, emission terminates the current block with a
+///          conditional branch and leaves the insertion point in the success
+///          block.
 Lowerer::Value Lowerer::emitPositiveStepCheck(Value stepValue) {
     if (!options_.boundsChecks)
         return stepValue;
@@ -207,10 +240,24 @@ Lowerer::Value Lowerer::emitPositiveStepCheck(Value stepValue) {
     return stepValue;
 }
 
+/// @brief Narrow a signed integer to the checked Zia Byte representation.
+/// @param value Integer value to convert.
+/// @return Fresh `i32` result produced by `CastSiNarrowChk`.
 Lowerer::Value Lowerer::narrowIntegerToByte(Value value) {
     return emitUnary(Opcode::CastSiNarrowChk, Type(Type::Kind::I32), value);
 }
 
+/// @brief Coerce a lowered value to a target semantic type.
+/// @param value Value to convert or reclassify.
+/// @param valueIlType Current IL representation of @p value.
+/// @param sourceType Semantic source type, or null/unknown when unavailable.
+/// @param targetType Required semantic destination type, or null for no
+///        conversion.
+/// @return Converted value and its destination IL representation.
+/// @details Handles boxing for `Any` and type parameters, unboxing unknown
+///          pointer values, optional wrapping, struct-to-interface heap
+///          wrapping, and checked numeric/Byte conversions. Representation-
+///          compatible values are returned without an emitted conversion.
 LowerResult Lowerer::coerceValueToType(Value value,
                                        Type valueIlType,
                                        TypeRef sourceType,
@@ -317,6 +364,9 @@ LowerResult Lowerer::coerceValueToType(Value value,
 }
 
 /// @brief Check if a string-returning call returns a borrowed reference.
+/// @param callee Canonical lowered callee name.
+/// @return False under the current runtime contract, where string-returning
+///         accessors return owned handles.
 /// @details Runtime string accessors should return owned handles. Keep this
 ///          hook for future borrowed APIs, but default to the owned contract.
 static bool isBorrowedStringCall(const std::string &callee) {
@@ -324,6 +374,15 @@ static bool isBorrowedStringCall(const std::string &callee) {
     return false;
 }
 
+/// @brief Emit a direct call that produces a result value.
+/// @param retTy IL return type expected from the callee.
+/// @param callee Canonical direct-call target name.
+/// @param args Call arguments in ABI order.
+/// @return Fresh temporary containing the call result.
+/// @details Records the target as a used external, consumes deferred arguments
+///          identified by the runtime signature, and defers release of owned
+///          string or pointer results according to the runtime ownership
+///          catalog.
 Lowerer::Value Lowerer::emitCallRet(Type retTy,
                                     const std::string &callee,
                                     const std::vector<Value> &args) {
@@ -372,6 +431,11 @@ Lowerer::Value Lowerer::emitCallRet(Type retTy,
     return result;
 }
 
+/// @brief Emit a void direct call.
+/// @param callee Canonical direct-call target name.
+/// @param args Call arguments in ABI order.
+/// @details Records the callee as a used external and consumes deferred
+///          arguments identified by the runtime ownership signature.
 void Lowerer::emitCall(const std::string &callee, const std::vector<Value> &args) {
     usedExterns_.insert(callee);
     il::core::Instr instr;
@@ -390,6 +454,9 @@ void Lowerer::emitCall(const std::string &callee, const std::vector<Value> &args
     }
 }
 
+/// @brief Emit a void indirect call through a function pointer.
+/// @param funcPtr Runtime function pointer to invoke.
+/// @param args Call arguments in ABI order after the function-pointer operand.
 void Lowerer::emitCallIndirect(Value funcPtr, const std::vector<Value> &args) {
     il::core::Instr instr;
     instr.op = Opcode::CallIndirect;
@@ -404,6 +471,11 @@ void Lowerer::emitCallIndirect(Value funcPtr, const std::vector<Value> &args) {
     blockMgr_.currentBlock()->instructions.push_back(instr);
 }
 
+/// @brief Emit a value-returning indirect call through a function pointer.
+/// @param retTy IL return type expected from the target.
+/// @param funcPtr Runtime function pointer to invoke.
+/// @param args Call arguments in ABI order after the function-pointer operand.
+/// @return Fresh temporary containing the indirect call result.
 Lowerer::Value Lowerer::emitCallIndirectRet(Type retTy,
                                             Value funcPtr,
                                             const std::vector<Value> &args) {
@@ -423,6 +495,11 @@ Lowerer::Value Lowerer::emitCallIndirectRet(Type retTy,
     return Value::temp(id);
 }
 
+/// @brief Emit a direct call uniformly for void and value-returning targets.
+/// @param callee Canonical direct-call target name.
+/// @param args Call arguments in ABI order.
+/// @param returnType IL return type of the target.
+/// @return Call result and type, using an integer-zero placeholder for void.
 LowerResult Lowerer::emitCallWithReturn(const std::string &callee,
                                         const std::vector<Value> &args,
                                         Type returnType) {
@@ -433,6 +510,11 @@ LowerResult Lowerer::emitCallWithReturn(const std::string &callee,
     return {emitCallRet(returnType, callee, args), returnType};
 }
 
+/// @brief Convert a lowered value to the Zia runtime string representation.
+/// @param val Value to format.
+/// @param sourceType Semantic type of @p val, or null when unavailable.
+/// @return @p val for strings or unknown types; otherwise an owned string
+///         produced by the matching runtime formatting helper.
 Lowerer::Value Lowerer::emitToString(Value val, TypeRef sourceType) {
     if (!sourceType)
         return val;
@@ -454,6 +536,8 @@ Lowerer::Value Lowerer::emitToString(Value val, TypeRef sourceType) {
     }
 }
 
+/// @brief Terminate the current block with an unconditional branch.
+/// @param targetIdx Index of the destination block in the current function.
 void Lowerer::emitBr(size_t targetIdx) {
     // Use index-based access to avoid stale pointer after vector reallocation
     il::core::Instr instr;
@@ -465,6 +549,10 @@ void Lowerer::emitBr(size_t targetIdx) {
     blockMgr_.currentBlock()->terminated = true;
 }
 
+/// @brief Terminate the current block with a conditional branch.
+/// @param cond `i1` branch condition.
+/// @param trueIdx Destination block index when @p cond is true.
+/// @param falseIdx Destination block index when @p cond is false.
 void Lowerer::emitCBr(Value cond, size_t trueIdx, size_t falseIdx) {
     // Use index-based access to avoid stale pointer after vector reallocation
     il::core::Instr instr;
@@ -478,6 +566,8 @@ void Lowerer::emitCBr(Value cond, size_t trueIdx, size_t falseIdx) {
     blockMgr_.currentBlock()->terminated = true;
 }
 
+/// @brief Terminate the current block with a value return.
+/// @param val Value returned to the caller.
 void Lowerer::emitRet(Value val) {
     // Use index-based access to avoid stale pointer after vector reallocation
     il::core::Instr instr;
@@ -489,6 +579,7 @@ void Lowerer::emitRet(Value val) {
     blockMgr_.currentBlock()->terminated = true;
 }
 
+/// @brief Terminate the current block with a void return.
 void Lowerer::emitRetVoid() {
     // Use index-based access to avoid stale pointer after vector reallocation
     il::core::Instr instr;
@@ -499,6 +590,9 @@ void Lowerer::emitRetVoid() {
     blockMgr_.currentBlock()->terminated = true;
 }
 
+/// @brief Materialize an owned runtime string from an interned global.
+/// @param globalName Module string-global label to materialize.
+/// @return Fresh string handle scheduled for deferred release.
 Lowerer::Value Lowerer::emitConstStr(const std::string &globalName) {
     Value result = builder_->emitConstStr(globalName, curLoc_);
     // Native const_str materialisation currently returns a fresh runtime
@@ -509,10 +603,16 @@ Lowerer::Value Lowerer::emitConstStr(const std::string &globalName) {
     return result;
 }
 
+/// @brief Materialize an owned empty runtime string.
+/// @return Fresh empty-string handle scheduled for deferred release.
 Lowerer::Value Lowerer::emitEmptyString() {
     return emitConstStr(getStringGlobal(""));
 }
 
+/// @brief Reserve a fresh IL temporary identifier.
+/// @return Identifier unique within the builder's current value namespace.
+/// @details When a function is active, also seeds its debug-facing value name
+///          with the generated `%tN` form.
 unsigned Lowerer::nextTempId() {
     unsigned id = builder_->reserveTempId();
     if (currentFunc_) {
@@ -524,6 +624,11 @@ unsigned Lowerer::nextTempId() {
     return id;
 }
 
+/// @brief Assign a readable, function-local name to a temporary.
+/// @param id Temporary identifier to name.
+/// @param name Preferred non-empty name.
+/// @details Duplicate preferred names receive an `$<id>` suffix. The request
+///          is ignored when no function is active or @p name is empty.
 void Lowerer::nameTemp(unsigned id, const std::string &name) {
     if (!currentFunc_ || name.empty())
         return;
@@ -544,6 +649,11 @@ void Lowerer::nameTemp(unsigned id, const std::string &name) {
 // Boxing/Unboxing Helpers
 //=============================================================================
 
+/// @brief Box a primitive IL value into the runtime object representation.
+/// @param val Primitive or pointer value to box.
+/// @param type Current IL representation of @p val.
+/// @return Owned boxed pointer for primitive kinds; pointer and unsupported
+///         kinds are returned unchanged.
 Lowerer::Value Lowerer::emitBox(Value val, Type type) {
     switch (type.kind) {
         case Type::Kind::I64:
@@ -564,6 +674,16 @@ Lowerer::Value Lowerer::emitBox(Value val, Type type) {
     }
 }
 
+/// @brief Box a value using both its IL representation and semantic type.
+/// @param val Value to box.
+/// @param ilType Current IL representation of @p val.
+/// @param semanticType Semantic type used to recognize inline structs and
+///        managed nested fields.
+/// @return Owned heap box for value types and primitives, or @p val when its
+///         representation requires no box.
+/// @details Structs are copied into a value-type heap box after preloading
+///          their fields, then every recursively nested managed field is
+///          registered with the runtime ownership descriptor.
 Lowerer::Value Lowerer::emitBoxValue(Value val, Type ilType, TypeRef semanticType) {
     // Check if this is a struct type that needs heap allocation
     if (semanticType && semanticType->kind == TypeKindSem::Struct &&
@@ -655,6 +775,11 @@ Lowerer::Value Lowerer::emitBoxValue(Value val, Type ilType, TypeRef semanticTyp
     return emitBox(val, ilType);
 }
 
+/// @brief Unbox a runtime object to a primitive IL representation.
+/// @param boxed Runtime object pointer or already-pointer value.
+/// @param expectedType Requested IL representation.
+/// @return Unboxed value and actual IL type; pointer and unsupported targets
+///         remain pointer-valued.
 LowerResult Lowerer::emitUnbox(Value boxed, Type expectedType) {
     switch (expectedType.kind) {
         case Type::Kind::I64:
@@ -683,6 +808,12 @@ LowerResult Lowerer::emitUnbox(Value boxed, Type expectedType) {
     }
 }
 
+/// @brief Unbox a runtime value with semantic handling for value types.
+/// @param boxed Boxed runtime pointer.
+/// @param ilType Requested IL representation.
+/// @param semanticType Requested semantic type.
+/// @return Stack copy for a known non-empty struct, otherwise the primitive
+///         result of emitUnbox().
 LowerResult Lowerer::emitUnboxValue(Value boxed, Type ilType, TypeRef semanticType) {
     // Check if this is a struct type that needs copying from heap to stack
     if (semanticType && semanticType->kind == TypeKindSem::Struct &&
@@ -700,6 +831,11 @@ LowerResult Lowerer::emitUnboxValue(Value boxed, Type ilType, TypeRef semanticTy
     return emitUnbox(boxed, ilType);
 }
 
+/// @brief Convert a value to the pointer-compatible Optional representation.
+/// @param val Present payload value.
+/// @param innerType Semantic payload type.
+/// @return Heap box for struct and primitive payloads; pointer/string payloads
+///         are already nullable and are returned unchanged.
 Lowerer::Value Lowerer::emitOptionalWrap(Value val, TypeRef innerType) {
     Type ilType = mapType(innerType);
     // Structs map to ptr at the IL level but still have value semantics.
@@ -715,6 +851,11 @@ Lowerer::Value Lowerer::emitOptionalWrap(Value val, TypeRef innerType) {
     return emitBox(val, ilType);
 }
 
+/// @brief Convert a present Optional payload back to its underlying value.
+/// @param val Non-null optional representation.
+/// @param innerType Semantic payload type.
+/// @return Fresh stack copy for a struct, unboxed primitive, or unchanged
+///         pointer/string payload.
 LowerResult Lowerer::emitOptionalUnwrap(Value val, TypeRef innerType) {
     Type ilType = mapType(innerType);
     // Struct optionals carry boxed heap payloads so force-unwrap / narrowing
@@ -733,6 +874,10 @@ LowerResult Lowerer::emitOptionalUnwrap(Value val, TypeRef innerType) {
 // Low-Level Instruction Emission
 //=============================================================================
 
+/// @brief Emit a constant-byte-offset pointer calculation.
+/// @param ptr Base pointer.
+/// @param offset Signed byte offset from @p ptr.
+/// @return Fresh pointer temporary produced by `GEP`.
 Lowerer::Value Lowerer::emitGEP(Value ptr, int64_t offset) {
     unsigned gepId = nextTempId();
     il::core::Instr gepInstr;
@@ -745,6 +890,10 @@ Lowerer::Value Lowerer::emitGEP(Value ptr, int64_t offset) {
     return Value::temp(gepId);
 }
 
+/// @brief Emit a typed load from memory.
+/// @param ptr Address to read.
+/// @param type IL type of the stored value.
+/// @return Fresh temporary containing the loaded value.
 Lowerer::Value Lowerer::emitLoad(Value ptr, Type type) {
     unsigned loadId = nextTempId();
     il::core::Instr loadInstr;
@@ -757,6 +906,10 @@ Lowerer::Value Lowerer::emitLoad(Value ptr, Type type) {
     return Value::temp(loadId);
 }
 
+/// @brief Emit a typed store to memory.
+/// @param ptr Destination address.
+/// @param val Value to write.
+/// @param type IL type used for the memory operation.
 void Lowerer::emitStore(Value ptr, Value val, Type type) {
     il::core::Instr storeInstr;
     storeInstr.op = Opcode::Store;
@@ -766,6 +919,12 @@ void Lowerer::emitStore(Value ptr, Value val, Type type) {
     blockMgr_.currentBlock()->instructions.push_back(std::move(storeInstr));
 }
 
+/// @brief Load a field from an aggregate or entity instance.
+/// @param field Resolved field layout, including byte offset and ownership.
+/// @param selfPtr Base address of the containing value.
+/// @return Weak referent, inline aggregate address, or loaded scalar value.
+/// @details Loaded strings are retained and deferred because memory loads
+///          produce borrowed handles.
 Lowerer::Value Lowerer::emitFieldLoad(const FieldLayout *field, Value selfPtr) {
     Value fieldAddr = emitGEP(selfPtr, static_cast<int64_t>(field->offset));
     if (field->isWeak) {
@@ -788,6 +947,12 @@ Lowerer::Value Lowerer::emitFieldLoad(const FieldLayout *field, Value selfPtr) {
     return loaded;
 }
 
+/// @brief Store a value into an aggregate or entity field.
+/// @param field Resolved field layout, including byte offset and ownership.
+/// @param selfPtr Base address of the containing value.
+/// @param val New field value.
+/// @details Weak fields replace their runtime weak handle; other fields use
+///          recursive inline-value ownership and replacement semantics.
 void Lowerer::emitFieldStore(const FieldLayout *field, Value selfPtr, Value val) {
     Value fieldAddr = emitGEP(selfPtr, static_cast<int64_t>(field->offset));
     if (field->isWeak) {
@@ -804,6 +969,14 @@ void Lowerer::emitFieldStore(const FieldLayout *field, Value selfPtr, Value val)
     emitInlineValueStore(field->type, fieldAddr, val, true);
 }
 
+/// @brief Store a semantic value into inline storage with ownership handling.
+/// @param valueType Semantic type of the stored value.
+/// @param destPtr Destination address.
+/// @param value Scalar value or source pointer for an inline aggregate.
+/// @param destInitialized True when an existing managed value must be released.
+/// @details Aggregate values are copied recursively. String and owned-object
+///          values transfer a deferred reference when available or retain a
+///          borrowed reference before replacing the destination.
 void Lowerer::emitInlineValueStore(TypeRef valueType,
                                    Value destPtr,
                                    Value value,
@@ -846,6 +1019,10 @@ void Lowerer::emitInlineValueStore(TypeRef valueType,
     emitStore(destPtr, value, ilType);
 }
 
+/// @brief Move a managed handle out of a slot without releasing it.
+/// @param slot Address of the owning slot.
+/// @param type Managed string or pointer representation to load.
+/// @return Previously stored handle; the slot is reset to null.
 Lowerer::Value Lowerer::takeManagedValueFromSlot(Value slot, Type type) {
     Value value = emitLoad(slot, type);
     // Managed String and object handles share the pointer representation. A
@@ -854,6 +1031,14 @@ Lowerer::Value Lowerer::takeManagedValueFromSlot(Value slot, Type type) {
     return value;
 }
 
+/// @brief Recursively copy an inline semantic value between storage regions.
+/// @param valueType Semantic type describing the storage layout.
+/// @param destPtr Destination base address.
+/// @param sourcePtr Source base address.
+/// @param destInitialized True when displaced managed fields must be released.
+/// @details Struct fields, fixed-array elements, and tuple elements are copied
+///          according to their computed layouts; leaf values delegate to
+///          emitInlineValueStore().
 void Lowerer::emitInlineValueCopy(TypeRef valueType,
                                   Value destPtr,
                                   Value sourcePtr,
@@ -903,6 +1088,9 @@ void Lowerer::emitInlineValueCopy(TypeRef valueType,
     emitInlineValueStore(valueType, destPtr, loaded, destInitialized);
 }
 
+/// @brief Recursively initialize inline storage to semantic zero/null values.
+/// @param valueType Semantic type describing the destination layout.
+/// @param destPtr Destination base address.
 void Lowerer::emitInlineValueZero(TypeRef valueType, Value destPtr) {
     if (valueType && valueType->kind == TypeKindSem::Struct) {
         if (const StructTypeInfo *info = getOrCreateStructTypeInfo(valueType->name)) {
@@ -955,6 +1143,9 @@ void Lowerer::emitInlineValueZero(TypeRef valueType, Value destPtr) {
     }
 }
 
+/// @brief Allocate and zero-initialize stack storage for an inline value.
+/// @param valueType Semantic type whose storage size and fields are used.
+/// @return Pointer to at least one byte of initialized stack storage.
 Lowerer::Value Lowerer::emitInlineValueAlloc(TypeRef valueType) {
     const size_t storageSize = std::max<size_t>(1, getSemanticTypeSize(valueType));
     unsigned allocaId = nextTempId();
@@ -971,6 +1162,11 @@ Lowerer::Value Lowerer::emitInlineValueAlloc(TypeRef valueType) {
     return destPtr;
 }
 
+/// @brief Allocate a stack copy of a struct value.
+/// @param info Resolved struct layout.
+/// @param sourcePtr Address of the source struct storage.
+/// @return Pointer to initialized stack storage containing an ownership-safe
+///         field-by-field copy.
 Lowerer::Value Lowerer::emitStructTypeCopy(const StructTypeInfo &info, Value sourcePtr) {
     // Allocate stack space for the copy
     unsigned allocaId = nextTempId();
@@ -987,6 +1183,10 @@ Lowerer::Value Lowerer::emitStructTypeCopy(const StructTypeInfo &info, Value sou
     return destPtr;
 }
 
+/// @brief Initialize unowned struct storage from another struct value.
+/// @param info Resolved struct layout.
+/// @param destPtr Address of uninitialized destination storage.
+/// @param sourcePtr Address of source storage.
 void Lowerer::emitStructTypeInitialize(const StructTypeInfo &info, Value destPtr, Value sourcePtr) {
     for (const auto &field : info.fields) {
         Value fieldAddr = emitGEP(destPtr, static_cast<int64_t>(field.offset));
@@ -995,6 +1195,10 @@ void Lowerer::emitStructTypeInitialize(const StructTypeInfo &info, Value destPtr
     }
 }
 
+/// @brief Replace an initialized struct value with an ownership-safe copy.
+/// @param info Resolved struct layout.
+/// @param destPtr Address of initialized destination storage.
+/// @param sourcePtr Address of source storage.
 void Lowerer::emitStructTypeStore(const StructTypeInfo &info, Value destPtr, Value sourcePtr) {
     for (const auto &field : info.fields) {
         Value fieldAddr = emitGEP(destPtr, static_cast<int64_t>(field.offset));
@@ -1003,6 +1207,9 @@ void Lowerer::emitStructTypeStore(const StructTypeInfo &info, Value destPtr, Val
     }
 }
 
+/// @brief Allocate zero-initialized stack storage for a struct layout.
+/// @param info Resolved struct layout.
+/// @return Pointer to the initialized storage.
 Lowerer::Value Lowerer::emitStructTypeAlloc(const StructTypeInfo &info) {
     // Allocate stack space for the struct type
     unsigned allocaId = nextTempId();
@@ -1024,6 +1231,13 @@ Lowerer::Value Lowerer::emitStructTypeAlloc(const StructTypeInfo &info) {
     return destPtr;
 }
 
+/// @brief Apply value semantics and ownership tracking to a call result.
+/// @param result Raw value returned by the call instruction.
+/// @param semanticType Semantic return type.
+/// @param ilType IL return representation.
+/// @return Stack-materialized struct or the original result with @p ilType.
+/// @details Owned struct boxes are copied into inline storage and then deferred
+///          for release; other releasable pointer results are also deferred.
 LowerResult Lowerer::materializeCallResult(Value result, TypeRef semanticType, Type ilType) {
     if (semanticType && semanticType->kind == TypeKindSem::Struct &&
         ilType.kind == Type::Kind::Ptr) {
@@ -1043,6 +1257,10 @@ LowerResult Lowerer::materializeCallResult(Value result, TypeRef semanticType, T
 // Type Mapping
 //=============================================================================
 
+/// @brief Report an internal semantic-to-lowering invariant violation.
+/// @param loc Source location associated with the unresolved construct.
+/// @param code Stable diagnostic code.
+/// @param message Human-readable diagnostic message.
 void Lowerer::reportLoweringInvariant(il::support::SourceLoc loc,
                                       std::string code,
                                       std::string message) {
@@ -1063,10 +1281,18 @@ void Lowerer::reportLoweringInvariant(il::support::SourceLoc loc,
     diag_.report(std::move(diag));
 }
 
+/// @brief Test whether a semantic type is unusable by lowering.
+/// @param type Semantic type to validate.
+/// @return True when @p type is null.
 bool Lowerer::isInvalidLoweringType(TypeRef type) const {
     return !type;
 }
 
+/// @brief Report a lowering invariant failure and return an error-typed value.
+/// @param loc Source location associated with the failure.
+/// @param code Stable diagnostic code.
+/// @param message Human-readable diagnostic message.
+/// @return Integer-zero placeholder with IL `error` type.
 LowerResult Lowerer::poisonValue(il::support::SourceLoc loc,
                                  std::string code,
                                  std::string message) {
@@ -1074,6 +1300,10 @@ LowerResult Lowerer::poisonValue(il::support::SourceLoc loc,
     return {Value::constInt(0), Type(Type::Kind::Error)};
 }
 
+/// @brief Map a resolved Zia semantic type to its IL representation.
+/// @param type Semantic type to map.
+/// @return Corresponding IL type, or `void`/`error` after reporting an
+///         invariant violation for an unusable type.
 Lowerer::Type Lowerer::mapType(TypeRef type) {
     if (!type) {
         reportLoweringInvariant(
@@ -1092,6 +1322,10 @@ Lowerer::Type Lowerer::mapType(TypeRef type) {
     return Type(toILType(*type));
 }
 
+/// @brief Recover a representative semantic type from an IL type.
+/// @param ilType IL representation to classify.
+/// @return Canonical semantic type for the representation, or `Unknown` for
+///         unsupported kinds.
 TypeRef Lowerer::reverseMapType(Type ilType) {
     switch (ilType.kind) {
         case Type::Kind::I64:
@@ -1166,6 +1400,10 @@ size_t Lowerer::getILTypeAlignment(Type type) {
     }
 }
 
+/// @brief Compute inline storage size for a semantic type.
+/// @param type Semantic type to measure, or null for pointer-sized fallback.
+/// @return Size in bytes, recursively accounting for structs, fixed arrays,
+///         and padded tuples.
 size_t Lowerer::getSemanticTypeSize(TypeRef type) {
     if (!type)
         return getILTypeSize(Type(Type::Kind::Ptr));
@@ -1186,6 +1424,10 @@ size_t Lowerer::getSemanticTypeSize(TypeRef type) {
     }
 }
 
+/// @brief Compute inline storage alignment for a semantic type.
+/// @param type Semantic type to inspect, or null for pointer alignment.
+/// @return Maximum required field/element alignment in bytes for aggregates,
+///         otherwise the mapped IL alignment.
 size_t Lowerer::getSemanticTypeAlignment(TypeRef type) {
     if (!type)
         return getILTypeAlignment(Type(Type::Kind::Ptr));
@@ -1214,6 +1456,11 @@ size_t Lowerer::getSemanticTypeAlignment(TypeRef type) {
     }
 }
 
+/// @brief Compute the byte offset of a tuple element.
+/// @param tupleType Semantic tuple type.
+/// @param index Zero-based element index.
+/// @return Aligned element offset; zero for a non-tuple input. An out-of-range
+///         index returns the computed end offset.
 size_t Lowerer::getTupleElementOffset(TypeRef tupleType, size_t index) {
     if (!tupleType || tupleType->kind != TypeKindSem::Tuple)
         return 0;
@@ -1229,6 +1476,10 @@ size_t Lowerer::getTupleElementOffset(TypeRef tupleType, size_t index) {
     return offset;
 }
 
+/// @brief Compute total padded inline storage for a tuple.
+/// @param tupleType Semantic tuple type.
+/// @return Size in bytes rounded to the tuple's maximum element alignment, or
+///         zero for a non-tuple input.
 size_t Lowerer::getTupleStorageSize(TypeRef tupleType) {
     if (!tupleType || tupleType->kind != TypeKindSem::Tuple)
         return 0;
@@ -1259,18 +1510,30 @@ size_t Lowerer::alignTo(size_t offset, size_t alignment) {
 // Local Variable Management
 //=============================================================================
 
+/// @brief Bind a function-local name to a current SSA value.
+/// @param name Source-level local name to define or replace.
+/// @param value Lowered value associated with @p name.
+/// @details Temporary values also receive @p name as their preferred debug
+///          value name.
 void Lowerer::defineLocal(const std::string &name, Value value) {
     locals_[name] = value;
     if (value.kind == Value::Kind::Temp)
         nameTemp(value.id, name);
 }
 
+/// @brief Look up the current SSA binding for a local name.
+/// @param name Source-level local name.
+/// @return Pointer to the stored value, or null when no binding exists.
 Lowerer::Value *Lowerer::lookupLocal(const std::string &name) {
     // Check regular locals first
     auto it = locals_.find(name);
     return it != locals_.end() ? &it->second : nullptr;
 }
 
+/// @brief Allocate pointer-sized stack storage for a local variable.
+/// @param name Local name used for slot registration and debug naming.
+/// @param type Intended stored type; storage is uniformly one machine word.
+/// @return Pointer temporary for the new slot.
 Lowerer::Value Lowerer::createSlot(const std::string &name, Type type) {
     // Allocate stack space for the variable
     unsigned allocaId = nextTempId();
@@ -1288,6 +1551,11 @@ Lowerer::Value Lowerer::createSlot(const std::string &name, Type type) {
     return slot;
 }
 
+/// @brief Store a value into a registered local slot.
+/// @param name Local name whose slot is targeted.
+/// @param value Value to write.
+/// @param type IL type used for the store.
+/// @details Does nothing when @p name has no registered slot.
 void Lowerer::storeToSlot(const std::string &name, Value value, Type type) {
     auto it = slots_.find(name);
     if (it == slots_.end())
@@ -1301,6 +1569,10 @@ void Lowerer::storeToSlot(const std::string &name, Value value, Type type) {
     blockMgr_.currentBlock()->instructions.push_back(storeInstr);
 }
 
+/// @brief Load a value from a registered local slot.
+/// @param name Local name whose slot is read.
+/// @param type IL type used for the load.
+/// @return Fresh loaded temporary, or integer zero when no slot exists.
 Lowerer::Value Lowerer::loadFromSlot(const std::string &name, Type type) {
     auto it = slots_.find(name);
     if (it == slots_.end())
@@ -1318,10 +1590,15 @@ Lowerer::Value Lowerer::loadFromSlot(const std::string &name, Type type) {
     return Value::temp(loadId);
 }
 
+/// @brief Remove a local slot binding without emitting storage cleanup.
+/// @param name Local name to remove from the slot map.
 void Lowerer::removeSlot(const std::string &name) {
     slots_.erase(name);
 }
 
+/// @brief Resolve the current method receiver.
+/// @param result Receives the loaded or directly bound `self` pointer.
+/// @return True when `self` is available from a slot or local binding.
 bool Lowerer::getSelfPtr(Value &result) {
     // Check if self is stored in a slot (used in class/struct type methods)
     auto slotIt = slots_.find("self");
@@ -1344,6 +1621,9 @@ bool Lowerer::getSelfPtr(Value &result) {
 // Helper Functions
 //=============================================================================
 
+/// @brief Apply the Zia entry-point name mapping.
+/// @param name Qualified lowered function name.
+/// @return `main` for source entry point `start`; otherwise @p name unchanged.
 std::string Lowerer::mangleFunctionName(const std::string &name) {
     // Entry point is special
     if (name == "start")
@@ -1351,10 +1631,17 @@ std::string Lowerer::mangleFunctionName(const std::string &name) {
     return name;
 }
 
+/// @brief Intern string contents in the module string table.
+/// @param value UTF-8 string contents.
+/// @return Stable module-global label for @p value.
 std::string Lowerer::getStringGlobal(const std::string &value) {
     return stringTable_.intern(value);
 }
 
+/// @brief Compare two byte strings with C character case folding.
+/// @param a First string.
+/// @param b Second string.
+/// @return True when lengths and every case-folded byte are equal.
 bool Lowerer::equalsIgnoreCase(const std::string &a, const std::string &b) {
     if (a.size() != b.size())
         return false;
@@ -1370,6 +1657,10 @@ bool Lowerer::equalsIgnoreCase(const std::string &a, const std::string &b) {
 // Deferred Release (Automatic Memory Management)
 //=============================================================================
 
+/// @brief Determine whether a semantic value owns a releasable runtime handle.
+/// @param type Semantic type to classify.
+/// @return True for strings, managed reference/container types, boxed optional
+///         payloads, type parameters, and named runtime pointers.
 bool Lowerer::needsRelease(TypeRef type) const {
     if (!type)
         return false;
@@ -1407,6 +1698,9 @@ bool Lowerer::needsRelease(TypeRef type) const {
     }
 }
 
+/// @brief Determine whether a semantic type is String or Optional[String].
+/// @param type Semantic type to classify.
+/// @return True for String after recursively removing Optional wrappers.
 bool Lowerer::isStringType(TypeRef type) const {
     if (!type)
         return false;
@@ -1415,6 +1709,13 @@ bool Lowerer::isStringType(TypeRef type) const {
     return type->kind == TypeKindSem::String;
 }
 
+/// @brief Release a managed handle and return its resulting reference count.
+/// @param value String or object handle to release.
+/// @param isString True to use string release semantics.
+/// @return Integer zero for strings; for objects, the post-release reference
+///         count after running destructor dispatch and freeing at zero.
+/// @details Object release introduces destroy and continuation blocks and
+///          leaves the insertion point at the continuation.
 Lowerer::Value Lowerer::emitManagedReleaseRet(Value value, bool isString) {
     if (isString) {
         emitCall(kStrReleaseMaybe, {value});
@@ -1449,6 +1750,13 @@ Lowerer::Value Lowerer::emitManagedReleaseRet(Value value, bool isString) {
     return emitLoad(resultSlot, Type(Type::Kind::I64));
 }
 
+/// @brief Release a managed string, object, or dynamically boxed handle.
+/// @param value Managed handle to release; null-safe runtime helpers are used.
+/// @param isString True when @p value has the direct string representation.
+/// @details Object release branches to destructor dispatch and deallocation
+///          only when the checked runtime helper reports a heap object whose
+///          reference count reached zero. The insertion point finishes in a
+///          continuation block.
 void Lowerer::emitManagedRelease(Value value, bool isString) {
     if (isString) {
         emitCall(kStrReleaseMaybe, {value});
@@ -1473,6 +1781,12 @@ void Lowerer::emitManagedRelease(Value value, bool isString) {
     setBlock(contIdx);
 }
 
+/// @brief Schedule an owned temporary for release at an expression boundary.
+/// @param v Owned value to track.
+/// @param isString True for the direct string release path.
+/// @details Duplicate temporary identifiers are ignored. Each entry records
+///          its defining block so later cleanup never references an SSA value
+///          on a different control-flow edge.
 void Lowerer::deferRelease(Value v, bool isString) {
     if (v.kind == Value::Kind::Temp) {
         for (const auto &pending : deferredTemps_) {
@@ -1483,6 +1797,9 @@ void Lowerer::deferRelease(Value v, bool isString) {
     deferredTemps_.push_back({v, isString, blockMgr_.currentBlockIndex()});
 }
 
+/// @brief Transfer ownership out of the deferred-release set.
+/// @param v Temporary whose pending release should be canceled.
+/// @return True when the most recently scheduled matching entry was removed.
 bool Lowerer::consumeDeferred(Value v) {
     if (v.kind != Value::Kind::Temp)
         return false;
@@ -1498,6 +1815,10 @@ bool Lowerer::consumeDeferred(Value v) {
     return false;
 }
 
+/// @brief Test whether a local slot owns a string-compatible handle.
+/// @param name Local slot name.
+/// @return True for a registered slot whose mapped semantic type is `str`,
+///         including Optional[String].
 bool Lowerer::isOwnedStringSlot(const std::string &name) const {
     if (slots_.find(name) == slots_.end())
         return false;
@@ -1508,6 +1829,8 @@ bool Lowerer::isOwnedStringSlot(const std::string &name) const {
     return const_cast<Lowerer *>(this)->mapType(typeIt->second).kind == Type::Kind::Str;
 }
 
+/// @brief Release every owned string slot in deterministic name order.
+/// @details Emits nothing after the current block has terminated.
 void Lowerer::releaseLocalStringSlots() {
     if (isTerminated())
         return;
@@ -1524,6 +1847,8 @@ void Lowerer::releaseLocalStringSlots() {
     }
 }
 
+/// @brief Release one local slot when it owns a string handle.
+/// @param name Local slot name.
 void Lowerer::releaseOwnedStringSlot(const std::string &name) {
     if (isTerminated() || !isOwnedStringSlot(name))
         return;
@@ -1531,6 +1856,12 @@ void Lowerer::releaseOwnedStringSlot(const std::string &name) {
     emitCall(kStrReleaseMaybe, {handle});
 }
 
+/// @brief Transfer or retain a string value into an owning local slot.
+/// @param name Destination local slot name.
+/// @param value String handle to store.
+/// @param releaseDisplaced True to release the slot's previous handle.
+/// @details A deferred value transfers its existing reference; a borrowed
+///          value is retained to create the slot's ownership reference.
 void Lowerer::storeOwnedStringToSlot(const std::string &name, Value value, bool releaseDisplaced) {
     // Owned temporaries move their transferred reference into the slot;
     // borrowed values mint the slot's reference with a retain.
@@ -1544,6 +1875,10 @@ void Lowerer::storeOwnedStringToSlot(const std::string &name, Value value, bool 
     storeToSlot(name, value, Type(Type::Kind::Str));
 }
 
+/// @brief Release string slots introduced or rebound within a lexical block.
+/// @param liveBefore Slot map captured before entering the block.
+/// @details A slot is local to the block when its name was absent or mapped to
+///          a different storage value in @p liveBefore.
 void Lowerer::releaseBlockStringSlots(const std::unordered_map<std::string, Value> &liveBefore) {
     if (isTerminated())
         return;
@@ -1562,6 +1897,10 @@ void Lowerer::releaseBlockStringSlots(const std::unordered_map<std::string, Valu
     }
 }
 
+/// @brief Test whether a local slot owns a releasable object handle.
+/// @param name Local slot name.
+/// @return True for a registered pointer-representation slot whose semantic
+///         type satisfies needsRelease().
 bool Lowerer::isOwnedObjectSlot(const std::string &name) const {
     if (slots_.find(name) == slots_.end())
         return false;
@@ -1573,6 +1912,8 @@ bool Lowerer::isOwnedObjectSlot(const std::string &name) const {
            self->needsRelease(typeIt->second);
 }
 
+/// @brief Release every owned object slot in deterministic name order.
+/// @details Emits nothing after the current block has terminated.
 void Lowerer::releaseLocalObjectSlots() {
     if (isTerminated())
         return;
@@ -1588,6 +1929,8 @@ void Lowerer::releaseLocalObjectSlots() {
     }
 }
 
+/// @brief Release one local slot when it owns an object handle.
+/// @param name Local slot name.
 void Lowerer::releaseOwnedObjectSlot(const std::string &name) {
     if (isTerminated() || !isOwnedObjectSlot(name))
         return;
@@ -1595,17 +1938,24 @@ void Lowerer::releaseOwnedObjectSlot(const std::string &name) {
     emitManagedRelease(handle, /*isString=*/false);
 }
 
+/// @brief Enter a loop and snapshot the slots live before its body.
+/// @param breakTarget Destination block index for `break`.
+/// @param continueTarget Destination block index for `continue`.
 void Lowerer::pushLoopScope(size_t breakTarget, size_t continueTarget) {
     loopStack_.push(breakTarget, continueTarget);
     loopSlotSnapshots_.push_back(slots_);
 }
 
+/// @brief Leave the innermost loop and discard its slot snapshot.
 void Lowerer::popLoopScope() {
     loopStack_.pop();
     if (!loopSlotSnapshots_.empty())
         loopSlotSnapshots_.pop_back();
 }
 
+/// @brief Release managed slots introduced in the current loop body.
+/// @details Uses the snapshot captured by pushLoopScope() and emits nothing
+///          when no loop is active or the block is already terminated.
 void Lowerer::releaseCurrentLoopBodySlots() {
     if (loopSlotSnapshots_.empty() || isTerminated())
         return;
@@ -1613,6 +1963,12 @@ void Lowerer::releaseCurrentLoopBodySlots() {
     releaseBlockObjectSlots(loopSlotSnapshots_.back());
 }
 
+/// @brief Transfer or retain an object value into an owning local slot.
+/// @param name Destination local slot name.
+/// @param value Object handle to store.
+/// @param releaseDisplaced True to release the slot's previous handle.
+/// @details A deferred value transfers its existing reference; a borrowed
+///          value is retained to create the slot's ownership reference.
 void Lowerer::storeOwnedObjectToSlot(const std::string &name, Value value, bool releaseDisplaced) {
     const bool owned = consumeDeferred(value);
     if (!owned)
@@ -1624,6 +1980,10 @@ void Lowerer::storeOwnedObjectToSlot(const std::string &name, Value value, bool 
     storeToSlot(name, value, Type(Type::Kind::Ptr));
 }
 
+/// @brief Release object slots introduced or rebound within a lexical block.
+/// @param liveBefore Slot map captured before entering the block.
+/// @details A slot is local to the block when its name was absent or mapped to
+///          a different storage value in @p liveBefore.
 void Lowerer::releaseBlockObjectSlots(const std::unordered_map<std::string, Value> &liveBefore) {
     if (isTerminated())
         return;
@@ -1642,6 +2002,8 @@ void Lowerer::releaseBlockObjectSlots(const std::unordered_map<std::string, Valu
     }
 }
 
+/// @brief Release all pending temporaries valid in the current block.
+/// @details Clears pending state without emission when the block is terminated.
 void Lowerer::releaseDeferredTemps() {
     if (deferredTemps_.empty() || isTerminated()) {
         deferredTemps_.clear();
@@ -1651,6 +2013,11 @@ void Lowerer::releaseDeferredTemps() {
     releaseDeferredTempsFrom(0);
 }
 
+/// @brief Release pending temporaries from one saved boundary onward.
+/// @param first Index of the first deferred entry owned by the current
+///        expression or statement.
+/// @details Entries are removed from tracking immediately; only values
+///          defined in the active block receive emitted release operations.
 void Lowerer::releaseDeferredTempsFrom(size_t first) {
     if (first >= deferredTemps_.size())
         return;
@@ -1679,6 +2046,12 @@ void Lowerer::releaseDeferredTempsFrom(size_t first) {
     }
 }
 
+/// @brief Emit the module-wide `__zia_dtor_dispatch` helper.
+/// @details Collects defined class destructors by runtime class identifier and
+///          emits a deterministic comparison chain that calls the matching
+///          `<Type>.__dtor(self)` implementation. The caller's lowering,
+///          ownership, and owning-type contexts are saved and restored around
+///          helper generation.
 void Lowerer::emitDestructorDispatch() {
     std::vector<std::pair<int, std::string>> destructors;
     destructors.reserve(classTypes_.size());

@@ -46,6 +46,7 @@ std::string stripInlineComment(const std::string &text);
 /// @return Text before the first declaration comment marker.
 std::string stripDeclarationComment(const std::string &text);
 
+/// @brief Delimiter consumed after a parser utility token.
 enum class TokenDelimiter {
     End,
     Comma,
@@ -58,6 +59,9 @@ enum class TokenDelimiter {
 std::string readToken(std::istringstream &stream);
 
 /// @brief Extract the next token and report how it was separated from following text.
+/// @param stream Source stream backed by an instruction tail segment.
+/// @param delimiter Optional output receiving end/comma/whitespace classification.
+/// @return Token without its delimiter.
 std::string readToken(std::istringstream &stream, TokenDelimiter *delimiter);
 
 /// @brief Validate an IL symbol/label fragment after removing sigils.

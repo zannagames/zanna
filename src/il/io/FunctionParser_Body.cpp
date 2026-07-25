@@ -14,6 +14,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Parse IL function bodies, block headers, instructions, and location directives.
+/// @details Body parsing is transactional through ParserSnapshot and enforces
+///          per-function SSA uniqueness, branch arity, and configured resource limits.
+
 #include "il/internal/io/FunctionParser.hpp"
 #include "il/internal/io/FunctionParser_Internal.hpp"
 #include "il/internal/io/InstrParser.hpp"
@@ -51,6 +56,11 @@ Expected<void> parseInstructionShim_E(const std::string &line, ParserState &st) 
     return Expected<void>{makeError(st.curLoc, std::move(message))};
 }
 
+/// @brief Require the current token to have a particular classification.
+/// @param state Parser wrapper containing the current token stream.
+/// @param want Required token kind.
+/// @param what Human-readable expectation appended to failures.
+/// @return Success on a match, otherwise a line-prefixed unexpected-token diagnostic.
 Expected<void> expect(parser_impl::ParserState &state, TokenKind want, std::string_view what) {
     if (state.ts && state.ts->kind() == want)
         return {};
@@ -64,6 +74,9 @@ Expected<void> expect(parser_impl::ParserState &state, TokenKind want, std::stri
     return lineError<void>(state.lineNo(), oss.str());
 }
 
+/// @brief Advance after an error until a synchronization token or EOF.
+/// @param state Parser wrapper refreshed after scanning.
+/// @param boundary Token kind at which recovery stops.
 void recoverTo(parser_impl::ParserState &state, TokenKind boundary) {
     if (!state.ts)
         return;
@@ -74,6 +87,9 @@ void recoverTo(parser_impl::ParserState &state, TokenKind boundary) {
     state.refresh();
 }
 
+/// @brief Parse the current `.loc file line column` directive.
+/// @param state Parser wrapper whose source location is updated and committed.
+/// @return Success or a malformed-directive diagnostic.
 Expected<void> parseLocDirective(parser_impl::ParserState &state) {
     if (!state.ts)
         return lineError<void>(state.lineNo(), "malformed .loc directive");
@@ -93,6 +109,9 @@ Expected<void> parseLocDirective(parser_impl::ParserState &state) {
     return {};
 }
 
+/// @brief Parse the current token as a basic-block header.
+/// @param state Parser wrapper synchronized from legacy state after parsing.
+/// @return Result of parseBlockHeader(), or a missing-label diagnostic.
 Expected<void> parseBlock(parser_impl::ParserState &state) {
     if (!state.ts)
         return lineError<void>(state.lineNo(), "missing block label");
@@ -104,6 +123,9 @@ Expected<void> parseBlock(parser_impl::ParserState &state) {
     return result;
 }
 
+/// @brief Extract an instruction mnemonic after an optional result assignment.
+/// @param line Normalized instruction line.
+/// @return Subview containing the first opcode token, or an empty view.
 std::string_view extractOpcode(std::string_view line) {
     line = trimView(line);
     if (line.empty())
@@ -119,12 +141,18 @@ std::string_view extractOpcode(std::string_view line) {
     return line.substr(0, space);
 }
 
+/// @brief Dispatch the current instruction line to the shared instruction parser.
+/// @param state Parser wrapper with active legacy state and token stream.
+/// @return Normalized instruction-parser result.
 Expected<void> parseGenericInstr(parser_impl::ParserState &state, std::string_view) {
     if (!state.ts || !state.legacy)
         return lineError<void>(state.lineNo(), "unexpected instruction context");
     return parseInstructionShim_E(state.ts->line(), *state.legacy);
 }
 
+/// @brief Select and invoke the instruction handler for the current opcode.
+/// @param state Parser wrapper containing the current instruction token.
+/// @return Handler result or a missing-dispatch diagnostic.
 Expected<void> parseInstr(parser_impl::ParserState &state) {
     using Handler = Expected<void> (*)(parser_impl::ParserState &, std::string_view);
 
@@ -147,6 +175,11 @@ Expected<void> parseInstr(parser_impl::ParserState &state) {
     return lineError<void>(state.lineNo(), "instruction parser dispatch missing handler");
 }
 
+/// @brief Parse tokens through a function's closing brace.
+/// @param stream Function-body token stream.
+/// @param state Wrapper committed to the shared parser state as context changes.
+/// @return Success after branch/temp resolution, or the first syntax, I/O, or
+///         resource-limit diagnostic.
 Expected<void> parseBody(TokenStream &stream, parser_impl::ParserState &state) {
     state.ts = &stream;
     state.refresh();
@@ -242,6 +275,11 @@ Expected<void> parseBody(TokenStream &stream, parser_impl::ParserState &state) {
 // Block parameter parsing
 // ============================================================================
 
+/// @brief Parse one named, typed block parameter and assign or reuse its SSA ID.
+/// @param paramText Parameter segment such as `%name: i64`.
+/// @param st Mutable function parser state.
+/// @param localNames Names already parsed in this block header.
+/// @return Parsed parameter or a name/type/resource diagnostic.
 Expected<Param> parseBlockParam(const std::string &paramText,
                                 ParserState &st,
                                 std::unordered_set<std::string> &localNames) {
@@ -326,6 +364,12 @@ Expected<Param> parseBlockParam(const std::string &paramText,
     return param;
 }
 
+/// @brief Parse a parenthesized block-parameter list.
+/// @param work Complete normalized block header.
+/// @param lp Offset of the opening parenthesis.
+/// @param st Mutable parser state used for SSA allocation.
+/// @param bparams Receives parsed parameters in source order.
+/// @return Success or the first delimiter/parameter diagnostic.
 Expected<void> parseBlockParamList(const std::string &work,
                                    size_t lp,
                                    ParserState &st,
@@ -351,6 +395,11 @@ Expected<void> parseBlockParamList(const std::string &work,
     return {};
 }
 
+/// @brief Resolve forward branches when their target block becomes known.
+/// @param label Newly defined block label.
+/// @param paramCount Number of parameters on the target.
+/// @param st Parser state whose matching pending branches are removed.
+/// @return Success, or an argument-count diagnostic from the original branch line.
 Expected<void> resolvePendingBranches(const std::string &label,
                                       size_t paramCount,
                                       ParserState &st) {
@@ -370,6 +419,10 @@ Expected<void> resolvePendingBranches(const std::string &label,
 // Public API
 // ============================================================================
 
+/// @brief Parse, validate, and append a basic-block header.
+/// @param header Label with optional parameters and optional `handler` prefix.
+/// @param st Mutable state with an active function.
+/// @return Success or a structured label, parameter, duplicate, or branch diagnostic.
 Expected<void> parseBlockHeader(const std::string &header, ParserState &st) {
     std::string work = trim(header);
     if (work.rfind("handler ", 0) == 0)
@@ -410,6 +463,12 @@ Expected<void> parseBlockHeader(const std::string &header, ParserState &st) {
     return {};
 }
 
+/// @brief Parse one complete function transactionally.
+/// @param is Stream positioned after the function declaration line.
+/// @param header Function header text.
+/// @param st Parser state and destination module.
+/// @return Success after an import declaration or closing brace; failures roll
+///         back all function-local and module-list mutations.
 Expected<void> parseFunction(std::istream &is, std::string &header, ParserState &st) {
     ParserSnapshot snapshot{st};
     auto headerResult = parseFunctionHeader(header, st);

@@ -3277,6 +3277,34 @@ static bool test_phase4_assets3d_model_templates() {
     rt_string_unref(unsupported_path_s);
     std::remove(unsupported_path);
 
+    // ADR 0182: the canonical .scene3d extension passes async preflight and
+    // completes through the same sync-commit path as the legacy .vscn alias.
+    const char *canonical_scene_path = "/tmp/zanna_game3d_async_canonical.scene3d";
+    {
+        void *canonical_scene = rt_scene3d_new();
+        void *canonical_node = rt_scene_node3d_new();
+        EXPECT_TRUE(canonical_scene != nullptr && canonical_node != nullptr,
+                    "test can allocate the canonical .scene3d fixture");
+        rt_scene_node3d_set_name(canonical_node, rt_const_cstr("canonical"));
+        rt_scene3d_add(canonical_scene, canonical_node);
+        EXPECT_TRUE(rt_scene3d_save(canonical_scene, rt_const_cstr(canonical_scene_path)) == 1,
+                    "test can write the canonical .scene3d fixture");
+    }
+    rt_string canonical_scene_path_s =
+        rt_string_from_bytes(canonical_scene_path, std::strlen(canonical_scene_path));
+    void *canonical_handle = rt_game3d_assets_load_model_template_async(canonical_scene_path_s);
+    EXPECT_TRUE(canonical_handle != nullptr,
+                "LoadTemplateAsync returns a handle for a canonical .scene3d path");
+    EXPECT_TRUE(wait_asset_ready(canonical_handle),
+                ".scene3d AssetHandle3D completes through the async model path");
+    EXPECT_TRUE(
+        std::strcmp(rt_string_cstr(rt_game3d_asset_handle_get_error(canonical_handle)), "") == 0,
+        ".scene3d AssetHandle3D reports no preflight or load error");
+    EXPECT_TRUE(rt_game3d_asset_handle_get_template(canonical_handle) != nullptr,
+                ".scene3d AssetHandle3D exposes the loaded template result");
+    rt_string_unref(canonical_scene_path_s);
+    std::remove(canonical_scene_path);
+
     const char *sync_only_path = "/tmp/zanna_game3d_async_sync_only_model.obj";
     EXPECT_TRUE(write_text_file(sync_only_path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"),
                 "test can write sync-only OBJ model fixture");

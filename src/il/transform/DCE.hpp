@@ -18,14 +18,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares module-level dead code and unused block-parameter elimination.
+
 #pragma once
 
 #include "il/core/fwd.hpp"
 
 namespace il::transform {
 
-/// \brief Eliminate trivial dead code and unused block parameters.
-/// \param M Module to simplify in place.
+/// @brief Eliminate dead instructions, stack traffic, and block parameters.
+/// @details Preserves trapping and effectful operations, removes unused pure
+///          calls and provably nontrapping memory operations, and compacts
+///          predecessor branch arguments alongside eliminated block parameters.
+/// @param M Module simplified in place and re-interned afterward.
 void dce(il::core::Module &M);
 
 } // namespace il::transform

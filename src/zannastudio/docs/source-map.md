@@ -1000,7 +1000,7 @@ and centralizes type applicability without owning GUI or scene state.
 
 ### `ui/scene_light_inspector_3d.zia`
 
-Presentation-only single-node light inspector. It owns type selection,
+Presentation-only light inspector with mixed-value batch fields. It owns type selection,
 accessible common/type-specific controls, conditional visibility and
 enablement, and normalized draft intent. `SceneEditor3D` retains typed
 `SceneNode.Light` mutation, canonical serialization, rollback, history, and
@@ -1261,7 +1261,7 @@ Use this practical decision table:
 | 3D material sparse-patch/copy-on-edit rules | `ui/scene_material_3d.zia` |
 | 3D material common/mixed inspector presentation | `ui/scene_material_inspector_3d.zia` |
 | 3D normalized light reconstruction/no-op rules | `ui/scene_light_3d.zia` |
-| 3D single-node light inspector presentation | `ui/scene_light_inspector_3d.zia` |
+| 3D mixed-value light inspector presentation | `ui/scene_light_inspector_3d.zia` |
 | Terminal PTY wrapper | `terminal/terminal_session.zia` |
 | Terminal UI behavior | `terminal/terminal_controller.zia` |
 | Git command execution | `scm/scm_git.zia` |

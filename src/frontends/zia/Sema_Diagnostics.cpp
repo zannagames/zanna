@@ -67,6 +67,10 @@ size_t editDistance(std::string_view lhs, std::string_view rhs) {
 //=============================================================================
 
 /// @brief Report a semantic warning at a source location (legacy).
+/// @param loc Source location attached to the warning.
+/// @param message Human-readable warning text.
+/// @details Emits the legacy `V3001` warning without applying warning-policy or suppression
+///          filtering.
 void Sema::warning(SourceLoc loc, const std::string &message) {
     il::support::Diagnostic diag{il::support::Severity::Warning, message, loc, "V3001"};
     diag.stage = "sema";
@@ -74,6 +78,11 @@ void Sema::warning(SourceLoc loc, const std::string &message) {
 }
 
 /// @brief Report a coded warning with policy and suppression checks.
+/// @param code Stable warning identifier.
+/// @param loc Source location attached to the warning.
+/// @param message Human-readable warning text.
+/// @details Disabled and locally suppressed warnings are discarded. Enabled warnings are
+///          promoted to errors under `-Werror` or strict safety policy as applicable.
 void Sema::warn(WarningCode code, SourceLoc loc, const std::string &message) {
     // Check policy: is this warning enabled?
     if (warningPolicy_) {
@@ -118,6 +127,9 @@ void Sema::warn(WarningCode code, SourceLoc loc, const std::string &message) {
 }
 
 /// @brief Check for unused variables in a scope and emit W001 warnings.
+/// @param scope Scope whose local symbols are inspected.
+/// @details Excludes discard names, intentionally unused parameters, synthetic `self`, externs,
+///          and non-variable symbols.
 void Sema::checkUnusedVariables(const Scope &scope) {
     for (const auto &[name, sym] : scope.getSymbols()) {
         // Only check variables and parameters
@@ -153,10 +165,21 @@ void Sema::checkUnusedVariables(const Scope &scope) {
 }
 
 /// @brief Report a semantic error at a source location.
+/// @param loc Primary error location.
+/// @param message Human-readable error text.
+/// @details Uses the generic `V-ZIA-SEMA` code and delegates structured construction to
+///          @ref errorWithCode.
 void Sema::error(SourceLoc loc, const std::string &message) {
     errorWithCode(loc, "V-ZIA-SEMA", message);
 }
 
+/// @brief Report a structured semantic error and mark analysis as failed.
+/// @param loc Primary diagnostic location.
+/// @param code Stable diagnostic code.
+/// @param message Human-readable error text.
+/// @param range Highlight range; synthesized as one column at @p loc when omitted.
+/// @param notes Related diagnostic locations and explanations.
+/// @param help Optional remediation guidance.
 void Sema::errorWithCode(SourceLoc loc,
                          std::string code,
                          std::string message,
@@ -179,6 +202,11 @@ void Sema::errorWithCode(SourceLoc loc,
     diag_.report(std::move(diag));
 }
 
+/// @brief Find the nearest visible spelling for an unresolved symbol.
+/// @param name Misspelled identifier.
+/// @return Candidate within the length-sensitive edit-distance threshold, or std::nullopt.
+/// @details Searches lexical scopes, bound short names, and registered type names; ties retain
+///          the first candidate encountered.
 std::optional<std::string> Sema::suggestSymbolName(const std::string &name) const {
     std::optional<std::string> best;
     size_t bestDistance = std::numeric_limits<size_t>::max();
@@ -205,6 +233,11 @@ std::optional<std::string> Sema::suggestSymbolName(const std::string &name) cons
     return best;
 }
 
+/// @brief Diagnose a duplicate name in the current lexical scope.
+/// @param name Name being defined.
+/// @param loc Location of the new definition.
+/// @return True when no local definition exists; false after emitting a duplicate diagnostic.
+/// @details When available, the prior definition is attached as a diagnostic note.
 bool Sema::reportDuplicateDefinition(const std::string &name, SourceLoc loc) {
     if (!currentScope_)
         return true;
@@ -241,6 +274,12 @@ bool Sema::reportDuplicateDefinition(const std::string &name, SourceLoc loc) {
     return false;
 }
 
+/// @brief Compute the last source location covered by a statement tree.
+/// @param stmt Statement whose lexical end is needed.
+/// @return End of the deepest applicable branch/body, the statement location as fallback, or an
+///         invalid location for null.
+/// @details Compound control flow selects the latest branch, catch, or finally endpoint so scope
+///          snapshots cover the complete source construct.
 SourceLoc Sema::scopeEndForStmt(const Stmt *stmt) {
     if (!stmt)
         return {};
@@ -293,6 +332,10 @@ SourceLoc Sema::scopeEndForStmt(const Stmt *stmt) {
 }
 
 /// @brief Report an "undefined identifier" error for the given name.
+/// @param loc Identifier location.
+/// @param name Unresolved source spelling.
+/// @details Adds a nearest-name suggestion and replacement fix-it when a sufficiently close
+///          visible symbol exists.
 void Sema::errorUndefined(SourceLoc loc, const std::string &name) {
     std::string message = "Undefined identifier: " + name;
     std::vector<il::support::DiagnosticNote> notes;
@@ -329,6 +372,11 @@ void Sema::errorUndefined(SourceLoc loc, const std::string &name) {
 }
 
 /// @brief Report a runtime method accessed without call parentheses. See header.
+/// @param expr Field-style method access being rejected.
+/// @param className Runtime receiver class.
+/// @param candidates Runtime method candidates encoded with arity suffixes.
+/// @details Offers an `()` fix-it only when a zero-argument overload exists; otherwise the
+///          diagnostic uses `(...)` guidance without a misleading automatic edit.
 void Sema::errorRuntimeMethodNeedsCall(FieldExpr *expr, const std::string &className,
                                        const std::vector<std::string> &candidates) {
     // A zero-arg overload means `()` fully fixes the access, so we offer a fix-it.
@@ -378,6 +426,9 @@ void Sema::errorRuntimeMethodNeedsCall(FieldExpr *expr, const std::string &class
 }
 
 /// @brief Report a type mismatch error showing expected vs actual types.
+/// @param loc Expression location.
+/// @param expected Required semantic type, or null for unknown.
+/// @param actual Observed semantic type, or null for unknown.
 void Sema::errorTypeMismatch(SourceLoc loc, TypeRef expected, TypeRef actual) {
     std::string expectedStr = expected ? expected->toDisplayString() : "unknown";
     std::string actualStr = actual ? actual->toDisplayString() : "unknown";

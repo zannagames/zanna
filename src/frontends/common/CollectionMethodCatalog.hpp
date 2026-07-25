@@ -17,6 +17,13 @@
 //        src/frontends/zia/Lowerer_Expr_Method.cpp
 //
 //===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares the shared collection method catalog used by frontends.
+/// @details A single descriptor source keeps semantic return inference and
+///          lowering dispatch identifiers synchronized.
+//
+//===----------------------------------------------------------------------===//
 
 #pragma once
 
@@ -99,7 +106,9 @@ enum class CollectionReturnKind {
  */
 struct CollectionMethodDescriptor {
     std::string_view name; ///< Source-level method spelling.
+    /// Stable dispatch identifier consumed by lowering.
     CollectionMethodId id{CollectionMethodId::Unknown};
+    /// Receiver-relative result category consumed by semantic analysis.
     CollectionReturnKind returnKind{CollectionReturnKind::Unknown};
 };
 

@@ -1,0 +1,363 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_perspective_viewport_probe.zia
+// Purpose: Verify the projection-switchable 3D viewport and its chrome.
+// Key invariants:
+//   - One retained camera projects render, overlays, and picks in both modes.
+//   - The perspective eye distance keeps viewScale exact at the target plane,
+//     so a target-plane point projects identically in both projections.
+//   - Perspective shows real parallax: depth changes screen position while
+//     orthographic projection is depth-invariant.
+//   - Behind-eye points report visible=false instead of mirrored coordinates.
+//   - Right-mouse fly-look rotates about the fixed eye (the view target
+//     re-anchors), never edits VSCN content, and ends on release or Escape.
+//   - Projection, overlay toggles, and snap increments persist per document
+//     workspace and reassert the shared gizmo snap increments on activation.
+//   - All viewport chrome is workspace-only: document content, history
+//     revision, and the modified flag never change.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell and destroys it before reporting.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_transform_3d.zia,
+//        docs/adr/0183-perspective-editor-viewport-and-fly-navigation.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_perspective_viewport_probe;
+
+// ============================================================================
+// MODULE: scene_perspective_viewport_probe
+// PURPOSE: Regress ADR 0183 — projection switching, fly navigation, overlay
+//          and snap chrome, and per-document workspace persistence.
+//
+// WHERE-THIS-FITS: Display probe registered as
+//          zia_zannastudio_scene_perspective_viewport.
+//
+// TEACHING-NOTE: Every expected screen position below is read back through
+//          the editor's own shared camera (ProjectWorldPoint). The probe pins
+//          relationships between projections instead of duplicating camera
+//          math that could drift.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../editor/editor_engine";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_transform_3d";
+
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+bind Convert = Zanna.Core.Convert;
+bind Math = Zanna.Math;
+
+func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
+func withinPixels(actual: Integer,
+                  expected: Integer,
+                  tolerance: Integer) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0 { difference = 0 - difference; }
+    return difference <= tolerance;
+}
+
+func fail(shell: app_shell.AppShell, reason: String) {
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+// NOTE: DispatchPending already polls the app; polling again here would
+// consume WasPressed edges before the editor pump can read them.
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          doc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(doc);
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Perspective Viewport Probe", 1180, 780);
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    var hiddenEngine = new editor_engine.EditorEngine();
+    hiddenEngine.Setup(shell.workbench.editorRow);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    hiddenEngine.LoadDocument(sceneDoc);
+    shell.SelectSurface(sceneDoc.kind);
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Defaults: perspective on, chrome truthful, options row hidden.
+    // ------------------------------------------------------------------
+    if editor.viewPerspective == false
+       or editor.showGrid == false
+       or editor.showMarkers == false
+       or editor.showLightOverlays == false
+       or editor.showStats
+       or editor.viewOptionsRow == null
+       or editor.viewOptionsRow.IsVisible()
+       or near(editor.snapMoveIncrement, 0.5) == false
+       or near(editor.snapRotateIncrement, 15.0) == false
+       or near(editor.snapScaleIncrement, 0.1) == false {
+        fail(shell, "fresh 3D document chrome defaults were not truthful");
+        return;
+    }
+
+    // One authored node keeps the camera-range analysis non-degenerate;
+    // every projection expectation below uses raw world coordinates.
+    if editor.AddEmptyNode("Depth Anchor", -1) < 0 {
+        fail(shell, "could not author probe node");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // Deterministic camera pose: looking straight down -Z from +Z.
+    editor.viewYawDegrees = 0;
+    editor.viewPitchDegrees = 0;
+    editor.viewScale = 28;
+    editor.viewTargetX = 0.0;
+    editor.viewTargetY = 0.0;
+    editor.viewTargetZ = 0.0;
+
+    var width = editor.renderedViewportWidth;
+    var height = editor.renderedViewportHeight;
+    var centerX = width / 2;
+
+    // ------------------------------------------------------------------
+    // Orthographic reference: depth never changes screen X.
+    // ------------------------------------------------------------------
+    editor.SetViewProjection(false);
+    pump(editor, sceneDoc, shell);
+    if editor.viewPerspective {
+        fail(shell, "projection toggle to orthographic did not latch");
+        return;
+    }
+    var orthoNear = editor.ProjectWorldPoint(1.0, 0.0, 0.0);
+    var orthoFar = editor.ProjectWorldPoint(1.0, 0.0, -6.0);
+    if orthoNear.visible == false or orthoFar.visible == false
+       or orthoNear.x != orthoFar.x
+       or withinPixels(orthoNear.x, centerX + 28, 1) == false {
+        fail(shell, "orthographic projection lost depth invariance: near="
+             + orthoNear.x + " far=" + orthoFar.x
+             + " expected=" + (centerX + 28));
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Perspective: target-plane scale invariance plus real parallax.
+    // ------------------------------------------------------------------
+    editor.SetViewProjection(true);
+    pump(editor, sceneDoc, shell);
+    if editor.viewPerspective == false {
+        fail(shell, "projection toggle to perspective did not latch");
+        return;
+    }
+    var perspectivePlane = editor.ProjectWorldPoint(1.0, 0.0, 0.0);
+    var perspectiveFar = editor.ProjectWorldPoint(1.0, 0.0, -6.0);
+    if perspectivePlane.visible == false
+       or withinPixels(perspectivePlane.x, centerX + 28, 1) == false {
+        fail(shell, "perspective eye distance broke target-plane scale: x="
+             + perspectivePlane.x + " expected=" + (centerX + 28));
+        return;
+    }
+    if perspectiveFar.visible == false
+       or perspectiveFar.x >= perspectivePlane.x {
+        fail(shell, "perspective projection produced no parallax: far="
+             + perspectiveFar.x + " plane=" + perspectivePlane.x);
+        return;
+    }
+    var eyeDistance = (height / 1.0)
+        / (2.0 * 28.0 * scene_editor_3d.VIEWPORT_FOV_HALF_TAN);
+    var behindEye = editor.ProjectWorldPoint(
+        0.0, 0.0, eyeDistance + 5.0);
+    if behindEye.visible {
+        fail(shell, "behind-eye point still claimed projection visibility");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Right-mouse fly-look: eye-fixed rotation, workspace-only.
+    // ------------------------------------------------------------------
+    var harness = GUI.TestHarness.New();
+    if harness.BindApp(shell.app) == false {
+        fail(shell, "fly harness did not bind");
+        return;
+    }
+    var uiScale = shell.app.GetEffectiveScale();
+    if uiScale <= 0.0 { uiScale = 1.0; }
+    var flyBaseline = sceneDoc.content;
+    var flyRevision = editor.GetRevision();
+    var viewCenterX = Convert.NumToInt(
+        (editor.viewportImage.GetScreenX() + width / 2.0) * uiScale);
+    var viewCenterY = Convert.NumToInt(
+        (editor.viewportImage.GetScreenY() + height / 2.0) * uiScale);
+    harness.SendMouse("move", viewCenterX, viewCenterY, 1);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.SendMouse("down", viewCenterX, viewCenterY, 1);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if editor.IsFlyNavigationActive() == false {
+        harness.UnbindApp();
+        fail(shell, "right-mouse press did not begin fly navigation");
+        return;
+    }
+    var yawBefore = editor.viewYawDegrees;
+    var pitchBefore = editor.viewPitchDegrees;
+    var targetXBefore = editor.viewTargetX;
+    var targetZBefore = editor.viewTargetZ;
+    // Eye position from the same derivation the editor uses: yaw 0, pitch 0
+    // places the eye exactly eyeDistance along +Z from the target.
+    var eyeZBefore = targetZBefore + eyeDistance;
+    var lookPixels = Convert.NumToInt(40.0 * uiScale);
+    harness.SendMouse(
+        "move", viewCenterX + lookPixels, viewCenterY, 1);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var yawAfter = editor.viewYawDegrees;
+    if yawAfter != yawBefore - 10
+       or editor.viewPitchDegrees != pitchBefore {
+        harness.UnbindApp();
+        fail(shell, "fly-look did not turn 10 degrees right: yaw="
+             + yawAfter + " expected=" + (yawBefore - 10)
+             + " pitch=" + editor.viewPitchDegrees);
+        return;
+    }
+    // Eye-fixed contract: the target re-anchors so the eye stays put.
+    // yaw -10, pitch 0: eye unit = (sin(-10deg), 0, cos(-10deg)).
+    var yawRadians = (yawAfter / 1.0) * scene_editor_3d.DEG_TO_RAD;
+    var expectedTargetX = 0.0
+        - Zanna.Math.Sin(yawRadians) * eyeDistance;
+    var expectedTargetZ = eyeZBefore
+        - Zanna.Math.Cos(yawRadians) * eyeDistance;
+    if near(editor.viewTargetX - expectedTargetX, 0.0) == false
+       or near(editor.viewTargetZ - expectedTargetZ, 0.0) == false {
+        harness.UnbindApp();
+        fail(shell, "fly-look did not rotate about the fixed eye: target="
+             + editor.viewTargetX + "," + editor.viewTargetZ
+             + " expected=" + expectedTargetX + "," + expectedTargetZ);
+        return;
+    }
+    if near(targetXBefore, editor.viewTargetX) {
+        harness.UnbindApp();
+        fail(shell, "fly-look left the view target fixed like an orbit");
+        return;
+    }
+    harness.SendMouse(
+        "up", viewCenterX + lookPixels, viewCenterY, 1);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    if editor.IsFlyNavigationActive() {
+        harness.UnbindApp();
+        fail(shell, "releasing the right button did not end fly navigation");
+        return;
+    }
+    // Escape also ends a fresh fly capture.
+    harness.SendMouse("down", viewCenterX, viewCenterY, 1);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var escapeArmed = editor.IsFlyNavigationActive();
+    harness.SendKey("Escape", 0);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    var escapeEnded = editor.IsFlyNavigationActive() == false;
+    harness.SendMouse("up", viewCenterX, viewCenterY, 1);
+    harness.DispatchPending();
+    pump(editor, sceneDoc, shell);
+    harness.UnbindApp();
+    if escapeArmed == false or escapeEnded == false {
+        fail(shell, "Escape did not cancel fly navigation");
+        return;
+    }
+    if sceneDoc.content != flyBaseline
+       or editor.GetRevision() != flyRevision {
+        fail(shell, "fly navigation leaked into document content");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Overlay toggles and snap spinners: applied, shared, and undo-free.
+    // ------------------------------------------------------------------
+    editor.SetViewOptionsVisible(true);
+    pump(editor, sceneDoc, shell);
+    if editor.viewOptionsRow.IsVisible() == false {
+        fail(shell, "view options row did not open");
+        return;
+    }
+    editor.gridCheck.SetChecked(false);
+    editor.statsCheck.SetChecked(true);
+    editor.snapMoveSpinner.SetValue(2.5);
+    pump(editor, sceneDoc, shell);
+    if editor.showGrid or editor.showStats == false
+       or near(editor.snapMoveIncrement, 2.5) == false
+       or near(scene_transform_3d.SnapIncrement(
+                   scene_transform_3d.TRANSFORM_MOVE), 2.5) == false {
+        fail(shell, "overlay/snap chrome edits did not apply: grid="
+             + editor.showGrid + " stats=" + editor.showStats
+             + " snap=" + editor.snapMoveIncrement);
+        return;
+    }
+    var boundedLow = scene_transform_3d.BoundSnapIncrement(0.0, 1000.0);
+    var boundedHigh = scene_transform_3d.BoundSnapIncrement(9999.0, 1000.0);
+    if near(boundedLow, 0.001) == false
+       or near(boundedHigh, 1000.0) == false {
+        fail(shell, "snap increment bounds drifted: low=" + boundedLow
+             + " high=" + boundedHigh);
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Workspace persistence: chrome follows its document across switches.
+    // ------------------------------------------------------------------
+    editor.SetViewProjection(false);
+    pump(editor, sceneDoc, shell);
+    var secondDoc = documents.NewScene3DDocument();
+    editor.Activate(secondDoc);
+    pump(editor, secondDoc, shell);
+    if editor.viewPerspective == false
+       or editor.showGrid == false
+       or editor.showStats
+       or near(editor.snapMoveIncrement, 0.5) == false
+       or near(scene_transform_3d.SnapIncrement(
+                   scene_transform_3d.TRANSFORM_MOVE), 0.5) == false {
+        fail(shell, "fresh document inherited another document's chrome");
+        return;
+    }
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+    if editor.viewPerspective
+       or editor.showGrid
+       or editor.showStats == false
+       or near(editor.snapMoveIncrement, 2.5) == false
+       or near(scene_transform_3d.SnapIncrement(
+                   scene_transform_3d.TRANSFORM_MOVE), 2.5) == false
+       or editor.gridCheck.IsChecked()
+       or editor.statsCheck.IsChecked() == false {
+        fail(shell, "restored document lost its viewport chrome: persp="
+             + editor.viewPerspective + " grid=" + editor.showGrid
+             + " stats=" + editor.showStats
+             + " snap=" + editor.snapMoveIncrement);
+        return;
+    }
+    if sceneDoc.content != flyBaseline
+       or editor.GetRevision() != flyRevision {
+        fail(shell, "workspace chrome dirtied the document");
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

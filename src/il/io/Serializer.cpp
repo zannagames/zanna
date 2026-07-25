@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements deterministic textual serialization of Zanna IL modules.
+/// @details The serializer validates unquoted grammar elements, reconstructs
+///          stable SSA names, and dispatches operand formatting by opcode.
+///          Normal modes reject malformed in-memory IR; debug mode emits
+///          best-effort diagnostic text.
+
 #include "il/io/Serializer.hpp"
 #include "il/core/BasicBlock.hpp"
 #include "il/core/Extern.hpp"
@@ -89,6 +96,7 @@ struct SerializeContext {
     }
 };
 
+/// @brief Function signature used by opcode-specific operand formatters.
 using Formatter = void (*)(const Instr &, std::ostream &, const SerializeContext &);
 
 /// @brief Convert an opcode enumerator into an array index.
@@ -295,6 +303,7 @@ void printCallOperands(const Instr &instr, std::ostream &os, const SerializeCont
         return;
     os << " [";
     bool first = true;
+    /// Append one call attribute while maintaining comma separation.
     auto printAttr = [&](std::string_view name) {
         if (!first)
             os << ", ";
@@ -311,6 +320,9 @@ void printCallOperands(const Instr &instr, std::ostream &os, const SerializeCont
 }
 
 /// @brief Emit a stable attribute list for function definitions.
+/// @param attrs Semantic attributes attached to the function declaration.
+/// @param os Stream receiving the optional bracketed attribute list.
+/// @param moduleInitializer Whether to include the `module_init` marker.
 void printFunctionAttrs(const FunctionAttrs &attrs,
                         std::ostream &os,
                         bool moduleInitializer = false) {
@@ -319,6 +331,7 @@ void printFunctionAttrs(const FunctionAttrs &attrs,
         return;
     os << " [";
     bool first = true;
+    /// Append one function attribute while maintaining comma separation.
     auto printAttr = [&](std::string_view name) {
         if (!first)
             os << ", ";
@@ -339,6 +352,10 @@ void printFunctionAttrs(const FunctionAttrs &attrs,
 /// @brief Emit operand list for call.indirect instructions.
 /// @details Format: call.indirect %fnPtr(%arg1, %arg2, ...)
 ///          First operand is the function pointer, remaining are arguments.
+/// @param instr Indirect call carrying the callee, arguments, and optional
+///              explicit signature.
+/// @param os Stream receiving serialized operands.
+/// @param ctx Serialization context with value name mappings.
 void printCallIndirectOperands(const Instr &instr, std::ostream &os, const SerializeContext &ctx) {
     if (!requireOperands(instr, os, ctx, 1, "missing callee"))
         return;
@@ -517,6 +534,7 @@ void printSwitchI32Operands(const Instr &instr, std::ostream &os, const Serializ
 /// @param op Opcode to format.
 /// @return Function object responsible for serialising operands of @p op.
 const Formatter &formatterFor(Opcode op) {
+    /// Build the immutable opcode-to-formatter dispatch table.
     static const auto formatters = [] {
         std::array<Formatter, kNumOpcodes> table;
         table.fill(&printDefaultOperands);
@@ -532,6 +550,7 @@ const Formatter &formatterFor(Opcode op) {
         table[toIndex(Opcode::TrapKind)] = &printTrapKindOperand;
         table[toIndex(Opcode::TrapFromErr)] = &printTrapFromErrOperands;
         table[toIndex(Opcode::EhPush)] =
+            /// Emit the optional handler label attached to `eh.push`.
             [](const Instr &instr, std::ostream &os, const SerializeContext &ctx) {
                 if (!instr.labels.empty()) {
                     os << ' ';
@@ -539,6 +558,7 @@ const Formatter &formatterFor(Opcode op) {
                 }
             };
         table[toIndex(Opcode::ResumeLabel)] =
+            /// Emit the token and optional continuation of `resume.label`.
             [](const Instr &instr, std::ostream &os, const SerializeContext &ctx) {
                 if (!instr.operands.empty()) {
                     os << ' ';
@@ -670,12 +690,18 @@ void printInstr(const Instr &in, std::ostream &os, const SerializeContext &ctx) 
 ///          safe to print.  This routine chooses each definition's preferred
 ///          source name when possible and lets `SerializeContext` fall back to
 ///          `%t<id>` otherwise.
+/// @param function Function whose parameters, blocks, and definitions are
+///                 scanned for preferred names.
+/// @param bestEffortMalformed Whether malformed shapes may be emitted as debug
+///                            output instead of throwing.
+/// @return Serialization context sized for every referenced definition ID.
 [[nodiscard]] SerializeContext makeSerializeContext(const Function &function,
                                                     bool bestEffortMalformed) {
     SerializeContext ctx;
     ctx.bestEffortMalformed = bestEffortMalformed;
 
     size_t capacity = function.valueNames.size();
+    /// Expand the name-table capacity to include definition @p id.
     auto touchId = [&](unsigned id) { capacity = std::max(capacity, static_cast<size_t>(id) + 1); };
     for (const auto &param : function.params)
         touchId(param.id);
@@ -713,6 +739,7 @@ void printInstr(const Instr &in, std::ostream &os, const SerializeContext &ctx) 
     }
 
     std::unordered_map<std::string, unsigned> nameOwners;
+    /// Record ownership of one preferred name and flag cross-ID collisions.
     auto recordDefinitionName = [&](unsigned id) {
         if (id >= ctx.valueNames.size())
             return;
@@ -754,6 +781,7 @@ void Serializer::write(const Module &m, std::ostream &os, Mode mode) {
         os << "target \"" << encodeEscapedString(*m.target) << "\"\n";
     if (mode == Mode::Canonical) {
         std::vector<Extern> ex(m.externs.begin(), m.externs.end());
+        /// Order canonical extern declarations lexicographically by symbol name.
         std::sort(
             ex.begin(), ex.end(), [](const Extern &a, const Extern &b) { return a.name < b.name; });
         for (const auto &e : ex)

@@ -37,28 +37,48 @@ namespace il::transform {
 
 class PipelineExecutor {
   public:
+    /// @brief Measurements captured around one pass invocation.
     struct PassMetrics {
+        /// @brief Aggregate basic-block and instruction counts for a module.
         struct IRSize {
+            /// Number of basic blocks across all functions.
             std::size_t blocks = 0;
+            /// Number of instructions across all blocks.
             std::size_t instructions = 0;
         };
 
+        /// IR size immediately before the pass.
         IRSize before;
+        /// IR size immediately after the pass and optional verification.
         IRSize after;
+        /// New analysis computations attributable to the pass.
         AnalysisCounts analysesComputed{};
+        /// Wall-clock duration of pass execution, excluding verification.
         std::chrono::nanoseconds duration{};
+        /// Wall-clock duration of the optional verification hook.
         std::chrono::nanoseconds verifyDuration{};
+        /// Whether a verification hook was invoked.
         bool verifyRan = false;
     };
 
     /// @brief Configuration for instrumentation hooks around pass execution.
     struct Instrumentation {
+        /// Optional hook invoked before each materialized pass.
         zanna::pass::PassManager::PrintHook printBefore;
+        /// Optional hook invoked after each successful pass.
         zanna::pass::PassManager::PrintHook printAfter;
+        /// Optional hook returning whether post-pass IR verification succeeded.
         zanna::pass::PassManager::VerifyHook verifyEach;
+        /// Optional metrics sink receiving one record per executed pass.
         std::function<void(std::string_view id, const PassMetrics &metrics)> passMetrics;
     };
 
+    /// @brief Bind an executor to registries and instrumentation policy.
+    /// @param registry Borrowed pass registry that must outlive the executor.
+    /// @param analysisRegistry Borrowed analysis registry that must outlive the executor.
+    /// @param instrumentation Hooks copied into the executor.
+    /// @param parallelFunctionPasses Permit registered parallel-safe function passes
+    ///        to run concurrently across module functions.
     PipelineExecutor(const PassRegistry &registry,
                      const AnalysisRegistry &analysisRegistry,
                      Instrumentation instrumentation,

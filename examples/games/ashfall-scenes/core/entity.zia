@@ -1,0 +1,184 @@
+// =============================================================================
+// core/entity.zia — pooled entity registry with generation handles
+// =============================================================================
+//
+// The registry owns liveness and identity, not field data. Each archetype is a
+// fixed-capacity pool; subsystems keep their own parallel Lists (position,
+// health, ...) indexed by the slot this registry hands out. A handle packs
+// (archetype, slot, generation) into one Integer:
+//
+//     handle = (arch << 40) | (slot << 16) | gen
+//
+// Freeing a slot bumps its generation, so a handle held past free() fails
+// valid() instead of aliasing a recycled slot — the classic use-after-free
+// guard without a hash map (Zia has no Map[K,V]).
+// =============================================================================
+module entity;
+
+bind "../config" as config;
+bind "./bits" as bits;
+
+var SLOT_SHIFT: Integer = 16;
+var ARCH_SHIFT: Integer = 40;
+var GEN_MASK: Integer = 65535;      // 16 bits
+var SLOT_MASK: Integer = 16777215;  // 24 bits
+
+class EntityReg {
+    // Flattened per-archetype pools. `base[arch]` is the first slot index of
+    // archetype `arch` inside the shared parallel Lists; `cap[arch]` its size.
+    hide List[Integer] gen;      // generation per global slot
+    hide List[Integer] alive;    // 0/1 per global slot
+    hide List[Integer] base;     // per-archetype base offset
+    hide List[Integer] cap;      // per-archetype capacity
+    hide List[Integer] liveCount;// per-archetype live count
+    hide List[Integer] freeTop;  // per-archetype free-list stack top (global slot or -1)
+    hide List[Integer] freeNext; // intrusive free-list link per global slot
+    hide Integer total;
+
+    expose func init() {
+        gen = [];
+        alive = [];
+        base = [];
+        cap = [];
+        liveCount = [];
+        freeTop = [];
+        freeNext = [];
+        total = 0;
+    }
+
+    // Register capacities per archetype (must be called once, in ARCH order).
+    expose func setup() {
+        setCap(config.ARCH_PROJECTILE, config.POOL_PROJECTILES);
+        setCap(config.ARCH_ENEMY, config.POOL_AI);
+        setCap(config.ARCH_PICKUP, 64);
+        setCap(config.ARCH_DESTRUCTIBLE, 64);
+        setCap(config.ARCH_DECAL, config.POOL_DECALS);
+        setCap(config.ARCH_POPUP, config.POOL_POPUPS);
+        build();
+    }
+
+    hide func setCap(arch: Integer, n: Integer) {
+        // Grow the cap list to hold this archetype id.
+        while cap.Count <= arch {
+            cap.Add(0);
+        }
+        cap[arch] = n;
+    }
+
+    hide func build() {
+        // Pass 1: lay out per-archetype base offsets and total slot count.
+        var offset = 0;
+        var arch = 0;
+        while arch < cap.Count {
+            base.Add(offset);
+            liveCount.Add(0);
+            freeTop.Add(-1);
+            offset = offset + cap[arch];
+            arch = arch + 1;
+        }
+        total = offset;
+        // Pass 2: size the global parallel Lists (gen starts at 1; 0 is reserved
+        // for the null handle).
+        var s = 0;
+        while s < total {
+            gen.Add(1);
+            alive.Add(0);
+            freeNext.Add(-1);
+            s = s + 1;
+        }
+        // Pass 3: push each archetype's slots onto its free-list in descending
+        // order, so pop yields ascending slot order (deterministic allocation).
+        arch = 0;
+        while arch < cap.Count {
+            var b = base[arch];
+            var i = cap[arch] - 1;
+            while i >= 0 {
+                var glob = b + i;
+                freeNext[glob] = freeTop[arch];
+                freeTop[arch] = glob;
+                i = i - 1;
+            }
+            arch = arch + 1;
+        }
+    }
+
+    hide func pack(arch: Integer, slot: Integer, g: Integer) -> Integer {
+        return bits.bor(bits.bor(bits.shl(arch, ARCH_SHIFT), bits.shl(slot, SLOT_SHIFT)),
+                        bits.band(g, GEN_MASK));
+    }
+
+    expose func archOf(h: Integer) -> Integer { return bits.shr(h, ARCH_SHIFT); }
+    expose func slot(h: Integer) -> Integer { return bits.band(bits.shr(h, SLOT_SHIFT), SLOT_MASK); }
+    expose func genOf(h: Integer) -> Integer { return bits.band(h, GEN_MASK); }
+
+    // Local slot index within the archetype's own parallel Lists (0..cap-1).
+    expose func localSlot(h: Integer) -> Integer {
+        var arch = archOf(h);
+        return slot(h) - base[arch];
+    }
+
+    // Allocate a slot in `arch`. Returns 0 (the null handle) when the pool is
+    // exhausted — callers check `valid` / non-zero.
+    expose func alloc(arch: Integer) -> Integer {
+        if arch < 0 || arch >= freeTop.Count { return 0; }
+        var glob = freeTop[arch];
+        if glob < 0 { return 0; }
+        freeTop[arch] = freeNext[glob];
+        alive[glob] = 1;
+        liveCount[arch] = liveCount[arch] + 1;
+        return pack(arch, glob, gen[glob]);
+    }
+
+    expose func valid(h: Integer) -> Boolean {
+        if h == 0 { return false; }
+        var glob = slot(h);
+        if glob < 0 || glob >= total { return false; }
+        if alive[glob] == 0 { return false; }
+        return gen[glob] == genOf(h);
+    }
+
+    expose func free(h: Integer) {
+        if valid(h) == false { return; }
+        var glob = slot(h);
+        var arch = archOf(h);
+        alive[glob] = 0;
+        // Bump generation (wrap within 16 bits, skipping 0).
+        var g = gen[glob] + 1;
+        if g > GEN_MASK { g = 1; }
+        gen[glob] = g;
+        freeNext[glob] = freeTop[arch];
+        freeTop[arch] = glob;
+        liveCount[arch] = liveCount[arch] - 1;
+    }
+
+    expose func countOf(arch: Integer) -> Integer {
+        if arch < 0 || arch >= liveCount.Count { return 0; }
+        return liveCount[arch];
+    }
+
+    expose func capOf(arch: Integer) -> Integer {
+        if arch < 0 || arch >= cap.Count { return 0; }
+        return cap[arch];
+    }
+
+    // Iterate: for a given archetype, return the handle for local slot i if it
+    // is alive, else 0. Lets subsystems walk their pool densely.
+    expose func handleAt(arch: Integer, localIdx: Integer) -> Integer {
+        if arch < 0 || arch >= base.Count { return 0; }
+        if localIdx < 0 || localIdx >= cap[arch] { return 0; }
+        var glob = base[arch] + localIdx;
+        if alive[glob] == 0 { return 0; }
+        return pack(arch, glob, gen[glob]);
+    }
+
+    // Free every live entity of an archetype (level teardown).
+    expose func clearArch(arch: Integer) {
+        var i = 0;
+        var c = capOf(arch);
+        while i < c {
+            var h = handleAt(arch, i);
+            if h != 0 { free(h); }
+            i = i + 1;
+        }
+    }
+}

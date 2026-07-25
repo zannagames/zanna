@@ -11,6 +11,12 @@
 // Links: docs/internals/codemap.md
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements shared object-class resolution helpers for OOP lowering.
+/// @details Resolves runtime-function returns, variables, arrays, member
+///          accesses, method results, and class-layout field metadata without
+///          emitting IL.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/IdentifierUtil.hpp"

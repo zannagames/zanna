@@ -1,0 +1,230 @@
+// =============================================================================
+// probes/level_probe.zia — P4 gate: level tech + 9 levels + hub (headless)
+// =============================================================================
+//
+// Boots each campaign level and asserts: it builds without a trap (geometry +
+// wave-0 enemies + objectives), endpoint rushing cannot bypass combat, clearing
+// all authored encounter waves completes the mission, pickups apply their effect, a
+// killed machine drops salvage into the pickup pool, and level builds are
+// deterministic. Each level uses a fresh boot (which also exercises unload of
+// the previous scene through the level manager).
+// =============================================================================
+module level_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../game" as game;
+bind "../world/level_env" as level_env;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func bootLevel(levelId: Integer, seed: Integer) -> game.Game {
+    var g = new game.Game();
+    g.initCore(seed);
+    g.setScripted(true);
+    g.setLevel(levelId);
+    g.boot(true, false);
+    return g;
+}
+
+func tick(g: game.Game) {
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+}
+
+func start() {
+    var env = new level_env.LevelEnv();
+    env.setup();
+    // --- 1. Every campaign level + hub builds and ticks without a trap ------
+    var lv = config.LV_L1;
+    while lv <= config.LV_HUB {
+        var g = bootLevel(lv, 0x9000 + lv);
+        if g.getLevelMgr().levelName().Length == 0 { fail("level " + toString(lv) + " has no name"); return; }
+        var lb0 = g.getLevelMgr().getBuilder();
+        if lb0.routeMarkerCount() < 1 { fail("level " + toString(lv) + " has no route markers"); return; }
+        if lb0.landmarkCount() < 1 { fail("level " + toString(lv) + " has no landmarks"); return; }
+        if env.fogFarOf(lv) < 65.0 { fail("level " + toString(lv) + " fog is too dense"); return; }
+        if lv != config.LV_HUB {
+            if g.getEnemies().aliveCount() < 1 { fail("level " + toString(lv) + " spawned no enemies"); return; }
+            var routed = 0;
+            var si = 0;
+            while si < lb0.spawnCount() {
+                if lb0.spawnRouteXat(si) < 90000.0 { routed = routed + 1; }
+                si = si + 1;
+            }
+            if routed < 1 { fail("level " + toString(lv) + " has no routed spawns"); return; }
+            if lb0.coverCount() < 1 { fail("level " + toString(lv) + " has no AI cover hints"); return; }
+            if lb0.flankCount() < 2 { fail("level " + toString(lv) + " has too few flank hints"); return; }
+            if lb0.landmarkCount() < 2 { fail("level " + toString(lv) + " has too few landmarks"); return; }
+            if lb0.encounterBeatCount() < 3 { fail("level " + toString(lv) + " has too few encounter beats"); return; }
+            if lb0.spawnCount() < 12 { fail("level " + toString(lv) + " has too few combatants"); return; }
+            if lb0.waveTotal() < 3 { fail("level " + toString(lv) + " has too few combat waves"); return; }
+            var wi = 0;
+            while wi < lb0.waveTotal() {
+                var inWave = 0;
+                var wsi = 0;
+                while wsi < lb0.spawnCount() {
+                    if lb0.spawnWaveAt(wsi) == wi { inWave = inWave + 1; }
+                    wsi = wsi + 1;
+                }
+                if inWave > config.AI_ACTIVE_CAP {
+                    fail("level " + toString(lv) + " wave " + toString(wi) +
+                         " exceeds active AI cap");
+                    return;
+                }
+                wi = wi + 1;
+            }
+            if lb0.boxCount() < 28 { fail("level " + toString(lv) + " has sparse geometry"); return; }
+            if lb0.propCount() < 6 { fail("level " + toString(lv) + " has sparse props"); return; }
+            if lv == config.LV_L4 {
+                var raisedDeck = 0;
+                var bi = 0;
+                while bi < lb0.boxCount() {
+                    if lb0.boxCollideAt(bi) == 1 && lb0.boxCYat(bi) > 2.5 {
+                        raisedDeck = raisedDeck + 1;
+                    }
+                    bi = bi + 1;
+                }
+                var elevatedReward = false;
+                var pi = 0;
+                while pi < lb0.pickupCount() {
+                    if lb0.pickupYat(pi) > 3.0 { elevatedReward = true; }
+                    pi = pi + 1;
+                }
+                if raisedDeck < 3 || elevatedReward == false {
+                    fail("L4 playable high-ground route missing"); return;
+                }
+            }
+            if lv == config.LV_L6 {
+                var terraceReward = false;
+                var ti = 0;
+                while ti < lb0.pickupCount() {
+                    if lb0.pickupYat(ti) > 1.0 { terraceReward = true; }
+                    ti = ti + 1;
+                }
+                if terraceReward == false { fail("L6 elevated resupply route missing"); return; }
+            }
+        }
+        if g.getLevelMgr().getObjectives().count() < 1 { fail("level " + toString(lv) + " has no objectives"); return; }
+        var oi = 0;
+        while oi < g.getLevelMgr().getObjectives().count() {
+            var okind = g.getLevelMgr().getObjectives().kindOf(oi);
+            if g.getLevelMgr().getObjectives().isOptional(oi) == false &&
+               (okind == 2 || okind == 4) {
+                fail("level " + toString(lv) + " has a required puzzle objective");
+                return;
+            }
+            oi = oi + 1;
+        }
+        var ai = g.getLevelMgr().getObjectives().activeIndex();
+        if ai >= 0 && g.getLevelMgr().getObjectives().promptOf(ai).Length == 0 {
+            fail("level " + toString(lv) + " active objective has no prompt");
+            return;
+        }
+        g.devSetGod(true);
+        var t = 0;
+        while t < 30 { tick(g); t = t + 1; }   // must not trap
+        lv = lv + 1;
+    }
+
+    // Timed holdout waves may overlap, but the director must defer a formation
+    // if spawning it would exceed the live combatant budget.
+    var gCap = bootLevel(config.LV_L6, 0x9040);
+    gCap.devSetGod(true);
+    var maxAlive = gCap.getEnemies().aliveCount();
+    var capTicks = 0;
+    while capTicks < 2500 {
+        tick(gCap);
+        maxAlive = M.maxi(maxAlive, gCap.getEnemies().aliveCount());
+        capTicks = capTicks + 1;
+    }
+    if maxAlive > config.AI_ACTIVE_CAP {
+        fail("overlapping holdout exceeded active AI cap: " + toString(maxAlive)); return;
+    }
+
+    // L1 has a sequential exit objective and an objective-opened gate.
+    var gGate = bootLevel(config.LV_L1, 0x9050);
+    var lbGate = gGate.getLevelMgr().getBuilder();
+    var objGate = gGate.getLevelMgr().getObjectives();
+    if lbGate.gateCount() < 1 { fail("L1 has no objective gate"); return; }
+    if objGate.prereqOf(1) != 0 { fail("L1 exit objective is not gated by clear objective"); return; }
+
+    // --- 2. Endpoint rushing cannot bypass combat ----------------------------
+    var g3 = bootLevel(config.LV_L3, 0x9100);
+    g3.devSetGod(true);
+    g3.devSpawnPlayer(0.0, 0.2, -44.0);
+    var t2 = 0;
+    while t2 < 120 { tick(g3); t2 = t2 + 1; }
+    if g3.getState() == config.ST_LEVEL_COMPLETE { fail("endpoint bypassed required combat"); return; }
+    // Kill each wave through the normal death path; low-threat reinforcement
+    // rules must eventually stage all four formations and complete the level.
+    t2 = 0;
+    while g3.getState() != config.ST_LEVEL_COMPLETE && t2 < 1400 {
+        g3.devKillAllEnemies();
+        tick(g3);
+        t2 = t2 + 1;
+    }
+    if g3.getState() != config.ST_LEVEL_COMPLETE { fail("cleared encounter waves did not complete L3"); return; }
+
+    // --- 3. Placed pickup collect applies its effect ------------------------
+    // L1 places a health pickup at (-4, 0, 20). Damage the player, then stand on it.
+    var g1 = bootLevel(config.LV_L1, 0x9200);
+    g1.devSetGod(false);
+    g1.devDamagePlayer(120.0);   // strip shield + bite health
+    var hpLow = g1.getPlayerHealth().getHealth();
+    g1.devSetGod(true);          // avoid dying to enemies during the walk-in
+    g1.devSpawnPlayer(-4.0, 0.2, 20.0);
+    var t3 = 0;
+    while t3 < 20 { tick(g1); t3 = t3 + 1; }
+    if g1.getPlayerHealth().getHealth() <= hpLow { fail("health pickup did not heal"); return; }
+
+    // Authored barrels are damageable combat hazards and adjacent barrels can
+    // chain through the shared blast pipeline.
+    var hazards0 = g1.getLevelMgr().hazardCount();
+    if hazards0 < 2 { fail("L1 explosive barrel hazards missing"); return; }
+    g1.getBus().push(config.EV_DAMAGE, config.TGT_DESTRUCTIBLE, 0, config.REGION_BODY,
+                     60.0, config.DMG_HITSCAN + 0.0, 0.0);
+    g1.getLevelMgr().applyHazardDamageEvents();
+    if g1.getLevelMgr().hazardCount() >= hazards0 { fail("explosive barrel did not detonate"); return; }
+
+    // --- 4. Killed machine drops salvage into the pool ----------------------
+    var g4 = bootLevel(config.LV_L1, 0x9300);
+    g4.devSetGod(true);
+    var enemies = g4.getEnemies();
+    // Aim + spray the Cycler at the nearest enemy until a kill registers.
+    g4.getWeapons().switchTo(config.W_CYCLER);
+    var pickupsBefore = g4.getPickups().activeCount();
+    var t4 = 0;
+    while enemies.killCountTotal() < 1 && t4 < 600 {
+        // Find a live enemy to aim at.
+        var target = -1;
+        var s = 0;
+        while s < config.POOL_AI {
+            if enemies.isAlive(s) { target = s; s = config.POOL_AI; }
+            s = s + 1;
+        }
+        if target >= 0 {
+            g4.scriptAimAt(enemies.posX(target), 1.0, enemies.posZ(target));
+            g4.scriptFire(true);
+        }
+        tick(g4);
+        t4 = t4 + 1;
+    }
+    g4.scriptFire(false);
+    if enemies.killCountTotal() < 1 { fail("could not kill an enemy in L1"); return; }
+    // A salvage drop should have entered the pool (net of any auto-collected).
+    var droppedOrCollected = g4.getPickups().activeCount() > pickupsBefore || g4.getPickups().getSalvage() > 0;
+    if droppedOrCollected == false { fail("kill produced no salvage drop"); return; }
+
+    // --- 5. Deterministic build --------------------------------------------
+    var da = bootLevel(config.LV_L4, 0x9400).getEnemies().aliveCount();
+    var db = bootLevel(config.LV_L4, 0x9400).getEnemies().aliveCount();
+    if da != db { fail("nondeterministic level build: " + toString(da) + " vs " + toString(db)); return; }
+
+    Terminal.Say("levelsBuilt=" + toString(config.LV_HUB - config.LV_L1 + 1) +
+                 " antiBypass=ok pickupHeal=ok hazards=ok salvage=" + toString(g4.getPickups().getSalvage()) +
+                 " l4enemies=" + toString(da));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

@@ -80,6 +80,11 @@ bool isTerminator(const Instruction &I) {
     return ::il::core::getOpcodeInfo(I.op).isTerminator;
 }
 
+/// @brief Check whether a block's current final instruction is a terminator.
+/// @details Consults the instruction vector rather than the separately stored
+///          `terminated` flag, which may lag behind direct vector mutations.
+/// @param B Block to inspect.
+/// @return `true` when @p B is nonempty and ends with a registered terminator.
 bool isTerminated(const Block &B) {
     return !B.instructions.empty() && isTerminator(B.instructions.back());
 }
@@ -165,6 +170,10 @@ void replaceUsesDominatedBy(::il::core::Function &F,
     using ::il::core::BasicBlock;
     using ::il::core::Value;
 
+    /// @brief Decide whether a particular instruction is in the rewrite region.
+    /// @details Instructions in the root block qualify only after the root
+    ///          definition; instructions in other blocks qualify when the root
+    ///          block dominates their block.
     auto shouldRewriteInstruction = [&](const BasicBlock &block, std::size_t instrIndex) {
         if (&block == &rootBlock)
             return instrIndex > rootInstrIndex;
@@ -203,6 +212,8 @@ unsigned nextTempId(const ::il::core::Function &F) {
     using ::il::core::Value;
 
     unsigned next = 0;
+    /// @brief Incorporate one observed identifier into the next-ID candidate.
+    /// @throws std::overflow_error If @p v has no representable successor.
     auto update = [&](unsigned v) {
         if (v == std::numeric_limits<unsigned>::max())
             throw std::overflow_error("nextTempId: temporary identifier space exhausted");
@@ -251,6 +262,9 @@ unsigned nextTempId(const ::il::core::Function &F) {
 }
 
 /// @brief Linear search for a block with @p label in @p F.
+/// @param F Mutable function whose blocks are searched in storage order.
+/// @param label Exact block label to match.
+/// @return Pointer to the first matching block, or `nullptr` when absent.
 zanna::il::Block *findBlock(::il::core::Function &F, std::string_view label) {
     for (auto &B : F.blocks) {
         if (B.label == label)
@@ -259,7 +273,10 @@ zanna::il::Block *findBlock(::il::core::Function &F, std::string_view label) {
     return nullptr;
 }
 
-/// @brief Const overload of findBlock.
+/// @brief Search a const function for a block with an exact label.
+/// @param F Function whose blocks are searched in storage order.
+/// @param label Exact block label to match.
+/// @return Pointer to the first matching block, or `nullptr` when absent.
 const zanna::il::Block *findBlock(const ::il::core::Function &F, std::string_view label) {
     for (const auto &B : F.blocks) {
         if (B.label == label)

@@ -39,6 +39,9 @@ namespace {
 using il::support::Diag;
 using il::support::Expected;
 
+/// @brief Fill default verifier code and stage fields when absent.
+/// @param diag Diagnostic to normalize by value.
+/// @return Normalized diagnostic preserving any explicit fields.
 Diag normalizeVerifierDiag(Diag diag) {
     if (diag.code.empty()) {
         diag.code = diag.severity == il::support::Severity::Warning ? "V-IL-WARN" : "V-IL-VERIFY";
@@ -48,6 +51,10 @@ Diag normalizeVerifierDiag(Diag diag) {
     return diag;
 }
 
+/// @brief Compare diagnostics for exact deduplication.
+/// @param lhs First diagnostic.
+/// @param rhs Second diagnostic.
+/// @return `true` when severity, code, message, and source coordinates match.
 bool sameDiagnostic(const Diag &lhs, const Diag &rhs) {
     return lhs.severity == rhs.severity && lhs.code == rhs.code && lhs.message == rhs.message &&
            lhs.loc.file_id == rhs.loc.file_id && lhs.loc.line == rhs.loc.line &&
@@ -59,14 +66,15 @@ bool sameDiagnostic(const Diag &lhs, const Diag &rhs) {
 /// @brief Run the full IL verifier pipeline over a module.
 ///
 /// @details Executes the extern, global, function, and exception-handler
-/// verifiers in sequence, stopping at the first failure.  Diagnostics are
-/// captured via @c CollectingDiagSink so warnings can be appended to any error
-/// returned to the caller.
+/// verifiers through @ref verifyAll with a 50-diagnostic budget. The first error
+/// becomes the returned failure and every other collected diagnostic is attached
+/// as a note; warning-only output does not fail verification.
 ///
 /// @param m Module to verify.
 /// @return @c Expected success on clean modules; otherwise an aggregated error diagnostic.
 Expected<void> Verifier::verify(const Module &m) {
     auto diagnostics = verifyAll(m, 50);
+    /// @brief Select the first error-severity diagnostic.
     auto primaryIt = std::find_if(diagnostics.begin(), diagnostics.end(), [](const Diag &diag) {
         return diag.severity == il::support::Severity::Error;
     });
@@ -90,10 +98,20 @@ Expected<void> Verifier::verify(const Module &m) {
     return Expected<void>{std::move(primary)};
 }
 
+/// @brief Run verifier stages and collect a bounded set of unique diagnostics.
+/// @details Each stage may emit through a sink and return a failure. Both
+///          channels are normalized and deduplicated before the next stage runs;
+///          collection stops once @p maxDiagnostics is reached.
+/// @param m Module to verify.
+/// @param maxDiagnostics Maximum number of diagnostics retained.
+/// @return Collected diagnostics in stage/report order.
 std::vector<Diag> Verifier::verifyAll(const Module &m, size_t maxDiagnostics) {
     CollectingDiagSink sink;
     std::vector<Diag> diagnostics;
 
+    /// @brief Drain one stage's sink and returned error into the result vector.
+    /// @param result Structured success or failure returned by the stage.
+    /// @return `true` when the collection budget has been reached.
     auto appendDiagnostics = [&](const Expected<void> &result) {
         bool capped = false;
         const auto captured = sink.diagnostics();
@@ -104,6 +122,7 @@ std::vector<Diag> Verifier::verifyAll(const Module &m, size_t maxDiagnostics) {
                 continue;
             }
             Diag normalized = normalizeVerifierDiag(diag);
+            /// @brief Detect an already collected diagnostic equal to @p normalized.
             const bool duplicate =
                 std::any_of(diagnostics.begin(), diagnostics.end(), [&](const Diag &existing) {
                     return sameDiagnostic(existing, normalized);
@@ -113,6 +132,7 @@ std::vector<Diag> Verifier::verifyAll(const Module &m, size_t maxDiagnostics) {
         }
         if (!result && diagnostics.size() < maxDiagnostics) {
             Diag resultDiag = normalizeVerifierDiag(result.error());
+            /// @brief Detect an already collected diagnostic equal to @p resultDiag.
             const bool duplicate =
                 std::any_of(diagnostics.begin(), diagnostics.end(), [&](const Diag &existing) {
                     return sameDiagnostic(existing, resultDiag);

@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/StringTable.hpp
+// File: src/frontends/common/StringTable.hpp
 // Purpose: String literal interning and deduplication for all frontends.
 //
 // This module provides efficient string literal management during lowering:
@@ -13,17 +13,19 @@
 //   - Label generation: Deterministic ".L<id>" labels for reproducible output
 //   - Caching: Fast lookup for previously-seen strings
 //
-// Key Invariants:
-//   - Each distinct string content produces exactly one global string
-//   - Labels are monotonically increasing (.L0, .L1, .L2, ...)
-//   - The table persists across procedure boundaries for deduplication
+// Key invariants:
+//   * Each distinct content value produces exactly one global label.
+//   * Labels increase monotonically in first-intern order.
+//   * Failed or recursively reentrant emitter calls do not leave partial
+//     entries in the table.
+// Ownership: Owns content, labels, insertion order, and the emitter callback;
+//            normally lives for one module-lowering operation.
+// References: docs/internals/architecture.md, docs/internals/codemap.md
 //
-// Ownership/Lifetime:
-//   - Owned by Lowerer (or LoweringContext)
-//   - Lives for the duration of module lowering
-//   - Reset between modules (not between procedures)
+//===----------------------------------------------------------------------===//
 //
-// Links: docs/internals/architecture.md, docs/internals/codemap.md
+/// @file
+/// @brief Declares deterministic string-literal interning for frontends.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -58,6 +60,7 @@ class StringTable {
     explicit StringTable(GlobalEmitter emitter) : emitter_(std::move(emitter)) {}
 
     /// @brief Set the global emitter callback.
+    /// @param emitter Callback invoked for each subsequently interned new string.
     void setEmitter(GlobalEmitter emitter) {
         emitter_ = std::move(emitter);
     }
@@ -71,6 +74,10 @@ class StringTable {
     /// @return The IL global label for this string (e.g., ".L0").
     /// @details If this is the first time seeing this content, a new
     ///          global is registered via the emitter callback.
+    /// @throws std::logic_error If the emitter recursively interns a new string.
+    /// @throws std::overflow_error If the label counter is exhausted.
+    /// @throws Any exception raised by allocation or the emitter; insertion is
+    ///         rolled back before the exception propagates.
     [[nodiscard]] std::string intern(const std::string &content) {
         // Check if already interned
         auto it = stringToLabel_.find(content);
@@ -130,16 +137,19 @@ class StringTable {
     // =========================================================================
 
     /// @brief Get the number of unique strings interned.
+    /// @return Number of content-to-label entries.
     [[nodiscard]] std::size_t size() const noexcept {
         return stringToLabel_.size();
     }
 
     /// @brief Check if the table is empty.
+    /// @return True when no content is interned.
     [[nodiscard]] bool empty() const noexcept {
         return stringToLabel_.empty();
     }
 
     /// @brief Get the next label ID that would be assigned.
+    /// @return Numeric suffix for the next new label.
     [[nodiscard]] std::size_t nextId() const noexcept {
         return nextId_;
     }
@@ -161,6 +171,7 @@ class StringTable {
     // =========================================================================
 
     /// @brief Iterate over all interned strings.
+    /// @tparam Func Callable accepting `(const std::string&, const std::string&)`.
     /// @param fn Callback receiving (label, content) pairs.
     template <typename Func> void forEach(Func &&fn) const {
         for (const auto &content : insertionOrder_)
@@ -170,6 +181,7 @@ class StringTable {
   private:
     /// @brief Map from string content to assigned label.
     std::unordered_map<std::string, std::string> stringToLabel_;
+    /// @brief Contents in first-intern order for deterministic iteration.
     std::vector<std::string> insertionOrder_;
 
     /// @brief Counter for deterministic label generation.
@@ -177,6 +189,7 @@ class StringTable {
 
     /// @brief Callback for emitting global string definitions.
     GlobalEmitter emitter_;
+    /// @brief Reentrancy guard set while invoking emitter_.
     bool emitting_{false};
 };
 

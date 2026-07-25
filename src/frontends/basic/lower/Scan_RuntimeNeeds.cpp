@@ -13,6 +13,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the pre-emission scan that records BASIC runtime
+///        dependencies and ownership helpers.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/AstWalker.hpp"
 #include "frontends/basic/BasicSymbolQuery.hpp"
@@ -67,26 +71,36 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
     }
 
     /// @brief Defer builtin call traversal to bespoke runtime logic.
+    /// The borrowed call is processed manually by @ref after.
+    /// @return False to suppress automatic child traversal.
     bool shouldVisitChildren(const BuiltinCallExpr &) {
         return false;
     }
 
     /// @brief Skip procedure call traversal; arguments are processed manually.
+    /// The borrowed call is processed manually by @ref after.
+    /// @return False to suppress automatic child traversal.
     bool shouldVisitChildren(const CallExpr &) {
         return false;
     }
 
     /// @brief Skip constructor arguments; runtime tracking occurs explicitly.
+    /// The borrowed construction expression is processed manually by @ref after.
+    /// @return False to suppress automatic child traversal.
     bool shouldVisitChildren(const NewExpr &) {
         return false;
     }
 
     /// @brief Skip member access traversal; base expressions handled explicitly.
+    /// The borrowed access expression is processed manually by @ref after.
+    /// @return False to suppress automatic child traversal.
     bool shouldVisitChildren(const MemberAccessExpr &) {
         return false;
     }
 
     /// @brief Skip method call traversal; helper handles base and args.
+    /// The borrowed call is processed manually by @ref after.
+    /// @return False to suppress automatic child traversal.
     bool shouldVisitChildren(const MethodCallExpr &) {
         return false;
     }
@@ -197,6 +211,8 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
     // Statement hooks ---------------------------------------------------
 
     /// @brief Ensure PRINT# statements request channel-aware runtime helpers.
+    /// @param stmt Channel output statement whose mode, arity, and newline
+    ///        behavior select error-reporting helpers.
     void before(const PrintChStmt &stmt) {
         std::size_t actualArgs = 0;
         for (const auto &arg : stmt.args) {
@@ -217,6 +233,7 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
     }
 
     /// @brief Track string comparison helpers required by SELECT CASE arms.
+    /// @param stmt SELECT CASE statement whose arm labels are inspected.
     void after(const SelectCaseStmt &stmt) {
         for (const auto &arm : stmt.arms) {
             if (!arm.str_labels.empty()) {
@@ -499,10 +516,11 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
         lowerer_.requireLineInputChErr();
     }
 
-    /// @brief BUG-011 fix: Register SUB parameter object types before scanning body.
+    /// @brief Register SUB parameter types before scanning its body.
     /// @details Procedure parameters with object types (e.g., `p AS MyClass`) must
     ///          be registered in the symbol table before the body is scanned so that
     ///          member access expressions like `p.field` can resolve the class type.
+    /// @param decl SUB declaration whose ordered parameters seed symbol metadata.
     void before(const SubDecl &decl) {
         for (const auto &p : decl.params) {
             if (!p.objectClass.empty()) {
@@ -514,8 +532,10 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
         }
     }
 
-    /// @brief BUG-011 fix: Register FUNCTION parameter object types before scanning body.
-    /// @details Same as SubDecl - ensures parameter class types are known during scan.
+    /// @brief Register FUNCTION parameter types before scanning its body.
+    /// @details Ensures object and scalar parameter types are available to
+    ///          nested expression and member-resolution scans.
+    /// @param decl FUNCTION declaration whose ordered parameters seed symbols.
     void before(const FunctionDecl &decl) {
         for (const auto &p : decl.params) {
             if (!p.objectClass.empty()) {
@@ -805,6 +825,8 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
         lowerer_.requireArrayOobPanic();
     }
 
+    /// @brief Records ownership helpers for assignment to a member field.
+    /// @param access Member target whose resolved field type is inspected.
     void handleLetMemberTarget(const MemberAccessExpr &access) {
         if (!access.base)
             return;
@@ -856,10 +878,15 @@ class RuntimeNeedsScanner final : public BasicAstWalker<RuntimeNeedsScanner> {
             lowerer_.setSymbolType(var->name, Type::Str);
     }
 
+    /// Borrowed lowerer receiving symbol and runtime requirement updates.
     Lowerer &lowerer_;
+    /// Procedure-aware facade used to record referenced scalars and arrays.
     ProcedureSymbolTracker tracker_;
+    /// Read-only symbol query facade used for type and ownership decisions.
     BasicSymbolQuery query_;
+    /// INPUT destination names retained between before/after hooks.
     std::vector<std::string> inputVarNames_{};
+    /// Positive while traversing assignment targets, suppressing rvalue needs.
     int lvalueDepth_{0};
 };
 

@@ -13,6 +13,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements analysis cache invalidation and manager construction.
+/// @details Preservation summaries are translated into precise module and
+///          per-function cache erasure while retaining still-live results.
+
 #include "il/transform/AnalysisManager.hpp"
 
 #include "il/core/Function.hpp"
@@ -135,6 +140,7 @@ class AnalysisCacheInvalidator {
                 changedFunctions.insert(&fn);
         }
 
+        /// Erase dead or explicitly changed functions from one analysis cache.
         auto eraseChangedFunctions =
             [&](std::unordered_map<const core::Function *, detail::AnalysisValue>
                     &cacheForAnalysis) {

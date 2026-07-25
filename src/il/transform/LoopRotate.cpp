@@ -72,6 +72,10 @@ using namespace il::core;
 namespace il::transform {
 namespace {
 
+/// @brief Find a block's current position in a function.
+/// @param function Function whose block vector is searched.
+/// @param label Label of the desired block.
+/// @return Block index, or `SIZE_MAX` when @p label is absent.
 size_t findBlockIndex(const Function &function, const std::string &label) {
     for (size_t i = 0; i < function.blocks.size(); ++i) {
         if (function.blocks[i].label == label)
@@ -80,9 +84,14 @@ size_t findBlockIndex(const Function &function, const std::string &label) {
     return SIZE_MAX;
 }
 
+/// @brief Derive a block label that is unused in a function.
+/// @param function Function defining the label namespace.
+/// @param base Preferred label before collision suffixes.
+/// @return @p base or a dot-suffixed variant unique within @p function.
 std::string makeUniqueLabel(const Function &function, const std::string &base) {
     std::string candidate = base;
     unsigned suffix = 0;
+    /// Return whether the candidate label is already present.
     auto labelExists = [&](const std::string &label) {
         for (const auto &block : function.blocks) {
             if (block.label == label)
@@ -101,6 +110,10 @@ std::string makeUniqueLabel(const Function &function, const std::string &base) {
 ///          by a cbr terminator. All instructions before the cbr must be pure
 ///          (comparisons, arithmetic, casts) so they can be safely duplicated
 ///          into the latch block.
+/// @param header Candidate loop header.
+/// @param loop Loop membership used to distinguish the body and exit successors.
+/// @return `true` when the header has one in-loop and one exit edge and all
+///         instructions before the branch are duplicable and non-trapping.
 bool isRotatableHeader(const BasicBlock &header, const Loop &loop) {
     if (header.instructions.empty())
         return false;
@@ -186,6 +199,10 @@ Instr cloneInstr(const Instr &src,
     return clone;
 }
 
+/// @brief Record a name for a newly allocated SSA id.
+/// @param function Function whose value-name table is extended.
+/// @param id Temporary or block-parameter id to name.
+/// @param name Name moved into the table entry.
 void setValueName(Function &function, unsigned id, std::string name) {
     if (function.valueNames.size() <= id)
         function.valueNames.resize(id + 1);
@@ -193,7 +210,13 @@ void setValueName(Function &function, unsigned id, std::string name) {
 }
 
 /// @brief Attempt to rotate a single loop.
-/// @return True if the loop was rotated.
+/// @param function Function containing the loop and receiving all CFG/SSA edits.
+/// @param loop Loop description obtained before this rewrite attempt.
+/// @return `true` if the loop was rotated.
+/// @details Validates the complete loop shape before mutation, restores checked
+///          arithmetic whose range proof could be invalidated, clones the header
+///          test into a new guard and the latch, and threads any live header
+///          parameters through the rotated body.
 bool rotateLoop(Function &function, const Loop &loop) {
     // Require single latch and single exit for safety
     if (loop.latchLabels.size() != 1)
@@ -257,9 +280,13 @@ bool rotateLoop(Function &function, const Loop &loop) {
         return false;
 
     // Collect outside-loop predecessors of the header (entry edges)
+    /// @brief Stable indices identifying an external CFG edge into the header.
     struct EntryEdge {
+        /// Index of the predecessor block.
         size_t blockIdx;
+        /// Index of its terminator instruction.
         size_t instrIdx;
+        /// Successor slot that names the old header.
         size_t labelIdx;
     };
 
@@ -295,9 +322,11 @@ bool rotateLoop(Function &function, const Loop &loop) {
     // conservatively decline to rotate when a header instruction result is live
     // outside the header, when a header param is used outside the loop body
     // region, or when the body successor has an unexpected predecessor.
+    /// Return whether a value directly refers to the requested temporary.
     auto valueRefs = [](const Value &v, unsigned id) {
         return v.kind == Value::Kind::Temp && v.id == id;
     };
+    /// Return whether an instruction operand or branch argument refers to an id.
     auto instrRefs = [&](const Instr &ins, unsigned id) {
         for (const auto &op : ins.operands)
             if (valueRefs(op, id))
@@ -373,6 +402,7 @@ bool rotateLoop(Function &function, const Loop &loop) {
     // are unchanged. Restore checked form before committing the CFG rewrite;
     // a later CheckOpt pass may demote instructions whose proof survives the
     // rotated shape.
+    /// Restore trapping signed arithmetic before discarding its edge-range proof.
     const auto restoreCheckedArithmetic = [](Instr &instr) {
         switch (instr.op) {
             case Opcode::Add:
@@ -503,6 +533,7 @@ bool rotateLoop(Function &function, const Loop &loop) {
         // Append incoming values for the new params on the guard and latch edges
         // to the body. Map any header-param-valued arg through oldToNew so the
         // back-edge passes the body's current value, not the now-dead header id.
+        /// Append reconstructed parameter values to every edge targeting the body.
         auto threadArgs = [&](Instr &term, const std::unordered_map<unsigned, Value> &remap) {
             for (size_t li = 0; li < term.labels.size(); ++li) {
                 if (term.labels[li] != bodySuccLabel)
@@ -547,10 +578,12 @@ bool rotateLoop(Function &function, const Loop &loop) {
 
 } // namespace
 
+/// @copydoc LoopRotate::id()
 std::string_view LoopRotate::id() const {
     return "loop-rotate";
 }
 
+/// @copydoc LoopRotate::run()
 PreservedAnalyses LoopRotate::run(Function &function, AnalysisManager &analysis) {
     bool changed = false;
     for (;;) {

@@ -93,12 +93,21 @@ typedef int32_t vaud_voice_id;
 /// @details Called by the software mixer while it holds the ZannaAUD state lock.
 ///          Implementations must not allocate and should return quickly. Returning
 ///          zero routes the group directly to the master mix.
+/// @param userdata Opaque pointer supplied during processor registration.
+/// @param group_id Logical mix group being queried.
+/// @return Nonzero when the group should be routed through @c process_fn.
 typedef int (*vaud_group_effects_query_fn)(void *userdata, int64_t group_id);
 
 /// @brief Process one logical mix group bus in-place.
 /// @details Samples are interleaved floating-point PCM in the conventional
 ///          `[-1.0, 1.0]` range. Called by the software mixer after summing the
 ///          group bus and before adding it to the master accumulator.
+/// @param userdata Opaque pointer supplied during processor registration.
+/// @param group_id Logical mix group represented by @p samples.
+/// @param samples Mutable interleaved bus buffer processed in place.
+/// @param frames Number of sample frames in the buffer.
+/// @param channels Interleaved channel count.
+/// @param sample_rate Output sample rate in hertz.
 typedef void (*vaud_group_effects_process_fn)(void *userdata,
                                               int64_t group_id,
                                               float *samples,
@@ -229,6 +238,7 @@ void vaud_detach_sound(vaud_sound_t sound);
 
 /// @brief Return non-zero when a sound is still attached to a live context.
 /// @param sound Sound to inspect (may be NULL).
+/// @return 1 when attached to a context that is not being destroyed; otherwise 0.
 int vaud_sound_is_attached(vaud_sound_t sound);
 
 /// @brief Play a sound effect.
@@ -267,6 +277,11 @@ vaud_voice_id vaud_play_ex_group(vaud_sound_t sound, float volume, float pan, in
 vaud_voice_id vaud_play_loop(vaud_sound_t sound, float volume, float pan);
 
 /// @brief Play a looping sound effect with logical mix-group routing.
+/// @param sound Sound to play.
+/// @param volume Playback volume, normalized like vaud_play_ex().
+/// @param pan Stereo pan, normalized like vaud_play_ex().
+/// @param group_id Logical group routed through optional group processing.
+/// @return Voice ID for controlling playback, or VAUD_INVALID_VOICE on failure.
 vaud_voice_id vaud_play_loop_group(vaud_sound_t sound, float volume, float pan, int64_t group_id);
 
 /// @brief Stop a playing voice.
@@ -290,6 +305,9 @@ void vaud_set_voice_volume(vaud_context_t ctx, vaud_voice_id voice, float volume
 void vaud_set_voice_pan(vaud_context_t ctx, vaud_voice_id voice, float pan);
 
 /// @brief Move a currently playing voice to a logical mix group.
+/// @param ctx Audio context.
+/// @param voice Voice ID to reroute.
+/// @param group_id New logical mix-group identifier.
 void vaud_set_voice_group(vaud_context_t ctx, vaud_voice_id voice, int64_t group_id);
 
 /// @brief Check if a voice is still playing.
@@ -316,21 +334,39 @@ vaud_voice_id vaud_play_ex2(vaud_sound_t sound, float volume, float pan, float p
 void vaud_set_voice_pitch(vaud_context_t ctx, vaud_voice_id voice, float pitch);
 
 /// @brief Get the playback-rate (pitch) multiplier of a voice (1.0 default).
+/// @param ctx Audio context.
+/// @param voice Voice ID to query.
+/// @return Current multiplier, or 1.0 for an invalid/unavailable voice.
 float vaud_get_voice_pitch(vaud_context_t ctx, vaud_voice_id voice);
 
 /// @brief Set a direct per-voice one-pole lowpass cutoff in Hz.
 /// @details Values <= 0 (or NaN) bypass the filter. Composes with occlusion:
 ///          the effective cutoff is the lower of the two.
+/// @param ctx Audio context.
+/// @param voice Voice ID to update.
+/// @param cutoff_hz Requested cutoff, or a nonpositive value to bypass.
 void vaud_set_voice_lowpass(vaud_context_t ctx, vaud_voice_id voice, float cutoff_hz);
 
 /// @brief Set the occlusion amount of a voice (0 = open .. 1 = fully occluded).
 /// @details Maps to a perceptual lowpass sweep (~22 kHz down to ~800 Hz) plus
 ///          up to -6 dB of gain reduction. Changes are smoothed inside the
 ///          mixer (~80 ms) so gameplay-driven toggles never zipper.
+/// @param ctx Audio context.
+/// @param voice Voice ID to update.
+/// @param amount Occlusion amount; finite values are clamped to [0, 1], while
+///               nonpositive and NaN values become zero.
 void vaud_set_voice_occlusion(vaud_context_t ctx, vaud_voice_id voice, float amount);
+
 /// @brief Enable/disable per-voice RMS metering (zero mixing cost when off).
+/// @param ctx Audio context.
+/// @param voice Voice ID to update.
+/// @param enabled Nonzero to enable metering; zero to disable and clear level.
 void vaud_set_voice_metering(vaud_context_t ctx, vaud_voice_id voice, int enabled);
+
 /// @brief RMS source level (pre-gain) of the last mixed block; 0 when unmetered.
+/// @param ctx Audio context.
+/// @param voice Voice ID to query.
+/// @return Last metered source RMS, or 0 for invalid, stopped, or unmetered voices.
 float vaud_get_voice_level(vaud_context_t ctx, vaud_voice_id voice);
 
 /// @brief Register, replace, or remove a sidechain-style group ducking rule.
@@ -339,6 +375,12 @@ float vaud_get_voice_level(vaud_context_t ctx, vaud_voice_id voice);
 ///          recovers to unity over @p release_sec. Re-registering the same
 ///          (trigger, target) pair replaces the rule; amount <= 0 removes it.
 ///          At most VAUD-internal rule-table capacity (8) rules are active.
+/// @param ctx Audio context.
+/// @param trigger_group Group whose audible voices activate ducking.
+/// @param target_group Group whose gain is reduced.
+/// @param amount Maximum gain reduction, clamped to [0, 1]; nonpositive removes.
+/// @param attack_sec Positive fade-down time; invalid values become 1 ms.
+/// @param release_sec Positive recovery time; invalid values become 1 ms.
 void vaud_set_group_duck(vaud_context_t ctx,
                          int64_t trigger_group,
                          int64_t target_group,
@@ -362,10 +404,19 @@ vaud_music_t vaud_load_music(vaud_context_t ctx, const char *path);
 
 /// @brief Load a Vorbis logical stream from an OGG container for streaming music playback.
 /// @details Accepts plain `.ogg` audio files and mixed logical-stream containers
-///          such as `.ogv`, selecting the first Vorbis stream it finds.
+///          such as `.ogv`, selecting the first Vorbis stream it finds. Mono or
+///          stereo input is resampled to the configured output sample rate.
+/// @param ctx Audio context that owns and services the stream.
+/// @param path Path to the OGG container.
+/// @return Music handle on success, or NULL on open, decode, format, or allocation failure.
 vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path);
 
 /// @brief Load an MP3 file for streaming music playback.
+/// @details Opens decoder state and buffers decoded mono or stereo frames for
+///          resampling to the configured output rate.
+/// @param ctx Audio context that owns and services the stream.
+/// @param path Path to the MP3 file.
+/// @return Music handle on success, or NULL on open, format, or allocation failure.
 vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path);
 
 /// @brief Service streaming music buffers outside the audio render callback.
@@ -392,6 +443,7 @@ void vaud_detach_music(vaud_music_t music);
 
 /// @brief Return non-zero when a music stream is still attached to a live context.
 /// @param music Music stream to inspect (may be NULL).
+/// @return 1 when attached to a context that is not being destroyed; otherwise 0.
 int vaud_music_is_attached(vaud_music_t music);
 
 /// @brief Start music playback.
@@ -426,6 +478,8 @@ void vaud_music_set_loop(vaud_music_t music, int loop);
 void vaud_music_set_volume(vaud_music_t music, float volume);
 
 /// @brief Assign a music stream to a logical mix group.
+/// @param music Music handle; NULL is ignored.
+/// @param group_id New logical mix-group identifier.
 void vaud_music_set_group(vaud_music_t music, int64_t group_id);
 
 /// @brief Get music playback volume.
@@ -487,6 +541,10 @@ void vaud_get_stats(vaud_context_t ctx, vaud_stats_t *out_stats);
 ///          callbacks are invoked only from the software mixer while the audio
 ///          context mutex is held, so they must not call back into ZannaAUD,
 ///          perform allocation, blocking I/O, or context destruction.
+/// @param ctx Audio context whose group processor is replaced.
+/// @param query_fn Optional fast predicate selecting processed groups.
+/// @param process_fn In-place processor, or NULL to clear all callback state.
+/// @param userdata Opaque callback state retained only while @p process_fn is set.
 void vaud_set_group_effects_processor(vaud_context_t ctx,
                                       vaud_group_effects_query_fn query_fn,
                                       vaud_group_effects_process_fn process_fn,

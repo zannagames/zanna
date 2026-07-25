@@ -6,7 +6,21 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/sem/TypeRegistry.cpp
-// Purpose: Implements seeding of catalog-only built-in namespaced runtime types.
+// Purpose: Implement case-insensitive runtime type classification and seed
+//          catalog-only built-in names into the BASIC namespace registry.
+// Key invariants:
+//   * Qualified type keys are stored in lowercase.
+//   * Every registered built-in type has its namespace prefix chain installed.
+//   * BASIC STRING compatibility aliases remain distinct from the canonical
+//     Zanna.System.String classification.
+// Ownership: TypeRegistry owns its classification map; namespace seeding copies
+//            names into a caller-owned NamespaceRegistry.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Implements BASIC runtime type classification and namespace seeding.
 //
 //===----------------------------------------------------------------------===//
 
@@ -54,6 +68,8 @@ static void ensureNamespaceChain(NamespaceRegistry &registry, const std::string 
 } // namespace
 
 /// @brief Lowercase a string to form the case-insensitive lookup key.
+/// @param s Qualified or aliased type spelling to normalize.
+/// @return Lowercase copy used as a registry key.
 std::string TypeRegistry::toLower(std::string_view s) {
     std::string out;
     out.reserve(s.size());
@@ -106,6 +122,7 @@ TypeKind TypeRegistry::kindOf(std::string_view qualifiedName) const {
 }
 
 /// @brief Return the process-wide runtime TypeRegistry singleton.
+/// @return Reference to the lazily initialized type registry.
 TypeRegistry &runtimeTypeRegistry() {
     static TypeRegistry reg;
     return reg;

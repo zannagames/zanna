@@ -515,7 +515,7 @@ Built artifacts are structurally and payload-verified by default: macOS ZIPs mus
 
 ### zanna asset
 
-Offline 3D asset conditioning. `zanna asset bake <input> <output.vscn>` loads a
+Offline 3D asset conditioning. `zanna asset bake <input> <output.scene3d>` (legacy `.vscn` also accepted) loads a
 model (glTF/GLB/FBX/OBJ/STL) through the full runtime import pipeline —
 including the meshopt, Draco, and Basis Universal decoders and the import
 options — optionally generates LOD chains, and saves the complete `SceneAsset`

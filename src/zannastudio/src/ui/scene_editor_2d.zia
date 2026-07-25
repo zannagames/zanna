@@ -248,6 +248,7 @@ class SceneEditor2D {
     expose GUI.TextInput layerAssetInput;
     expose GUI.Button chooseLayerAssetButton;
     expose scene_asset_browser.SceneAssetBrowser tiledAssetBrowser;
+    expose scene_asset_browser.SceneAssetBrowser componentAssetBrowser;
     expose scene_property_inspector_2d.ScenePropertyInspector2D
         sceneProperties;
     expose scene_tileset_inspector_2d.SceneTilesetInspector2D
@@ -411,6 +412,8 @@ class SceneEditor2D {
         layerAssetInput = null;
         chooseLayerAssetButton = null;
         tiledAssetBrowser = new scene_asset_browser.SceneAssetBrowser();
+        componentAssetBrowser =
+            new scene_asset_browser.SceneAssetBrowser();
         sceneProperties =
             new scene_property_inspector_2d.ScenePropertyInspector2D();
         tilesetInspector =
@@ -850,6 +853,13 @@ class SceneEditor2D {
             inspector,
             "Project components",
             "2D object component template");
+        var componentAssetHost =
+            GUI.GroupBox.New(inspector, "Component asset field");
+        componentAssetBrowser.Setup(
+            componentAssetHost,
+            "Browse Asset Field...",
+            file_utils.AssetKindExtensions("any"),
+            "Use In Field Draft");
 
         detailLabel = GUI.Label.New(inspector, "");
         detailLabel.SetWordWrap(true);
@@ -934,6 +944,13 @@ class SceneEditor2D {
         }
         tiledAssetBrowser.SetLibraryRoot(ComponentSchemaRoot());
         tilesetInspector.assetBrowser.SetLibraryRoot(ComponentSchemaRoot());
+        componentAssetBrowser.SetLibraryRoot(ComponentSchemaRoot());
+        var componentAssetPath = componentAssetBrowser.Pump(
+            projectManager,
+            scene != null and SelectedAssetComponentField() != null);
+        if componentAssetPath != "" {
+            ApplyComponentAssetPath(componentAssetPath);
+        }
         var projectImportPath = tiledAssetBrowser.Pump(
             projectManager, currentDoc != null);
         if projectImportPath != "" {
@@ -5396,10 +5413,52 @@ class SceneEditor2D {
         } else {
             objectPropertyValueInput.Focus();
         }
-        detailLabel.SetText(
-            "Editing " + field.label
-            + " in the raw typed-property controls.");
+        if field.kind == "asset" {
+            componentAssetBrowser.SetExtensions(
+                file_utils.AssetKindListExtensions(field.assetKinds));
+            componentAssetBrowser.Open();
+            detailLabel.SetText(
+                "Editing " + field.label
+                + ". Browse the filtered project assets or type a "
+                + "reference in the raw typed-property controls.");
+        } else {
+            detailLabel.SetText(
+                "Editing " + field.label
+                + " in the raw typed-property controls.");
+        }
         return true;
+    }
+
+    /// @brief Return the selected asset-kind schema field, or null.
+    hide func SelectedAssetComponentField()
+        -> scene_component_schema.SceneComponentField {
+        if componentPalette == null { return null; }
+        var field = componentPalette.SelectedField();
+        if field == null or field.kind != "asset" { return null; }
+        return field;
+    }
+
+    /// @brief Stage one browsed asset path into the property draft.
+    /// @details Fixes the ADR 0178 deferral for 2D objects: the bounded
+    ///          workspace browser stages a portable reference and the
+    ///          canonical write still flows through Save Property.
+    hide func ApplyComponentAssetPath(assetPath: String) {
+        var field = SelectedAssetComponentField();
+        if field == null { return; }
+        var documentPath = "";
+        if currentDoc != null { documentPath = currentDoc.filePath; }
+        var portable = scene_asset_browser.PortableReferencePath(
+            assetPath, documentPath);
+        if portable == "" { return; }
+        objectPropertyKeyInput.SetText(field.key);
+        SelectPropertyType(
+            scene_component_schema.ValueKind(field.kind));
+        objectPropertyValueInput.SetText(portable);
+        UpdatePropertyValueControl();
+        objectPropertyValueInput.Focus();
+        detailLabel.SetText(
+            "Staged " + portable + " into " + field.label
+            + ". Save the property draft to commit one undoable edit.");
     }
 
     /// @brief Keep multi-object layout affordances selection-count truthful.

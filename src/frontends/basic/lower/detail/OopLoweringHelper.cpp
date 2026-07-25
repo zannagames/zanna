@@ -4,13 +4,17 @@
 // See LICENSE in the project root for license information.
 //
 // File: src/frontends/basic/lower/detail/OopLoweringHelper.cpp
-//
-// Summary:
-//   Implements OopLoweringHelper which coordinates OOP construct lowering.
-//   This helper delegates to the Lowerer's OOP methods while providing
-//   a unified interface for class, method, and object operations.
+// Purpose: Implements the internal object-oriented lowering forwarding facade.
+// Key invariants: Explicit-context overloads use the caller's OOP state;
+//                 convenience overloads use Lowerer's active state.
+// Ownership/Lifetime: Borrows Lowerer and OOP context state; owns no AST or IR.
+// Links: src/frontends/basic/lower/detail/LowererDetail.hpp,
+//        src/frontends/basic/OopLoweringContext.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements internal forwarding for BASIC OOP lowering.
 
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/OopLoweringContext.hpp"
@@ -18,6 +22,8 @@
 
 namespace il::frontends::basic::lower::detail {
 
+/// @brief Creates an OOP helper over an authorized Lowerer facade.
+/// @param access Borrowed forwarding facade retained by value.
 OopLoweringHelper::OopLoweringHelper(Lowerer::DetailAccess access) noexcept : access_(access) {}
 
 /// @brief Lower New Expr.

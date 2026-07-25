@@ -51,7 +51,8 @@ struct LateCleanupStats {
 class LateCleanup : public ModulePass {
   public:
     /// @brief Optionally attach a stats sink to observe size deltas.
-    /// @param stats Struct that will be populated during @ref run.
+    /// @param stats Borrowed struct populated during @ref run, or null to disable collection.
+    /// @note A non-null sink must remain alive until the pass finishes running.
     void setStats(LateCleanupStats *stats) {
         stats_ = stats;
     }

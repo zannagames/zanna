@@ -8,6 +8,12 @@
 /// @file Parser_Decl.cpp
 /// @brief Declaration parsing implementation for the Zia parser.
 ///
+/// @details Parses module headers and binds, dispatches top-level declarations,
+///          and builds functions, nominal types, namespaces, aliases, globals,
+///          members, properties, and enums. Shared helpers handle generic
+///          constraints, parameters, visibility/modifier validation, qualified
+///          names, and interface lists.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Parser.hpp"
@@ -369,6 +375,7 @@ DeclPtr Parser::parseFunctionDecl(bool isForeign) {
 }
 
 /// @brief Parse a comma-separated list of function or method parameters.
+/// @param[out] params Destination vector populated in declaration order.
 /// @details Supports `name: Type` parameters, including optional types (`Type?`),
 ///          generics (`List[T]`), variadics, and default values.
 /// @return True on success, false on parse error.
@@ -438,6 +445,7 @@ bool Parser::parseParameters(std::vector<Param> &params) {
     return true;
 }
 
+/// @brief Parse and return a complete parameter list.
 /// @return The parsed parameter list, or empty vector on error.
 std::vector<Param> Parser::parseParameters() {
     std::vector<Param> params;
@@ -508,6 +516,9 @@ std::vector<std::string> Parser::parseGenericParamsWithConstraints(
     return params;
 }
 
+/// @brief Parse a dot-separated identifier path.
+/// @param what Human-readable construct name used in diagnostics.
+/// @return Parsed qualified name, or an empty string on error.
 std::string Parser::parseQualifiedIdentifierString(const char *what) {
     if (!check(TokenKind::Identifier)) {
         error(std::string("expected ") + what);
@@ -763,8 +774,8 @@ DeclPtr Parser::parseInterfaceDecl() {
     return iface;
 }
 
-/// @brief Parse a namespace declaration (namespace Foo.Bar { declarations... }).
-/// @return The parsed NamespaceDecl, or nullptr on error.
+/// @brief Parse a type alias declaration (`type Name = Target;`).
+/// @return The parsed TypeAliasDecl, or nullptr on error.
 DeclPtr Parser::parseTypeAlias() {
     SourceLoc loc = peek().loc;
     advance(); // consume 'type'
@@ -788,6 +799,11 @@ DeclPtr Parser::parseTypeAlias() {
     return std::make_unique<TypeAliasDecl>(loc, std::move(name), std::move(target));
 }
 
+/// @brief Parse a namespace declaration with nested declarations.
+/// @return The parsed NamespaceDecl, or nullptr on error.
+/// @details Accepts qualified namespace names and enforces the shared
+///          statement/namespace nesting limit while recovering from malformed
+///          nested declarations.
 DeclPtr Parser::parseNamespaceDecl() {
     if (++stmtDepth_ > kMaxStmtDepth) {
         --stmtDepth_;
@@ -798,6 +814,7 @@ DeclPtr Parser::parseNamespaceDecl() {
     struct DepthGuard {
         unsigned &d;
 
+        /// @brief Restore the namespace-recursion counter on every exit path.
         ~DepthGuard() {
             --d;
         }
@@ -1086,6 +1103,8 @@ DeclPtr Parser::parsePropertyDecl() {
     return prop;
 }
 
+/// @brief Parse an enum declaration and its optional explicit variant values.
+/// @return The parsed EnumDecl, or nullptr on error.
 DeclPtr Parser::parseEnumDecl() {
     auto loc = peek().loc;
     expect(TokenKind::KwEnum, "enum");

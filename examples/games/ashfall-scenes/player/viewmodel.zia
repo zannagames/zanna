@@ -1,0 +1,108 @@
+// =============================================================================
+// player/viewmodel.zia — first-person weapon mount (procedural motion stack)
+// =============================================================================
+//
+// Establishes the view-model pass call order (E18: after the scene/effects,
+// before the overlay) and the additive procedural motion stack — sway (look-lag
+// spring), bob (Lissajous from move speed), landing-dip share, recoil kick, ADS
+// centering. Weapons (13/14) fill the actual weapon mesh + recoil drive; this
+// module owns the socket transform and the feel numbers.
+// =============================================================================
+module viewmodel;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+
+class ViewModel {
+    // Sway spring state (2D).
+    hide Float swayX; hide Float swayY;
+    hide Float swayVX; hide Float swayVY;
+    // Bob phase.
+    hide Float bobPhase;
+    hide Float bobAmt;
+    // Recoil kick socket (weapons push; springs back).
+    hide Float kick;
+    hide Float kickVel;
+    // Composite socket offset (local space, applied at draw).
+    hide Float offX; hide Float offY; hide Float offZ;
+    hide Float adsT;
+
+    expose func init() {
+        swayX = 0.0; swayY = 0.0; swayVX = 0.0; swayVY = 0.0;
+        bobPhase = 0.0; bobAmt = 0.0;
+        kick = 0.0; kickVel = 0.0;
+        offX = 0.0; offY = 0.0; offZ = 0.0;
+        adsT = 0.0;
+    }
+
+    // Weapons call this on fire to add recoil to the socket.
+    expose func addKick(amount: Float) {
+        kickVel = kickVel + amount;
+    }
+
+    // Fixed-tick update. lookDX/lookDY = this tick's look delta (deg); moveSpeed
+    // drives bob; adsT centers the weapon.
+    expose func updateSim(dt: Float, lookDX: Float, lookDY: Float,
+                          moveSpeed: Float, grounded: Boolean, adsBlend: Float) {
+        adsT = adsBlend;
+
+        // Sway: a 2D spring lagging the look input (k=140, zeta~0.9).
+        var k = 140.0;
+        var c = 21.0;
+        var targetX = 0.0 - lookDX * 0.02;
+        var targetY = 0.0 - lookDY * 0.02;
+        swayVX = swayVX + (targetX - swayX) * k * dt - swayVX * c * dt;
+        swayVY = swayVY + (targetY - swayY) * k * dt - swayVY * c * dt;
+        swayX = swayX + swayVX * dt;
+        swayY = swayY + swayVY * dt;
+        swayX = M.clampf(swayX, -0.05, 0.05);
+        swayY = M.clampf(swayY, -0.05, 0.05);
+
+        // Bob: Lissajous from move speed (suppressed while airborne / ADS).
+        var speedN = M.clampf(moveSpeed / config.SPEED_SPRINT, 0.0, 1.0);
+        if grounded == false { speedN = 0.0; }
+        bobAmt = M.approach(bobAmt, speedN, 0.45, dt);
+        bobPhase = bobPhase + moveSpeed * dt * 3.2;
+        var adsDamp = 1.0 - adsT * 0.82;
+        var bobX = Math.Sin(bobPhase) * 0.028 * bobAmt * adsDamp;
+        var bobY = Math.Sin(bobPhase * 2.0 + 0.4) * 0.018 * bobAmt * adsDamp;
+        var bobZ = Math.Cos(bobPhase) * 0.010 * bobAmt * adsDamp;
+
+        // Recoil kick spring back to 0.
+        kickVel = kickVel + (0.0 - kick) * 120.0 * dt - kickVel * 16.0 * dt;
+        kick = kick + kickVel * dt;
+
+        // Compose the socket offset (ADS pulls toward center + slightly forward).
+        var hipX = 0.15; var hipY = -0.17 - speedN * 0.018; var hipZ = -0.31;
+        var adsX = 0.0;  var adsY = -0.05; var adsZ = -0.22;
+        offX = M.lerpf(hipX, adsX, adsT) + swayX + bobX;
+        offY = M.lerpf(hipY, adsY, adsT) + swayY + bobY;
+        offZ = M.lerpf(hipZ, adsZ, adsT) + bobZ - kick * 0.06;
+    }
+
+    expose func getOffX() -> Float { return offX; }
+    expose func getOffY() -> Float { return offY; }
+    expose func getOffZ() -> Float { return offZ; }
+    expose func getKick() -> Float { return kick; }
+
+    // Draw the weapon in the view-model pass. Weapons pass their mesh+material;
+    // here for P1b it is a no-op until weapons exist. The pass uses E18's
+    // BeginViewModel so the weapon never clips world geometry.
+    expose func draw(canvas: G3D.Canvas3D, cam: G3D.Camera3D,
+                     mesh: G3D.Mesh3D, mat: G3D.Material3D, hasWeapon: Boolean) {
+        if hasWeapon == false { return; }
+        G3D.Canvas3D.BeginViewModel(canvas, cam, config.CAMERA_FOV * 0.75);
+        // The weapon transform is built camera-relative by the weapon system;
+        // for now draw at the socket offset in front of the camera.
+        var fwd = cam.Forward;
+        var eye = cam.Position;
+        var tx = Math.Vec3.get_X(eye) + Math.Vec3.get_X(fwd) + offX;
+        var ty = Math.Vec3.get_Y(eye) + Math.Vec3.get_Y(fwd) + offY;
+        var tz = Math.Vec3.get_Z(eye) + Math.Vec3.get_Z(fwd) + offZ;
+        var xf = Math.Mat4.Translate(tx, ty, tz);
+        G3D.Canvas3D.DrawMesh(canvas, mesh, xf, mat);
+        G3D.Canvas3D.End(canvas);
+    }
+}

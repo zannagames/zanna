@@ -45,10 +45,13 @@ using il::support::makeError;
 ///          canonical parameter pair, and reports descriptive diagnostics when
 ///          invariants are violated. On success the helper returns the ids of
 ///          the `%err` and `%tok` parameters so consumers can wire them into
-///          downstream analyses.
+///          downstream analyses. An `eh.entry` appearing after the first
+///          instruction is reported even though the block is not
+///          handler-shaped.
 /// @param fn Function owning the block, used for diagnostics.
 /// @param bb Candidate handler block to validate.
-/// @return Optional handler signature when the block is well-formed.
+/// @return Empty optional for an ordinary block, a populated signature for a
+///         valid handler, or a diagnostic for malformed handler structure.
 Expected<std::optional<HandlerSignature>> analyzeHandlerBlock(const Function &fn,
                                                               const BasicBlock &bb) {
     if (bb.instructions.empty())

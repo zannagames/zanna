@@ -1,0 +1,165 @@
+// =============================================================================
+// fx/sky.zia — per-level procedural skyboxes (direction-sampled gradients)
+// =============================================================================
+//
+// Builds a CubeMap3D per level from the level_env palette: each texel
+// reconstructs its world direction (face+uv mapping proven in ridgebound
+// water_sky.zia) and samples an analytic sky — zenith→horizon gradient +
+// squared horizon-haze band + sun glow + sin/cos cloud octaves; below the
+// horizon it settles to the ground color. Dark skies (L9) get a hashed
+// starfield. Faces are 256px interactive / 32px headless (probe wall-time).
+// The cubemap is cached per level and doubles as the env-map for reflective
+// materials; the game's fog + clear color use the same horizon color.
+// =============================================================================
+module sky;
+
+bind Zanna.Graphics as Gfx;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../world/level_env" as level_env;
+
+class SkyFactory {
+    hide level_env.LevelEnv env;
+    hide List[Integer] cachedFor;      // level ids with a built cubemap
+    hide List[G3D.CubeMap3D] cachedMap;
+    hide Integer faceSize;
+
+    expose func init() {
+        cachedFor = [];
+        cachedMap = [];
+        faceSize = 256;
+    }
+
+    expose func setup(e: level_env.LevelEnv, headless: Boolean) {
+        env = e;
+        if headless { faceSize = 32; }
+    }
+
+    // Build (or fetch cached) the skybox for a level.
+    expose func build(levelId: Integer) -> G3D.CubeMap3D {
+        var i = 0;
+        while i < cachedFor.Count {
+            if cachedFor[i] == levelId { return cachedMap[i]; }
+            i = i + 1;
+        }
+        var px = face(levelId, 0);
+        var nx = face(levelId, 1);
+        var py = face(levelId, 2);
+        var ny = face(levelId, 3);
+        var pz = face(levelId, 4);
+        var nz = face(levelId, 5);
+        var map = G3D.CubeMap3D.New(px, nx, py, ny, pz, nz);
+        cachedFor.Add(levelId);
+        cachedMap.Add(map);
+        return map;
+    }
+
+    hide func face(levelId: Integer, faceId: Integer) -> Gfx.Pixels {
+        var size = faceSize;
+        var img = Gfx.Pixels.New(size, size);
+        var pyi = 0;
+        while pyi < size {
+            var pxi = 0;
+            while pxi < size {
+                var u = (((pxi + 0.5) / (size + 0.0)) * 2.0) - 1.0;
+                var v = (((pyi + 0.5) / (size + 0.0)) * 2.0) - 1.0;
+                Gfx.Pixels.Set(img, pxi, pyi, texel(levelId, faceId, u, v));
+                pxi = pxi + 1;
+            }
+            pyi = pyi + 1;
+        }
+        return img;
+    }
+
+    // Face+uv -> world direction (ridgebound-proven mapping) -> sky sample.
+    hide func texel(levelId: Integer, faceId: Integer, u: Float, v: Float) -> Integer {
+        var dx = 0.0; var dy = 0.0; var dz = 0.0;
+        if faceId == 0 { dx = 1.0; dy = 0.0 - v; dz = 0.0 - u; }
+        else if faceId == 1 { dx = -1.0; dy = 0.0 - v; dz = u; }
+        else if faceId == 2 { dx = u; dy = 1.0; dz = v; }
+        else if faceId == 3 { dx = u; dy = -1.0; dz = 0.0 - v; }
+        else if faceId == 4 { dx = u; dy = 0.0 - v; dz = 1.0; }
+        else { dx = 0.0 - u; dy = 0.0 - v; dz = -1.0; }
+        var len = Sqrt(dx * dx + dy * dy + dz * dz);
+        if len <= 0.0001 { return pack(0.5, 0.5, 0.5); }
+        return sample(levelId, dx / len, dy / len, dz / len);
+    }
+
+    hide func sample(l: Integer, dx: Float, dy: Float, dz: Float) -> Integer {
+        // Below-horizon: settle toward the ground color.
+        if dy < -0.02 {
+            var down = M.clampf((0.0 - dy) * 2.2, 0.0, 1.0);
+            var gr = M.lerpf(env.horizonR(l), env.groundR(l), down);
+            var gg = M.lerpf(env.horizonG(l), env.groundG(l), down);
+            var gb = M.lerpf(env.horizonB(l), env.groundB(l), down);
+            return pack(gr, gg, gb);
+        }
+        // Zenith gradient.
+        var up = M.smoothstep(0.0, 0.55, dy);
+        var r = M.lerpf(env.horizonR(l), env.zenithR(l), up);
+        var g = M.lerpf(env.horizonG(l), env.zenithG(l), up);
+        var b = M.lerpf(env.horizonB(l), env.zenithB(l), up);
+        // Horizon haze band (squared falloff).
+        var haze = M.clampf(1.0 - M.absf(dy) * 2.4, 0.0, 1.0);
+        haze = haze * haze * 0.22;
+        r = r + haze * env.horizonR(l);
+        g = g + haze * env.horizonG(l);
+        b = b + haze * env.horizonB(l);
+        // Sun glow (dot with -sunDir since sunDir points from sun toward scene).
+        if env.sunIntensity(l) > 0.01 {
+            var sd = normDot(l, dx, dy, dz);
+            if sd > 0.0 {
+                var glow = sd * sd;
+                glow = glow * glow * glow;        // ^6 falloff
+                var k = glow * 0.9;
+                r = r + k * env.sunColR(l);
+                g = g + k * env.sunColG(l);
+                b = b + k * env.sunColB(l);
+                // Hot core.
+                if sd > 0.9985 { r = r + 0.9; g = g + 0.85; b = b + 0.7; }
+            }
+        }
+        // Clouds: 3 sin/cos octaves in direction space, horizon-weighted.
+        var cd = env.cloudDensity(l);
+        if cd > 0.01 {
+            var band = M.clampf(1.0 - M.absf(dy) * 1.4, 0.0, 1.0);
+            var n = Sin(dx * 7.0 + dz * 5.0) * 0.5 + Sin(dx * 13.0 - dz * 11.0 + dy * 6.0) * 0.3 +
+                    Cos(dz * 17.0 + dx * 3.0) * 0.2;
+            var cloudMask = M.smoothstep(0.55 - cd * 0.35, 0.9, (n + 1.0) * 0.5) * band * cd;
+            r = M.lerpf(r, r * 0.4 + 0.55, cloudMask);
+            g = M.lerpf(g, g * 0.4 + 0.55, cloudMask);
+            b = M.lerpf(b, b * 0.4 + 0.58, cloudMask);
+        }
+        // Starfield on dark skies.
+        if env.hasStars(l) && dy > 0.05 {
+            var hx = M.roundi((dx + 1.0) * 271.0);
+            var hz = M.roundi((dz + 1.0) * 353.0);
+            var hy = M.roundi((dy + 1.0) * 197.0);
+            var h = (hx * 73856093 + hz * 19349663 + hy * 83492791) % 100000;
+            if h < 0 { h = 0 - h; }
+            if h > 99720 {
+                var sMag = ((h - 99720) + 0.0) / 280.0;
+                r = r + 0.55 * sMag; g = g + 0.6 * sMag; b = b + 0.7 * sMag;
+            }
+        }
+        return pack(r, g, b);
+    }
+
+    hide func normDot(l: Integer, dx: Float, dy: Float, dz: Float) -> Float {
+        var sx = 0.0 - env.sunDirX(l);
+        var sy = 0.0 - env.sunDirY(l);
+        var sz = 0.0 - env.sunDirZ(l);
+        var slen = Sqrt(sx * sx + sy * sy + sz * sz);
+        if slen < 0.0001 { return 0.0; }
+        return (dx * sx + dy * sy + dz * sz) / slen;
+    }
+
+    hide func pack(r: Float, g: Float, b: Float) -> Integer {
+        var ri = M.clampi(M.roundi(r * 255.0), 0, 255);
+        var gi = M.clampi(M.roundi(g * 255.0), 0, 255);
+        var bi = M.clampi(M.roundi(b * 255.0), 0, 255);
+        return (((ri * 256) + gi) * 256 + bi) * 256 + 255;
+    }
+}

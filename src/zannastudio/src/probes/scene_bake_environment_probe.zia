@@ -1,0 +1,305 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_bake_environment_probe.zia
+// Purpose: Verify the Studio bake, probe-grid, and environment workflow.
+// Key invariants:
+//   - Shared-mesh preflight refuses baking and Make Meshes Unique resolves
+//     it as one exact transaction (no-op aware).
+//   - The chunked bake reports monotone progress, completes inside the
+//     editor pump, and commits charts + atlas + settings as one canonical
+//     transaction whose lightmaps survive VSCN reload.
+//   - Cancel restores the exact prior document bytes.
+//   - Probe grids author as one transaction and Bake Probes writes the
+//     .vlpg sidecar without touching the scene document.
+//   - Environment writes the root env.* convention in one transaction and
+//     the live viewport application never changes canonical bytes.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell and its temporary workspace directory.
+// Links: zannastudio/src/ui/scene_bake_3d.zia,
+//        docs/adr/0188-studio-bake-and-environment-workflow.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_bake_environment_probe;
+
+// ============================================================================
+// MODULE: scene_bake_environment_probe
+// PURPOSE: Regress ADR 0188 end to end on a tiny deterministic fixture.
+//
+// WHERE-THIS-FITS: Display probe registered as
+//          zia_zannastudio_scene_bake_environment.
+//
+// TEACHING-NOTE: The bake asserts persisted artifacts (serialized lightMap
+//          slot, reloaded scene, .vlpg bytes), never just live state — the
+//          runtime baker's determinism is already covered by runtime tests.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_bake_3d";
+bind "../ui/scene_editor_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Terminal = Zanna.Terminal;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+
+func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
+func fail(shell: app_shell.AppShell,
+          workDir: String,
+          reason: String) {
+    if workDir != "" { Dir.RemoveAll(workDir); }
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          doc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(doc);
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Bake Environment Probe", 1180, 780);
+
+    var workDir = TempFile.CreateDirWithPrefix("zannastudio_bake_probe_");
+    if workDir == "" {
+        fail(shell, "", "could not create the bake workspace");
+        return;
+    }
+    var scenePath = Path.Join(workDir, "bake.scene3d");
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    sceneDoc.filePath = scenePath;
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+
+    // Tiny deterministic fixture: two nodes SHARING one mesh + one light.
+    if editor.AddEmptyNode("Floor", -1) < 0
+       or editor.AddEmptyNode("Block", -1) < 0
+       or editor.AddLightNode("Key Light", -1) < 0 {
+        fail(shell, workDir, "could not author the bake fixture");
+        return;
+    }
+    var sharedMesh = Mesh3D.Box(1.0, 0.2, 1.0);
+    editor.flatNodes.get(0).Mesh = sharedMesh;
+    editor.flatNodes.get(1).Mesh = sharedMesh;
+    editor.flatNodes.get(1).SetPosition(0.0, 1.0, 0.0);
+    editor.flatNodes.get(2).SetPosition(0.5, 2.0, 0.5);
+    pump(editor, sceneDoc, shell);
+
+    // Only static nodes participate in bakes: the batch checkbox marks
+    // both mesh nodes in one transaction.
+    var staticSelection: List[Integer] = [];
+    staticSelection.add(0);
+    staticSelection.add(1);
+    editor.SelectSceneNodes(staticSelection, 0);
+    var staticRevisionBaseline = editor.GetRevision();
+    if editor.ApplySelectedStatic(true) == false
+       or editor.GetRevision() != staticRevisionBaseline + 1
+       or editor.flatNodes.get(0).GetStatic() == false
+       or editor.flatNodes.get(1).GetStatic() == false {
+        fail(shell, workDir,
+             "batch static marking was not one exact transaction");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Preflight: shared meshes refuse; Make Unique is one transaction.
+    // ------------------------------------------------------------------
+    var sharedNames = scene_bake_3d.SharedMeshNodeNames(
+        editor.flatNodes);
+    if sharedNames.count() != 2 {
+        fail(shell, workDir,
+             "shared-mesh scan drifted: " + sharedNames.count());
+        return;
+    }
+    if editor.StartBake() {
+        fail(shell, workDir, "bake accepted shared meshes");
+        return;
+    }
+    if editor.IsBakeActive() {
+        fail(shell, workDir, "refused bake still became active");
+        return;
+    }
+    var uniqueRevision = editor.GetRevision();
+    if editor.MakeMeshesUniqueForBaking() == false
+       or editor.GetRevision() != uniqueRevision + 1
+       or editor.flatNodes.get(0).Mesh
+          == editor.flatNodes.get(1).Mesh {
+        fail(shell, workDir,
+             "make-unique was not one exact mesh-copy transaction");
+        return;
+    }
+    if editor.MakeMeshesUniqueForBaking() {
+        fail(shell, workDir, "make-unique no-op still claimed changes");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Cancel: an active bake restores the exact prior document.
+    // ------------------------------------------------------------------
+    editor.bakeSamplesSpinner.SetValue(1.0);
+    editor.bakeBouncesSpinner.SetValue(0.0);
+    editor.bakeTexelsSpinner.SetValue(1.0);
+    pump(editor, sceneDoc, shell);
+    var cancelBaseline = sceneDoc.content;
+    if editor.StartBake() == false or editor.IsBakeActive() == false {
+        fail(shell, workDir, "bake did not start on unique meshes");
+        return;
+    }
+    var cancelEditRevision = editor.GetRevision();
+    if editor.AddEmptyNode("Illegal Mid-Bake", -1) >= 0
+       or editor.GetRevision() != cancelEditRevision {
+        editor.CancelBake();
+        fail(shell, workDir, "edits were accepted during an active bake");
+        return;
+    }
+    editor.CancelBake();
+    if editor.IsBakeActive()
+       or sceneDoc.content != cancelBaseline {
+        fail(shell, workDir, "cancel did not restore the exact document");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Bake to completion inside the pump: one transaction, persisted
+    // lightmaps, monotone progress.
+    // ------------------------------------------------------------------
+    var bakeRevision = editor.GetRevision();
+    if editor.StartBake() == false {
+        fail(shell, workDir, "second bake did not start");
+        return;
+    }
+    var pumps = 0;
+    var lastProgress = 0.0;
+    while editor.IsBakeActive() and pumps < 4000 {
+        pump(editor, sceneDoc, shell);
+        pumps = pumps + 1;
+    }
+    if editor.IsBakeActive() {
+        editor.CancelBake();
+        fail(shell, workDir, "bake did not complete within the pump budget");
+        return;
+    }
+    if editor.GetRevision() != bakeRevision + 1
+       or Str.Contains(sceneDoc.content, "\"lightMap\": 0") == false {
+        fail(shell, workDir,
+             "completed bake was not one committed transaction with a "
+             + "persisted lightmap: revision=" + editor.GetRevision()
+             + "/" + (bakeRevision + 1));
+        return;
+    }
+    var reloaded = documents.NewScene3DDocument();
+    reloaded.content = sceneDoc.content;
+    reloaded.filePath = Path.Join(workDir, "bake_reload.scene3d");
+    editor.Activate(reloaded);
+    pump(editor, reloaded, shell);
+    if editor.loadError != "" or editor.flatNodes.count() != 3 {
+        fail(shell, workDir, "baked scene did not reload cleanly");
+        return;
+    }
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+
+    // Bake settings persisted onto the root as bake.* metadata.
+    var persisted = scene_bake_3d.SettingsFromRoot(editor.scene.Root);
+    if near(persisted.texelsPerUnit, 1.0) == false
+       or persisted.samples != 1
+       or persisted.bounces != 0 {
+        fail(shell, workDir, "bake settings did not persist on the root");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Probe grid: one-transaction authoring plus the .vlpg sidecar.
+    // ------------------------------------------------------------------
+    editor.ApplyViewportSelection(0, false, false);
+    editor.probeMinXSpinner.SetValue(-2.0);
+    editor.probeMaxXSpinner.SetValue(2.0);
+    editor.probeSpacingSpinner.SetValue(1.0);
+    pump(editor, sceneDoc, shell);
+    var probeRevision = editor.GetRevision();
+    if editor.ApplySelectedProbeGrid() == false
+       or editor.GetRevision() != probeRevision + 1
+       or editor.flatNodes.get(0).MetadataHas("probes.spacing") == false {
+        fail(shell, workDir, "probe grid apply was not one transaction");
+        return;
+    }
+    var sidecarBaseline = sceneDoc.content;
+    if editor.BakeSelectedProbeGrid() == false {
+        fail(shell, workDir, "probe bake failed after a lightmap bake");
+        return;
+    }
+    var sidecarPath = Path.Join(workDir, "bake.vlpg");
+    if File.Exists(sidecarPath) == false {
+        fail(shell, workDir, "the .vlpg sidecar was not written");
+        return;
+    }
+    if sceneDoc.content != sidecarBaseline {
+        fail(shell, workDir, "the probe sidecar dirtied the scene");
+        return;
+    }
+    if editor.RemoveSelectedProbeGrid() == false
+       or editor.flatNodes.get(0).MetadataHas("probes.spacing") {
+        fail(shell, workDir, "probe grid removal drifted");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Environment: root env.* convention, one transaction, render-neutral.
+    // ------------------------------------------------------------------
+    editor.envSkyboxInput.SetText("sky/panorama.hdr");
+    editor.envIblCheck.SetChecked(true);
+    editor.envIblIntensitySpinner.SetValue(1.5);
+    pump(editor, sceneDoc, shell);
+    var envRevision = editor.GetRevision();
+    if editor.ApplyEnvironmentFromControls() == false
+       or editor.GetRevision() != envRevision + 1 {
+        fail(shell, workDir, "environment apply was not one transaction");
+        return;
+    }
+    var envState = scene_bake_3d.EnvironmentFromRoot(editor.scene.Root);
+    if envState.skyboxPath != "sky/panorama.hdr"
+       or envState.iblEnabled == false
+       or near(envState.iblIntensity, 1.5) == false {
+        fail(shell, workDir, "environment convention did not round-trip");
+        return;
+    }
+    var envBaseline = sceneDoc.content;
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    if sceneDoc.content != envBaseline {
+        fail(shell, workDir, "live environment rendering dirtied content");
+        return;
+    }
+
+    Dir.RemoveAll(workDir);
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

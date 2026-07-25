@@ -623,7 +623,8 @@ the handle terminal with `error == "cancelled"` and no result. Calling `cancel()
 on a completed handle is a no-op, which keeps retrieved results stable.
 
 Async handles accept the same model extensions as blocking `SceneAsset.LoadResult`:
-`.gltf`, `.glb`, `.fbx`, `.obj`, `.stl`, and `.vscn`. glTF/GLB assets use the
+`.gltf`, `.glb`, `.fbx`, `.obj`, `.stl`, and `.scene3d` (plus the legacy
+`.vscn` alias, ADR 0182). glTF/GLB assets use the
 worker preload path described below; the other formats are validated by the
 handle and completed through the main-thread commit path so callers can use one
 async API for mixed model libraries.

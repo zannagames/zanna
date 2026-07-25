@@ -14,6 +14,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares temporary use tracking and whole-function value rewriting.
+/// @details `UseDefInfo` indexes temporary-valued instruction operands and
+///          branch arguments. It offers a rescan-based replacement operation
+///          for generally mutable IL and a cached-site operation for callers
+///          that can guarantee instruction storage remains stable.
+
 #pragma once
 
 #include "il/core/Value.hpp"
@@ -70,6 +77,11 @@ class UseDefInfo {
     ///          defer every instruction insertion and erasure until all value
     ///          replacements are complete. Calling it after storage mutation is
     ///          invalid; general mutable passes must use replaceAllUses().
+    /// @param tempId Temporary identifier whose recorded uses are rewritten.
+    /// @param replacement Value assigned to each cached operand location.
+    /// @return Number of cached use sites rewritten, or zero when none exist.
+    /// @warning Every pointer cached by the most recent build or replacement
+    ///          must still designate the same live operand.
     std::size_t replaceAllUsesStableStorage(unsigned tempId,
                                             const ::il::core::Value &replacement);
 
@@ -93,10 +105,17 @@ class UseDefInfo {
     /// @brief Direct operand locations, valid until instruction storage moves.
     std::unordered_map<unsigned, std::vector<::il::core::Value *>> useSites_;
 
-    /// @brief Scan a function and populate the use-count map.
+    /// @brief Replace the indexed function and rebuild all cached use data.
+    /// @details Clears both caches before scanning ordinary operands and branch
+    ///          arguments in every instruction.
+    /// @param F Function whose use information becomes authoritative.
     void build(::il::core::Function &F);
 
     /// @brief Record a use if the value is a temporary.
+    /// @details Non-temporary values are ignored. Temporary values increment
+    ///          their count and contribute their address to the stable-storage
+    ///          cache.
+    /// @param v Mutable operand or branch argument encountered during a scan.
     void recordUse(::il::core::Value &v);
 };
 

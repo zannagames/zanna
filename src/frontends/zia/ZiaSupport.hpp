@@ -37,6 +37,9 @@ namespace il::frontends::zia {
 /// @details Replaces `base + "_" + std::to_string(id)`, which allocates two or
 ///          three temporaries. Uses std::to_chars (no allocation) for the digits
 ///          and reserves the exact final size.
+/// @param base Stem copied before the separator.
+/// @param id Unsigned decimal suffix value.
+/// @return A string containing @p base, an underscore, and @p id in decimal.
 inline std::string makeSuffixedName(std::string_view base, unsigned long long id) {
     char digits[24];
     auto result = std::to_chars(digits, digits + sizeof(digits), id);
@@ -89,6 +92,8 @@ inline std::size_t toIndex(long long value, const char *context = "index") {
 /// @details Unlike `assert()` from <cassert>, this is NOT compiled out under
 ///          NDEBUG. Use for invariants that must hold in every build (scope
 ///          stack non-empty, index < size before a cast, etc.).
+/// @param cond Condition that must evaluate to true.
+/// @param msg Human-readable explanation reported when @p cond is false.
 #define ZANNA_ZIA_ASSERT(cond, msg)                                                                \
     do {                                                                                           \
         if (!(cond))                                                                               \

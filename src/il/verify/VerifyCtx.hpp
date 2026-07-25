@@ -33,6 +33,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the borrowed context passed to instruction checkers.
+/// @details The aggregate groups diagnostics, type state, module symbol maps,
+///          and the exact function/block/instruction location. It owns no data
+///          and is valid only while every referenced object remains alive.
+
 #pragma once
 
 #include "il/core/fwd.hpp"

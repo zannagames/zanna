@@ -4,12 +4,24 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
 // File: src/frontends/basic/sem/OverloadResolution.hpp
 // Purpose: Resolve method overloads (including property accessors) with
-// //         deterministic ranking and diagnostics.
-// Key invariants: No user-defined conversions; only exact or widening numeric.
-// Ownership/Lifetime: Borrows OopIndex and DiagnosticEmitter; owns no state.
-// Links: docs/internals/codemap.md
+//          deterministic ranking and diagnostics.
+// Key invariants:
+//   * Resolution permits no user-defined or narrowing conversions.
+//   * A successful result identifies both the selected method and its declaring
+//     class so lowering can dispatch inherited methods correctly.
+// Ownership: The resolver borrows OopIndex and DiagnosticEmitter. ResolvedMethod
+//            borrows class/method metadata while owning copied name strings.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares inheritance-aware BASIC method overload resolution.
+/// @details Provides the stable selection result consumed by OOP lowering.
+//
 //===----------------------------------------------------------------------===//
 
 #pragma once

@@ -60,7 +60,13 @@ struct CFGIssue {
 /// per-function analyses. The caller is responsible for rebuilding the context
 /// if the indexed function/block layout changes.
 struct CFGContext {
+    /// @brief Index the control-flow graphs of every function in a module.
+    /// @param module Module whose function/block storage must outlive the context.
     explicit CFGContext(il::core::Module &module);
+
+    /// @brief Index only one function from a module.
+    /// @param module Module that owns @p function and label-symbol storage.
+    /// @param function Sole function whose blocks and edges are cached.
     CFGContext(il::core::Module &module, il::core::Function &function);
 
     /// @brief Build a CFG cache for one function whose identifier sidecars are current.
@@ -99,38 +105,44 @@ struct CFGContext {
     std::vector<CFGIssue> issues;
 
     /// @brief Check whether CFG indexing found a structural problem.
+    /// @return True when no duplicate labels or unknown targets were observed.
     [[nodiscard]] bool valid() const noexcept {
         return issues.empty();
     }
 };
 
 /// @brief Return successors of block @p B by inspecting its terminator.
+/// @param ctx CFG cache containing @p B.
 /// @param B Block whose outgoing edges are requested.
 /// @return Cached list of successor edge targets (may contain duplicate blocks).
 const std::vector<il::core::Block *> &successors(const CFGContext &ctx, const il::core::Block &B);
 
 /// @brief Return predecessors of block @p B within function @p F.
-/// @param F Function containing blocks to scan.
+/// @param ctx CFG cache containing @p B.
 /// @param B Target block whose incoming edges are requested.
 /// @return Cached list of predecessor edge sources (may contain duplicate blocks).
 const std::vector<il::core::Block *> &predecessors(const CFGContext &ctx, const il::core::Block &B);
 
 /// @brief Compute DFS post-order of blocks in @p F starting from the entry block.
+/// @param ctx CFG cache containing @p F.
 /// @param F Function whose blocks are traversed.
 /// @return Blocks in post-order; the entry block is last.
 std::vector<il::core::Block *> postOrder(const CFGContext &ctx, il::core::Function &F);
 
 /// @brief Compute reverse post-order (RPO) of blocks in @p F.
+/// @param ctx CFG cache containing @p F.
 /// @param F Function whose blocks are traversed.
 /// @return Blocks in RPO; the entry block is first.
 std::vector<il::core::Block *> reversePostOrder(const CFGContext &ctx, il::core::Function &F);
 
 /// @brief Check whether the control-flow graph of @p F has no cycles.
+/// @param ctx CFG cache containing @p F.
 /// @param F Function whose CFG is inspected.
 /// @return True if the CFG is acyclic; false otherwise.
 bool isAcyclic(const CFGContext &ctx, il::core::Function &F);
 
 /// @brief Compute a topological order of blocks in @p F.
+/// @param ctx CFG cache containing @p F.
 /// @param F Function whose blocks are ordered.
 /// @return Blocks in topological order; empty if @p F contains cycles.
 std::vector<il::core::Block *> topoOrder(const CFGContext &ctx, il::core::Function &F);

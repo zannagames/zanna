@@ -4,18 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Expr_Lambda.cpp
-// Purpose: Lambda, block expression, type cast (as), is-expression, and
-//          struct literal lowering for the Zia IL lowerer.
-// Key invariants:
-//   - Lambda functions get unique names (__lambda_N) and closure struct ABI
-//   - All lambdas use uniform closure struct: { funcPtr, envPtr }
-//   - Context is saved/restored around nested function creation
-// Ownership/Lifetime:
-//   - Lowerer owns IL builder; lambda functions are added to module_->functions
-// Links: src/frontends/zia/Lowerer.hpp, src/frontends/zia/Lowerer_Expr_Complex.cpp
-//
+///
+/// @file Lowerer_Expr_Lambda.cpp
+/// @brief Lowers lambdas, block expressions, casts, type tests, and struct
+///        literals.
+///
+/// @details Lambdas become uniquely named module functions plus a uniform
+///          two-pointer closure containing the function and captured
+///          environment. Nested function emission saves and restores the
+///          enclosing lowering context. This file also implements lexical
+///          block cleanup, representation-correct `as` conversions, and
+///          runtime-aware `is` checks for class and interface hierarchies.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -30,8 +30,9 @@ namespace il::frontends::zia {
 
 using namespace runtime;
 
-/// Closure struct layout: [funcPtr (8 bytes)] [envPtr (8 bytes)]
+/// @brief Total byte size of `[funcPtr, envPtr]` closure storage.
 static constexpr int kClosureSize = 16;
+/// @brief Byte offset of the environment pointer within closure storage.
 static constexpr int kClosureEnvOffset = 8;
 
 //=============================================================================

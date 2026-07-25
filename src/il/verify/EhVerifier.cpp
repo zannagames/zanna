@@ -31,11 +31,10 @@
 #include "il/verify/EhModel.hpp"
 
 /// @file
-/// @brief Coordinates the legacy exception-handling verification workflow.
-/// @details The translation unit adapts older EH verification helpers to the
-///          modern pass infrastructure.  Each function is analysed independently
-///          by constructing an @ref EhModel on the fly and forwarding to the
-///          reusable check suite while preserving the existing diagnostic shape.
+/// @brief Coordinates the exception-handling verification workflow.
+/// @details Each function is analysed independently by constructing an
+///          @ref EhModel on the fly and forwarding it to the reusable check
+///          suite while preserving the existing diagnostic shape.
 
 using namespace il::core;
 
@@ -45,7 +44,7 @@ namespace il::verify {
 /// @details The verifier iterates each function, constructing an @ref EhModel
 ///          to reflect its handlers and unwind edges.  Functions without EH
 ///          instructions are skipped.  Remaining functions are passed through the
-///          legacy @ref checkEhStackBalance, @ref checkDominanceOfHandlers,
+///          @ref checkEhStackBalance, @ref checkDominanceOfHandlers,
 ///          @ref checkUnreachableHandlers, and @ref checkResumeEdges routines in
 ///          sequence.  Any failure propagates immediately via the
 ///          @ref il::support::Expected channel while success yields an empty

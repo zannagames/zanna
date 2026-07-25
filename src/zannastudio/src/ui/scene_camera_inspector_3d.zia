@@ -1,0 +1,257 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_camera_inspector_3d.zia
+// Purpose: Accessible Camera3D projection controls for Studio's 3D inspector.
+// Key invariants:
+//   - This presentation object never mutates a SceneNode or canonical VSCN.
+//   - Controls are enabled only for one unambiguous selected node.
+//   - Projection-specific rows hide inapplicable fields.
+//   - Apply, Remove, Look Through, and preview intents return to the
+//     transactional scene controller; look-through and the inset never
+//     change canonical bytes.
+// Ownership/Lifetime: SceneEditor3D owns one inspector; GUI owns its widgets.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_camera_3d.zia,
+//        zannastudio/src/probes/scene_camera_authoring_probe.zia,
+//        docs/adr/0184-scene-camera-nodes-look-through-and-preview.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_camera_inspector_3d;
+
+bind "scene_camera_3d";
+
+bind GUI = Zanna.GUI;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+
+// ============================================================================
+// MODULE: scene_camera_inspector_3d
+// PURPOSE: Keep responsive camera presentation outside the VSCN controller.
+//
+// WHERE-THIS-FITS: SceneEditor3D refreshes this object from the selected
+//          runtime node and consumes its buttons as transaction requests.
+//
+// TEACHING-NOTE: Widgets are a draft. BuildState returns values only; the
+//          controller constructs an independent camera and owns history.
+// ============================================================================
+
+/// @brief Presentation-only node-camera component inspector.
+class SceneCameraInspector3D {
+    expose GUI.GroupBox group;
+    expose GUI.Label summary;
+    expose GUI.Dropdown projectionDropdown;
+    expose GUI.Spinner fov;
+    expose GUI.Spinner orthoSize;
+    expose GUI.Spinner nearPlane;
+    expose GUI.Spinner farPlane;
+    expose GUI.Button applyButton;
+    expose GUI.Button removeButton;
+    expose GUI.Button lookThroughButton;
+    expose GUI.Checkbox previewCheck;
+
+    expose func init() {
+        group = null;
+        summary = null;
+        projectionDropdown = null;
+        fov = null;
+        orthoSize = null;
+        nearPlane = null;
+        farPlane = null;
+        applyButton = null;
+        removeButton = null;
+        lookThroughButton = null;
+        previewCheck = null;
+    }
+
+    /// @brief Build the complete node-camera component surface.
+    expose func Setup(parent: GUI.VBox) {
+        group = GUI.GroupBox.New(parent, "Camera component");
+        summary = GUI.Label.New(
+            group,
+            "No camera component. Create one to author a scene vantage.");
+        summary.SetWordWrap(true);
+
+        projectionDropdown = GUI.Dropdown.New(group);
+        projectionDropdown.SetAccessibleName("Node camera projection");
+        projectionDropdown.AddItem("Perspective");
+        projectionDropdown.AddItem("Orthographic");
+        projectionDropdown.SetSelected(0);
+
+        var fieldRow = GUI.HBox.New();
+        fieldRow.SetSpacing(4.0);
+        group.AddChild(fieldRow);
+        fov = AddSpinner(
+            fieldRow, "Fov °",
+            scene_camera_3d.MIN_FOV_DEGREES,
+            scene_camera_3d.MAX_FOV_DEGREES,
+            1.0, 2, scene_camera_3d.DEFAULT_FOV_DEGREES);
+        orthoSize = AddSpinner(
+            fieldRow, "Size",
+            scene_camera_3d.MIN_ORTHO_SIZE,
+            scene_camera_3d.MAX_ORTHO_SIZE,
+            0.5, 3, scene_camera_3d.DEFAULT_ORTHO_SIZE);
+
+        var planeRow = GUI.HBox.New();
+        planeRow.SetSpacing(4.0);
+        group.AddChild(planeRow);
+        nearPlane = AddSpinner(
+            planeRow, "Near",
+            scene_camera_3d.MIN_PLANE_DISTANCE,
+            scene_camera_3d.MAX_PLANE_DISTANCE,
+            0.05, 3, scene_camera_3d.DEFAULT_NEAR_PLANE);
+        farPlane = AddSpinner(
+            planeRow, "Far",
+            scene_camera_3d.MIN_PLANE_DISTANCE,
+            scene_camera_3d.MAX_PLANE_DISTANCE,
+            10.0, 2, scene_camera_3d.DEFAULT_FAR_PLANE);
+
+        var buttons = GUI.HBox.New();
+        buttons.SetSpacing(4.0);
+        group.AddChild(buttons);
+        applyButton = GUI.Button.New(buttons, "Create Camera");
+        applyButton.SetTooltip(
+            "Build an independent camera and commit one undoable VSCN edit");
+        removeButton = GUI.Button.New(buttons, "Remove");
+        removeButton.SetTooltip(
+            "Remove the camera while keeping the node and its other components");
+
+        var viewRow = GUI.HBox.New();
+        viewRow.SetSpacing(4.0);
+        group.AddChild(viewRow);
+        lookThroughButton = GUI.Button.New(viewRow, "Look Through");
+        lookThroughButton.SetTooltip(
+            "Drive the editor viewport from this authored camera; "
+            + "workspace-only");
+        previewCheck = GUI.Checkbox.New(viewRow, "Preview inset");
+        previewCheck.SetTooltip(
+            "Render this camera's view in a bounded corner inset");
+        previewCheck.SetChecked(true);
+
+        UpdateProjectionControls();
+        UpdateControls(false, false, 0, false);
+    }
+
+    /// @brief Refresh controls from one selected node without mutating it.
+    expose func Refresh(node: SceneNode,
+                        selectionCount: Integer,
+                        editorEnabled: Boolean,
+                        lookingThrough: Boolean) {
+        var camera: Camera3D = null;
+        if node != null { camera = node.Camera; }
+        var state = scene_camera_3d.FromCamera(camera);
+        var projectionIndex = 0;
+        if state.isOrtho { projectionIndex = 1; }
+        projectionDropdown.SetSelected(projectionIndex);
+        fov.SetValue(state.fovDegrees);
+        orthoSize.SetValue(state.orthoSize);
+        nearPlane.SetValue(state.nearPlane);
+        farPlane.SetValue(state.farPlane);
+
+        if selectionCount == 0 {
+            summary.SetText(
+                "Select one node to author a camera component.");
+        } else if selectionCount > 1 {
+            summary.SetText(
+                selectionCount
+                + " nodes selected. Camera editing requires one "
+                + "unambiguous node.");
+        } else if camera == null {
+            summary.SetText(
+                "No camera component. Create one to author a scene vantage.");
+        } else {
+            summary.SetText(
+                scene_camera_3d.Describe(camera)
+                + " • pose follows the node world transform; aspect is "
+                + "display-derived.");
+        }
+        UpdateProjectionControls();
+        UpdateControls(
+            editorEnabled, camera != null, selectionCount, lookingThrough);
+    }
+
+    /// @brief Build one complete normalized draft from visible controls.
+    expose func BuildState() -> scene_camera_3d.CameraState3D {
+        var state = new scene_camera_3d.CameraState3D();
+        state.isOrtho = projectionDropdown.Selected == 1;
+        state.fovDegrees = fov.Value;
+        state.orthoSize = orthoSize.Value;
+        state.nearPlane = nearPlane.Value;
+        state.farPlane = farPlane.Value;
+        return scene_camera_3d.Normalize(state);
+    }
+
+    /// @brief Show only fields meaningful for the selected projection.
+    expose func UpdateProjectionControls() {
+        if projectionDropdown == null { return; }
+        var ortho = projectionDropdown.Selected == 1;
+        fov.SetVisible(ortho == false);
+        orthoSize.SetVisible(ortho);
+    }
+
+    /// @brief Keep actions truthful for selection and component state.
+    expose func UpdateControls(editorEnabled: Boolean,
+                               hasCamera: Boolean,
+                               selectionCount: Integer,
+                               lookingThrough: Boolean) {
+        if projectionDropdown == null { return; }
+        var hasSingle = editorEnabled and selectionCount == 1;
+        group.SetEnabled(editorEnabled);
+        projectionDropdown.SetEnabled(hasSingle);
+        fov.SetEnabled(hasSingle);
+        orthoSize.SetEnabled(hasSingle);
+        nearPlane.SetEnabled(hasSingle);
+        farPlane.SetEnabled(hasSingle);
+        applyButton.SetEnabled(hasSingle);
+        removeButton.SetEnabled(hasSingle and hasCamera);
+        lookThroughButton.SetEnabled(
+            (hasSingle and hasCamera) or lookingThrough);
+        previewCheck.SetEnabled(hasSingle and hasCamera);
+        if hasSingle == false {
+            applyButton.SetText("Apply Camera");
+            applyButton.SetTooltip(
+                "Select exactly one node before editing its camera");
+        } else if hasCamera {
+            applyButton.SetText("Apply Camera");
+            applyButton.SetTooltip(
+                "Replace this component with an independent camera in one edit");
+        } else {
+            applyButton.SetText("Create Camera");
+            applyButton.SetTooltip(
+                "Create this camera component in one undoable VSCN edit");
+        }
+        if lookingThrough {
+            lookThroughButton.SetText("Exit Look-Through");
+            lookThroughButton.SetTooltip(
+                "Return the viewport to the editor camera pose");
+        } else {
+            lookThroughButton.SetText("Look Through");
+            lookThroughButton.SetTooltip(
+                "Drive the editor viewport from this authored camera; "
+                + "workspace-only");
+        }
+    }
+
+    hide func AddSpinner(parent: GUI.HBox,
+                         label: String,
+                         minimum: Number,
+                         maximum: Number,
+                         step: Number,
+                         decimals: Integer,
+                         value: Number) -> GUI.Spinner {
+        GUI.Label.New(parent, label);
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(minimum, maximum);
+        spinner.SetStep(step);
+        spinner.SetDecimals(decimals);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName(label + " camera value");
+        return spinner;
+    }
+}

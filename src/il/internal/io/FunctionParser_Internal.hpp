@@ -10,7 +10,8 @@
 //          files. Contains the TokenStream class for line-based tokenization,
 //          parser state wrappers, and common utility functions.
 // Key invariants: Used only by FunctionParser_*.cpp files; not part of public API.
-// Ownership/Lifetime: Header-only utilities with no ownership semantics.
+// Ownership/Lifetime: TokenStream and parser wrappers borrow their input/state.
+//          ParserSnapshot owns rollback copies and restores a borrowed parser state.
 // Links: docs/il/il-guide.md#reference
 //
 //===----------------------------------------------------------------------===//
@@ -72,21 +73,33 @@ enum class TokenKind {
 ///          and classifies each line as a block label, instruction, directive, etc.
 class TokenStream {
   public:
+    /// @brief Bind a tokenizer to an input stream and shared parser state.
+    /// @param stream Stream read incrementally; must outlive this tokenizer.
+    /// @param legacy Parser state updated with physical line numbers.
     TokenStream(std::istream &stream, LegacyParserState &legacy)
         : stream_(&stream), legacy_(&legacy) {}
 
+    /// @brief Inspect the current classified token.
+    /// @return Token kind produced by the most recent advance().
     [[nodiscard]] TokenKind kind() const noexcept {
         return token_;
     }
 
+    /// @brief Access the normalized current source line.
+    /// @return Borrowed line text valid until the next advance().
     [[nodiscard]] const std::string &line() const noexcept {
         return line_;
     }
 
+    /// @brief Access the shared legacy parser state.
+    /// @return Mutable borrowed state reference.
     [[nodiscard]] LegacyParserState &legacy() noexcept {
         return *legacy_;
     }
 
+    /// @brief Read and classify the next non-comment, non-empty line.
+    /// @return True when a token line is available; false at EOF, I/O failure,
+    ///         or a resource limit.
     bool advance() {
         while (readLine()) {
             ++legacy_->lineNo;
@@ -115,15 +128,21 @@ class TokenStream {
         return false;
     }
 
+    /// @brief Report the resource dimension that stopped line reading.
+    /// @return Empty view when no limit fired, otherwise a stable descriptive label.
     [[nodiscard]] std::string_view resourceLimit() const noexcept {
         return resourceLimit_;
     }
 
+    /// @brief Report whether the most recent failed read was an I/O error.
+    /// @return True for bad/fail states other than ordinary EOF.
     [[nodiscard]] bool ioError() const noexcept {
         return ioError_;
     }
 
   private:
+    /// @brief Read one physical line while enforcing line-count and byte budgets.
+    /// @return True when `line_` contains a complete or final unterminated line.
     bool readLine() {
         line_.clear();
         resourceLimit_.clear();
@@ -174,6 +193,7 @@ struct ParserState {
     TokenStream *ts = nullptr;
     LegacyParserState *legacy = nullptr;
 
+    /// @brief Refresh wrapper pointers and location from the legacy parser state.
     void refresh() {
         if (!legacy)
             return;
@@ -183,6 +203,7 @@ struct ParserState {
         loc = legacy->curLoc;
     }
 
+    /// @brief Commit wrapper function/block/location changes to legacy state.
     void commit() {
         if (!legacy)
             return;
@@ -191,6 +212,8 @@ struct ParserState {
         legacy->curLoc = loc;
     }
 
+    /// @brief Return the current physical parser line.
+    /// @return Legacy line number, or zero when no legacy state is attached.
     [[nodiscard]] unsigned lineNo() const noexcept {
         return legacy ? legacy->lineNo : 0;
     }
@@ -258,12 +281,15 @@ struct ParserSnapshot {
     size_t functionCount; ///< Number of functions at snapshot time.
     bool active = true;   ///< True if rollback should occur on destruction.
 
+    /// @brief Snapshot all state mutated during transactional function parsing.
+    /// @param st Parser state restored unless discard() commits the transaction.
     explicit ParserSnapshot(LegacyParserState &st)
         : state(st), curFn(st.curFn), curBB(st.curBB), curLoc(st.curLoc), tempIds(st.tempIds),
           nextTemp(st.nextTemp), blockParamCount(st.blockParamCount), pendingBrs(st.pendingBrs),
           functionNames(st.functionNames),
           functionCount(st.m.functions.size()) {}
 
+    /// @brief Restore captured parser fields and remove newly appended functions.
     void restore() {
         state.curFn = curFn;
         state.curBB = curBB;
@@ -277,10 +303,12 @@ struct ParserSnapshot {
             state.m.functions.resize(functionCount);
     }
 
+    /// @brief Commit the transaction by disabling destructor rollback.
     void discard() {
         active = false;
     }
 
+    /// @brief Roll back the parse transaction when it remains active.
     ~ParserSnapshot() {
         if (active)
             restore();
@@ -292,6 +320,8 @@ struct ParserSnapshot {
 // ============================================================================
 
 /// @brief Trim whitespace from a string_view.
+/// @param text Input view.
+/// @return Subview excluding leading and trailing bytes classified as whitespace.
 inline std::string_view trimView(std::string_view text) {
     size_t begin = 0;
     while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin])))
@@ -303,6 +333,10 @@ inline std::string_view trimView(std::string_view text) {
 }
 
 /// @brief Create a line-prefixed error diagnostic.
+/// @tparam T Expected success value type.
+/// @param lineNo One-based physical line.
+/// @param message Diagnostic body.
+/// @return Failed Expected carrying `line N: message`.
 template <class T> Expected<T> lineError(unsigned lineNo, const std::string &message) {
     std::ostringstream oss;
     oss << "line " << lineNo << ": " << message;
@@ -310,11 +344,17 @@ template <class T> Expected<T> lineError(unsigned lineNo, const std::string &mes
 }
 
 /// @brief Get source position from cursor.
+/// @param cur Parser cursor.
+/// @return Current cursor source position by value.
 inline SourcePos cursorPos(const Cursor &cur) {
     return cur.pos();
 }
 
 /// @brief Create a syntax error with optional context.
+/// @param pos Source position used for the line prefix.
+/// @param msg Primary diagnostic message.
+/// @param near Optional offending token appended in quotes.
+/// @return Structured error diagnostic.
 inline Error makeSyntaxError(SourcePos pos, std::string_view msg, std::string_view near) {
     std::ostringstream body;
     body << msg;
@@ -329,6 +369,8 @@ inline Error makeSyntaxError(SourcePos pos, std::string_view msg, std::string_vi
 /// trailing newlines. This helper strips that prefix and trailing newline/carriage
 /// returns so that downstream diagnostics emitted through @ref
 /// il::support::printDiag are consistent across call sites.
+/// @param text Captured legacy diagnostic text.
+/// @return Normalized message without the standard prefix or trailing newlines.
 inline std::string stripCapturedDiagMessage(std::string text) {
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
         text.pop_back();
@@ -339,6 +381,8 @@ inline std::string stripCapturedDiagMessage(std::string text) {
 }
 
 /// @brief Human-readable description of a token kind.
+/// @param token Token classification.
+/// @return Static phrase used in parser diagnostics.
 inline std::string_view describeTokenKind(TokenKind token) {
     switch (token) {
         case TokenKind::CloseBrace:
@@ -358,6 +402,8 @@ inline std::string_view describeTokenKind(TokenKind token) {
 }
 
 /// @brief Extract the text that caused a parse error.
+/// @param state Parser wrapper containing the current TokenStream.
+/// @return Current token text or a canonical brace/EOF spelling.
 inline std::string describeOffendingToken(const parser_impl::ParserState &state) {
     if (!state.ts)
         return "";

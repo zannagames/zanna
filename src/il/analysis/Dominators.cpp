@@ -182,6 +182,9 @@ DomTree computeDominatorTree(const CFGContext &ctx, il::core::Function &F) {
 }
 
 /// @brief Return the immediate post-dominator of block @p B.
+/// @param B Block whose immediate post-dominator is requested.
+/// @return Immediate post-dominator, or nullptr for an exit, unknown, or
+///         non-exit-reachable block without a computed parent.
 il::core::Block *PostDomTree::immediatePostDominator(il::core::Block *B) const {
     auto it = ipostdom.find(B);
     return it == ipostdom.end() ? nullptr : it->second;
@@ -190,6 +193,9 @@ il::core::Block *PostDomTree::immediatePostDominator(il::core::Block *B) const {
 /// @brief Check whether block @p A post-dominates block @p B.
 /// @details Walks up the post-dominator chain from @p B until reaching the
 ///          virtual exit (nullptr) or finding @p A.
+/// @param A Potential post-dominator.
+/// @param B Block whose exit paths are tested.
+/// @return True when @p A is @p B or appears on its computed post-dominator chain.
 bool PostDomTree::postDominates(il::core::Block *A, il::core::Block *B) const {
     if (!A || !B)
         return false;
@@ -213,6 +219,10 @@ bool PostDomTree::postDominates(il::core::Block *A, il::core::Block *B) const {
 /// @c ipostdom = nullptr, representing the virtual exit node.  All other
 /// blocks are processed in reverse-post-order of the reversed CFG, which
 /// is obtained by reversing the post-order DFS from the exit blocks.
+/// @param ctx CFG context providing successor and predecessor caches.
+/// @param F Function whose post-dominance relationships are computed.
+/// @return Post-dominator tree for blocks connected to a real exit; components
+///         with no exit may remain without immediate-post-dominator entries.
 PostDomTree computePostDominatorTree(const CFGContext &ctx, il::core::Function &F) {
     PostDomTree PDT;
     if (F.blocks.empty())

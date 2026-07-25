@@ -5,6 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/sem/Check_Select.cpp
+// Purpose: Orchestrate semantic validation of BASIC SELECT CASE statements and
+//          traverse each accepted case body in its own lexical scope.
+// Key invariants:
+//   * Selector classification precedes arm validation so label compatibility is
+//     checked against a stable selector category.
+//   * Arm validation shares one cumulative context, allowing duplicate and
+//     overlapping labels to be detected across the entire SELECT statement.
+//   * Each arm body is visited through the common control-check context so scope
+//     and control-flow stacks remain balanced.
+// References: docs/tutorials/basic-tutorial.md#select-case,
+//             docs/internals/codemap/basic.md#semantic-analyzer
+//
+//===----------------------------------------------------------------------===//
+//
 /// @file
 /// @brief Dispatcher for SELECT CASE semantic checks.
 /// @details Delegates to detail helpers that enforce selector typing and arm

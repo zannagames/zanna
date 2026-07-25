@@ -1,0 +1,221 @@
+// =============================================================================
+// probes/enemy_probe.zia — P3 gate: AI + enemies + bosses (headless)
+// =============================================================================
+//
+// Asserts the AI substrate invariants: perception fills awareness into COMBAT,
+// an engaged enemy damages the player, the player can kill an enemy, all 14
+// archetypes (11 + 3 bosses) spawn and tick without traps, the director never
+// exceeds its attack-token caps across a brawl, a Sapper's detonation chains
+// into an adjacent machine, and the whole thing is deterministic run-to-run.
+// =============================================================================
+module enemy_probe;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../game" as game;
+bind "../ai/ai_core" as ai_core;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func newGame(seed: Integer) -> game.Game {
+    var g = new game.Game();
+    g.initCore(seed);
+    g.setScripted(true);
+    g.boot(true, false);
+    g.devSpawnPlayer(0.0, 0.2, 0.0);
+    g.scriptFire(false);
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+    return g;
+}
+
+func tick(g: game.Game) {
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+}
+
+func start() {
+    var g = newGame(0x3333);
+    var enemies = g.getEnemies();
+
+    // --- 1. Perception → COMBAT ---------------------------------------------
+    var husk = g.devSpawnEnemy(config.EN_HUSK, 0.0, -8.0);
+    g.devFaceEnemy(husk, 0.0, 0.0);
+    var spins = 0;
+    while enemies.stateOf(husk) != ai_core.AI_COMBAT && spins < 200 {
+        g.devFaceEnemy(husk, 0.0, 0.0);   // keep facing (it turns to player once aware)
+        tick(g);
+        spins = spins + 1;
+    }
+    if enemies.stateOf(husk) != ai_core.AI_COMBAT { fail("husk never entered COMBAT (awareness=" + toString(M.roundi(enemies.awarenessOf(husk))) + ")"); return; }
+
+    // --- 2. Engaged enemy damages the player --------------------------------
+    var hp0 = g.getPlayerHealth().getHealth();
+    var sh0 = g.getPlayerHealth().getShield();
+    var t2 = 0;
+    while g.getPlayerHealth().getShield() >= sh0 && g.getPlayerHealth().getHealth() >= hp0 && t2 < 400 {
+        tick(g);
+        t2 = t2 + 1;
+    }
+    if g.getPlayerHealth().getShield() >= sh0 && g.getPlayerHealth().getHealth() >= hp0 {
+        fail("engaged husk never damaged the player");
+        return;
+    }
+    if enemies.attacksLandedTotal() < 1 { fail("no enemy attack landed"); return; }
+
+    // --- 3. Player kills an enemy -------------------------------------------
+    g.devSetGod(true);
+    var kills0 = enemies.killCountTotal();
+    var t3 = 0;
+    while enemies.isAlive(husk) && t3 < 400 {
+        g.scriptAimAt(enemies.posX(husk), 1.0, enemies.posZ(husk));
+        g.scriptFire(true);
+        tick(g);
+        t3 = t3 + 1;
+    }
+    g.scriptFire(false);
+    if enemies.isAlive(husk) { fail("could not kill the husk"); return; }
+    if enemies.killCountTotal() <= kills0 { fail("kill not counted"); return; }
+
+    // --- 4. All 14 archetypes spawn + tick without traps --------------------
+    var g4 = newGame(0x4444);
+    g4.devSetGod(true);
+    var a = 0;
+    while a < config.EN_TYPE_COUNT {
+        var ang = (a + 0.0) / (config.EN_TYPE_COUNT + 0.0) * 6.2831853;
+        var sx = 12.0 * Math.Cos(ang);
+        var sz = 12.0 * Math.Sin(ang);
+        g4.devSpawnEnemy(a, sx, sz);
+        a = a + 1;
+    }
+    var spawned = g4.getEnemies().aliveCount();
+    if spawned < config.EN_TYPE_COUNT { fail("not all archetypes spawned: " + toString(spawned)); return; }
+    var t4 = 0;
+    while t4 < 120 { tick(g4); t4 = t4 + 1; }   // must not trap
+
+    // Campaign levels feed authored flank pockets into the AI manager.
+    var gt = new game.Game();
+    gt.initCore(0x4445);
+    gt.setScripted(true);
+    gt.setLevel(config.LV_L2);
+    gt.boot(true, false);
+    if gt.getEnemies().flankCount() < 2 { fail("campaign flank hints did not reach AI"); return; }
+
+    // --- 5. Attack-token cap holds across a brawl ---------------------------
+    var g5 = newGame(0x5555);
+    g5.devSetGod(true);
+    var k = 0;
+    while k < 8 {
+        var ang = (k + 0.0) / 8.0 * 6.2831853;
+        g5.devSpawnEnemy(config.EN_HUSK, Math.Cos(ang) * 9.0, Math.Sin(ang) * 9.0);
+        k = k + 1;
+    }
+    k = 0;
+    while k < 4 {
+        var ang = (k + 0.0) / 4.0 * 6.2831853;
+        g5.devSpawnEnemy(config.EN_RANGER, Math.Cos(ang) * 16.0, Math.Sin(ang) * 16.0);
+        k = k + 1;
+    }
+    var maxEngaged = 0;
+    var t5 = 0;
+    while t5 < 300 {
+        tick(g5);
+        var e = g5.getEnemies().engagedCount();
+        if e > maxEngaged { maxEngaged = e; }
+        t5 = t5 + 1;
+    }
+    if maxEngaged > 6 { fail("token cap exceeded: " + toString(maxEngaged) + " > 6"); return; }
+
+    // Ranged attacks must exist in world space for at least one simulation step;
+    // damage may not be posted directly when the wind-up expires.
+    var gShot = newGame(0x5556);
+    var ranger = gShot.devSpawnEnemy(config.EN_RANGER, 0.0, -12.0);
+    gShot.devFaceEnemy(ranger, 0.0, 0.0);
+    var shotTicks = 0;
+    while gShot.getEnemies().hostileShotsFired() == 0 && shotTicks < 400 {
+        gShot.devFaceEnemy(ranger, 0.0, 0.0);
+        tick(gShot);
+        shotTicks = shotTicks + 1;
+    }
+    if gShot.getEnemies().hostileShotsFired() == 0 { fail("ranger never launched a projectile"); return; }
+    if gShot.getEnemies().hostileProjectileCount() == 0 { fail("ranged damage was not world-space"); return; }
+
+    // Boss rank and aerial mobility are independent traits.
+    var prime = gShot.devSpawnEnemy(config.BOSS_SHRIKE, 8.0, -12.0);
+    if gShot.getEnemies().posY(prime) < 6.0 { fail("SHRIKE Prime did not spawn airborne"); return; }
+
+    // Vanguard shields protect only the readable frontal arc. A rear shot must
+    // bypass the energy shield instead of turning the unit into a health sponge.
+    var gShield = newGame(0x5557);
+    var vanguard = gShield.devSpawnEnemy(config.EN_VANGUARD, 0.0, -8.0);
+    gShield.devFaceEnemy(vanguard, 0.0, 0.0);
+    var vHp0 = gShield.getEnemies().healthOf(vanguard);
+    var vSh0 = gShield.getEnemies().shieldOf(vanguard);
+    gShield.getBus().push(config.EV_DAMAGE, config.TGT_ENEMY, vanguard,
+                          config.REGION_BODY, 50.0, config.DMG_HITSCAN + 0.0, 180.0);
+    gShield.getEnemies().applyDamageEvents();
+    gShield.getBus().drain();
+    if gShield.getEnemies().healthOf(vanguard) < vHp0 ||
+       gShield.getEnemies().shieldOf(vanguard) >= vSh0 {
+        fail("Vanguard frontal shield did not absorb damage"); return;
+    }
+    var vShFront = gShield.getEnemies().shieldOf(vanguard);
+    gShield.getBus().push(config.EV_DAMAGE, config.TGT_ENEMY, vanguard,
+                          config.REGION_BODY, 50.0, config.DMG_HITSCAN + 0.0, 0.0);
+    gShield.getEnemies().applyDamageEvents();
+    gShield.getBus().drain();
+    if gShield.getEnemies().healthOf(vanguard) >= vHp0 ||
+       M.absf(gShield.getEnemies().shieldOf(vanguard) - vShFront) > 0.01 {
+        fail("Vanguard rear shot did not bypass shield"); return;
+    }
+
+    // --- 6. Sapper detonation chains into an adjacent machine ---------------
+    var g6 = newGame(0x6666);
+    g6.devSetGod(true);
+    var sapper = g6.devSpawnEnemy(config.EN_SAPPER, 0.0, -6.0);
+    var neighbor = g6.devSpawnEnemy(config.EN_HUSK, 1.2, -6.0);
+    g6.devFaceEnemy(sapper, 0.0, 0.0);
+    g6.devFaceEnemy(neighbor, 0.0, 0.0);
+    var nHp0 = g6.getEnemies().healthOf(neighbor);
+    var t6 = 0;
+    while g6.getEnemies().isAlive(sapper) && t6 < 400 { tick(g6); t6 = t6 + 1; }
+    if g6.getEnemies().isAlive(sapper) { fail("sapper never detonated"); return; }
+    // The neighbor should have been chained (damaged or killed).
+    var chained = g6.getEnemies().isAlive(neighbor) == false || g6.getEnemies().healthOf(neighbor) < nHp0;
+    if chained == false { fail("sapper chain did not damage the neighbor"); return; }
+
+    // --- 7. Determinism -----------------------------------------------------
+    var da = runBrawl(0x7777);
+    var db = runBrawl(0x7777);
+    if da != db { fail("nondeterministic brawl: " + toString(da) + " vs " + toString(db)); return; }
+
+    Terminal.Say("huskKill=ok playerDmg=ok archetypes=" + toString(spawned) +
+                 " maxEngaged=" + toString(maxEngaged) + " detBrawl=" + toString(da));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}
+
+// Deterministic scripted brawl: returns killCount*1000 + attacksLanded.
+func runBrawl(seed: Integer) -> Integer {
+    var g = newGame(seed);
+    g.devSetGod(true);
+    var k = 0;
+    while k < 6 {
+        var ang = (k + 0.0) / 6.0 * 6.2831853;
+        g.devSpawnEnemy(config.EN_HUSK, Math.Cos(ang) * 8.0, Math.Sin(ang) * 8.0);
+        k = k + 1;
+    }
+    var t = 0;
+    while t < 200 {
+        // Player sprays the Cycler in a slow sweep.
+        g.getWeapons().switchTo(config.W_CYCLER);
+        var ang = (t + 0.0) * 0.03;
+        g.scriptAimAt(Math.Cos(ang) * 8.0, 1.0, Math.Sin(ang) * 8.0);
+        g.scriptFire(true);
+        tick(g);
+        t = t + 1;
+    }
+    return g.getEnemies().killCountTotal() * 1000 + g.getEnemies().attacksLandedTotal();
+}

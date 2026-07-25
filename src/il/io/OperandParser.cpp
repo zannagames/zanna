@@ -55,6 +55,9 @@ using il::io::formatLineDiag;
 
 using Operand = Value;
 
+/// @brief Convert a runtime-signature parameter kind to a representable IL type.
+/// @param kind Runtime registry parameter category.
+/// @return Corresponding IL type, or no value for unsupported F32.
 std::optional<Type> typeFromRuntimeSig(il::runtime::signatures::SigParam::Kind kind) {
     using Kind = il::runtime::signatures::SigParam::Kind;
     switch (kind) {
@@ -119,7 +122,13 @@ class StringStateTracker {
     }
 };
 
-// Shared scanners to reduce duplication across parser helpers.
+/// @brief Find the balanced top-level parenthesis pair in operand text.
+/// @param state Parser state supplying line diagnostics.
+/// @param instr Instruction whose source location is reported.
+/// @param text Operand text to scan.
+/// @param startIndex First byte considered.
+/// @param context Human-readable construct name.
+/// @return Opening/closing offsets or a structured mismatch diagnostic.
 static Expected<std::pair<size_t, size_t>> findTopLevelParenRange(ParserState &state,
                                                                   const Instr &instr,
                                                                   const std::string &text,
@@ -168,6 +177,13 @@ static Expected<std::pair<size_t, size_t>> findTopLevelParenRange(ParserState &s
     return Expected<std::pair<size_t, size_t>>{std::make_pair(lp, rp)};
 }
 
+/// @brief Split operand text at a delimiter outside strings and parentheses.
+/// @param state Parser state supplying line diagnostics.
+/// @param instr Instruction whose source location is reported.
+/// @param text Text to split.
+/// @param delim Top-level delimiter byte.
+/// @param context Human-readable construct name.
+/// @return Trimmed non-empty segments or a structured syntax diagnostic.
 static Expected<std::vector<std::string>> splitTopLevel(ParserState &state,
                                                         const Instr &instr,
                                                         const std::string &text,
@@ -235,10 +251,20 @@ static Expected<std::vector<std::string>> splitTopLevel(ParserState &state,
     return Expected<std::vector<std::string>>{std::move(tokens)};
 }
 
+/// @brief Create a failed Expected at the parser's current location.
+/// @tparam T Expected success type.
+/// @param state Parser state supplying location and line.
+/// @param message Diagnostic body.
+/// @return Error-valued Expected.
 template <typename T> Expected<T> makeSyntaxError(ParserState &state, std::string message) {
     return Expected<T>{il::io::makeLineErrorDiag(state.curLoc, state.lineNo, std::move(message))};
 }
 
+/// @brief Parse optional bracketed call effect attributes.
+/// @param state Parser state supplying diagnostics.
+/// @param instr Call instruction whose CallAttr fields are updated.
+/// @param text Trailing text after the argument list.
+/// @return Success for empty/valid text, or an attribute syntax/name diagnostic.
 Expected<void> parseCallAttrs(ParserState &state, Instr &instr, const std::string &text) {
     const std::string attrsText = trim(text);
     if (attrsText.empty())
@@ -278,6 +304,11 @@ Expected<void> parseCallAttrs(ParserState &state, Instr &instr, const std::strin
     return {};
 }
 
+/// @brief Parse and attach an explicit call.indirect signature.
+/// @param state Parser state supplying diagnostics.
+/// @param instr Indirect-call instruction to update.
+/// @param body Return type and parenthesized parameter list.
+/// @return Success or a structured delimiter/type/vararg diagnostic.
 Expected<void> parseIndirectSignature(ParserState &state, Instr &instr, const std::string &body) {
     const size_t lp = body.find('(');
     const size_t rp = body.rfind(')');
@@ -331,6 +362,8 @@ Expected<void> parseIndirectSignature(ParserState &state, Instr &instr, const st
 } // namespace
 
 /// @brief Create an operand parser bound to the current parser state and instruction.
+/// @param state Mutable parser state borrowed for this parser's lifetime.
+/// @param instr Mutable instruction populated in place.
 /// @note instr_ aliases the caller-owned instruction so operands are populated in-place.
 OperandParser::OperandParser(ParserState &state, Instr &instr) : state_(state), instr_(instr) {}
 

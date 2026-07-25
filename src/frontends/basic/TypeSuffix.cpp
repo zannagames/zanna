@@ -8,9 +8,17 @@
 // File: src/frontends/basic/TypeSuffix.cpp
 // Purpose: Provide the BASIC identifier suffix parser that converts sigils into
 //          semantic types used by the lowering pipeline.
-// Key invariants: Missing suffixes default to the integer type to match legacy
-//                 BASIC semantics.
-// Links: docs/tutorials/basic-tutorial.md#types
+// Key invariants:
+//   - Only the final identifier byte participates in suffix inference.
+//   - $, #/!, and %/& map to string, floating, and integer types respectively.
+//   - The optional helper distinguishes no suffix from an explicit integer
+//     suffix; the convenience helper defaults either case to I64.
+// Ownership/Lifetime:
+//   - Helpers are stateless and borrow identifier views only for each call.
+// Links: src/frontends/basic/TypeSuffix.hpp,
+//        src/frontends/basic/SymbolTable.cpp,
+//        src/frontends/basic/Semantic_OOP_Builder.cpp,
+//        docs/tutorials/basic-tutorial.md#types
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,17 +33,13 @@
 namespace il::frontends::basic {
 
 /// @brief Deduce the BASIC scalar type represented by an identifier suffix.
-///
-/// BASIC allows variable names to end in a sigil that encodes the variable's
-/// type (for example `A$` for strings and `B%` for integers). The lowering
-/// pipeline models those choices through the `Type` enumeration. This helper
-/// inspects the final character of @p name, returning the corresponding
-/// semantic type. Names without a suffix default to `Type::I64`, mirroring the
-/// semantics of classic BASIC dialects.
-///
+/// @details BASIC allows variable names to end in a sigil that encodes the
+///          variable's type (for example @c A$ for strings and @c B% for
+///          integers). This helper inspects only the final byte and preserves
+///          the distinction between an explicit suffix and no suffix.
 /// @param name Identifier to inspect; the view is not stored.
-/// @return The inferred type based on the final character, or `Type::I64` when
-///         no suffix is present.
+/// @return String for @c $, F64 for @c # or @c !, I64 for @c % or @c &, and
+///         @c std::nullopt when no recognized suffix is present.
 std::optional<Type> inferAstTypeFromSuffix(std::string_view name) {
     if (!name.empty()) {
         switch (name.back()) {
@@ -56,7 +60,8 @@ std::optional<Type> inferAstTypeFromSuffix(std::string_view name) {
 
 /// @brief Infer an identifier's BASIC type from its suffix, defaulting to integer.
 /// @param name Identifier to inspect.
-/// @return The suffix-implied type, or `Type::I64` when the name has no type sigil.
+/// @return The suffix-implied type, or @ref Type::I64 when the name has no
+///         recognized type sigil.
 Type inferAstTypeFromName(std::string_view name) {
     if (auto suffixType = inferAstTypeFromSuffix(name))
         return *suffixType;

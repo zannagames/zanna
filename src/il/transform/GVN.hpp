@@ -21,6 +21,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares dominator-scoped global value numbering and load reuse.
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"

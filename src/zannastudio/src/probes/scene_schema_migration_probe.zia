@@ -9,7 +9,7 @@
 // Purpose: Verify bounded schema-migration scans, per-file transactional
 //          application, refusals, and version-2 field authoring writes.
 // Key invariants:
-//   - Scans count exact-kind matches and list 3D scenes as manual refusals.
+//   - Scans count exact-kind matches uniformly across 2D and 3D scenes.
 //   - Apply renames/retypes matched values and refuses lossy conversions.
 //   - A file changed after the scan is refused byte-identically.
 //   - UpdateField writes enum choices and the lowest required schema version.
@@ -39,6 +39,8 @@ bind "../ui/scene_component_authoring";
 bind "../ui/scene_schema_migration";
 
 bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
 bind Dir = Zanna.IO.Dir;
 bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
@@ -66,38 +68,60 @@ func WriteScene(path: String, key: String, values: Integer) -> Boolean {
     return scene.Save(path);
 }
 
+func Write3DScene(path: String, key: String, values: Integer) -> Boolean {
+    var scene = SceneGraph.New();
+    var index = 0;
+    while index < values {
+        var node = SceneNode.New();
+        node.Name = "Node " + index;
+        node.MetadataSetInt(key, 10 + index);
+        scene.Add(node);
+        index = index + 1;
+    }
+    var decoy = SceneNode.New();
+    decoy.Name = "Decoy";
+    decoy.MetadataSetString(key, "wrong-kind");
+    scene.Add(decoy);
+    return scene.Save(path) != 0;
+}
+
 func main() {
     Dir.MakeAll(Path.Join(FIXTURE_ROOT, "nested"));
-    var sceneA = Path.Join(FIXTURE_ROOT, "region-a.scene");
+    var sceneA = Path.Join(FIXTURE_ROOT, "region-a.scene2d");
     var sceneB = Path.Join(FIXTURE_ROOT, Path.Join("nested", "region-b.level"));
     var stale = Path.Join(FIXTURE_ROOT, "stale.scene");
     var vscn = Path.Join(FIXTURE_ROOT, "world.vscn");
+    var canonical3d = Path.Join(FIXTURE_ROOT, "world2.scene3d");
     if WriteScene(sceneA, "enemy.hp", 2) == false
        or WriteScene(sceneB, "enemy.hp", 1) == false
        or WriteScene(stale, "enemy.hp", 1) == false
+       or Write3DScene(vscn, "enemy.hp", 2) == false
+       or Write3DScene(canonical3d, "enemy.hp", 1) == false
     {
         fail("fixture scenes");
         return;
     }
-    File.WriteAllText(vscn, "{}");
 
     var plan = scene_schema_migration.Scan(
         FIXTURE_ROOT, "enemy.hp", "int");
-    if plan.error != "" or plan.MatchedFiles() != 3 or plan.truncated {
-        fail("scan matches: " + plan.error);
+    if plan.error != "" or plan.MatchedFiles() != 5 or plan.truncated {
+        fail("scan matches: " + plan.error + " matched="
+             + plan.MatchedFiles());
         return;
     }
-    var sawVscnRefusal = false;
+    var saw3DMatches = 0;
     var index = 0;
     while index < plan.records.count() {
         var record = plan.records.get(index);
-        if Str.EndsWith(record.path, ".vscn") and record.reason != "" {
-            sawVscnRefusal = true;
+        if (Str.EndsWith(record.path, ".vscn")
+            or Str.EndsWith(record.path, ".scene3d"))
+           and record.reason == "" and record.matches > 0 {
+            saw3DMatches = saw3DMatches + 1;
         }
         index = index + 1;
     }
-    if sawVscnRefusal == false {
-        fail("3D scenes were not reported as manual refusals");
+    if saw3DMatches != 2 {
+        fail("3D scenes did not scan uniformly: " + saw3DMatches);
         return;
     }
 
@@ -134,7 +158,7 @@ func main() {
         }
         index = index + 1;
     }
-    if migrated != 2 or refusedStale == false {
+    if migrated != 4 or refusedStale == false {
         fail("apply outcome: migrated=" + migrated);
         return;
     }
@@ -150,6 +174,20 @@ func main() {
        or check.ObjectHas(0, "enemy.hp")
        or check.ObjectGetStr(2, "enemy.hp", "") != "wrong-kind" {
         fail("migrated values were not converted exactly");
+        return;
+    }
+    var check3D = SceneGraph.Load(vscn);
+    if check3D == null {
+        fail("migrated 3D scene reload");
+        return;
+    }
+    var migratedNode = check3D.Root.GetChild(0);
+    var decoyNode = check3D.Root.GetChild(2);
+    if migratedNode.MetadataKind("enemy.health") != "string"
+       or migratedNode.MetadataGetString("enemy.health", "") != "10"
+       or migratedNode.MetadataHas("enemy.hp")
+       or decoyNode.MetadataGetString("enemy.hp", "") != "wrong-kind" {
+        fail("migrated 3D values were not converted exactly");
         return;
     }
 

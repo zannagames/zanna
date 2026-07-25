@@ -18,6 +18,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares a borrowed, function-local model of EH-aware control flow.
+/// @details `EhModel` resolves block labels, classifies handler and continuation
+///          token parameters, records concrete `eh.push` sites, and exposes
+///          successor edges with enough label metadata for branch-argument
+///          provenance checks.
+
 #pragma once
 
 #include "il/core/BasicBlock.hpp"
@@ -114,13 +121,13 @@ class EhModel {
     [[nodiscard]] bool isHandlerBlock(const il::core::BasicBlock &block) const noexcept;
 
     /// @brief Return the canonical resume-token parameter id for a handler block.
-    /// @details The helper returns a value only for blocks with the standard
-    ///          `(%err:Error, %tok:ResumeTok)` shape. It is used by EH
-    ///          provenance checks to confirm that a branch forwards the active
-    ///          token into the destination's `%tok` parameter.
+    /// @details The helper returns a value only for handler-shaped blocks whose
+    ///          first two parameters are `Error` and `ResumeTok`. Additional
+    ///          parameters do not affect this classification. EH provenance
+    ///          checks use the result to confirm forwarding into `%tok`.
     /// @param block Handler-shaped block to inspect.
     /// @return Parameter id for `%tok`, or no value when the block is not a
-    ///         canonical handler block.
+    ///         compatible handler block.
     [[nodiscard]] std::optional<unsigned> handlerResumeTokenParam(
         const il::core::BasicBlock &block) const noexcept;
 
@@ -168,14 +175,24 @@ class EhModel {
     }
 
   private:
+    /// @brief Borrowed function described by this model.
     const il::core::Function *fn = nullptr;
+
+    /// @brief Borrowed first block, or null when the function has no blocks.
     const il::core::BasicBlock *entryBlock = nullptr;
+
     /// @brief Label-to-block lookup table using string_view keys.
     /// @note Keys reference BasicBlock::label strings owned by the Function.
     ///       This map must not outlive the Function passed to the constructor.
     BlockMap blocks;
+
+    /// @brief Well-shaped `eh.push` sites in function storage order.
     std::vector<EhHandlerPushSite> handlerPushSites;
+
+    /// @brief Map from a borrowed push instruction to its site-vector index.
     std::unordered_map<const il::core::Instr *, std::size_t> pushSiteByInstr;
+
+    /// @brief Whether the function contains an opcode relevant to EH behavior.
     bool hasEh = false;
 };
 

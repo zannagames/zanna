@@ -4,18 +4,19 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Expr_Optional.cpp
-// Purpose: Optional-related expression lowering for the Zia IL lowerer —
-//          null-coalescing (??), optional chaining (?.), try (?),
-//          force-unwrap (!), and await expressions.
-// Key invariants:
-//   - Null checks use alloca+store+load pattern to convert Ptr to I64 for ICmpNe
-//   - Coalesce and optional chain produce merge blocks for both paths
-// Ownership/Lifetime:
-//   - Lowerer owns IL builder; block indices are stable within a function
-// Links: src/frontends/zia/Lowerer.hpp, src/frontends/zia/Lowerer_Expr_Complex.cpp
-//
+///
+/// @file Lowerer_Expr_Optional.cpp
+/// @brief Lowers coalescing, optional chaining, propagation, force-unwrapping,
+///        and awaiting expressions.
+///
+/// @details Nullable optional representations are tested by round-tripping
+///          their pointer bits through integer-comparable storage. Coalescing
+///          and chaining merge both paths through ownership-aware result
+///          slots. Postfix propagation emits early returns for Optional and
+///          Result failures, force-unwrapping traps on null, and `await`
+///          materializes the resolved Future payload in its semantic
+///          representation.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -30,6 +31,8 @@ namespace {
 
 /// @brief True if @p name is one of the size/length property spellings
 ///        (Length/Len/Count/size, any case) treated as a count accessor.
+/// @param name Property spelling to classify.
+/// @return True for a recognized count/length alias.
 bool isCountLikeProperty(const std::string &name) {
     return name == "Length" || name == "length" || name == "Len" || name == "Count" ||
            name == "count" || name == "size";

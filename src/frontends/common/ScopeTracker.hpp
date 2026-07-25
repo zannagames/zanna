@@ -5,14 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/ScopeTracker.hpp
+// File: src/frontends/common/ScopeTracker.hpp
 // Purpose: Stack-based lexical scope tracker mapping source identifiers to
 //          unique mangled IL names. Supports push/pop, RAII guards, and
 //          innermost-to-outermost name resolution.
-// Key invariants: Resolution searches from innermost to outermost scope.
-//                 ScopedScope RAII guard ensures balanced push/pop.
-// Ownership/Lifetime: Owns the scope stack; bindings store string copies.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   * Resolution searches from innermost to outermost scope.
+//   * ScopedScope balances exactly one push/pop pair.
+//   * Generated local IDs increase monotonically until reset().
+// Ownership: Owns the scope stack and copied binding strings; ScopedScope
+//            borrows its tracker for the guard lifetime.
+// References: docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares lexical scope tracking and local-name mangling support.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -56,6 +64,7 @@ class ScopeTracker {
         ScopedScope &operator=(ScopedScope &&) = delete;
 
       private:
+        /// @brief Tracker whose innermost scope is owned by this guard.
         ScopeTracker &st_;
     };
 
@@ -80,6 +89,9 @@ class ScopeTracker {
     /// @brief Bind a name to a mangled identifier in the current scope.
     /// @param name Source identifier.
     /// @param mapped Mangled IL identifier.
+    /// @return True when inserted; false when @p name already exists in the
+    ///         current scope.
+    /// @throws std::logic_error If no scope is active.
     bool bind(const std::string &name, const std::string &mapped) {
         requireScope();
         return stack_.back().emplace(name, mapped).second;
@@ -95,6 +107,8 @@ class ScopeTracker {
     /// @brief Declare a new local and generate a unique mangled name.
     /// @param name Source identifier.
     /// @return The generated unique mangled name.
+    /// @throws std::logic_error If no scope is active or @p name is duplicated.
+    /// @throws std::overflow_error If the local ID counter is exhausted.
     std::string declareLocal(const std::string &name) {
         requireScope();
         if (stack_.back().contains(name))
@@ -109,6 +123,8 @@ class ScopeTracker {
     /// @brief Declare a local with a specific mangled name.
     /// @param name Source identifier.
     /// @param mangledName The mangled name to use.
+    /// @return True when inserted; false for a duplicate name in this scope.
+    /// @throws std::logic_error If no scope is active.
     bool declareLocalAs(const std::string &name, const std::string &mangledName) {
         requireScope();
         return stack_.back().emplace(name, mangledName).second;
@@ -146,6 +162,7 @@ class ScopeTracker {
 
     /// @brief Consume and return the next unique ID.
     /// @return A unique ID that can be used for mangling.
+    /// @throws std::overflow_error If the 64-bit ID counter is exhausted.
     uint64_t nextId() {
         if (nextId_ == std::numeric_limits<uint64_t>::max())
             throw std::overflow_error("local name counter exhausted");
@@ -153,12 +170,17 @@ class ScopeTracker {
     }
 
   private:
+    /// @brief Scope maps ordered from outermost to innermost.
     std::vector<std::unordered_map<std::string, std::string>> stack_;
+
+    /// @brief Require at least one active lexical scope.
+    /// @throws std::logic_error If stack_ is empty.
     void requireScope() const {
         if (stack_.empty())
             throw std::logic_error("scope operation requires an active scope");
     }
 
+    /// @brief ID that will be consumed by the next generated local name.
     uint64_t nextId_{0};
 };
 

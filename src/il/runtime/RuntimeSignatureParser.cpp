@@ -69,6 +69,12 @@ std::optional<il::core::Type::Kind> parseKindToken(std::string_view token) {
     return std::nullopt;
 }
 
+/// @brief Determine whether a parameter token denotes a managed object handle.
+/// @details Nullable suffixes are ignored. Object, sequence, and list spellings
+///          all require the safe frontend's managed-object treatment even though
+///          their lowered IL type is pointer.
+/// @param token Raw parameter type token.
+/// @return True when the token contributes a bit to the object-parameter mask.
 bool isObjectParamToken(std::string_view token) {
     token = trim(token);
     if (!token.empty() && token.back() == '?')

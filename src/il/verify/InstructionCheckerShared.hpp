@@ -32,6 +32,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares shared table-driven instruction checker strategies.
+/// @details Checkers consume a complete `VerifyCtx`, return structured
+///          diagnostics, and share formatting and failure helpers. Specialized
+///          implementations are split across arithmetic, memory, and runtime
+///          translation units.
+
 #pragma once
 
 #include "il/core/Instr.hpp"
@@ -131,8 +138,9 @@ std::optional<Type> typeFromClass(TypeClass typeClass);
 [[nodiscard]] Expected<void> checkAlloca(const VerifyCtx &ctx);
 
 /// @brief Verify a GEP (get-element-pointer) instruction.
-/// @details Checks that the base operand is a pointer type and that the index
-///          operand is an integer, producing a pointer result.
+/// @details Checks that the base operand is a pointer type and that the byte
+///          offset is i64, producing a pointer result. Constant offsets rooted
+///          in a statically sized alloca are range checked.
 /// @param ctx Verification context containing the GEP instruction.
 /// @return Success when base and index types are valid; diagnostic error otherwise.
 [[nodiscard]] Expected<void> checkGEP(const VerifyCtx &ctx);
@@ -151,7 +159,7 @@ std::optional<Type> typeFromClass(TypeClass typeClass);
 /// @return Success when address and value types match; diagnostic error otherwise.
 [[nodiscard]] Expected<void> checkStore(const VerifyCtx &ctx);
 
-/// @brief Verify an addr.of instruction that takes the address of a value.
+/// @brief Verify an addr.of instruction that addresses a string global.
 /// @param ctx Verification context containing the addr.of instruction.
 /// @return Success when operand and result types are valid; diagnostic error otherwise.
 [[nodiscard]] Expected<void> checkAddrOf(const VerifyCtx &ctx);
@@ -168,9 +176,10 @@ std::optional<Type> typeFromClass(TypeClass typeClass);
 /// @return Success when the global reference is valid and addressable.
 [[nodiscard]] Expected<void> checkGAddr(const VerifyCtx &ctx);
 
-/// @brief Verify a const.null instruction that produces a null pointer.
+/// @brief Verify a const.null instruction that produces a nullable value.
+/// @details Accepts ptr, str, error, and resumetok result annotations.
 /// @param ctx Verification context containing the const.null instruction.
-/// @return Success when the result type is a pointer; diagnostic error otherwise.
+/// @return Success for a supported nullable result kind; diagnostic otherwise.
 [[nodiscard]] Expected<void> checkConstNull(const VerifyCtx &ctx);
 
 // --- Runtime call verification helpers ---
@@ -199,14 +208,16 @@ std::optional<Type> typeFromClass(TypeClass typeClass);
 /// @return Success when the error context and operands are valid.
 [[nodiscard]] Expected<void> checkTrapFromErr(const VerifyCtx &ctx);
 
-/// @brief Verify a shift instruction and warn when the constant amount is out of bounds.
-/// @details If the shift amount operand is a constant integer with value >= 64 or < 0,
-///          emits a warning diagnostic. On x86, shifts by >= 64 produce undefined results.
+/// @brief Accept a shift after table-driven structural and type validation.
+/// @details IL shift counts are defined modulo 64, so constant amounts require
+///          no additional range diagnostic.
 /// @param ctx Verification context containing the shift instruction.
-/// @return Always succeeds (warnings do not block verification).
+/// @return Always succeeds.
 [[nodiscard]] Expected<void> checkShift(const VerifyCtx &ctx);
 
-/// @brief Default validator that records the declared instruction result type.
+/// @brief Default validator for instructions needing no specialized semantics.
+/// @details Opcode-signature checking and type recording are handled by the
+///          surrounding dispatch pipeline.
 /// @param ctx Verification context that owns the instruction.
 /// @return Always empty because structural checks handle failures.
 [[nodiscard]] Expected<void> checkDefault(const VerifyCtx &ctx);

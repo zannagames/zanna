@@ -1,0 +1,92 @@
+// =============================================================================
+// probes/meta_probe.zia — P5 gate: economy / scoring / difficulty (pure logic)
+// =============================================================================
+//
+// Asserts the meta systems: salvage earns and spends on tiered upgrades (with
+// rising cost, overspend refusal, and damage/handling multipliers); scoring
+// computes medals from time + damage + secrets; difficulty scalars order
+// correctly across Story/Soldier/Veteran and NG+.
+// =============================================================================
+module meta_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../meta/economy" as economy;
+bind "../meta/scoring" as scoring;
+bind "../meta/difficulty" as difficulty;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func start() {
+    // --- Economy ------------------------------------------------------------
+    var e = new economy.Economy();
+    e.setup();
+    if e.available() != 0 { fail("economy starts nonzero"); return; }
+    if e.canBuy(config.W_BOLT) { fail("bought with no salvage"); return; }
+    e.addSalvage(100);
+    if e.canBuy(config.W_BOLT) == false { fail("cannot buy tier 1 with exact salvage"); return; }
+    var t0dmg = e.damageMult(config.W_BOLT);
+    if e.buyUpgrade(config.W_BOLT) == false { fail("buy tier 1 failed"); return; }
+    if e.tierOf(config.W_BOLT) != 1 { fail("tier did not advance"); return; }
+    if e.available() != 0 { fail("salvage not deducted"); return; }
+    if e.damageMult(config.W_BOLT) <= t0dmg { fail("damage mult did not rise"); return; }
+    if e.handlingMult(config.W_BOLT) >= 1.0 { fail("handling mult did not tighten"); return; }
+    // Rising cost: tier 2 costs more than tier 1.
+    e.addSalvage(1000);
+    var cost2 = e.nextCost(config.W_BOLT);
+    if cost2 <= 100 { fail("tier 2 not more expensive"); return; }
+    e.buyUpgrade(config.W_BOLT);
+    e.buyUpgrade(config.W_BOLT);
+    if e.tierOf(config.W_BOLT) != economy.MAX_TIER { fail("did not reach max tier"); return; }
+    if e.nextCost(config.W_BOLT) != -1 { fail("maxed weapon still upgradeable"); return; }
+    if e.buyUpgrade(config.W_BOLT) { fail("bought past max tier"); return; }
+
+    // --- Scoring: medals from time + damage ---------------------------------
+    // A fast, no-damage, all-secrets run earns Ashborn; a slow, damaged run Bronze.
+    var fast = new scoring.Scoring();
+    fast.beginLevel(100, 2);
+    fast.tick(50.0);           // well under 60% of par
+    fast.addSecret(); fast.addSecret();
+    var fastMedal = fast.medal();
+    if fastMedal != scoring.MEDAL_ASHBORN {
+        fail("fast/clean run not Ashborn: " + fast.medalName(fastMedal));
+        return;
+    }
+    var slow = new scoring.Scoring();
+    slow.beginLevel(100, 2);
+    slow.tick(110.0);          // over par
+    slow.addDamage(80);
+    var slowMedal = slow.medal();
+    if slowMedal != scoring.MEDAL_BRONZE {
+        fail("slow/damaged run not Bronze: " + slow.medalName(slowMedal));
+        return;
+    }
+    if fast.score() <= slow.score() { fail("fast score not higher"); return; }
+    // Recording keeps the best medal.
+    fast.recordLevel(config.LV_L1);
+    if fast.medalOf(config.LV_L1) != scoring.MEDAL_ASHBORN { fail("medal not recorded"); return; }
+
+    // --- Difficulty scalars order correctly ---------------------------------
+    var d = new difficulty.Difficulty();
+    d.setLevel(config.DIFF_STORY);
+    var storyDmg = d.incomingDamageScale();
+    d.setLevel(config.DIFF_VETERAN);
+    var vetDmg = d.incomingDamageScale();
+    d.setLevel(config.DIFF_SOLDIER);
+    var soldierDmg = d.incomingDamageScale();
+    if storyDmg >= soldierDmg || soldierDmg >= vetDmg {
+        fail("difficulty damage scalars out of order");
+        return;
+    }
+    if M.absf(soldierDmg - 1.0) > 0.001 { fail("soldier scale not 1.0"); return; }
+    d.setLevel(config.DIFF_VETERAN);
+    d.setNgPlus(true);
+    if d.incomingDamageScale() <= vetDmg { fail("NG+ did not raise difficulty"); return; }
+    if d.enemyHealthScale() <= 1.0 { fail("veteran enemy health not > 1"); return; }
+
+    Terminal.Say("econSalvage=" + toString(e.available()) + " maxTier=" + toString(economy.MAX_TIER) +
+                 " fastScore=" + toString(fast.score()) + " slowScore=" + toString(slow.score()));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

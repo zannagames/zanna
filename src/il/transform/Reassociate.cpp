@@ -41,6 +41,8 @@ namespace {
 /// @brief Check if an opcode is commutative and associative for integers.
 /// @details Only includes operations where reassociation is provably correct:
 ///          plain integer arithmetic (no overflow checks) and bitwise ops.
+/// @param op Opcode to classify.
+/// @return `true` for the supported plain add/multiply and bitwise operations.
 bool isReassociable(Opcode op) {
     switch (op) {
         case Opcode::Add:
@@ -58,6 +60,8 @@ bool isReassociable(Opcode op) {
 /// @details Constants get the lowest rank (sorted last in descending order)
 ///          so that `a + 1` and `1 + a` both become `a + 1` (temp first).
 ///          Among temporaries, higher IDs rank higher for a stable sort.
+/// @param v Operand to rank.
+/// @return Pair of value-kind priority and deterministic within-kind payload.
 std::pair<unsigned, std::uint64_t> operandRank(const Value &v) {
     switch (v.kind) {
         case Value::Kind::Temp:
@@ -76,7 +80,8 @@ std::pair<unsigned, std::uint64_t> operandRank(const Value &v) {
 }
 
 /// @brief Canonicalize operand order for a single instruction.
-/// @return True if the operand order was changed.
+/// @param I Candidate binary instruction, modified in place.
+/// @return `true` if the operand order was changed.
 bool canonicalizeOperands(Instr &I) {
     if (I.operands.size() != 2)
         return false;
@@ -95,8 +100,20 @@ bool canonicalizeOperands(Instr &I) {
     return false;
 }
 
+/// @brief Same-block instruction indices keyed by result temporary id.
 using DefIndex = std::unordered_map<unsigned, std::size_t>;
 
+/// @brief Recursively flatten a single-use same-op operand subtree.
+/// @param block Block containing all candidate definitions.
+/// @param opcode Associative opcode required at every internal node.
+/// @param value Current operand to classify as a leaf or descend through.
+/// @param rootIndex Exclusive upper bound on usable definition indices.
+/// @param defs Same-block result-definition index.
+/// @param useCounts Function-wide use counts that enforce single-use nodes.
+/// @param visited Temporary ids already expanded, preventing malformed cycles.
+/// @param treeNodes Output instruction indices belonging to the flattened tree.
+/// @param leaves Output operands at the frontier of that tree.
+/// @return `true` after safely classifying the operand.
 bool flattenOperand(const BasicBlock &block,
                     Opcode opcode,
                     const Value &value,
@@ -146,6 +163,14 @@ bool flattenOperand(const BasicBlock &block,
     return true;
 }
 
+/// @brief Rebuild an associative expression tree in deterministic right-deep order.
+/// @param block Block containing the root and all eligible internal nodes.
+/// @param rootIndex Index of the candidate root instruction.
+/// @param defs Same-block definition index.
+/// @param useCounts Function-wide temporary use counts.
+/// @return `true` when any node's operand vector changes.
+/// @details Multi-use and forward-defined temporaries remain leaves. A tree with
+///          inconsistent node/leaf cardinality falls back to binary operand sorting.
 bool canonicalizeTree(BasicBlock &block,
                       std::size_t rootIndex,
                       const DefIndex &defs,
@@ -179,6 +204,7 @@ bool canonicalizeTree(BasicBlock &block,
     if (leaves.size() != nodes.size() + 1)
         return canonicalizeOperands(root);
 
+    /// Sort operands by descending canonical rank before rebuilding the tree.
     std::sort(leaves.begin(), leaves.end(), [](const Value &lhs, const Value &rhs) {
         return operandRank(lhs) > operandRank(rhs);
     });
@@ -208,6 +234,7 @@ bool canonicalizeTree(BasicBlock &block,
 
 } // namespace
 
+/// @copydoc reassociate()
 void reassociate(Module &M) {
     for (auto &F : M.functions) {
         std::unordered_map<unsigned, unsigned> useCounts;

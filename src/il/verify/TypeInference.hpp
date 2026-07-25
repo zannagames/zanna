@@ -33,6 +33,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares verifier-side temporary type and definition tracking.
+/// @details `TypeInference` wraps caller-owned maps and sets, resolves literal
+///          and temporary value types, records instruction results, and checks
+///          ordinary operands plus branch arguments for unknown or
+///          not-yet-defined temporaries.
+
 #pragma once
 
 #include "il/core/Type.hpp"
@@ -65,7 +72,7 @@ class TypeInference {
 
     /// @brief Return the static type of a value.
     /// @param value Value to inspect.
-    /// @param missing Optional flag set when the referenced temporary is undefined.
+    /// @param missing Optional flag set when a temporary has no type-map entry.
     /// @return The inferred type or void when unknown.
     il::core::Type valueType(const il::core::Value &value, bool *missing = nullptr) const;
 
@@ -115,7 +122,10 @@ class TypeInference {
     bool isDefined(unsigned id) const;
 
   private:
+    /// @brief Borrowed map from temporary identifiers to known static types.
     std::unordered_map<unsigned, il::core::Type> &temps_;
+
+    /// @brief Borrowed set of temporaries defined at the current program point.
     std::unordered_set<unsigned> &defined_;
 };
 

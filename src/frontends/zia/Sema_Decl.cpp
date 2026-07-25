@@ -25,6 +25,8 @@ namespace {
 
 /// @brief True if @p expr is an integer literal whose value fits 0–255,
 ///        i.e. can be narrowed to a Byte without loss.
+/// @param expr Candidate initializer expression.
+/// @return True only for an in-range integer literal.
 bool integerLiteralFitsByte(Expr *expr) {
     auto *lit = dynamic_cast<IntLiteralExpr *>(expr);
     return lit && lit->value >= 0 && lit->value <= 255;
@@ -33,6 +35,10 @@ bool integerLiteralFitsByte(Expr *expr) {
 /// @brief Refine an integer-literal initializer's type to match a declared
 ///        `Byte` when the literal fits, so `var b: Byte = 5` types as Byte
 ///        rather than Integer. Returns @p initType unchanged otherwise.
+/// @param declaredType Explicit destination type.
+/// @param initType Initially inferred initializer type.
+/// @param initializer Initializer expression used to verify literal range.
+/// @return Byte for a compatible contextual literal; otherwise @p initType.
 TypeRef contextualizeIntegerLiteralForDeclaredType(TypeRef declaredType,
                                                    TypeRef initType,
                                                    Expr *initializer) {
@@ -45,11 +51,16 @@ TypeRef contextualizeIntegerLiteralForDeclaredType(TypeRef declaredType,
 
 /// @brief True if @p type may not be used as a stored value/field type
 ///        (Void, Never, or Module).
+/// @param type Semantic type to classify.
+/// @return True when the type cannot have a stored runtime value.
 bool isForbiddenValueType(TypeRef type) {
     return type && (type->kind == TypeKindSem::Void || type->kind == TypeKindSem::Never ||
                     type->kind == TypeKindSem::Module);
 }
 
+/// @brief Render a forbidden value type for diagnostics.
+/// @param type Semantic type, which may be null.
+/// @return Semantic spelling, or `unknown` for a null type.
 std::string forbiddenValueTypeName(TypeRef type) {
     return type ? type->toString() : "unknown";
 }
@@ -58,6 +69,9 @@ std::string forbiddenValueTypeName(TypeRef type) {
 ///        as child symbols during a broad namespace bind.
 /// @details Explicit binds to these aliases remain valid. Suppressing the broad
 ///          child keeps compatibility namespaces from competing with canonical classes.
+/// @param ns Parent namespace of a broad bind.
+/// @param child Immediate child namespace being considered.
+/// @return True when the qualified child is a compatibility-only alias.
 bool suppressBroadRuntimeAliasNamespaceImport(std::string_view ns, std::string_view child) {
     const std::string qualified = std::string(ns) + "." + std::string(child);
     static constexpr std::string_view suppressed[] = {
@@ -140,6 +154,11 @@ void Sema::analyzeBind(BindDecl &decl) {
     // (for example `module Inner; class Inner { ... }`).
 }
 
+/// @brief Rebuild file-module export maps for all resolved file binds.
+/// @param binds Module binds in the current compilation unit.
+/// @param decls Flattened declarations from which each bound file's exports are collected.
+/// @details Records both importer-file-specific visibility and globally unambiguous compatibility
+///          entries. Conflicting aliases in the same importing file are diagnosed.
 void Sema::buildBoundFileExports(const std::vector<BindDecl> &binds,
                                  const std::vector<DeclPtr> &decls) {
     moduleExports_.clear();
@@ -207,6 +226,12 @@ bool Sema::hasModuleExports(const std::string &moduleName, SourceLoc useLoc) con
     return findModuleExports(moduleName, useLoc) != nullptr;
 }
 
+/// @brief Collect exported top-level symbols originating in one source file.
+/// @param fileId Source file whose declarations are selected.
+/// @param decls Candidate declarations, including nested namespaces.
+/// @param out Destination map keyed by source-visible export name.
+/// @details Externs and non-exported declarations are excluded; namespace exports are traversed
+///          recursively while preserving their qualified lookup names.
 void Sema::collectExportedSymbolsForFile(uint32_t fileId,
                                          const std::vector<DeclPtr> &decls,
                                          std::unordered_map<std::string, Symbol> &out) const {
@@ -286,6 +311,9 @@ void Sema::collectExportedSymbolsForFile(uint32_t fileId,
     collectFromDecls(decls, "", collectFromDecls);
 }
 
+/// @brief Choose the primary qualifier introduced by a file bind.
+/// @param decl File bind declaration.
+/// @return Explicit alias, declared module name, or path stem in precedence order.
 std::string Sema::fileBindModuleName(const BindDecl &decl) const {
     if (!decl.alias.empty())
         return decl.alias;
@@ -330,14 +358,14 @@ std::vector<std::string> Sema::fileBindVisibleModuleNames(const BindDecl &decl) 
     return names;
 }
 
-/// @brief Analyze a bind declaration that imports a runtime namespace.
+/// @brief Analyze a bind declaration that exposes a runtime namespace.
 /// @details Handles three forms of namespace binding:
-///          1. Selective import: `bind Zanna.Terminal { Say, ReadLine };`
-///             - Only listed symbols are imported into scope
-///          2. Alias import: `bind Zanna.Terminal as T;`
+///          1. Selective bind: `bind Zanna.Terminal { Say, ReadLine };`
+///             - Only listed symbols are exposed in scope
+///          2. Alias bind: `bind Zanna.Terminal as T;`
 ///             - Namespace accessible via alias (e.g., T.Say())
-///          3. Full import: `bind Zanna.Terminal;`
-///             - All namespace symbols imported into current scope
+///          3. Full bind: `bind Zanna.Terminal;`
+///             - All namespace symbols are exposed in the current scope
 ///          Validates that the namespace exists and checks for symbol conflicts.
 /// @param decl The bind declaration AST node to analyze.
 void Sema::analyzeNamespaceBind(BindDecl &decl) {
@@ -456,6 +484,7 @@ bool Sema::isValidRuntimeNamespace(const std::string &ns) {
 /// @details Imports types from typeRegistry_, classes and methods from RuntimeRegistry,
 ///          properties by display name, and direct functions from kRuntimeNameAliases.
 /// @param ns The namespace whose symbols should be imported.
+/// @param loc Bind location used for name-conflict warnings.
 void Sema::importNamespaceSymbols(const std::string &ns, SourceLoc loc) {
     // Import all symbols from this namespace
     const std::string prefix = ns + ".";
@@ -847,6 +876,7 @@ template void Sema::registerTypeMembers<InterfaceDecl>(InterfaceDecl &, bool);
 
 /// @brief Register class member signatures (fields and methods).
 /// @details Skips generic types, which are registered during instantiation.
+/// @param decl Class declaration whose members are registered.
 void Sema::registerClassMembers(ClassDecl &decl) {
     // Skip member registration for generic types - done during instantiation
     if (!decl.genericParams.empty())
@@ -856,6 +886,7 @@ void Sema::registerClassMembers(ClassDecl &decl) {
 
 /// @brief Register value member signatures (fields and methods).
 /// @details Skips generic types, which are registered during instantiation.
+/// @param decl Struct declaration whose members are registered.
 void Sema::registerStructMembers(StructDecl &decl) {
     // Skip member registration for generic types - done during instantiation
     if (!decl.genericParams.empty())
@@ -864,6 +895,9 @@ void Sema::registerStructMembers(StructDecl &decl) {
 }
 
 /// @brief Register interface member signatures (methods only, no fields).
+/// @param decl Interface declaration whose method requirements are registered.
+/// @details Generic parameters are installed temporarily so member annotations resolve to
+///          semantic type parameters.
 void Sema::registerInterfaceMembers(InterfaceDecl &decl) {
     if (decl.genericParams.empty()) {
         registerTypeMembers(decl, false);
@@ -878,7 +912,7 @@ void Sema::registerInterfaceMembers(InterfaceDecl &decl) {
     popTypeParams();
 }
 
-/// @brief Analyze an class type declaration body.
+/// @brief Analyze a class type declaration body.
 /// @details Handles base class inheritance by copying parent fields and methods into scope,
 ///          pre-defines method symbols for intra-class calls, then analyzes member bodies.
 ///          Validates interface implementations after all members are analyzed.
@@ -1260,6 +1294,11 @@ void Sema::analyzeFieldDecl(FieldDecl &decl, TypeRef ownerType) {
     defineSymbol(decl.name, sym);
 }
 
+/// @brief Analyze property accessor bodies under their owning type context.
+/// @param decl Property declaration with optional getter and setter bodies.
+/// @param ownerType Semantic class or struct type that owns the property.
+/// @details Defines `self` for instance accessors and the configured setter parameter for
+///          setters, then validates getter control flow against the property type.
 void Sema::analyzePropertyDecl(PropertyDecl &decl, TypeRef ownerType) {
     TypeRef propType = decl.type ? resolveTypeNode(decl.type.get()) : types::unknown();
 
@@ -1313,6 +1352,13 @@ void Sema::analyzePropertyDecl(PropertyDecl &decl, TypeRef ownerType) {
         analyzeBody(decl.setterBody.get(), types::voidType(), true);
 }
 
+/// @brief Find a property declaration visible from an owner for lowering.
+/// @param ownerName Semantic class or struct owner where lookup begins.
+/// @param propertyName Property identifier.
+/// @param declaringOwner Optional destination for the actual declaring type.
+/// @return Direct or inherited property declaration, or nullptr when absent.
+/// @details Class lookup follows the base-class chain; struct lookup examines only the named
+///          struct because structs do not inherit.
 const PropertyDecl *Sema::propertyDeclForLowering(const std::string &ownerName,
                                                   const std::string &propertyName,
                                                   std::string *declaringOwner) const {
@@ -1354,11 +1400,20 @@ const PropertyDecl *Sema::propertyDeclForLowering(const std::string &ownerName,
     return nullptr;
 }
 
+/// @brief Find a visible property declaration without requesting its declaring owner.
+/// @param ownerName Semantic owner where lookup begins.
+/// @param propertyName Property identifier.
+/// @return Direct or inherited property declaration, or nullptr when absent.
 const PropertyDecl *Sema::findPropertyDecl(const std::string &ownerName,
                                            const std::string &propertyName) const {
     return propertyDeclForLowering(ownerName, propertyName, nullptr);
 }
 
+/// @brief Analyze a destructor body with an implicit final `self` parameter.
+/// @param decl Destructor declaration to analyze.
+/// @param ownerType Semantic class type bound to `self`.
+/// @details Destructors are checked in a void-return context and restore any enclosing method or
+///          function state after their scope is popped.
 void Sema::analyzeDestructorDecl(DestructorDecl &decl, TypeRef ownerType) {
     if (!decl.body)
         return;

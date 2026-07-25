@@ -87,9 +87,12 @@ static int game3d_string_has_bytes(rt_string value) {
 }
 
 /// @brief Whether @p path ends in a supported 3D model extension
-/// (.vscn/.gltf/.glb/.fbx/.obj/.stl), case-insensitive.
+/// (.scene3d/.vscn/.gltf/.glb/.fbx/.obj/.stl), case-insensitive.
+/// @details `.scene3d` is the canonical scene extension; `.vscn` remains an
+///          accepted legacy alias (ADR 0182).
 static int game3d_path_has_model_extension(const char *path) {
-    static const char *const exts[] = {".vscn", ".gltf", ".glb", ".fbx", ".obj", ".stl"};
+    static const char *const exts[] = {
+        ".scene3d", ".vscn", ".gltf", ".glb", ".fbx", ".obj", ".stl"};
     if (!path)
         return 0;
     const char *dot = strrchr(path, '.');

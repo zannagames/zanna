@@ -1293,7 +1293,7 @@ void printTopLevelUsage(std::ostream &out) {
         << "       zanna eval [options] [code]\n"
         << "       zanna explain <diagnostic-code>\n"
         << "       zanna package [target] [--target macos|linux|windows|tarball] [-o output]\n"
-        << "       zanna asset bake|validate <model> [output.vscn] [options]\n"
+        << "       zanna asset bake|validate <model> [output.scene3d] [options]\n"
         << "\n"
         << "Developer commands:\n"
         << "       zanna front zia|basic ...\n"

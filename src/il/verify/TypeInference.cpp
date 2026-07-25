@@ -17,6 +17,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements temporary type lookup and use-before-definition checks.
+/// @details The helper keeps caller-owned type and definition containers
+///          synchronized when it records or removes values and provides both
+///          structured and stream-oriented operand validation interfaces.
+
 #include "il/verify/TypeInference.hpp"
 #include "il/core/BasicBlock.hpp"
 #include "il/core/Function.hpp"
@@ -142,6 +148,10 @@ void TypeInference::recordResult(const Instr &instr, Type type) {
 il::support::Expected<void> TypeInference::ensureOperandsDefined_E(const Function &fn,
                                                                    const BasicBlock &bb,
                                                                    const Instr &instr) const {
+    /// @brief Validate one ordinary operand or branch argument.
+    /// @param op Value to inspect.
+    /// @return Success for literals and available temporaries; otherwise a
+    ///         diagnostic distinguishing unknown type from use-before-def.
     auto checkValue = [&](const Value &op) -> il::support::Expected<void> {
         if (op.kind != Value::Kind::Temp)
             return {};

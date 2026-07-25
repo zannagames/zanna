@@ -25,9 +25,10 @@
 /// Binary expressions are parsed using precedence climbing to handle
 /// operator precedence and associativity correctly without deep recursion.
 ///
-/// **One-Token Lookahead:**
-/// The parser uses single-token lookahead via `peek()` to make parsing
-/// decisions. This is sufficient for the Zia grammar.
+/// **Buffered Lookahead and Speculation:**
+/// `peek(offset)` fills a token buffer on demand for multi-token decisions.
+/// Ambiguous constructs use bounded speculative parsing that rolls back token
+/// position and error state unless explicitly committed.
 ///
 /// ## Operator Precedence
 ///
@@ -51,8 +52,8 @@
 /// ## Grammar Overview
 ///
 /// ```
-/// module     = ("module" IDENT ";")? import* declaration* EOF
-/// import     = "import" dotted-name ("as" IDENT)? ";"
+/// module     = ("module" IDENT ";")? bind* declaration* EOF
+/// bind       = "bind" (STRING | dotted-name) ("as" IDENT)? ";"
 ///
 /// declaration = struct-decl | class-decl | interface-decl
 ///             | func-decl | global-var-decl
@@ -89,7 +90,7 @@
 /// }
 /// ```
 ///
-/// @invariant One-token lookahead via peek().
+/// @invariant peek() always yields a token, buffering lookahead as needed.
 /// @invariant Precedence climbing for expressions.
 /// @invariant Error recovery at statement boundaries.
 ///
@@ -154,7 +155,7 @@ class Parser {
     ///
     /// @details Parses the complete module structure:
     /// 1. Optional `module ModuleName;` declaration
-    /// 2. Zero or more import declarations
+    /// 2. Zero or more bind declarations
     /// 3. Zero or more top-level declarations
     /// 4. Expects EOF at end
     ///
@@ -206,6 +207,9 @@ class Parser {
     Token advance();
 
     /// @brief Check whether the token at @p offset matches @p kind.
+    /// @param kind Expected token kind.
+    /// @param offset Lookahead distance from the current position.
+    /// @return True when the buffered token at @p offset has @p kind.
     bool check(TokenKind kind, size_t offset = 0);
 
     /// @brief Check if current token can be used as an identifier.
@@ -216,12 +220,16 @@ class Parser {
     bool checkIdentifierLike();
 
     /// @brief Check whether a token can begin an expression.
+    /// @param kind Token kind to classify.
+    /// @return True when @p kind is valid at the start of an expression.
     bool isExpressionStart(TokenKind kind) const;
 
     /// @brief Check whether the current `match` token starts a match expression/statement.
+    /// @return True when lookahead identifies expression-style match syntax.
     bool isMatchExpressionAhead();
 
     /// @brief Check whether the current `{` is likely a block expression.
+    /// @return True when bounded lookahead finds a value-producing block shape.
     bool looksLikeBlockExpression();
 
     /// @brief Consume current token if it matches the given kind.
@@ -241,6 +249,8 @@ class Parser {
     bool expect(TokenKind kind, const char *what, Token *out = nullptr);
 
     /// @brief Reclaim consumed tokens from the front of the lookahead buffer.
+    /// @details Preserves the current logical token while limiting retained
+    ///          storage during long parses.
     void compactBufferedTokens();
 
     /// @brief Attempt to resynchronize after a syntax error.
@@ -269,12 +279,17 @@ class Parser {
       public:
         /// @brief Begin a speculative parse: snapshot token position and
         ///        error state, and suppress diagnostics until committed.
+        /// @param parser Parser whose buffered position and diagnostics are
+        ///        managed by the speculation.
         explicit Speculation(Parser &parser);
+
+        /// @brief Roll back token/error state unless commit() was called.
         ~Speculation();
 
         Speculation(const Speculation &) = delete;
         Speculation &operator=(const Speculation &) = delete;
 
+        /// @brief Accept the speculative parse and retain its token progress.
         void commit() {
             committed_ = true;
         }
@@ -295,6 +310,7 @@ class Parser {
 
     /// @brief Parse a match pattern, falling back to expression patterns.
     /// @details Uses speculative parsing to distinguish patterns from expressions.
+    /// @return Parsed match-arm pattern.
     MatchArm::Pattern parseMatchPattern();
 
     /// @brief Parse a non-expression pattern (wildcard, literal, binding, constructor, tuple).
@@ -347,17 +363,22 @@ class Parser {
     /// @brief Parse a leading-identifier primary: either a `Type { ... }`
     ///        struct literal (when struct literals are enabled) or a plain
     ///        identifier reference. Assumes the current token is identifier-like.
+    /// @param loc Source location of the leading identifier.
+    /// @return Parsed struct literal or identifier expression.
     ExprPtr parseIdentifierOrStructLiteral(SourceLoc loc);
 
     /// @brief Parse the remainder of a `(`-led primary: unit literal `()`,
     ///        parenthesized expression, tuple, or lambda. Assumes the opening
     ///        `(` has already been consumed.
+    /// @param loc Source location of the opening parenthesis.
+    /// @return Parsed unit, grouping, tuple, or lambda expression.
     ExprPtr parseParenthesizedExpr(SourceLoc loc);
 
     /// @brief Parse an expression while permitting `Type { ... }` struct literals.
     /// @details Used for expression subcontexts that are already unambiguously value
     /// positions, while statement conditions keep struct literals disabled so
     /// braces remain block delimiters.
+    /// @return Parsed expression.
     ExprPtr parseExpressionAllowingStructLiterals();
 
     /// @brief Parse a match expression.
@@ -366,6 +387,7 @@ class Parser {
     ExprPtr parseMatchExpression(SourceLoc loc);
 
     /// @brief Parse a value-producing block expression: `{ stmts; expr }`.
+    /// @return Parsed block expression.
     ExprPtr parseBlockExpression();
 
     /// @brief Parse postfix operators (call, index, field access).
@@ -460,7 +482,8 @@ class Parser {
     ExprPtr parseInterpolatedString();
 
     /// @brief Parse function call arguments.
-    /// @return Vector of CallArg (positional or named).
+    /// @param[out] args Destination vector for positional or named arguments.
+    /// @return True when the complete argument list parses successfully.
     ///
     /// @details Handles both positional and named arguments:
     /// - `f(1, 2)` - positional
@@ -469,6 +492,7 @@ class Parser {
     bool parseCallArgs(std::vector<CallArg> &args);
     /// @brief Convenience overload returning the parsed call arguments
     ///        directly (empty on parse error).
+    /// @return Parsed argument vector.
     std::vector<CallArg> parseCallArgs();
 
     /// @}
@@ -584,7 +608,7 @@ class Parser {
     /// @return The parsed FunctionDecl.
     DeclPtr parseFunctionDecl(bool isForeign = false);
 
-    /// @brief Parse a struct type declaration: value Name { }
+    /// @brief Parse a struct type declaration: struct Name { }
     /// @return The parsed StructDecl.
     DeclPtr parseStructDecl();
 
@@ -615,6 +639,7 @@ class Parser {
     DeclPtr parseNamespaceDecl();
 
     /// @brief Parse a type alias: type Name = TargetType;
+    /// @return The parsed TypeAliasDecl.
     DeclPtr parseTypeAlias();
 
     /// @brief Parse a global variable declaration: var x = 1;
@@ -626,12 +651,14 @@ class Parser {
     BindDecl parseBindDecl();
 
     /// @brief Parse function/method parameters.
-    /// @return Vector of Param.
+    /// @param[out] params Destination vector for parsed parameter declarations.
+    /// @return True when the complete parameter list parses successfully.
     ///
     /// @details Parses parameter list: `(name: Type, name2: Type = default)`
     bool parseParameters(std::vector<Param> &params);
     /// @brief Convenience overload returning the parsed parameter list
     ///        directly (empty on parse error).
+    /// @return Parsed parameter vector.
     std::vector<Param> parseParameters();
 
     /// @brief Parse generic type parameters: [T, U]

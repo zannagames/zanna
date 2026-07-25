@@ -1,0 +1,355 @@
+// =============================================================================
+// fx/effects.zia — fire-and-forget particle effects (muzzle / impact / blast)
+// =============================================================================
+//
+// A fixed ring of Particles3D emitters, reused round-robin. Weapons and the
+// damage pipeline request bursts (muzzle flash, bullet impact sparks, explosion
+// balls); update() ages them and draw() renders the active ones in the scene
+// pass (after opaques, before EndScene — the Particles3D.Draw landmine rule).
+// =============================================================================
+module effects;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Graphics as Gfx;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+
+var COUNT: Integer = 12;
+var TRACERS: Integer = 24;
+var DECALS: Integer = 32;
+
+class Effects {
+    hide List[G3D.Particles3D] emitters;
+    hide List[Float] life;
+    hide Integer nextIdx;
+    hide Boolean ready;
+    // Tracers: stretched emissive boxes drawn in the scene pass.
+    hide G3D.Mesh3D tracerMesh;
+    hide List[G3D.Material3D] tracerMat;
+    hide List[Float] trSX; hide List[Float] trSY; hide List[Float] trSZ;
+    hide List[Float] trEX; hide List[Float] trEY; hide List[Float] trEZ;
+    hide List[Float] trTtl; hide List[Float] trMax;
+    hide List[Integer] trMatIdx;
+    hide Integer nextTracer;
+    // Tracer material cache by quantized color.
+    hide List[Integer] tmKey;
+    hide List[G3D.Material3D] tmVal;
+    // Scorch decals.
+    hide List[G3D.Decal3D] decals;
+    hide List[Integer] decalLive;
+    hide Integer nextDecal;
+    hide Gfx.Pixels scorchPx;
+    // Ambient atmosphere loop (one continuous emitter tracking the player).
+    hide G3D.Particles3D ambient;
+    hide Boolean ambientOn;
+    hide Boolean softParticles;
+
+    expose func init() {
+        emitters = []; life = [];
+        nextIdx = 0;
+        ready = false;
+        trSX = []; trSY = []; trSZ = []; trEX = []; trEY = []; trEZ = [];
+        trTtl = []; trMax = []; trMatIdx = [];
+        tracerMat = []; tmKey = []; tmVal = [];
+        nextTracer = 0;
+        decals = []; decalLive = [];
+        nextDecal = 0;
+        ambientOn = false;
+        softParticles = false;
+    }
+
+    expose func setup(canvas: G3D.Canvas3D) {
+        softParticles = G3D.Canvas3D.BackendSupports(canvas, "soft-particles");
+        var i = 0;
+        while i < COUNT {
+            var p = G3D.Particles3D.New(64);
+            if softParticles { G3D.Particles3D.SetSoftness(p, 0.25); }
+            emitters.Add(p);
+            life.Add(0.0);
+            i = i + 1;
+        }
+        tracerMesh = G3D.Mesh3D.Box(1.0, 1.0, 1.0);
+        i = 0;
+        while i < TRACERS {
+            trSX.Add(0.0); trSY.Add(0.0); trSZ.Add(0.0);
+            trEX.Add(0.0); trEY.Add(0.0); trEZ.Add(0.0);
+            trTtl.Add(0.0); trMax.Add(0.1); trMatIdx.Add(0);
+            i = i + 1;
+        }
+        // Scorch mark: radial dark splat with a soft edge.
+        scorchPx = Gfx.Pixels.New(16, 16);
+        var y = 0;
+        while y < 16 {
+            var x = 0;
+            while x < 16 {
+                var dx = (x - 7.5) / 7.5;
+                var dy = (y - 7.5) / 7.5;
+                var d = dx * dx + dy * dy;
+                var alpha = 0;
+                if d < 1.0 {
+                    alpha = M.clampi(M.roundi((1.0 - d) * 220.0), 0, 255);
+                }
+                Gfx.Pixels.Set(scorchPx, x, y, ((16 * 256 + 14) * 256 + 12) * 256 + alpha);
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        i = 0;
+        while i < DECALS {
+            decals.Add(null);
+            decalLive.Add(0);
+            i = i + 1;
+        }
+        ready = true;
+    }
+
+    // --- Ambient atmosphere loop ---------------------------------------------
+    // kind follows level_env.ATMO_*; count scales with the quality tier.
+    expose func ambientSetup(kind: Integer, count: Integer) {
+        // Stop the previous level's emitter before replacing it (release hygiene;
+        // it was already excluded from Update/Draw once ambientOn dropped).
+        if ambientOn { G3D.Particles3D.Stop(ambient); }
+        ambientOn = false;
+        if ready == false || kind <= 0 || count <= 0 { return; }
+        ambient = G3D.Particles3D.New(count);
+        if softParticles { G3D.Particles3D.SetSoftness(ambient, 0.45); }
+        G3D.Particles3D.SetEmitterShape(ambient, 1);
+        G3D.Particles3D.SetEmitterSize(ambient, 34.0, 12.0, 34.0);
+        G3D.Particles3D.SetRate(ambient, (count + 0.0) / 4.0);
+        if kind == 1 {
+            // Drifting ash motes: gray, wind-pushed, slow fall.
+            G3D.Particles3D.SetColor(ambient, 0x9A968FB0, 0x9A968F00);
+            G3D.Particles3D.SetSpeed(ambient, 0.2, 0.7);
+            G3D.Particles3D.SetLifetime(ambient, 3.0, 6.0);
+            G3D.Particles3D.SetSize(ambient, 0.02, 0.06);
+            G3D.Particles3D.SetGravity(ambient, 0.5, -0.35, 0.2);
+        } else if kind == 2 {
+            // Rising embers: additive orange sparks.
+            G3D.Particles3D.SetColor(ambient, 0xFF9040E0, 0xFF300000);
+            G3D.Particles3D.SetSpeed(ambient, 0.3, 1.0);
+            G3D.Particles3D.SetLifetime(ambient, 2.0, 4.5);
+            G3D.Particles3D.SetSize(ambient, 0.02, 0.05);
+            G3D.Particles3D.SetGravity(ambient, 0.15, 0.9, 0.1);
+            ambient.Additive = true;
+        } else if kind == 3 {
+            // Biolume spores: teal, near-still.
+            G3D.Particles3D.SetColor(ambient, 0x40E0B090, 0x40E0B000);
+            G3D.Particles3D.SetSpeed(ambient, 0.05, 0.25);
+            G3D.Particles3D.SetLifetime(ambient, 5.0, 9.0);
+            G3D.Particles3D.SetSize(ambient, 0.03, 0.07);
+            G3D.Particles3D.SetGravity(ambient, 0.0, -0.05, 0.0);
+            ambient.Additive = true;
+        } else if kind == 4 {
+            // Interior dust: faint, tiny.
+            G3D.Particles3D.SetColor(ambient, 0xC0C0C860, 0xC0C0C800);
+            G3D.Particles3D.SetSpeed(ambient, 0.05, 0.2);
+            G3D.Particles3D.SetLifetime(ambient, 4.0, 8.0);
+            G3D.Particles3D.SetSize(ambient, 0.015, 0.035);
+            G3D.Particles3D.SetGravity(ambient, 0.0, -0.08, 0.0);
+        } else {
+            // Energy motes: cyan, rising, additive.
+            G3D.Particles3D.SetColor(ambient, 0x50DCEBC0, 0x50DCEB00);
+            G3D.Particles3D.SetSpeed(ambient, 0.1, 0.4);
+            G3D.Particles3D.SetLifetime(ambient, 3.0, 6.0);
+            G3D.Particles3D.SetSize(ambient, 0.02, 0.05);
+            G3D.Particles3D.SetGravity(ambient, 0.0, 0.3, 0.0);
+            ambient.Additive = true;
+        }
+        G3D.Particles3D.Start(ambient);
+        ambientOn = true;
+    }
+
+    expose func ambientOff() {
+        if ambientOn { G3D.Particles3D.Stop(ambient); }
+        ambientOn = false;
+    }
+
+    // Keep the emitter volume centered on the player.
+    expose func ambientTrack(px: Float, py: Float, pz: Float) {
+        if ambientOn { G3D.Particles3D.SetPosition(ambient, px, py + 4.0, pz); }
+    }
+
+    // --- Tracers ---------------------------------------------------------------
+    hide func tracerMatFor(r: Float, g: Float, b: Float) -> Integer {
+        var key = M.clampi(M.roundi(r * 9.0), 0, 9) * 100 +
+                  M.clampi(M.roundi(g * 9.0), 0, 9) * 10 + M.clampi(M.roundi(b * 9.0), 0, 9);
+        var i = 0;
+        while i < tmKey.Count {
+            if tmKey[i] == key { return i; }
+            i = i + 1;
+        }
+        var m = G3D.Material3D.FromColor(r, g, b);
+        G3D.Material3D.SetEmissiveColor(m, r, g, b);
+        m.EmissiveIntensity = 2.6;
+        tmKey.Add(key);
+        tmVal.Add(m);
+        return tmKey.Count - 1;
+    }
+
+    expose func tracer(sx: Float, sy: Float, sz: Float, ex: Float, ey: Float, ez: Float,
+                       r: Float, g: Float, b: Float, ttl: Float) {
+        if ready == false { return; }
+        var i = nextTracer;
+        nextTracer = (nextTracer + 1) % TRACERS;
+        trSX[i] = sx; trSY[i] = sy; trSZ[i] = sz;
+        trEX[i] = ex; trEY[i] = ey; trEZ[i] = ez;
+        trTtl[i] = ttl; trMax[i] = ttl;
+        trMatIdx[i] = tracerMatFor(r, g, b);
+    }
+
+    // Build the segment transform: translate to midpoint, orient local +Z along
+    // the segment, scale to (girth, girth, length).
+    hide func segmentXf(sx: Float, sy: Float, sz: Float, ex: Float, ey: Float, ez: Float,
+                        girth: Float) -> Math.Mat4 {
+        var dx = ex - sx; var dy = ey - sy; var dz = ez - sz;
+        var len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if len < 0.01 { len = 0.01; }
+        var fx = dx / len; var fy = dy / len; var fz = dz / len;
+        // Right = normalize(f x up) with a pole-safe up.
+        var ux = 0.0; var uy = 1.0; var uz = 0.0;
+        if M.absf(fy) > 0.99 { ux = 1.0; uy = 0.0; }
+        var rx = fy * uz - fz * uy;
+        var ry = fz * ux - fx * uz;
+        var rz = fx * uy - fy * ux;
+        var rl = Math.Sqrt(rx * rx + ry * ry + rz * rz);
+        rx = rx / rl; ry = ry / rl; rz = rz / rl;
+        var bx = ry * fz - rz * fy;
+        var by = rz * fx - rx * fz;
+        var bz = rx * fy - ry * fx;
+        var mx = (sx + ex) * 0.5; var my = (sy + ey) * 0.5; var mz = (sz + ez) * 0.5;
+        var basis = Math.Mat4.New(
+            rx, bx, fx, mx,
+            ry, by, fy, my,
+            rz, bz, fz, mz,
+            0.0, 0.0, 0.0, 1.0);
+        return Math.Mat4.Mul(basis, Math.Mat4.Scale(girth, girth, len));
+    }
+
+    // --- Scorch decals -----------------------------------------------------------
+    expose func scorch(x: Float, y: Float, z: Float, nx: Float, ny: Float, nz: Float) {
+        if ready == false { return; }
+        var i = nextDecal;
+        nextDecal = (nextDecal + 1) % DECALS;
+        var d = G3D.Decal3D.New(Math.Vec3.New(x, y, z), Math.Vec3.New(nx, ny, nz),
+                                0.35, scorchPx);
+        G3D.Decal3D.SetLifetime(d, 20.0);
+        decals[i] = d;
+        decalLive[i] = 1;
+    }
+
+    // Colored muzzle flash (per-weapon hue).
+    expose func muzzleColored(x: Float, y: Float, z: Float, r: Float, g: Float, b: Float) {
+        if ready == false { return; }
+        var i = grab();
+        var p = emitters[i];
+        G3D.Particles3D.SetPosition(p, x, y, z);
+        var hi = (M.clampi(M.roundi(r * 255.0), 0, 255) * 256 + M.clampi(M.roundi(g * 255.0), 0, 255)) * 256 +
+                 M.clampi(M.roundi(b * 255.0), 0, 255);
+        G3D.Particles3D.SetColor(p, hi * 256 + 255, hi * 256);
+        G3D.Particles3D.SetSpeed(p, 2.0, 6.0);
+        G3D.Particles3D.SetLifetime(p, 0.04, 0.12);
+        G3D.Particles3D.SetSize(p, 0.04, 0.1);
+        G3D.Particles3D.Burst(p, 8);
+        life[i] = 0.15;
+    }
+
+    hide func grab() -> Integer {
+        var idx = nextIdx;
+        nextIdx = (nextIdx + 1) % COUNT;
+        return idx;
+    }
+
+    expose func muzzle(x: Float, y: Float, z: Float) {
+        if ready == false { return; }
+        var i = grab();
+        var p = emitters[i];
+        G3D.Particles3D.SetPosition(p, x, y, z);
+        G3D.Particles3D.SetColor(p, 0xFFE080FF, 0xFF400000);
+        G3D.Particles3D.SetSpeed(p, 2.0, 6.0);
+        G3D.Particles3D.SetLifetime(p, 0.05, 0.15);
+        G3D.Particles3D.SetSize(p, 0.05, 0.12);
+        G3D.Particles3D.Burst(p, 10);
+        life[i] = 0.2;
+    }
+
+    expose func impact(x: Float, y: Float, z: Float) {
+        if ready == false { return; }
+        var i = grab();
+        var p = emitters[i];
+        G3D.Particles3D.SetPosition(p, x, y, z);
+        G3D.Particles3D.SetColor(p, 0xFFC060FF, 0x80300000);
+        G3D.Particles3D.SetSpeed(p, 1.0, 4.0);
+        G3D.Particles3D.SetLifetime(p, 0.1, 0.3);
+        G3D.Particles3D.SetSize(p, 0.03, 0.08);
+        G3D.Particles3D.SetGravity(p, 0.0, -6.0, 0.0);
+        G3D.Particles3D.Burst(p, 14);
+        life[i] = 0.35;
+    }
+
+    expose func explosion(x: Float, y: Float, z: Float, radius: Float) {
+        if ready == false { return; }
+        var i = grab();
+        var p = emitters[i];
+        G3D.Particles3D.SetPosition(p, x, y, z);
+        G3D.Particles3D.SetColor(p, 0xFFD070FF, 0x40202000);
+        G3D.Particles3D.SetSpeed(p, radius * 1.5, radius * 3.0);
+        G3D.Particles3D.SetLifetime(p, 0.2, 0.6);
+        G3D.Particles3D.SetSize(p, 0.2, 0.5);
+        G3D.Particles3D.SetGravity(p, 0.0, -2.0, 0.0);
+        G3D.Particles3D.Burst(p, 40);
+        life[i] = 0.7;
+    }
+
+    expose func update(dt: Float) {
+        if ready == false { return; }
+        var i = 0;
+        while i < COUNT {
+            if life[i] > 0.0 {
+                G3D.Particles3D.Update(emitters[i], dt);
+                life[i] = life[i] - dt;
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < TRACERS {
+            if trTtl[i] > 0.0 { trTtl[i] = trTtl[i] - dt; }
+            i = i + 1;
+        }
+        i = 0;
+        while i < DECALS {
+            if decalLive[i] == 1 {
+                G3D.Decal3D.Update(decals[i], dt);
+                if decals[i].IsExpired { decalLive[i] = 0; decals[i] = null; }
+            }
+            i = i + 1;
+        }
+        if ambientOn { G3D.Particles3D.Update(ambient, dt); }
+    }
+
+    expose func draw(canvas: G3D.Canvas3D, camera: G3D.Camera3D) {
+        if ready == false { return; }
+        var i = 0;
+        while i < COUNT {
+            if life[i] > 0.0 {
+                G3D.Particles3D.Draw(emitters[i], canvas, camera);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < TRACERS {
+            if trTtl[i] > 0.0 {
+                var girth = 0.018 * (0.4 + 0.6 * trTtl[i] / trMax[i]);
+                var xf = segmentXf(trSX[i], trSY[i], trSZ[i], trEX[i], trEY[i], trEZ[i], girth);
+                G3D.Canvas3D.DrawMesh(canvas, tracerMesh, xf, tmVal[trMatIdx[i]]);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < DECALS {
+            if decalLive[i] == 1 { G3D.Canvas3D.DrawDecal(canvas, decals[i]); }
+            i = i + 1;
+        }
+        if ambientOn { G3D.Particles3D.Draw(ambient, canvas, camera); }
+    }
+}

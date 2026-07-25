@@ -4,8 +4,21 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/ImportResolver.hpp
+// Purpose: Declare bounded, cycle-aware Zia file-bind resolution.
+// Key invariants:
+//   * Processed and in-progress normalized path sets remain disjoint.
+//   * The import stack mirrors the active depth-first traversal path.
+//   * A fully processed file is never parsed again by one resolver instance.
+// Ownership: ImportResolver owns traversal/cache keys while borrowing
+//            diagnostics, source management, optional suppression state, and
+//            the optional source-provider callback's external environment.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file ImportResolver.hpp
+/// @file
 /// @brief Recursive import resolver for the Zia frontend.
 ///
 /// @details The ImportResolver handles the `bind` statement in Zia source code.
@@ -26,7 +39,7 @@
 ///   7. Mark the file as fully processed and pop the import stack.
 ///
 /// Safety limits prevent runaway compilation: kMaxImportDepth (50) bounds
-/// recursion depth and kMaxImportedFiles (100) bounds total file count.
+/// recursion depth and kMaxImportedFiles (256) bounds total file count.
 ///
 /// @invariant processedFiles_ and inProgressFiles_ are disjoint at all times.
 /// @invariant importStack_ mirrors the current recursion path (depth == stack size).
@@ -75,6 +88,10 @@ class ImportResolver {
     /// @param sm   Reference to the source manager that tracks loaded source files.
     ///             Used to register newly-loaded import files so their content is
     ///             available for error reporting and source location mapping.
+    /// @param warningSuppressions Optional accumulator scanned for imported-file
+    ///                            warning directives.
+    /// @param sourceProvider Optional callback that can provide an in-memory
+    ///                       source snapshot instead of reading disk.
     ImportResolver(il::support::DiagnosticEngine &diag,
                    il::support::SourceManager &sm,
                    WarningSuppressions *warningSuppressions = nullptr,
@@ -117,17 +134,16 @@ class ImportResolver {
                                   const std::string &importingFile) const;
 
     /// @brief Normalize a filesystem path to a canonical form for deduplication.
-    /// @details Collapses `.` and `..` components, normalizes path separators, and
-    ///          converts to a consistent case on case-insensitive filesystems. This
-    ///          ensures that different path strings referring to the same file are
-    ///          recognized as identical in processedFiles_ and inProgressFiles_.
+    /// @details Makes the path absolute, applies weak canonicalization when
+    ///          possible, and lexically normalizes remaining components.
     /// @param path The filesystem path to normalize.
     /// @return The normalized canonical path string.
     std::string normalizePath(const std::string &path) const;
 
     /// @brief Load, lex, and parse a Zia source file into a ModuleDecl AST.
-    /// @details Reads the file contents via the SourceManager, runs the Zia lexer
-    ///          to produce a token stream, and invokes the Parser to build an AST.
+    /// @details Obtains contents from the source provider, source cache, or disk;
+    ///          registers them with SourceManager; runs the Zia lexer; and invokes
+    ///          the Parser to build an AST.
     ///          If the file cannot be read or parsing fails, a diagnostic is emitted
     ///          at @p importLoc (the location of the `bind` statement in the
     ///          importing file).

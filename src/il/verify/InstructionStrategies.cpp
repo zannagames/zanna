@@ -5,10 +5,10 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// @file
-// @brief Provide the default instruction verification strategies for the IL verifier.
-// @details Supplies specialised handlers for control-flow instructions alongside
-//          a catch-all strategy that delegates to the general instruction checker.
+/// @file
+/// @brief Provides the default instruction verification strategies for the IL verifier.
+/// @details Supplies specialised handlers for control-flow instructions alongside
+///          a catch-all strategy that delegates to the general instruction checker.
 
 #include "il/verify/InstructionStrategies.hpp"
 
@@ -61,6 +61,7 @@ class ControlFlowStrategy final : public FunctionVerifier::InstructionStrategy {
     /// @param blockMap Mapping from labels to block definitions.
     /// @param externs Map of extern declarations (unused).
     /// @param funcs Map of function declarations (unused).
+    /// @param globals Map of global declarations (unused).
     /// @param types Type inference context for the current function.
     /// @param sink Diagnostic sink used for reporting (unused here).
     /// @return Success when the instruction satisfies control-flow invariants.
@@ -101,6 +102,7 @@ class ControlFlowStrategy final : public FunctionVerifier::InstructionStrategy {
 class DefaultInstructionStrategy final : public FunctionVerifier::InstructionStrategy {
   public:
     /// @brief Always claim responsibility for verification when no other strategy applies.
+    /// @details The instruction parameter is intentionally ignored.
     /// @return Always returns @c true.
     bool matches(const Instr &) const override {
         return true;
@@ -115,8 +117,9 @@ class DefaultInstructionStrategy final : public FunctionVerifier::InstructionStr
     /// @param blockMap Mapping from labels to block definitions (unused).
     /// @param externs Map of extern declarations.
     /// @param funcs Map of function declarations.
+    /// @param globals Map of global declarations used by memory checkers.
     /// @param types Type inference context for the current function.
-    /// @param sink Diagnostic sink used for reporting failures.
+    /// @param sink Diagnostic sink used for warnings and reporting.
     /// @return Success when the instruction is valid; otherwise a diagnostic error.
     Expected<void> verify(const Function &fn,
                           const BasicBlock &bb,

@@ -1,0 +1,296 @@
+// =============================================================================
+// fx/lighting.zia — the house light rig, shadows, fog, flare, strobes
+// =============================================================================
+//
+// Applies each level's rig from level_env: warm shadow-casting key directional +
+// cool fill directional + raised ambient floor, distance fog matched to the sky
+// horizon (+ pooled height fog on ash-floor levels), and the sun lens flare.
+// Shadows are configured once at boot (interactive only). Light-slot budget is
+// partitioned so systems never collide:
+//   slots 0-2   rig (key, fill, spare)
+//   slots 8-46  level practicals (LevelBuilder / arena rigs)
+//   slot  47    persistent player flashlight spot
+//   slots 48-55 reserved gameplay pulses (muzzle, explosions — fx/effects)
+// L6's lightning strobe spikes the key intensity on a cosmetic-RNG interval.
+// =============================================================================
+module lighting;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/rng" as rng;
+bind "../world/level_env" as level_env;
+
+var SLOT_KEY: Integer = 0;
+var SLOT_FILL: Integer = 1;
+var SLOT_FLASHLIGHT: Integer = 47;
+var FX_SLOT_BASE: Integer = 48;
+var FX_SLOT_COUNT: Integer = 8;
+
+class LightRig {
+    hide level_env.LevelEnv env;
+    hide G3D.Canvas3D canvas;
+    hide Game3D.World3D world;
+    hide G3D.Light3D keyLight;
+    hide Boolean hasKey;
+    hide Float keyBaseIntensity;
+    hide Integer levelId;
+    hide Boolean headless;
+    // Lens flare
+    hide G3D.LensFlare3D flare;
+    hide Boolean flareOn;
+    // L6 lightning strobe
+    hide Boolean strobeEnabled;
+    hide Float strobeTimer;
+    hide Float strobeFlash;         // >0 while flashing
+    hide rng.RngStream cosmeticRng;
+    // Reserved gameplay pulse lights (pooled)
+    hide List[G3D.Light3D] pulseLight;
+    hide List[Float] pulseTtl;
+    hide List[Float] pulseMax;
+    hide Integer nextPulse;
+    hide G3D.Light3D flashlight;
+    hide Boolean flashlightActive;
+
+    expose func init() {
+        hasKey = false;
+        keyBaseIntensity = 0.0;
+        levelId = 0;
+        headless = true;
+        flareOn = false;
+        strobeEnabled = false;
+        strobeTimer = 4.0;
+        strobeFlash = 0.0;
+        pulseLight = []; pulseTtl = []; pulseMax = [];
+        nextPulse = 0;
+        flashlightActive = false;
+    }
+
+    expose func setup(e: level_env.LevelEnv, w: Game3D.World3D, c: G3D.Canvas3D,
+                      hl: Boolean, cosmetic: rng.RngStream) {
+        env = e; world = w; canvas = c; headless = hl; cosmeticRng = cosmetic;
+        // Store quality-independent shadow controls now. applyShadowTier runs
+        // after settings load and performs the first allocation at the user's
+        // actual tier, avoiding a throwaway 2048px/three-cascade setup for a
+        // persisted Performance configuration.
+        if hl == false {
+            // Combat spaces top out well below the camera's 600 m far plane;
+            // concentrating shadow precision here avoids wasting texels on fog.
+            G3D.Canvas3D.SetShadowDistance(canvas, 140.0);
+            G3D.Canvas3D.SetShadowBias(canvas, 0.004);
+        }
+        // Reserved gameplay pulse lights, parked dark.
+        var i = 0;
+        while i < FX_SLOT_COUNT {
+            var pl = G3D.Light3D.Point(Vec3.New(0.0, -100.0, 0.0), 0.0, 0.0, 0.0, 8.0);
+            G3D.Canvas3D.SetLight(canvas, FX_SLOT_BASE + i, pl);
+            pulseLight.Add(pl);
+            pulseTtl.Add(0.0);
+            pulseMax.Add(0.25);
+            i = i + 1;
+        }
+        // One retained cone light follows the camera. Moving a public Light3D
+        // avoids allocating point lights every few ticks and gives the lamp a
+        // real beam silhouette instead of a floating glow sphere.
+        flashlight = G3D.Light3D.Spot(Vec3.New(0.0, -100.0, 0.0),
+                                      Vec3.New(0.0, -1.0, 0.0),
+                                      0.96, 0.93, 0.78, 0.035, 11.0, 25.0);
+        G3D.Light3D.SetIntensity(flashlight, 2.2);
+        G3D.Light3D.set_IsEnabled(flashlight, false);
+        G3D.Canvas3D.SetLight(canvas, SLOT_FLASHLIGHT, flashlight);
+    }
+
+    // Apply a quality tier's shadow settings (options menu).
+    expose func applyShadowTier(tier: Integer) {
+        if headless { return; }
+        if tier <= 0 {
+            G3D.Canvas3D.EnableShadows(canvas, 1024);
+            G3D.Canvas3D.SetShadowCascades(canvas, 1);
+            G3D.Canvas3D.SetShadowQuality(canvas, 0);
+            G3D.Canvas3D.SetShadowStrength(canvas, 0.72);
+        } else if tier == 1 {
+            G3D.Canvas3D.EnableShadows(canvas, 2048);
+            var balancedCascades = 1;
+            if G3D.Canvas3D.BackendSupports(canvas, "shadow-csm") { balancedCascades = 3; }
+            G3D.Canvas3D.SetShadowCascades(canvas, balancedCascades);
+            G3D.Canvas3D.SetShadowQuality(canvas, 1);
+            G3D.Canvas3D.SetShadowStrength(canvas, 0.85);
+        } else {
+            G3D.Canvas3D.EnableShadows(canvas, 2048);
+            var cinematicCascades = 1;
+            if G3D.Canvas3D.BackendSupports(canvas, "shadow-csm") { cinematicCascades = 3; }
+            G3D.Canvas3D.SetShadowCascades(canvas, cinematicCascades);
+            G3D.Canvas3D.SetShadowQuality(canvas, 2);
+            G3D.Canvas3D.SetShadowStrength(canvas, 0.85);
+        }
+    }
+
+    // Install the level's rig. Called at level load AFTER the level builder ran
+    // (builder clears lights and adds its practicals at slots 8+).
+    expose func applyRig(l: Integer) {
+        levelId = l;
+        // The level builder ran ClearLights: park the pooled pulse lights and
+        // reinstall them in their reserved slots (same objects, no allocation).
+        var pi = 0;
+        while pi < FX_SLOT_COUNT {
+            var pl = pulseLight[pi];
+            G3D.Light3D.SetColor(pl, 0.0, 0.0, 0.0);
+            G3D.Light3D.set_Position(pl, Vec3.New(0.0, -100.0, 0.0));
+            G3D.Canvas3D.SetLight(canvas, FX_SLOT_BASE + pi, pl);
+            pulseTtl[pi] = 0.0;
+            pi = pi + 1;
+        }
+        G3D.Canvas3D.SetLight(canvas, SLOT_FLASHLIGHT, flashlight);
+        G3D.Light3D.set_IsEnabled(flashlight, false);
+        flashlightActive = false;
+        // Ambient floor.
+        G3D.Canvas3D.SetAmbient(canvas, env.ambientR(l), env.ambientG(l), env.ambientB(l));
+        // Key.
+        hasKey = env.sunIntensity(l) > 0.01;
+        if hasKey {
+            var kd = Vec3.New(env.sunDirX(l), env.sunDirY(l), env.sunDirZ(l));
+            keyLight = G3D.Light3D.Directional(kd,
+                env.sunColR(l) * env.sunIntensity(l),
+                env.sunColG(l) * env.sunIntensity(l),
+                env.sunColB(l) * env.sunIntensity(l));
+            keyBaseIntensity = 1.0;
+            if headless == false { keyLight.CastsShadows = true; }
+            G3D.Canvas3D.SetLight(canvas, SLOT_KEY, keyLight);
+        }
+        // Fill.
+        if env.fillIntensity(l) > 0.01 {
+            var fd = Vec3.New(env.fillDirX(l), env.fillDirY(l), env.fillDirZ(l));
+            var fill = G3D.Light3D.Directional(fd,
+                env.fillColR(l) * env.fillIntensity(l),
+                env.fillColG(l) * env.fillIntensity(l),
+                env.fillColB(l) * env.fillIntensity(l));
+            G3D.Canvas3D.SetLight(canvas, SLOT_FILL, fill);
+        }
+        // Fog (World3D form: r,g,b,near,far) matched to the sky horizon.
+        world.SetFog(env.horizonR(l), env.horizonG(l), env.horizonB(l),
+                     env.fogNearOf(l), env.fogFarOf(l));
+        if env.hasHeightFog(l) {
+            // Pools below y=1.6 (ash floor), gentle falloff, subtle blend.
+            G3D.Canvas3D.SetHeightFog(canvas, 1.6, 0.35, 0.06, 0.65);
+        }
+        // Lens flare on sun levels (interactive only).
+        flareOn = false;
+        if headless == false && env.hasFlare(l) && hasKey {
+            flare = G3D.LensFlare3D.New(keyLight);
+            G3D.LensFlare3D.AddElement(flare, 0.0, 0.24, 0xFFEEC080, 0.0);
+            G3D.LensFlare3D.AddElement(flare, 0.35, 0.09, 0xFFD09060, 0.0);
+            G3D.LensFlare3D.AddElement(flare, 0.62, 0.06, 0x80C0FF50, 0.0);
+            G3D.LensFlare3D.AddElement(flare, 0.85, 0.12, 0xFFF0D040, 0.0);
+            flareOn = true;
+        }
+        // L6 lightning strobes.
+        strobeEnabled = l == config.LV_L6;
+        strobeTimer = 5.0;
+        strobeFlash = 0.0;
+        helixPhaseSeen = -1;
+    }
+
+    expose func hasFlareActive() -> Boolean { return flareOn; }
+    expose func drawFlare() {
+        if flareOn { G3D.Canvas3D.DrawLensFlare(canvas, flare); }
+    }
+
+    // Fire a short gameplay light pulse (muzzle / explosion) at a position.
+    // Retunes the slot's pooled Light3D in place (position/color/attenuation)
+    // instead of allocating a new point light per shot — the pooled light is
+    // already installed in its canvas slot, and setter mutation propagates
+    // (same mechanism the retained flashlight relies on).
+    expose func pulse(x: Float, y: Float, z: Float, r: Float, g: Float, b: Float,
+                      range: Float, ttl: Float) {
+        var i = nextPulse;
+        nextPulse = (nextPulse + 1) % FX_SLOT_COUNT;
+        var pl = pulseLight[i];
+        G3D.Light3D.set_Position(pl, Vec3.New(x, y, z));
+        G3D.Light3D.SetColor(pl, r, g, b);
+        G3D.Light3D.SetAttenuation(pl, range);
+        pulseTtl[i] = ttl;
+        pulseMax[i] = ttl;
+    }
+
+    /// Move and toggle the retained player spotlight.
+    expose func setFlashlight(on: Boolean, px: Float, py: Float, pz: Float,
+                              dx: Float, dy: Float, dz: Float) {
+        flashlightActive = on;
+        G3D.Light3D.set_IsEnabled(flashlight, on);
+        if on == false { return; }
+        G3D.Light3D.set_Position(flashlight,
+            Vec3.New(px + dx * 0.12, py - 0.06, pz + dz * 0.12));
+        G3D.Light3D.set_Direction(flashlight, Vec3.New(dx, dy, dz));
+    }
+
+    expose func isFlashlightActive() -> Boolean { return flashlightActive; }
+
+    // Per-tick: strobe scheduling + pulse decay.
+    expose func update(dt: Float) {
+        // Pulses decay by parking the pooled light dark and far away (no
+        // allocation; the light stays installed in its canvas slot).
+        var i = 0;
+        while i < FX_SLOT_COUNT {
+            if pulseTtl[i] > 0.0 {
+                pulseTtl[i] = pulseTtl[i] - dt;
+                if pulseTtl[i] <= 0.0 {
+                    G3D.Light3D.SetColor(pulseLight[i], 0.0, 0.0, 0.0);
+                    G3D.Light3D.set_Position(pulseLight[i], Vec3.New(0.0, -100.0, 0.0));
+                }
+            }
+            i = i + 1;
+        }
+        // L6 lightning: cosmetic RNG (excluded from replay checksums).
+        if strobeEnabled && hasKey {
+            if strobeFlash > 0.0 {
+                strobeFlash = strobeFlash - dt;
+                if strobeFlash <= 0.0 { reinstallKey(1.0); }
+            } else {
+                strobeTimer = strobeTimer - dt;
+                if strobeTimer <= 0.0 {
+                    strobeTimer = 6.0 + cosmeticRng.range(0.0, 5.0);
+                    strobeFlash = 0.12;
+                    reinstallKey(2.6);
+                }
+            }
+        }
+    }
+
+    // L9: re-tint the frozen helix ring practicals (slots 8-13) by boss phase.
+    hide Integer helixPhaseSeen;
+    expose func setHelixPhase(ph: Integer) {
+        if levelId != config.LV_L9 { return; }
+        if ph == helixPhaseSeen { return; }
+        helixPhaseSeen = ph;
+        var r = 0.3; var g = 0.8; var b = 0.9;
+        if ph == 1 { r = 1.0; g = 0.7; b = 0.25; }
+        else if ph >= 2 { r = 1.0; g = 0.25; b = 0.2; }
+        var k = 0;
+        while k < 6 {
+            var ang = (k + 0.0) / 6.0 * 6.2831853;
+            var pl = G3D.Light3D.Point(
+                Vec3.New(Cos(ang) * 22.0, 5.0, Sin(ang) * 22.0), r, g, b, 16.0);
+            G3D.Canvas3D.SetLight(canvas, 8 + k, pl);
+            k = k + 1;
+        }
+    }
+
+    // Whether a full-screen sky flash should tint the frame (L6 strobe overlay).
+    expose func strobeOverlayAlpha() -> Float {
+        if strobeFlash > 0.0 { return 0.35; }
+        return 0.0;
+    }
+
+    hide func reinstallKey(mult: Float) {
+        var l = levelId;
+        var kd = Vec3.New(env.sunDirX(l), env.sunDirY(l), env.sunDirZ(l));
+        keyLight = G3D.Light3D.Directional(kd,
+            env.sunColR(l) * env.sunIntensity(l) * mult,
+            env.sunColG(l) * env.sunIntensity(l) * mult,
+            env.sunColB(l) * env.sunIntensity(l) * mult);
+        if headless == false { keyLight.CastsShadows = true; }
+        G3D.Canvas3D.SetLight(canvas, SLOT_KEY, keyLight);
+    }
+}

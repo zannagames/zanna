@@ -1,0 +1,283 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_collider_3d.zia
+// Purpose: Typed-metadata collider drafts for Studio's 3D scene editor.
+// Key invariants:
+//   - Colliders are the documented metadata convention (ADR 0185): kind enum
+//     box|sphere|capsule|mesh-bounds, kind-specific dimension keys, and a
+//     trigger flag; no VSCN format change and no editor physics.
+//   - Dimensions are node-local; consumers apply the node world transform.
+//   - Drafts normalize to strictly positive, bounded dimensions.
+//   - Reading tolerates missing or foreign metadata and reports absence.
+// Ownership/Lifetime: Value-only module state; nodes own their metadata.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_collider_inspector_3d.zia,
+//        docs/adr/0185-collider-authoring-and-gameplay-overlays.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_collider_3d;
+
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Str = Zanna.String;
+
+// ============================================================================
+// MODULE: scene_collider_3d
+// PURPOSE: Keep the collider metadata vocabulary, validation, and node
+//          read/write helpers outside the SceneEditor3D controller.
+//
+// WHERE-THIS-FITS: SceneColliderInspector3D owns widgets; SceneEditor3D owns
+//          selection and the one-transaction commit; this module owns the
+//          key vocabulary and normalized value drafts.
+//
+// TEACHING-NOTE: The editor never derives physics. Games consume this
+//          convention at spawn (Collider3D from metadata + world transform +
+//          mesh bounds), so the write side must stay exactly documented.
+// ============================================================================
+
+final COLLIDER_NONE: Integer = 0;
+final COLLIDER_BOX: Integer = 1;
+final COLLIDER_SPHERE: Integer = 2;
+final COLLIDER_CAPSULE: Integer = 3;
+final COLLIDER_MESH_BOUNDS: Integer = 4;
+
+final KEY_KIND: String = "collider.kind";
+final KEY_HALF_X: String = "collider.halfX";
+final KEY_HALF_Y: String = "collider.halfY";
+final KEY_HALF_Z: String = "collider.halfZ";
+final KEY_RADIUS: String = "collider.radius";
+final KEY_HEIGHT: String = "collider.height";
+final KEY_TRIGGER: String = "collider.trigger";
+
+final MIN_DIMENSION: Number = 0.001;
+final MAX_DIMENSION: Number = 1000000.0;
+final DEFAULT_HALF_EXTENT: Number = 0.5;
+final DEFAULT_RADIUS: Number = 0.5;
+final DEFAULT_HEIGHT: Number = 1.0;
+final COLLIDER_VALUE_EPSILON: Number = 0.000001;
+
+/// @brief Complete editable state for one node collider convention.
+class ColliderState3D {
+    expose Integer kind;
+    expose Number halfX;
+    expose Number halfY;
+    expose Number halfZ;
+    expose Number radius;
+    expose Number height;
+    expose Boolean trigger;
+
+    expose func init() {
+        kind = COLLIDER_NONE;
+        halfX = DEFAULT_HALF_EXTENT;
+        halfY = DEFAULT_HALF_EXTENT;
+        halfZ = DEFAULT_HALF_EXTENT;
+        radius = DEFAULT_RADIUS;
+        height = DEFAULT_HEIGHT;
+        trigger = false;
+    }
+}
+
+/// @brief Return the stable metadata token for one collider kind.
+expose func KindToken(kind: Integer) -> String {
+    if kind == COLLIDER_BOX { return "box"; }
+    if kind == COLLIDER_SPHERE { return "sphere"; }
+    if kind == COLLIDER_CAPSULE { return "capsule"; }
+    if kind == COLLIDER_MESH_BOUNDS { return "mesh-bounds"; }
+    return "";
+}
+
+/// @brief Return the collider kind for one metadata token.
+expose func KindFromToken(token: String) -> Integer {
+    var folded = Str.ToLower(Str.Trim(token));
+    if folded == "box" { return COLLIDER_BOX; }
+    if folded == "sphere" { return COLLIDER_SPHERE; }
+    if folded == "capsule" { return COLLIDER_CAPSULE; }
+    if folded == "mesh-bounds" { return COLLIDER_MESH_BOUNDS; }
+    return COLLIDER_NONE;
+}
+
+/// @brief Return a stable display label for one collider kind.
+expose func KindName(kind: Integer) -> String {
+    if kind == COLLIDER_BOX { return "Box"; }
+    if kind == COLLIDER_SPHERE { return "Sphere"; }
+    if kind == COLLIDER_CAPSULE { return "Capsule"; }
+    if kind == COLLIDER_MESH_BOUNDS { return "Mesh bounds"; }
+    return "None";
+}
+
+/// @brief Return whether a kind authors box half extents.
+expose func HasHalfExtents(kind: Integer) -> Boolean {
+    return kind == COLLIDER_BOX;
+}
+
+/// @brief Return whether a kind authors a radius.
+expose func HasRadius(kind: Integer) -> Boolean {
+    return kind == COLLIDER_SPHERE or kind == COLLIDER_CAPSULE;
+}
+
+/// @brief Return whether a kind authors a cylinder height.
+expose func HasHeight(kind: Integer) -> Boolean {
+    return kind == COLLIDER_CAPSULE;
+}
+
+/// @brief Clamp one dimension into strictly positive bounds.
+hide func BoundDimension(value: Number) -> Number {
+    if (value >= MIN_DIMENSION) == false { return MIN_DIMENSION; }
+    if value > MAX_DIMENSION { return MAX_DIMENSION; }
+    return value;
+}
+
+/// @brief Clamp and validate a complete inspector draft in place.
+expose func Normalize(state: ColliderState3D) -> ColliderState3D {
+    if state == null { return new ColliderState3D(); }
+    if state.kind < COLLIDER_NONE or state.kind > COLLIDER_MESH_BOUNDS {
+        state.kind = COLLIDER_NONE;
+    }
+    state.halfX = BoundDimension(state.halfX);
+    state.halfY = BoundDimension(state.halfY);
+    state.halfZ = BoundDimension(state.halfZ);
+    state.radius = BoundDimension(state.radius);
+    state.height = BoundDimension(state.height);
+    if state.kind == COLLIDER_NONE { state.trigger = false; }
+    return state;
+}
+
+/// @brief Read one node's collider convention; kind None when absent.
+expose func FromNode(node: SceneNode) -> ColliderState3D {
+    var state = new ColliderState3D();
+    if node == null { return state; }
+    state.kind = KindFromToken(
+        node.MetadataGetString(KEY_KIND, ""));
+    if state.kind == COLLIDER_NONE { return state; }
+    state.halfX = node.MetadataGetFloat(
+        KEY_HALF_X, DEFAULT_HALF_EXTENT);
+    state.halfY = node.MetadataGetFloat(
+        KEY_HALF_Y, DEFAULT_HALF_EXTENT);
+    state.halfZ = node.MetadataGetFloat(
+        KEY_HALF_Z, DEFAULT_HALF_EXTENT);
+    state.radius = node.MetadataGetFloat(KEY_RADIUS, DEFAULT_RADIUS);
+    state.height = node.MetadataGetFloat(KEY_HEIGHT, DEFAULT_HEIGHT);
+    state.trigger = node.MetadataGetBool(KEY_TRIGGER, false);
+    return Normalize(state);
+}
+
+/// @brief Return whether two numbers match inside the authoring epsilon.
+hide func NearValue(a: Number, b: Number) -> Boolean {
+    var difference = a - b;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < COLLIDER_VALUE_EPSILON;
+}
+
+/// @brief Return whether a node's collider already equals one draft.
+/// @details Only kind-applicable dimensions participate, so switching an
+///          inapplicable spinner never fakes a difference.
+expose func Matches(node: SceneNode,
+                    state: ColliderState3D) -> Boolean {
+    if node == null or state == null { return false; }
+    var current = FromNode(node);
+    var next = Normalize(state);
+    if current.kind != next.kind { return false; }
+    if next.kind == COLLIDER_NONE { return true; }
+    if current.trigger != next.trigger { return false; }
+    if HasHalfExtents(next.kind)
+       and (NearValue(current.halfX, next.halfX) == false
+            or NearValue(current.halfY, next.halfY) == false
+            or NearValue(current.halfZ, next.halfZ) == false) {
+        return false;
+    }
+    if HasRadius(next.kind)
+       and NearValue(current.radius, next.radius) == false {
+        return false;
+    }
+    if HasHeight(next.kind)
+       and NearValue(current.height, next.height) == false {
+        return false;
+    }
+    return true;
+}
+
+/// @brief Write one normalized draft's keys onto a node.
+/// @details Writes only kind-applicable dimension keys and removes stale
+///          ones, keeping the persisted convention minimal and exact. The
+///          caller owns history: this mutates the live node only.
+expose func WriteToNode(node: SceneNode,
+                        state: ColliderState3D) -> Boolean {
+    if node == null or state == null { return false; }
+    var next = Normalize(state);
+    if next.kind == COLLIDER_NONE { return RemoveFromNode(node); }
+    if node.MetadataSetString(
+           KEY_KIND, KindToken(next.kind)) == false {
+        return false;
+    }
+    if HasHalfExtents(next.kind) {
+        if node.MetadataSetFloat(KEY_HALF_X, next.halfX) == false
+           or node.MetadataSetFloat(KEY_HALF_Y, next.halfY) == false
+           or node.MetadataSetFloat(KEY_HALF_Z, next.halfZ) == false {
+            return false;
+        }
+    } else {
+        RemoveKey(node, KEY_HALF_X);
+        RemoveKey(node, KEY_HALF_Y);
+        RemoveKey(node, KEY_HALF_Z);
+    }
+    if HasRadius(next.kind) {
+        if node.MetadataSetFloat(KEY_RADIUS, next.radius) == false {
+            return false;
+        }
+    } else {
+        RemoveKey(node, KEY_RADIUS);
+    }
+    if HasHeight(next.kind) {
+        if node.MetadataSetFloat(KEY_HEIGHT, next.height) == false {
+            return false;
+        }
+    } else {
+        RemoveKey(node, KEY_HEIGHT);
+    }
+    return node.MetadataSetBool(KEY_TRIGGER, next.trigger);
+}
+
+/// @brief Remove the complete collider convention from one node.
+expose func RemoveFromNode(node: SceneNode) -> Boolean {
+    if node == null { return false; }
+    if node.MetadataHas(KEY_KIND) == false { return false; }
+    RemoveKey(node, KEY_KIND);
+    RemoveKey(node, KEY_HALF_X);
+    RemoveKey(node, KEY_HALF_Y);
+    RemoveKey(node, KEY_HALF_Z);
+    RemoveKey(node, KEY_RADIUS);
+    RemoveKey(node, KEY_HEIGHT);
+    RemoveKey(node, KEY_TRIGGER);
+    return true;
+}
+
+/// @brief Remove one key only when present.
+hide func RemoveKey(node: SceneNode, key: String) {
+    if node.MetadataHas(key) { node.MetadataRemove(key); }
+}
+
+/// @brief Describe one node's collider for inspector summaries.
+expose func Describe(state: ColliderState3D) -> String {
+    if state == null or state.kind == COLLIDER_NONE {
+        return "No collider convention.";
+    }
+    var triggerText = "";
+    if state.trigger { triggerText = " • trigger"; }
+    if state.kind == COLLIDER_BOX {
+        return "Box • half " + state.halfX + " × " + state.halfY
+            + " × " + state.halfZ + triggerText;
+    }
+    if state.kind == COLLIDER_SPHERE {
+        return "Sphere • radius " + state.radius + triggerText;
+    }
+    if state.kind == COLLIDER_CAPSULE {
+        return "Capsule • radius " + state.radius
+            + " • height " + state.height + triggerText;
+    }
+    return "Mesh bounds • derived at spawn" + triggerText;
+}

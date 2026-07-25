@@ -60,6 +60,9 @@ using namespace il::core;
 namespace il::transform {
 
 namespace {
+/// @brief Test whether a block ends in a recognized IL terminator.
+/// @param block Block whose final instruction is inspected.
+/// @return `true` when @p block is nonempty and its last instruction is a terminator.
 bool hasTerminator(const BasicBlock &block) {
     return !block.instructions.empty() && zanna::il::isTerminator(block.instructions.back());
 }
@@ -373,6 +376,10 @@ std::optional<AddrExpr> findAddrExpr(Function &F, BasicBlock &H, unsigned indVar
     return std::nullopt;
 }
 
+/// @brief Find the positional index of a block parameter by temporary id.
+/// @param block Block whose parameter list is searched.
+/// @param tempId Temporary id assigned to the desired parameter.
+/// @return The matching parameter index, or `std::nullopt` when the id is absent.
 std::optional<size_t> blockParamIndex(const BasicBlock &block, unsigned tempId) {
     for (size_t i = 0; i < block.params.size(); ++i) {
         if (block.params[i].id == tempId)
@@ -381,6 +388,11 @@ std::optional<size_t> blockParamIndex(const BasicBlock &block, unsigned tempId) 
     return std::nullopt;
 }
 
+/// @brief Determine whether a temporary is defined anywhere inside a loop.
+/// @param function Function containing the blocks named by @p loop.
+/// @param loop Loop membership information used to limit the search.
+/// @param tempId Temporary id whose definition is sought.
+/// @return `true` for a matching block parameter or instruction result in the loop.
 bool tempDefinedInLoop(const Function &function, const Loop &loop, unsigned tempId) {
     for (const auto &block : function.blocks) {
         if (!loop.contains(block.label))
@@ -395,6 +407,14 @@ bool tempDefinedInLoop(const Function &function, const Loop &loop, unsigned temp
     return false;
 }
 
+/// @brief Translate a value used by the header into the value available on entry.
+/// @param function Function containing the loop and possible defining instruction.
+/// @param loop Loop used to reject temporaries defined within its body.
+/// @param header Header whose parameters are mapped through @p preheaderArgs.
+/// @param preheaderArgs Arguments carried by the selected preheader-to-header edge.
+/// @param value Header-context value to translate.
+/// @return The incoming argument, an unchanged constant or loop-invariant value, or
+///         `std::nullopt` when the value has no safe preheader representation.
 std::optional<Value> valueForPreheader(const Function &function,
                                        const Loop &loop,
                                        const BasicBlock &header,
@@ -415,6 +435,10 @@ std::optional<Value> valueForPreheader(const Function &function,
     return value;
 }
 
+/// @brief Multiply two signed integers without invoking overflow.
+/// @param lhs Left multiplication operand.
+/// @param rhs Right multiplication operand.
+/// @return The product when representable as `long long`, otherwise `std::nullopt`.
 std::optional<long long> checkedMul(long long lhs, long long rhs) {
     if (lhs == 0 || rhs == 0)
         return 0;
@@ -440,6 +464,10 @@ std::optional<long long> checkedMul(long long lhs, long long rhs) {
     return lhs * rhs;
 }
 
+/// @brief Assign a diagnostic name to a temporary, growing the name table as needed.
+/// @param function Function whose value-name table is updated.
+/// @param id Temporary id that indexes the table.
+/// @param name Human-readable name associated with @p id.
 void setValueName(Function &function, unsigned id, const std::string &name) {
     if (function.valueNames.size() <= id)
         function.valueNames.resize(id + 1);

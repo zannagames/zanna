@@ -145,6 +145,8 @@ class Scope {
   public:
     /// @brief Create a scope with an optional parent.
     /// @param parent The enclosing scope, or nullptr for global scope.
+    /// @param id Stable identifier assigned by semantic analysis.
+    /// @param depth Lexical nesting depth, with zero denoting global scope.
     explicit Scope(Scope *parent = nullptr, uint32_t id = 0, size_t depth = 0)
         : parent_(parent), id_(id), depth_(depth) {}
 
@@ -153,7 +155,8 @@ class Scope {
     /// @param symbol The symbol information.
     ///
     /// @details If a symbol with the same name already exists in this scope,
-    /// it is replaced (shadowing). Parent scope symbols are not affected.
+    /// it is replaced. Bindings in parent scopes are not affected.
+    /// @post A local lookup of @p name returns the supplied symbol value.
     void define(const std::string &name, Symbol symbol);
 
     /// @brief Look up a symbol by name in this scope and ancestors.
@@ -178,16 +181,21 @@ class Scope {
     }
 
     /// @brief Stable scope identifier assigned by Sema.
+    /// @return Identifier used to correlate scope snapshots and definitions.
     uint32_t id() const {
         return id_;
     }
 
     /// @brief Lexical nesting depth (0 for global scope).
+    /// @return Number of enclosing lexical scope levels.
     size_t depth() const {
         return depth_;
     }
 
     /// @brief Check if any symbol name starts with the given prefix.
+    /// @param prefix Prefix compared at byte offset zero; an empty prefix
+    ///        matches any non-empty symbol table.
+    /// @return True when at least one local symbol begins with @p prefix.
     bool hasSymbolWithPrefix(const std::string &prefix) const {
         for (const auto &[name, _] : symbols_) {
             if (name.rfind(prefix, 0) == 0)

@@ -12,6 +12,10 @@
 // Links: docs/internals/codemap.md
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements ME, field, property, enum, static-member, and implicit
+///        member-access lowering for BASIC objects.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/ILTypeUtils.hpp"

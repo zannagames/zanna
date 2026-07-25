@@ -18,8 +18,8 @@
 //   - Strong-symbol implementation. Wins over the weak fallback in
 //     zanna_runtime/core/rt_zia_highlight_stub.c when zia_editor_services is
 //     linked and force-loaded by the zia binary.
-//   - Pure read-only lookup. No state, no allocation; safe to call from any
-//     thread.
+//   - Pure read-only lookup with no persistent state; safe to call from any
+//     thread. The transient std::string used by the lexer lookup may allocate.
 //
 // Ownership/Lifetime:
 //   - The (name, len) pair is borrowed from the caller; we copy into a
@@ -46,6 +46,10 @@ extern "C" {
 ///          rt_zia_highlight_stub.c. The runtime syntax highlighter calls
 ///          this for each identifier it tokenizes; a non-zero return paints
 ///          the span with the keyword color.
+/// @param name Borrowed pointer to the first identifier byte; may be null.
+/// @param len Number of bytes available at @p name.
+/// @return `1` when the complete byte range is a reserved Zia keyword;
+///         otherwise `0`, including for null or empty input.
 int rt_zia_is_keyword(const char *name, int64_t len) {
     if (!name || len <= 0)
         return 0;

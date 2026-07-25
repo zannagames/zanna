@@ -55,6 +55,9 @@ const il::core::Instr *findTerminator(const il::core::BasicBlock &block) {
 /// @return True when both values encode the same literal/temporary.
 namespace {
 
+/// @brief Preserve a double's exact IEEE bit pattern for structural comparison.
+/// @param value Floating-point payload to encode.
+/// @return Raw 64-bit representation, including NaN payload and signed zero.
 std::uint64_t encodeDoubleToBits(double value) {
 #if defined(__cpp_lib_bit_cast)
     return std::bit_cast<std::uint64_t>(value);
@@ -67,6 +70,7 @@ std::uint64_t encodeDoubleToBits(double value) {
 
 } // namespace
 
+/// @copydoc valuesEqual()
 bool valuesEqual(const il::core::Value &lhs, const il::core::Value &rhs) {
     if (lhs.kind != rhs.kind)
         return false;
@@ -130,8 +134,13 @@ bool valueReferencesTemp(const il::core::Value &value, unsigned tempId) {
 
 namespace {
 
+/// @brief Test whether an instruction references any id in a tracked set.
+/// @param instr Instruction whose operands and branch bundles are scanned.
+/// @param tempIds Set of ids to match.
+/// @return True on the first matching temporary reference.
 bool instructionReferencesAnyTemp(const il::core::Instr &instr,
                                   const std::unordered_set<unsigned> &tempIds) {
+    /// Classify one value against the tracked-id set.
     auto referencesTrackedTemp = [&tempIds](const il::core::Value &value) {
         return value.kind == il::core::Value::Kind::Temp && tempIds.contains(value.id);
     };
@@ -151,7 +160,12 @@ bool instructionReferencesAnyTemp(const il::core::Instr &instr,
     return false;
 }
 
+/// @brief Test whether an instruction references one specific SSA id.
+/// @param instr Instruction whose operands and branch bundles are scanned.
+/// @param tempId Id to match.
+/// @return True on the first matching temporary reference.
 bool instructionReferencesTemp(const il::core::Instr &instr, unsigned tempId) {
+    /// Classify one value against the requested id.
     auto referencesTrackedTemp = [tempId](const il::core::Value &value) {
         return value.kind == il::core::Value::Kind::Temp && value.id == tempId;
     };
@@ -171,6 +185,11 @@ bool instructionReferencesTemp(const il::core::Instr &instr, unsigned tempId) {
     return false;
 }
 
+/// @brief Search all blocks except an owner for references to a set of ids.
+/// @param function Function whose blocks are scanned.
+/// @param owner Defining block excluded from the search.
+/// @param tempIds SSA ids to find.
+/// @return True when another block references any tracked id.
 bool anyTempUsedOutsideBlock(const il::core::Function &function,
                              const il::core::BasicBlock &owner,
                              const std::unordered_set<unsigned> &tempIds) {

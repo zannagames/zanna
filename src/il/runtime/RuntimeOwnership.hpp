@@ -15,6 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Defines optimizer-facing ownership metadata for runtime helpers.
+/// @details Classifications cover both canonical Zanna names and their native
+///          `rt_*` aliases. Unknown names deliberately return an empty,
+///          conservative effect set.
+
 #pragma once
 
 #include <cstddef>
@@ -39,21 +45,30 @@ struct RuntimeOwnershipEffects {
                                       ///< "unclassified").
 
     /// @brief Query whether the helper consumes argument @p index.
+    /// @param index Zero-based IL-visible argument position.
+    /// @return True when ownership of that argument transfers to the helper.
     [[nodiscard]] constexpr bool consumesArg(unsigned index) const noexcept {
         return index < 64 && (consumedArgMask & (std::uint64_t{1} << index)) != 0;
     }
 
     /// @brief Query whether the helper retains argument @p index.
+    /// @param index Zero-based IL-visible argument position.
+    /// @return True when the helper increments or stores that argument's
+    ///         reference.
     [[nodiscard]] constexpr bool retainsArg(unsigned index) const noexcept {
         return index < 64 && (retainedArgMask & (std::uint64_t{1} << index)) != 0;
     }
 
     /// @brief Query whether pointer argument @p index receives an owned reference.
+    /// @param index Zero-based IL-visible argument position.
+    /// @return True when the argument points to storage receiving an owned value.
     [[nodiscard]] constexpr bool writesOwnedOutArg(unsigned index) const noexcept {
         return index < 64 && (ownedOutArgMask & (std::uint64_t{1} << index)) != 0;
     }
 
     /// @brief True when any ownership fact is known.
+    /// @return True when at least one mask or positive result/allocation property
+    ///         is set; @ref knownNeutral alone is intentionally excluded.
     [[nodiscard]] constexpr bool hasAny() const noexcept {
         return consumedArgMask != 0 || retainedArgMask != 0 || ownedOutArgMask != 0 ||
                returnsOwned || mayAllocate || returnsKnownObject;
@@ -62,19 +77,38 @@ struct RuntimeOwnershipEffects {
 
 namespace detail {
 
+/// @brief Test whether a string begins with a prefix.
+/// @param value String to inspect.
+/// @param prefix Candidate leading substring.
+/// @return True when @p prefix occurs at offset zero.
 [[nodiscard]] constexpr bool startsWith(std::string_view value, std::string_view prefix) noexcept {
     return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
 
+/// @brief Test whether a string ends with a suffix.
+/// @param value String to inspect.
+/// @param suffix Candidate trailing substring.
+/// @return True when @p suffix occupies the end of @p value.
 [[nodiscard]] constexpr bool endsWith(std::string_view value, std::string_view suffix) noexcept {
     return value.size() >= suffix.size() &&
            value.substr(value.size() - suffix.size(), suffix.size()) == suffix;
 }
 
+/// @brief Test whether a string contains a substring.
+/// @param value String to inspect.
+/// @param needle Substring to locate.
+/// @return True when @p needle occurs anywhere in @p value.
 [[nodiscard]] constexpr bool contains(std::string_view value, std::string_view needle) noexcept {
     return value.find(needle) != std::string_view::npos;
 }
 
+/// @brief Match a qualified helper name against a fixed operation-name table.
+/// @tparam N Number of entries in @p operations.
+/// @param name Complete canonical or native helper name.
+/// @param prefix Required namespace or C-symbol prefix.
+/// @param operations Accepted suffixes after @p prefix.
+/// @return True when @p name starts with @p prefix and its remainder exactly
+///         matches one table entry.
 template <std::size_t N>
 [[nodiscard]] constexpr bool hasOperation(std::string_view name,
                                           std::string_view prefix,
@@ -94,6 +128,8 @@ template <std::size_t N>
 ///          these immutable math types as an owned value. Keep both canonical
 ///          names and C symbols here because frontend IL uses the former while
 ///          generated and hand-authored IL may use the latter.
+/// @param name Canonical or native runtime helper name.
+/// @return True when the helper allocates a supported immutable math value.
 [[nodiscard]] constexpr bool returnsFreshMathValue(std::string_view name) noexcept {
     constexpr std::string_view vec2Operations[] = {
         "Add",
@@ -284,6 +320,8 @@ template <std::size_t N>
 ///          OrbitController.Target and FollowController.Offset intentionally
 ///          expose borrowed stored vectors. Keep the allocating snapshot calls
 ///          explicit so those borrowed accessors remain unowned.
+/// @param name Canonical or native runtime helper name.
+/// @return True when the helper returns a newly allocated Vec3 snapshot.
 [[nodiscard]] constexpr bool returnsFreshVec3(std::string_view name) noexcept {
     return name == "Zanna.Graphics3D.Light3D.get_Color" ||
            name == "Zanna.Graphics3D.Light3D.get_Direction" ||
@@ -375,6 +413,9 @@ template <std::size_t N>
 }
 
 /// @brief True for registered 3D APIs that materialize fresh matrix/quaternion snapshots.
+/// @param name Canonical or native runtime helper name.
+/// @return True when the helper returns a newly allocated matrix or quaternion
+///         snapshot.
 [[nodiscard]] constexpr bool returnsFresh3DMathSnapshot(std::string_view name) noexcept {
     return name == "Zanna.Graphics3D.SceneNode.get_Rotation" ||
            name == "Zanna.Graphics3D.SceneNode.get_WorldMatrix" ||
@@ -398,6 +439,9 @@ template <std::size_t N>
 ///          object, array, and collection construction/consumption as ordinary
 ///          value operations. Names include both C runtime symbols and
 ///          high-level runtime namespace aliases produced by frontends.
+/// @param name Canonical Zanna helper name or native `rt_*` symbol.
+/// @return Known ownership effects, or an empty conservative classification
+///         when @p name is unrecognized.
 [[nodiscard]] inline RuntimeOwnershipEffects classifyRuntimeOwnership(std::string_view name) {
     RuntimeOwnershipEffects effects{};
 

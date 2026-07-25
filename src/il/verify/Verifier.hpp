@@ -19,7 +19,7 @@
 // Key Responsibilities:
 // - Provide the public verify() interface for IL module validation
 // - Orchestrate the verification pipeline (externs -> globals -> functions -> EH)
-// - Report the first verification error encountered
+// - Collect bounded diagnostics and expose a primary-error convenience result
 // - Ensure verification is stateless and thread-safe
 //
 // Design Notes:
@@ -28,10 +28,17 @@
 // of module validation. Verification proceeds in dependency order: externs must
 // be validated before functions (since functions reference externs), functions
 // must be validated before exception handling (since EH analysis examines function
-// bodies). The first error encountered stops verification and returns immediately,
-// avoiding cascading errors from invalid IL.
+// bodies). verifyAll advances through stages until its diagnostic budget is
+// exhausted; verify returns the first collected error with the remaining
+// diagnostics attached as notes.
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares the public facade for complete IL module verification.
+/// @details The facade offers a primary-error `Expected` interface and a bounded
+///          multi-diagnostic interface over the same extern, global, function,
+///          and exception-handling pipeline.
 
 #pragma once
 
@@ -50,11 +57,17 @@ namespace il::verify {
 class Verifier {
   public:
     /// @brief Verify module @p m against the IL specification.
+    /// @details Collects up to 50 diagnostics, returns the first error, and
+    ///          attaches other collected diagnostics as notes. Warning-only
+    ///          results are considered successful.
     /// @param m Module to verify.
     /// @return Expected success or diagnostic on failure.
     [[nodiscard]] static il::support::Expected<void> verify(const il::core::Module &m);
 
     /// @brief Collect verifier diagnostics from each verifier stage.
+    /// @details Runs stages in dependency order until the diagnostic cap is
+    ///          reached, normalizes missing codes/stages, and removes exact
+    ///          duplicates. A zero cap returns an empty vector.
     /// @param m Module to verify.
     /// @param maxDiagnostics Maximum diagnostics to return.
     /// @return Empty vector when valid; otherwise one or more diagnostics.

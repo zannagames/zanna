@@ -491,26 +491,52 @@ Value Lowerer::emitRowMajorFlatIndex(const std::vector<Value> &idxVals,
     return sum;
 }
 
+/// @brief Emits a stack allocation in the active procedure.
+/// @param bytes Number of bytes reserved in the stack frame.
+/// @return Pointer-valued IL handle for the allocated slot.
 Value Lowerer::emitAlloca(int bytes) {
     return emitter().emitAlloca(bytes);
 }
 
+/// @brief Emits a typed load from an address.
+/// @param ty IL type loaded from memory.
+/// @param addr Pointer-valued IL address.
+/// @return SSA value produced by the load.
 Value Lowerer::emitLoad(Type ty, Value addr) {
     return emitter().emitLoad(ty, addr);
 }
 
+/// @brief Emits a typed store to an address.
+/// @param ty IL type written to memory.
+/// @param addr Pointer-valued IL destination.
+/// @param val Value written to @p addr.
 void Lowerer::emitStore(Type ty, Value addr, Value val) {
     emitter().emitStore(ty, addr, val);
 }
 
+/// @brief Emits a binary IL instruction through the shared emitter.
+/// @param op Binary opcode to append.
+/// @param ty Result type recorded on the instruction.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @return SSA result of the binary instruction.
 Value Lowerer::emitBinary(Opcode op, Type ty, Value lhs, Value rhs) {
     return emitter().emitBinary(op, ty, lhs, rhs);
 }
 
+/// @brief Emits a unary IL instruction through the shared emitter.
+/// @param op Unary opcode to append.
+/// @param ty Result type recorded on the instruction.
+/// @param val Operand consumed by the instruction.
+/// @return SSA result of the unary instruction.
 Value Lowerer::emitUnary(Opcode op, Type ty, Value val) {
     return emitter().emitUnary(op, ty, val);
 }
 
+/// @brief Emits integer negation with the lowerer's checked-overflow policy.
+/// @param ty Integer type of @p val and the result.
+/// @param val Integer operand to negate.
+/// @return Negated SSA value; overflow follows the emitter's trap path.
 Value Lowerer::emitCheckedNeg(Type ty, Value val) {
     return emitter().emitCheckedNeg(ty, val);
 }
@@ -528,8 +554,13 @@ Value Lowerer::narrow32(Value value, il::support::SourceLoc loc) {
 }
 
 namespace {
-// Prefer canonical Zanna.* runtime names when an alias group exists.
-// Falls back to the original spelling when no registry entry is known.
+/// @brief Selects the preferred canonical runtime spelling for a callee.
+/// @details Runtime aliases sharing a generated signature ID are ranked with
+///          Zanna.String names first, Zanna.Terminal names second, the caller's
+///          already-canonical spelling next, and any remaining canonical name
+///          last. Unknown names pass through unchanged.
+/// @param name Runtime name or compatibility alias requested by the lowerer.
+/// @return Owned canonical spelling, or a copy of @p name when unregistered.
 static std::string mapToCanonicalRuntime(std::string_view name) {
     using namespace il::runtime;
 
@@ -581,6 +612,9 @@ static std::string mapToCanonicalRuntime(std::string_view name) {
 }
 } // namespace
 
+/// @brief Emits a direct void call and tracks registered runtime callees.
+/// @param callee Requested runtime alias or direct function name.
+/// @param args Ordered IL argument values.
 void Lowerer::emitCall(const std::string &callee, const std::vector<Value> &args) {
     const std::string name = mapToCanonicalRuntime(callee);
     // Track runtime callees so externs match call-site spellings.
@@ -589,6 +623,11 @@ void Lowerer::emitCall(const std::string &callee, const std::vector<Value> &args
     emitter().emitCall(name, args);
 }
 
+/// @brief Emits a direct value-returning call and tracks runtime callees.
+/// @param ty Expected IL result type.
+/// @param callee Requested runtime alias or direct function name.
+/// @param args Ordered IL argument values.
+/// @return SSA result of the call.
 Value Lowerer::emitCallRet(Type ty, const std::string &callee, const std::vector<Value> &args) {
     const std::string name = mapToCanonicalRuntime(callee);
     if (il::runtime::findRuntimeDescriptor(name))
@@ -619,18 +658,35 @@ Value Lowerer::emitRuntimeHelper(il::runtime::RuntimeFeature feature,
     return emitCallRet(returnType, callee, args);
 }
 
+/// @brief Emits a value-returning indirect call through a function pointer.
+/// @param ty Expected IL result type.
+/// @param callee Function-pointer value.
+/// @param args Ordered IL argument values.
+/// @return SSA result of the indirect call.
 Value Lowerer::emitCallIndirectRet(Type ty, Value callee, const std::vector<Value> &args) {
     return emitter().emitCallIndirectRet(ty, callee, args);
 }
 
+/// @brief Emits a void indirect call through a function pointer.
+/// @param callee Function-pointer value.
+/// @param args Ordered IL argument values.
 void Lowerer::emitCallIndirect(Value callee, const std::vector<Value> &args) {
     emitter().emitCallIndirect(callee, args);
 }
 
+/// @brief Emits a reference to a global string constant.
+/// @param globalName IL global symbol containing the string data.
+/// @return Pointer-valued reference to the global string.
 Value Lowerer::emitConstStr(const std::string &globalName) {
     return emitter().emitConstStr(globalName);
 }
 
+/// @brief Interns string content and returns its stable global label.
+/// @details On the first insertion, installs a callback that materializes each
+///          newly interned string as a module global. Existing strings reuse
+///          their previously assigned labels.
+/// @param s String content to look up or intern.
+/// @return Stable global label associated with @p s.
 std::string Lowerer::getStringLabel(const std::string &s) {
     // Check if already interned in the StringTable
     std::string existing = stringTable_.lookup(s);

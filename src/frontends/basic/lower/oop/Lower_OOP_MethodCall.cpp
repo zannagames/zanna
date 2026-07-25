@@ -12,6 +12,10 @@
 // Links: docs/internals/codemap.md
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements static, runtime-catalog, virtual, interface, and direct
+///        BASIC method-call lowering.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/ILTypeUtils.hpp"
@@ -35,6 +39,8 @@ namespace il::frontends::basic {
 namespace {
 
 /// @brief True if @p target is an HTTP(S) server route-registration method (Get/Post/Put/Delete).
+/// @param target Canonical runtime method name.
+/// @return True for supported HTTP or HTTPS route-registration methods.
 bool isHttpServerRouteTarget(const std::string &target) {
     return target == "Zanna.Network.HttpServer.Get" || target == "Zanna.Network.HttpServer.Post" ||
            target == "Zanna.Network.HttpServer.Put" ||
@@ -46,6 +52,8 @@ bool isHttpServerRouteTarget(const std::string &target) {
 }
 
 /// @brief True if a procedure signature matches the HTTP handler shape `void(ptr, ptr)`.
+/// @param sig Candidate procedure signature; may be nullptr.
+/// @return True when @p sig accepts two pointers and returns void.
 bool isValidHttpHandlerSignature(const ::il::frontends::basic::ProcedureSignature *sig) {
     return sig && sig->retType.kind == il::core::Type::Kind::Void && sig->paramTypes.size() == 2 &&
            sig->paramTypes[0].kind == il::core::Type::Kind::Ptr &&
@@ -53,6 +61,8 @@ bool isValidHttpHandlerSignature(const ::il::frontends::basic::ProcedureSignatur
 }
 
 /// @brief Resolve an HTTP handler tag (a procedure name) to its lowered callee symbol.
+/// @param lowerer Lowerer supplying procedure signatures and callee resolution.
+/// @param tag BASIC procedure name stored in the handler tag.
 /// @return The callee name if the named procedure has a valid handler signature; else "".
 std::string resolveHttpHandlerTarget(const Lowerer &lowerer, const std::string &tag) {
     const auto *sig = lowerer.findProcSignature(tag);
@@ -62,6 +72,8 @@ std::string resolveHttpHandlerTarget(const Lowerer &lowerer, const std::string &
 }
 
 /// @brief Select the runtime BindHandler target (HTTP vs HTTPS) for a route-registration target.
+/// @param target Canonical route-registration runtime method.
+/// @return Process-lifetime canonical BindHandler function name.
 const char *httpServerBindHandlerTarget(const std::string &target) {
     if (target.rfind("Zanna.Network.HttpsServer.", 0) == 0)
         return "Zanna.Network.HttpsServer.BindHandler";

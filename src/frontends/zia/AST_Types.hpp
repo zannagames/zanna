@@ -4,8 +4,21 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/AST_Types.hpp
+// Purpose: Define the syntactic Zia type-annotation node hierarchy.
+// Key invariants:
+//   * TypeNode::kind matches the concrete annotation node.
+//   * Nested type syntax is owned recursively through TypePtr.
+//   * Fixed-array counts are stored as compile-time size values beside the
+//     owned element annotation.
+// Ownership: The declaration or expression containing a type annotation owns
+//            its TypeNode tree through unique_ptr.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file AST_Types.hpp
+/// @file
 /// @brief Type annotation nodes for the Zia AST.
 ///
 /// @details Defines AST nodes representing type annotations as written in
@@ -24,7 +37,7 @@
 ///   - Generic types: `List<i64>`, `Map<str, i64>`
 ///   - Function types: `fn(i64, str) -> bool`
 ///   - Optional types: `i64?`
-///   - Array types: `[i64]`
+///   - Fixed-size array types: `i64[64]`
 ///
 /// @invariant Every TypeNode has a valid `kind` field matching its concrete type.
 /// @invariant Source locations are non-null for all user-written type annotations.

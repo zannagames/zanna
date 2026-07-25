@@ -1,0 +1,129 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall/probes/visual_probe.zia
+// Purpose: Capture and measure a warmed Ashfall campaign frame on the selected backend.
+// Key invariants:
+//   - The authored level retains visible scene structure beyond its HUD overlay.
+//   - The probe runs the same deterministic scene on software and window GPU backends.
+// Ownership/Lifetime:
+//   - The probe owns one Game and its captured Pixels object until process exit.
+// Links: ../game.zia, render_probe.zia, ../../ridgebound/smoke_probe.zia
+//
+//===----------------------------------------------------------------------===//
+
+module visual_probe;
+
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.TempFile as TempFile;
+bind Zanna.Math as Math;
+bind Zanna.System.Environment as Env;
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind "../config" as config;
+bind "../game" as game;
+
+func red(px: Integer) -> Integer { return Math.Bits.And(px >> 24, 0xFF); }
+func green(px: Integer) -> Integer { return Math.Bits.And(px >> 16, 0xFF); }
+func blue(px: Integer) -> Integer { return Math.Bits.And(px >> 8, 0xFF); }
+
+func luminance(px: Integer) -> Integer {
+    return (red(px) * 30 + green(px) * 59 + blue(px) * 11) / 100;
+}
+
+func start() {
+    var g = new game.Game();
+    g.initCore(0xA55F011);
+    g.setScripted(true);
+    g.setFullscreen(false);
+    g.getSave().setupTransient();
+    g.setLevel(config.LV_L1);
+    g.boot(false, false);
+    var canvas = g.getCanvas();
+    G3D.Canvas3D.SetVSync(canvas, false);
+    g.getWorld().OnResize(640, 360);
+
+    var expectedBackend = Env.GetVariable("ZANNA_ASHFALL_EXPECT_BACKEND");
+    if expectedBackend != "" && canvas.Backend != expectedBackend {
+        Terminal.Say("RESULT: fail backend=" + canvas.Backend +
+                     " expected=" + expectedBackend);
+        g.getWorld().Destroy();
+        return;
+    }
+
+    var frameIndex = 0;
+    while frameIndex < 4 {
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        g.devRenderFrame();
+        frameIndex = frameIndex + 1;
+    }
+
+    var frame = g.getWorld().CaptureFinalFrame();
+    if frame == null {
+        Terminal.Say("RESULT: fail Ashfall final-frame capture returned null");
+        g.getWorld().Destroy();
+        return;
+    }
+
+    var width = Pixels.get_Width(frame);
+    var height = Pixels.get_Height(frame);
+    if width != 640 || height != 360 {
+        Terminal.Say("RESULT: fail Ashfall capture dimensions=" +
+                     toString(width) + "x" + toString(height));
+        g.getWorld().Destroy();
+        return;
+    }
+    var outputPath = Path.Join(TempFile.Dir(), "ashfall_visual.png");
+    if Pixels.SavePng(frame, outputPath) != 1 {
+        Terminal.Say("RESULT: fail Ashfall screenshot write path=" + outputPath);
+        g.getWorld().Destroy();
+        return;
+    }
+
+    var samples = 0;
+    var sumLuma = 0;
+    var minLuma = 255;
+    var maxLuma = 0;
+    var litSamples = 0;
+    var y = height / 8;
+    while y < height * 7 / 8 {
+        var x = width / 8;
+        while x < width * 7 / 8 {
+            var lum = luminance(Pixels.Get(frame, x, y));
+            samples = samples + 1;
+            sumLuma = sumLuma + lum;
+            if lum < minLuma { minLuma = lum; }
+            if lum > maxLuma { maxLuma = lum; }
+            if lum >= 20 { litSamples = litSamples + 1; }
+            x = x + 3;
+        }
+        y = y + 3;
+    }
+
+    if samples == 0 {
+        Terminal.Say("RESULT: fail Ashfall capture produced no visual samples");
+        g.getWorld().Destroy();
+        return;
+    }
+    var meanLuma = (sumLuma + 0.0) / (samples + 0.0);
+    var litPercent = (litSamples + 0.0) * 100.0 / (samples + 0.0);
+    Terminal.Say("METRIC: backend=" + canvas.Backend +
+                 " size=" + toString(width) + "x" + toString(height) +
+                 " mean_luma=" + Fmt.NumFixed(meanLuma, 3) +
+                 " range=" + toString(minLuma) + ".." + toString(maxLuma) +
+                 " lit_percent=" + Fmt.NumFixed(litPercent, 3) +
+                 " screenshot=" + outputPath);
+    if meanLuma < 70.0 || litPercent < 80.0 || maxLuma - minLuma < 40 {
+        Terminal.Say("RESULT: fail ashfall scene is unexpectedly dark or flat");
+    } else {
+        Terminal.Say("RESULT: ok");
+    }
+    g.getWorld().Destroy();
+}

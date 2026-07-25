@@ -5,11 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/sem/NamespaceRegistry.hpp
-// Purpose: Records declared namespaces and their types with case-insensitive lookups.
-// Key invariants: // Key invariants:
-// Ownership/Lifetime: Registry is owned by semantic analyzer; lives for compilation.
-// Links: docs/internals/codemap.md, CLAUDE.md
+// File: src/frontends/basic/sem/NamespaceRegistry.hpp
+// Purpose: Declare the compilation-scoped registry of BASIC namespaces,
+//          classes, and interfaces.
+// Key invariants:
+//   * Lookup keys are normalized case-insensitively.
+//   * Namespace metadata retains the first registered spelling for diagnostics.
+//   * Re-registering a namespace merges declarations without replacing its
+//     canonical spelling.
+// Ownership: The registry owns all stored names and sets. Runtime descriptors
+//            and class catalogs passed to seed methods remain caller-owned.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares the case-insensitive BASIC namespace and type registry.
+/// @details The registry combines user declarations with namespace prefixes
+///          derived from runtime catalogs for semantic name resolution.
 //
 //===----------------------------------------------------------------------===//
 

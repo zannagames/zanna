@@ -42,6 +42,7 @@ using il::support::Expected;
 
 namespace {
 
+/// @brief Direct runtime array helper recognized for specialized ABI checks.
 enum class RuntimeArrayCallee {
     None,
     // i32 arrays
@@ -83,13 +84,29 @@ enum class RuntimeArrayCallee {
     ReleaseObj,
 };
 
+/// @brief Effect guarantees resolved for a call target.
 struct CalleeEffectMetadata {
+    /// @brief Whether the guarantees come from authoritative metadata.
     bool known = false;
+
+    /// @brief Whether the callee is free of observable side effects.
     bool pure = false;
+
+    /// @brief Whether the callee avoids externally visible writes.
     bool readonly = false;
+
+    /// @brief Whether the callee cannot throw or trap.
     bool nothrow = false;
 };
 
+/// @brief Resolve effect guarantees for a direct callee.
+/// @details Prefers runtime metadata, then function attributes, explicitly
+///          attributed externs, and helper-effect classification.
+/// @param externSig Resolved extern declaration, if any.
+/// @param fnSig Resolved function declaration, if any.
+/// @param runtimeSig Canonical runtime signature, if any.
+/// @param calleeName Symbol used for helper classification.
+/// @return Effect metadata with `known` false when no authoritative source exists.
 CalleeEffectMetadata queryCalleeEffects(const Extern *externSig,
                                         const Function *fnSig,
                                         const il::runtime::RuntimeSignature *runtimeSig,
@@ -195,10 +212,22 @@ RuntimeArrayCallee classifyRuntimeArrayCallee(std::string_view callee) {
     return RuntimeArrayCallee::None;
 }
 
+/// @brief Test whether two IL type kinds match exactly.
+/// @param actual Inferred argument or result kind.
+/// @param expected Signature-required kind.
+/// @return `true` when the kinds are equal.
 bool typeKindsCompatible(Type::Kind actual, Type::Kind expected) {
     return actual == expected;
 }
 
+/// @brief Check one fixed runtime argument against its signature kind.
+/// @details In addition to exact matches, runtime parameters marked as object
+///          pointers accept string handles.
+/// @param actual Inferred operand kind.
+/// @param expected Canonical runtime parameter kind.
+/// @param runtimeSig Runtime metadata containing the object-parameter mask.
+/// @param index Zero-based parameter index.
+/// @return `true` when exact or permitted by object-handle compatibility.
 bool runtimeArgTypeCompatible(Type::Kind actual,
                               Type::Kind expected,
                               const il::runtime::RuntimeSignature *runtimeSig,
@@ -211,6 +240,9 @@ bool runtimeArgTypeCompatible(Type::Kind actual,
     return objectParam && expected == Type::Kind::Ptr && actual == Type::Kind::Str;
 }
 
+/// @brief Classify IL kinds permitted in variadic call positions.
+/// @param kind Inferred kind of a variadic operand.
+/// @return `true` for scalar, pointer, and string ABI values.
 bool isSupportedVarArgType(Type::Kind kind) {
     switch (kind) {
         case Type::Kind::I1:
@@ -226,14 +258,28 @@ bool isSupportedVarArgType(Type::Kind kind) {
     }
 }
 
+/// @brief Test a string-view prefix without allocation.
+/// @param text Complete text.
+/// @param prefix Candidate prefix.
+/// @return `true` when @p text begins with @p prefix.
 bool startsWith(std::string_view text, std::string_view prefix) {
     return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
 }
 
+/// @brief Test whether a string view contains a substring.
+/// @param text Text to search.
+/// @param needle Substring to locate.
+/// @return `true` when @p needle occurs in @p text.
 bool contains(std::string_view text, std::string_view needle) {
     return text.find(needle) != std::string_view::npos;
 }
 
+/// @brief Determine whether discarding a runtime return would leak ownership.
+/// @details All string returns require binding. Pointer returns require binding
+///          for known allocation, construction, and resize helper families.
+/// @param callee Runtime helper symbol.
+/// @param retType Canonical return type.
+/// @return `true` when the call must produce a bound SSA result.
 bool runtimeReturnMustBeBound(std::string_view callee, Type retType) {
     if (retType.kind == Type::Kind::Str)
         return true;
@@ -255,21 +301,16 @@ bool runtimeReturnMustBeBound(std::string_view callee, Type retType) {
     return false;
 }
 
-/// @brief Validate runtime array helper invocations.
-/// @details Ensures that helper-specific operand counts, operand types, and
-///          result expectations are satisfied for array allocation, indexing,
-///          mutation, and reference-count management helpers.  Diagnostics are
-///          produced through @ref fail when the call deviates from the contract;
-///          otherwise the function returns success without modifying state.
-/// @param ctx Verification context describing the current instruction.
-/// @return Empty result on success; structured diagnostic on error.
 /// @brief Bundles the operand/result validation primitives used by
 ///        checkRuntimeArrayCall so the per-callee switch reads as a table of
 ///        intent rather than inline diagnostic boilerplate.
 struct RuntimeArrayCallChecker {
+    /// @brief Verification context shared by all primitive checks.
     const VerifyCtx &ctx;
 
     /// @brief Require an exact operand count, else emit a descriptive error.
+    /// @param expected Required number of call operands.
+    /// @return Success when the count matches; otherwise a callee-qualified error.
     Expected<void> requireArgCount(size_t expected) const {
         if (ctx.instr.operands.size() == expected)
             return {};
@@ -282,6 +323,10 @@ struct RuntimeArrayCallChecker {
     }
 
     /// @brief Require operand @p index to have type @p expected.
+    /// @param index Operand index, assumed present after count validation.
+    /// @param expected Required inferred type kind.
+    /// @param role Human-readable operand role included in diagnostics.
+    /// @return Success when known and matching; otherwise an error.
     Expected<void> requireOperandType(size_t index,
                                       Type::Kind expected,
                                       std::string_view role) const {
@@ -302,6 +347,9 @@ struct RuntimeArrayCallChecker {
     }
 
     /// @brief Require the instruction to produce a result of type @p expected.
+    /// @param expected Required result kind.
+    /// @return Success after recording the type, or an error for missing or
+    ///         conflicting result metadata.
     Expected<void> requireResultType(Type::Kind expected) const {
         if (!ctx.instr.result) {
             std::ostringstream ss;
@@ -320,6 +368,7 @@ struct RuntimeArrayCallChecker {
     }
 
     /// @brief Require the instruction to be side-effect only (no result).
+    /// @return Success for an unbound void call; otherwise an error.
     Expected<void> requireNoResult() const {
         if (ctx.instr.result) {
             std::ostringstream ss;
@@ -335,19 +384,42 @@ struct RuntimeArrayCallChecker {
     }
 };
 
+/// @brief Validate calls to recognized runtime array helpers.
+/// @details Applies helper-specific operand counts, operand roles and types,
+///          and result binding contracts for allocation, indexing, mutation,
+///          resize, retain, and release operations. Unknown callees are left to
+///          general call verification.
+/// @param ctx Verification context describing the direct call.
+/// @return Success when unknown or ABI-compatible; otherwise an error.
 Expected<void> checkRuntimeArrayCall(const VerifyCtx &ctx) {
     const RuntimeArrayCallee calleeKind = classifyRuntimeArrayCallee(ctx.instr.callee);
     if (calleeKind == RuntimeArrayCallee::None)
         return {};
 
     RuntimeArrayCallChecker checker{ctx};
+    /// @brief Forward an exact-count requirement to the checker.
+    /// @param expected Required operand count.
+    /// @return Success or the checker's diagnostic.
     const auto requireArgCount = [&](size_t expected) { return checker.requireArgCount(expected); };
+
+    /// @brief Forward a typed operand requirement to the checker.
+    /// @param index Operand index.
+    /// @param expected Required type kind.
+    /// @param role Diagnostic role name.
+    /// @return Success or the checker's diagnostic.
     const auto requireOperandType = [&](size_t index, Type::Kind expected, std::string_view role) {
         return checker.requireOperandType(index, expected, role);
     };
+
+    /// @brief Forward a result-kind requirement to the checker.
+    /// @param expected Required result kind.
+    /// @return Success or the checker's diagnostic.
     const auto requireResultType = [&](Type::Kind expected) {
         return checker.requireResultType(expected);
     };
+
+    /// @brief Forward the side-effect-only result requirement to the checker.
+    /// @return Success or the checker's diagnostic.
     const auto requireNoResult = [&]() { return checker.requireNoResult(); };
 
     switch (calleeKind) {
@@ -629,14 +701,14 @@ Expected<void> checkRuntimeArrayCall(const VerifyCtx &ctx) {
 
 } // namespace
 
-/// @brief Verify indirect calls to functions and externs.
-/// @details Resolves the callee against known functions and externs, checks
+/// @brief Verify direct and indirect calls to functions, externs, and runtime helpers.
+/// @details Resolves named callees against known functions and externs, checks
 ///          argument counts and operand types against the resolved signature,
 ///          validates return type compatibility, and records the result type
-///          when present.  For runtime helpers, cross-checks against the
-///          runtime signature registry to catch mismatches early.  If the
-///          callee is unknown or operands disagree with the signature, a
-///          diagnostic is produced.
+///          when present. Pointer-based indirect calls require embedded
+///          signature metadata; global-address indirect calls are cross-checked
+///          against the resolved symbol. Runtime calls also validate claimed
+///          effects and owned-return binding requirements.
 /// @param ctx Verification context containing call operands and signature maps.
 /// @return Success when the call matches the signature; otherwise an error.
 Expected<void> checkCall(const VerifyCtx &ctx) {

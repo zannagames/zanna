@@ -9,10 +9,11 @@
 // Purpose: Dominator tree analysis for IL functions. Captures dominance
 //          relationships (block A dominates block B iff every path from
 //          entry to B passes through A). Provides dominates() and
-//          immediateDominator() queries, built via Lengauer-Tarjan.
+//          immediateDominator() queries, built via the iterative
+//          Cooper-Harvey-Kennedy algorithm.
 // Key invariants:
 //   - A block dominates itself; the entry block dominates all reachable blocks.
-//   - immediateDominator() returns nullptr only for the entry block.
+//   - immediateDominator() returns nullptr for the entry and unindexed blocks.
 //   - DomTree must be recomputed after any CFG mutation.
 // Ownership/Lifetime: DomTree owns its idom and children maps by value.
 //          Computed from a CFGContext + Function; block pointers must remain

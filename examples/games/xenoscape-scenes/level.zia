@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 //
 // File: examples/games/xenoscape-scenes/level.zia
-// Purpose: Loads authored .scene regions into campaign tilemaps, dynamic
+// Purpose: Loads authored .scene2d regions into campaign tilemaps, dynamic
 //          tiles, and spawn records; the scene files are the level data.
 // Key invariants:
 //   - Tile coordinates are bounds-checked before mutation or property lookup.
@@ -323,10 +323,10 @@ class Level {
     hide func scenePathForRegion(num: Integer) -> String {
         var suffix = "" + num;
         if num < 10 { suffix = "0" + num; }
-        var path = "assets/scenes/region-" + suffix + ".scene";
+        var path = "assets/scenes/region-" + suffix + ".scene2d";
         if File.Exists(path) { return path; }
         return "examples/games/xenoscape-scenes/assets/scenes/region-"
-            + suffix + ".scene";
+            + suffix + ".scene2d";
     }
 
     expose func isSolid(col: Integer, row: Integer) -> Boolean {

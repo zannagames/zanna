@@ -408,9 +408,11 @@ class DocumentManager {
         if file_utils.IsVisualKind(doc.kind)
            and file_utils.DetectKind(candidate) != doc.kind {
             if doc.kind == file_utils.DOC_KIND_SCENE_2D {
-                return "Save 2D scenes with a .scene or .level extension.";
+                return "Save 2D scenes with a .scene2d extension "
+                    + "(.scene and .level remain accepted).";
             }
-            return "Save 3D scenes with a .vscn extension.";
+            return "Save 3D scenes with a .scene3d extension "
+                + "(.vscn remains accepted).";
         }
         if file_utils.DetectKind(candidate) == file_utils.DOC_KIND_BINARY_UNSUPPORTED {
             return "Choose a text or source-code file extension.";

@@ -4,20 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Decl.cpp
-// Purpose: Declaration lowering dispatch and compile-time constant folding
-//          for the Zia IL lowerer.
-// Key invariants:
-//   - lowerDecl dispatches to type-specific lowering methods
-//   - tryFoldNumericConstant is a pure function (no side effects)
-//   - registerAllFinalConstants must run before any expression lowering
-// Ownership/Lifetime:
-//   - Lowerer owns globalConstants_ map for compile-time constant storage
-// Links: src/frontends/zia/Lowerer.hpp,
-//        src/frontends/zia/Lowerer_Decl_Types.cpp,
-//        src/frontends/zia/Lowerer_Decl_Functions.cpp
-//
+///
+/// @file Lowerer_Decl.cpp
+/// @brief Dispatches Zia declarations and pre-registers enum and `final`
+///        constant values.
+///
+/// @details Declaration dispatch delegates IL-producing work to the focused
+///          function and type lowerers. Before expression lowering, this file
+///          also evaluates foldable global constants to a fixpoint so forward
+///          references and enum variants are available to later declarations.
+///          Namespace traversal temporarily threads the current qualified-name
+///          prefix through nested declaration lists.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -98,6 +96,9 @@ std::string Lowerer::declarationName(const Decl &decl, const std::string &name) 
 //=============================================================================
 
 /// @brief Try to evaluate an initializer expression to a compile-time constant.
+/// @param init Initializer expression to evaluate, or null.
+/// @return Folded IL constant when every required operation and reference is
+///         compile-time evaluable; otherwise `std::nullopt`.
 /// @details Handles literals, constant references, enum variants, unary operators,
 ///          and pure arithmetic/logical expressions. Returns nullopt for any
 ///          expression that cannot be evaluated at compile time.

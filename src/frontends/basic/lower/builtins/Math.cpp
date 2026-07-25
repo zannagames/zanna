@@ -5,14 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements lowering and registration for BASIC math-oriented builtins.  The
-// lowering logic routes through the generic variant dispatcher while providing
-// specialised handling for runtime conversions that require guard blocks.  By
-// centralising both dispatch and registration the file keeps the builtin table
-// declarative while still allowing individual builtins to participate in
-// lowering-time feature negotiation.
+// File: src/frontends/basic/lower/builtins/Math.cpp
+// Purpose: Implements and registers generic mathematical builtin lowering plus
+//          guarded numeric and VAL conversion dispatch.
+// Key invariants: Selected variants control argument transformations and
+//                 runtime feature application; failed selection yields a typed
+//                 zero fallback.
+// Ownership/Lifetime: Registry callbacks borrow their per-call lowering
+//                     contexts and return IL values owned by Lowerer state.
+// Links: src/frontends/basic/lower/BuiltinCommon.hpp,
+//        src/frontends/basic/builtins/MathBuiltins.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements BASIC math and conversion builtin callback registration.
 
 #include "frontends/basic/lower/BuiltinCommon.hpp"
 #include "frontends/basic/lower/builtins/Registrars.hpp"

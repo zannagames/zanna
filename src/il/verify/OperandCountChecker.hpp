@@ -29,6 +29,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares table-driven operand and successor cardinality validation.
+/// @details A checker borrows one verification context and instruction spec,
+///          then validates operand bounds plus label and branch-argument bundle
+///          counts through a structured diagnostic result.
+
 #pragma once
 
 #include "il/verify/SpecTables.hpp"
@@ -43,6 +49,9 @@ namespace il::verify::detail {
 /// @brief Ensures an instruction provides the expected number of operands.
 class OperandCountChecker {
   public:
+    /// @brief Bind a checker to one instruction and its generated specification.
+    /// @param ctx Verification context that must outlive the checker.
+    /// @param spec Opcode specification that must outlive the checker.
     OperandCountChecker(const VerifyCtx &ctx, const InstructionSpec &spec);
 
     /// @brief Validates the operand count described by the instruction and metadata.
@@ -50,9 +59,15 @@ class OperandCountChecker {
     [[nodiscard]] il::support::Expected<void> run() const;
 
   private:
+    /// @brief Format a cardinality failure in the current instruction context.
+    /// @param message Specific mismatch text.
+    /// @return Structured failure anchored to the instruction.
     il::support::Expected<void> report(std::string_view message) const;
 
+    /// @brief Borrowed verification context for the instruction under check.
     const VerifyCtx &ctx_;
+
+    /// @brief Borrowed generated cardinality specification.
     const InstructionSpec &spec_;
 };
 

@@ -23,6 +23,10 @@
 #include <ostream>
 #include <vector>
 
+/// @file
+/// @brief Defines shared context, formatting, and dispatch helpers for BASIC
+///        statement serialization.
+
 namespace il::frontends::basic {
 class AstPrinter;
 } // namespace il::frontends::basic

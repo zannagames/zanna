@@ -8,12 +8,12 @@
 // File: src/frontends/zia/Lowerer.hpp
 // Purpose: Define the type-checked Zia AST to Zanna IL lowering pipeline.
 // Key invariants:
-//   - Lowered functions contain verifier-valid typed IL and terminated blocks.
-//   - Managed references have one explicit owner across slots, calls, and CFG edges.
-// Ownership/Lifetime:
-//   - Lowerer borrows semantic-analysis state and owns transient lowering state.
-//   - Produced IL is owned by the caller-provided module builder.
-// Links: src/frontends/zia/Sema.hpp, src/frontends/zia/Lowerer_Emit.cpp,
+//   * Lowered functions contain typed IL with terminated reachable blocks.
+//   * Managed references have one explicit owner across slots, calls, and CFG edges.
+// Ownership:
+//   * Lowerer borrows semantic-analysis and diagnostic state.
+//   * It owns transient lowering state and transfers the completed Module by value.
+// References: src/frontends/zia/Sema.hpp, src/frontends/zia/Lowerer_Emit.cpp,
 //        docs/il/il-guide.md
 //
 //===----------------------------------------------------------------------===//
@@ -59,8 +59,8 @@
 /// Zia types are mapped to IL types:
 /// - Integer -> i64
 /// - Number -> f64
-/// - Boolean -> i64 (0 or 1)
-/// - String -> ptr (runtime string reference)
+/// - Boolean -> i1
+/// - String -> str (runtime string handle)
 /// - Entity/Collections -> ptr (heap-allocated objects)
 ///
 /// ## Runtime Integration
@@ -198,6 +198,8 @@ class Lowerer {
 
     /// @brief Create a lowerer with semantic analysis results.
     /// @param sema The semantic analyzer that analyzed the input module.
+    /// @param diag Diagnostic sink for lowering invariant failures.
+    /// @param options Frontend options affecting generated IL and diagnostics.
     ///
     /// @details The lowerer uses sema for:
     /// - Expression type lookup (sema.typeOf)
@@ -220,14 +222,17 @@ class Lowerer {
     ///          instantiated class, the flattened field list (inherited first)
     ///          with byte offsets and storage kinds, keyed by the runtime class
     ///          id that rt_obj_new_i64 stamps into instances.
+    /// @return Value-owned debugger layout table keyed by runtime class ID.
     [[nodiscard]] DebugClassLayoutExport collectDebugClassLayouts() const;
 
     /// @brief Get the current source location for IL emission.
+    /// @return Location stamped onto newly emitted instructions.
     [[nodiscard]] il::support::SourceLoc sourceLocation() const noexcept {
         return curLoc_;
     }
 
     /// @brief Set the current source location for IL emission.
+    /// @param loc Location to stamp onto subsequently emitted instructions.
     void setSourceLocation(il::support::SourceLoc loc) noexcept {
         curLoc_ = loc;
     }
@@ -284,7 +289,9 @@ class Lowerer {
     ///          from the try body must close the EH frame before running its
     ///          finally body; exits from catch bodies only run finally.
     struct CleanupFrame {
+        /// @brief Finally body to emit for this cleanup frame, if any.
         Stmt *finallyBody{nullptr};
+        /// @brief Whether an active EH frame must be popped first.
         bool popEhBeforeFinally{false};
     };
 
@@ -314,8 +321,11 @@ class Lowerer {
     std::vector<std::unordered_map<std::string, Value>> loopSlotSnapshots_;
 
     struct CatchErrorBinding {
+        /// @brief Slot holding the caught trap kind.
         std::string kindSlot;
+        /// @brief Slot holding the caught error code.
         std::string codeSlot;
+        /// @brief Slot holding the caught source line.
         std::string lineSlot;
     };
 

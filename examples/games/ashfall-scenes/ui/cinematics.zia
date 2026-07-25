@@ -1,0 +1,140 @@
+// =============================================================================
+// ui/cinematics.zia — level-intro fly-in, fades, letterbox, title orbit
+// =============================================================================
+//
+// Small camera choreography layer, interactive builds only (probes never
+// trigger it — boot() lands in ST_PLAYING with the gameplay camera). The intro
+// flies from the level's vantage offset down to the player's eye over 2.2 s
+// with an eased curve, 12% letterbox bars, and the level title card; any
+// confirm input skips it. Fades are simple full-screen scrims the game draws
+// last in the overlay. The title screen borrows applyOrbit() for its slow
+// vista pan.
+// =============================================================================
+module cinematics;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+
+class Cinematics {
+    // Intro fly-in.
+    hide Boolean introActive;
+    hide Float introT;
+    hide Float fromX; hide Float fromY; hide Float fromZ;
+    hide Float toX; hide Float toY; hide Float toZ;
+    hide Float lookYaw;               // final facing (deg, ai convention)
+    hide String titleCard;
+    // Fade scrim: alpha animates toward the target.
+    hide Float fadeA;
+    hide Float fadeTarget;
+    hide Float fadeRate;
+    // Title orbit phase.
+    hide Float orbitT;
+
+    expose func init() {
+        introActive = false;
+        introT = 0.0;
+        fromX = 0.0; fromY = 0.0; fromZ = 0.0;
+        toX = 0.0; toY = 0.0; toZ = 0.0;
+        lookYaw = 0.0;
+        titleCard = "";
+        fadeA = 0.0;
+        fadeTarget = 0.0;
+        fadeRate = 2.5;
+        orbitT = 0.0;
+    }
+
+    // --- Intro fly-in ------------------------------------------------------------
+    expose func startIntro(vx: Float, vy: Float, vz: Float,
+                           ex: Float, ey: Float, ez: Float,
+                           yawDeg: Float, title: String) {
+        introActive = true;
+        introT = 0.0;
+        fromX = vx; fromY = vy; fromZ = vz;
+        toX = ex; toY = ey; toZ = ez;
+        lookYaw = yawDeg;
+        titleCard = title;
+        fadeA = 1.0;
+        fadeTarget = 0.0;
+    }
+
+    expose func isIntroActive() -> Boolean { return introActive; }
+    expose func skipIntro() { introActive = false; }
+
+    expose func update(dt: Float) {
+        if introActive {
+            introT = introT + dt;
+            if introT >= 2.2 { introActive = false; }
+        }
+        orbitT = orbitT + dt;
+        // Fade scrim toward its target.
+        if fadeA < fadeTarget {
+            fadeA = M.minf(fadeA + fadeRate * dt, fadeTarget);
+        } else if fadeA > fadeTarget {
+            fadeA = M.maxf(fadeA - fadeRate * dt, fadeTarget);
+        }
+    }
+
+    // Eased 0..1 (smoothstep on the normalized intro time).
+    hide func introEase() -> Float {
+        var t = M.clampf(introT / 2.2, 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    // Drive the camera along the fly-in path, looking toward the landing spot.
+    expose func applyIntroCamera(cam: G3D.Camera3D) {
+        var e = introEase();
+        var cx = M.lerpf(fromX, toX, e);
+        var cy = M.lerpf(fromY, toY, e);
+        var cz = M.lerpf(fromZ, toZ, e);
+        // Look target: blend from the landing spot toward the final facing.
+        var yr = M.toRad(lookYaw);
+        var fx = Math.Sin(yr);
+        var fz = 0.0 - Math.Cos(yr);
+        var lx = M.lerpf(toX, toX + fx * 4.0, e);
+        var ly = M.lerpf(toY, toY, e);
+        var lz = M.lerpf(toZ, toZ + fz * 4.0, e);
+        cam.LookAt(Math.Vec3.New(cx, cy, cz), Math.Vec3.New(lx, ly, lz),
+                   Math.Vec3.New(0.0, 1.0, 0.0));
+        cam.Fov = config.CAMERA_FOV;
+    }
+
+    // Title vista: slow orbit around a center point (8 deg/s).
+    expose func applyOrbit(cam: G3D.Camera3D, cx: Float, cy: Float, cz: Float,
+                           radius: Float, height: Float) {
+        var a = orbitT * 0.14;
+        var ex = cx + Math.Cos(a) * radius;
+        var ez = cz + Math.Sin(a) * radius;
+        cam.LookAt(Math.Vec3.New(ex, cy + height, ez), Math.Vec3.New(cx, cy + 2.0, cz),
+                   Math.Vec3.New(0.0, 1.0, 0.0));
+        cam.Fov = 62.0;
+    }
+
+    // --- Fades ---------------------------------------------------------------
+    expose func fadeIn() { fadeA = 1.0; fadeTarget = 0.0; }       // from black
+    expose func fadeToBlack() { fadeTarget = 1.0; }
+    expose func cutFlash() { fadeA = 0.8; fadeTarget = 0.0; fadeRate = 4.0; }
+    expose func fadeAlpha() -> Float { return fadeA; }
+
+    // --- Overlay (letterbox + title card + scrim) ------------------------------
+    expose func drawOverlay(canvas: G3D.Canvas3D, w: Integer, h: Integer) {
+        if introActive {
+            var bar = h * 12 / 100;
+            G3D.Canvas3D.DrawRect2D(canvas, 0, 0, w, bar, 0x000000);
+            G3D.Canvas3D.DrawRect2D(canvas, 0, h - bar, w, bar, 0x000000);
+            // Title card fades out over the flight.
+            var a = 1.0 - introEase();
+            if a > 0.05 {
+                var tw = G3D.Canvas3D.MeasureText2DAA(canvas, titleCard, 2.6);
+                G3D.Canvas3D.DrawText2DAA(canvas, w / 2 - tw / 2, h - bar - 60, titleCard,
+                                          0xE8E8F0, 2.6);
+                G3D.Canvas3D.DrawRect2DAlpha(canvas, w / 2 - tw / 2, h - bar - 24, tw, 2,
+                                             0xFFA850, a);
+            }
+        }
+        if fadeA > 0.01 {
+            G3D.Canvas3D.DrawRect2DAlpha(canvas, 0, 0, w, h, 0x000000, fadeA);
+        }
+    }
+}

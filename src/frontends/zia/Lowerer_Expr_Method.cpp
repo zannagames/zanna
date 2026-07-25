@@ -9,8 +9,10 @@
 /// @brief Method call and type construction lowering for the Zia IL lowerer.
 ///
 /// @details This file handles method call dispatch (direct, virtual, interface),
-/// collection method calls (List, Map, Set), and value/class type construction
-/// via function-call syntax.
+///          collection method calls (List, Map, Set), inline lowering of list
+///          combinators, and value/class construction via function-call
+///          syntax. Construction follows resolved initializer bindings and
+///          preserves declaration-order field layout and managed ownership.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -31,6 +33,10 @@ namespace {
 /// @brief Append @p typeName's field declarations (base-class fields first,
 ///        then this class's) to @p out — gives the in-memory field order used
 ///        when lowering method receivers / field access.
+/// @param sema Semantic analyzer used to resolve class declarations.
+/// @param typeName Qualified class name whose fields are collected.
+/// @param out Destination vector extended with inherited and local non-static
+///        fields.
 void appendClassFieldDecls(Sema &sema,
                            const std::string &typeName,
                            std::vector<const FieldDecl *> &out) {
@@ -48,6 +54,10 @@ void appendClassFieldDecls(Sema &sema,
     }
 }
 
+/// @brief Collect a struct's non-static fields in declaration order.
+/// @param sema Semantic analyzer used to resolve the struct declaration.
+/// @param typeName Qualified struct name.
+/// @return Field declaration pointers, or an empty vector for an unknown type.
 std::vector<const FieldDecl *> collectStructFieldDecls(Sema &sema, const std::string &typeName) {
     std::vector<const FieldDecl *> out;
     StructDecl *decl = sema.findStructDecl(typeName);
@@ -69,6 +79,16 @@ std::vector<const FieldDecl *> collectStructFieldDecls(Sema &sema, const std::st
 // List Method Call Helper
 //=============================================================================
 
+/// @brief Try to lower a built-in List method call.
+/// @param baseValue Runtime list receiver.
+/// @param baseType Semantic list type supplying its element type.
+/// @param methodName Source method name.
+/// @param expr Call expression containing method arguments.
+/// @return Lowered result when @p methodName is recognized; otherwise
+///         `std::nullopt`.
+/// @details Collection access and mutation route through the List runtime,
+///          with element boxing/unboxing and index widening. Functional
+///          combinators delegate to lowerListCombinator().
 std::optional<LowerResult> Lowerer::lowerListMethodCall(Value baseValue,
                                                         TypeRef baseType,
                                                         const std::string &methodName,
@@ -249,6 +269,16 @@ std::optional<LowerResult> Lowerer::lowerListMethodCall(Value baseValue,
 // List Combinator Helper (map / filter / reduce / firstWhere / any / all / sum)
 //=============================================================================
 
+/// @brief Try to lower a List functional combinator as explicit IL control flow.
+/// @param baseValue Runtime list receiver.
+/// @param baseType Semantic list type supplying its element type.
+/// @param methodName Candidate combinator name.
+/// @param expr Call expression containing closure and accumulator arguments.
+/// @return Lowered map/filter/reduce/firstWhere/any/all/sum result, or
+///         `std::nullopt` for another method.
+/// @details Emits indexed loops over a stable receiver slot, invokes closure
+///          values through their uniform function/environment ABI, unboxes
+///          elements, and removes all scratch slots at the merge block.
 std::optional<LowerResult> Lowerer::lowerListCombinator(Value baseValue,
                                                         TypeRef baseType,
                                                         const std::string &methodName,
@@ -490,6 +520,16 @@ std::optional<LowerResult> Lowerer::lowerListCombinator(Value baseValue,
 // Map Method Call Helper
 //=============================================================================
 
+/// @brief Try to lower a built-in Map method call.
+/// @param baseValue Runtime map receiver.
+/// @param baseType Semantic map type supplying key and value types.
+/// @param methodName Source method name.
+/// @param expr Call expression containing method arguments.
+/// @return Lowered result when @p methodName is recognized; otherwise
+///         `std::nullopt`.
+/// @details Selects string-keyed Map or integer-keyed IntMap runtime helpers,
+///          coerces keys to their ABI representation, and boxes or unboxes map
+///          values at the language boundary.
 std::optional<LowerResult> Lowerer::lowerMapMethodCall(Value baseValue,
                                                        TypeRef baseType,
                                                        const std::string &methodName,
@@ -687,6 +727,13 @@ std::optional<LowerResult> Lowerer::lowerMapMethodCall(Value baseValue,
 // Set Method Call Helper
 //=============================================================================
 
+/// @brief Try to lower a built-in Set method call.
+/// @param baseValue Runtime set receiver.
+/// @param baseType Semantic set type supplying its element type.
+/// @param methodName Source method name.
+/// @param expr Call expression containing method arguments.
+/// @return Lowered result when @p methodName is recognized; otherwise
+///         `std::nullopt`.
 std::optional<LowerResult> Lowerer::lowerSetMethodCall(Value baseValue,
                                                        TypeRef baseType,
                                                        const std::string &methodName,
@@ -749,6 +796,15 @@ std::optional<LowerResult> Lowerer::lowerSetMethodCall(Value baseValue,
 // Method Call Helper
 //=============================================================================
 
+/// @brief Emit a direct call to a resolved user method.
+/// @param method Resolved method declaration.
+/// @param typeName Qualified owning-type name.
+/// @param selfValue Receiver passed as the first argument.
+/// @param expr Call expression containing explicit arguments.
+/// @return Materialized method result, or a void placeholder.
+/// @details Uses cached substituted parameter/return types, semantic argument
+///          bindings, and generic-method erasure metadata. Concrete generic
+///          return values are unboxed from an erased pointer representation.
 LowerResult Lowerer::lowerMethodCall(MethodDecl *method,
                                      const std::string &typeName,
                                      Value selfValue,
@@ -803,6 +859,14 @@ LowerResult Lowerer::lowerMethodCall(MethodDecl *method,
 // Value Type Construction Helper
 //=============================================================================
 
+/// @brief Try to construct a value type through `TypeName(...)` syntax.
+/// @param typeName Qualified struct name.
+/// @param expr Type-call expression containing constructor arguments.
+/// @return Pointer to initialized inline stack storage, or `std::nullopt` when
+///         @p typeName is not a known struct.
+/// @details Calls an explicit resolved `init` method when present; otherwise
+///          initializes fields in declaration order from bound arguments and
+///          defaults with semantic coercion.
 std::optional<LowerResult> Lowerer::lowerStructTypeConstruction(const std::string &typeName,
                                                                 CallExpr *expr) {
     const StructTypeInfo *infoPtr = getOrCreateStructTypeInfo(typeName);
@@ -923,6 +987,15 @@ std::optional<LowerResult> Lowerer::lowerStructTypeConstruction(const std::strin
 // Entity Type Construction Helper
 //=============================================================================
 
+/// @brief Try to construct a class through `TypeName(...)` syntax.
+/// @param typeName Qualified class name.
+/// @param expr Type-call expression containing constructor arguments.
+/// @return Owned heap object, or `std::nullopt` when @p typeName is not a
+///         known class.
+/// @details Allocates a runtime object carrying the class identifier, then
+///          calls an explicit resolved `init` method or initializes fields in
+///          declaration order with defaults, weak-field handling, and
+///          ownership-safe inline stores.
 std::optional<LowerResult> Lowerer::lowerClassTypeConstruction(const std::string &typeName,
                                                                CallExpr *expr) {
     const ClassTypeInfo *infoPtr = getOrCreateClassTypeInfo(typeName);
@@ -1033,8 +1106,11 @@ std::optional<LowerResult> Lowerer::lowerClassTypeConstruction(const std::string
 //=============================================================================
 
 /// @brief Lower a struct-literal expression: `TypeName { field = val, ... }`.
+/// @param expr Struct literal with named field initializers.
+/// @return Pointer to initialized inline stack storage.
 /// @details Reorders the named fields by declaration order, then delegates to
-/// the same alloca+init logic used by lowerStructTypeConstruction.
+///          the same ownership and coercion rules used by type construction;
+///          omitted fields receive semantic zero values.
 LowerResult Lowerer::lowerStructLiteral(StructLiteralExpr *expr) {
     TypeRef literalType = sema_.typeOf(expr);
     const std::string typeName =

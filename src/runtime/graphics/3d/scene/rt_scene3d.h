@@ -200,6 +200,10 @@ int8_t rt_scene_node3d_get_visible(void *node);
 void rt_scene_node3d_set_name(void *node, rt_string name);
 /// @brief Get the node's name as an owned string (empty if unset).
 rt_string rt_scene_node3d_get_name(void *node);
+rt_string rt_scene_node3d_get_prefab_path(void *node);
+int8_t rt_scene_node3d_get_is_instance_content(void *node);
+int8_t rt_scene_node3d_set_prefab_reference(void *node, rt_string path);
+int8_t rt_scene_node3d_clear_prefab_reference(void *node);
 /// @brief Return every gameplay-metadata key in deterministic lexicographic order.
 void *rt_scene_node3d_metadata_keys(void *node);
 /// @brief Return `null`, `bool`, `int`, `float`, or `string`; empty when @p key is absent.

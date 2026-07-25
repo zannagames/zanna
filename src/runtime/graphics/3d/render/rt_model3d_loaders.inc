@@ -878,7 +878,7 @@ static void *rt_model3d_load_impl(rt_string path,
     }
     model_set_root_name(model->template_root, path_cstr);
 
-    if (model_has_ext(path_cstr, ".vscn")) {
+    if (model_has_ext(path_cstr, ".scene3d") || model_has_ext(path_cstr, ".vscn")) {
         rt_scene3d *scene = NULL;
         if (load_assets) {
             size_t asset_size = 0;

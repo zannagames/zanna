@@ -1,0 +1,116 @@
+// =============================================================================
+// probes/campaign_probe.zia — P6 gate: full-campaign integration (headless)
+// =============================================================================
+//
+// Plays through all nine campaign levels in one session using real objective
+// satisfaction (clear combat waves, reach secured exits, survive holdouts)
+// and the in-session level transition (loadCampaignLevel, which unloads the
+// previous scene and builds the next). Asserts every level reaches
+// LEVEL_COMPLETE and the hub loads, with no trap and deterministic outcomes.
+// =============================================================================
+module campaign_probe;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.IO.File as File;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.TempFile as TempFile;
+bind "../config" as config;
+bind "../game" as game;
+bind "../world/objectives" as objectives;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func tick(g: game.Game) {
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+}
+
+func cleanupSaveDir(saveDir: String) {
+    var settingsPath = Path.Join(saveDir, "settings.json");
+    var checkpointPath = Path.Join(saveDir, "checkpoint.json");
+    var profilePath = Path.Join(saveDir, "profile.json");
+    if File.Exists(settingsPath) { File.Delete(settingsPath); }
+    if File.Exists(checkpointPath) { File.Delete(checkpointPath); }
+    if File.Exists(profilePath) { File.Delete(profilePath); }
+    if Dir.Exists(saveDir) { Dir.Remove(saveDir); }
+}
+
+// Drive the current level to LEVEL_COMPLETE by satisfying its objectives.
+func completeLevel(g: game.Game) -> Boolean {
+    var mgr = g.getLevelMgr();
+    var obj = mgr.getObjectives();
+    var spins = 0;
+    // L6 deliberately asks for a full 60-second holdout before its cleanup
+    // objective, so leave enough deterministic ticks for that timer plus wave
+    // staging and transition latency.
+    while g.getState() != config.ST_LEVEL_COMPLETE && spins < 6000 {
+        // Clear any live machines (resolves CLEAR/KILL and stages the next wave).
+        g.devKillAllEnemies();
+        // Handle a secured exit after its prerequisite combat objective.
+        var oi = obj.activeIndex();
+        if oi >= 0 {
+            var k = obj.kindOf(oi);
+            if k == objectives.OBJ_REACH {
+                g.devSpawnPlayer(obj.txAt(oi), 0.2, obj.tzAt(oi));
+            } else if k == objectives.OBJ_ACTIVATE {
+                g.devSpawnPlayer(obj.txAt(oi), 0.2, obj.tzAt(oi));
+                g.devInteract();
+            }
+        }
+        tick(g);
+        spins = spins + 1;
+    }
+    return g.getState() == config.ST_LEVEL_COMPLETE;
+}
+
+func start() {
+    var saveDir = TempFile.CreateDirWithPrefix("ashfall_campaign_");
+    var g = new game.Game();
+    g.initCore(0xCA11);
+    g.setScripted(true);
+    g.setLevel(config.LV_L1);
+    g.devSetSaveDir(saveDir);
+    g.boot(true, false);
+
+    var lv = config.LV_L1;
+    while lv <= config.LV_L9 {
+        if lv > config.LV_L1 { g.loadCampaignLevel(lv); }
+        g.devSetGod(true);
+        var name = g.getLevelMgr().levelName();
+        if completeLevel(g) == false {
+            fail("level " + toString(lv) + " (" + name + ") did not complete");
+            return;
+        }
+        if g.getSave().hasCheckpoint() {
+            fail("level " + toString(lv) + " recreated a cleared checkpoint on completion");
+            return;
+        }
+        lv = lv + 1;
+    }
+
+    // The hub loads as a safe zone (no required objectives).
+    g.loadCampaignLevel(config.LV_HUB);
+    if g.getLevelMgr().levelName().Length == 0 { fail("hub did not load"); return; }
+
+    // Total campaign kills should be substantial (every level cleared).
+    var kills = g.getScoring().getTotalKills();
+    if kills < 20 { fail("suspiciously few campaign kills: " + toString(kills)); return; }
+
+    // Reboot from the persisted profile: the final-frame L9 kills must have
+    // reached the completion snapshot, not only the in-memory score afterward.
+    var verify = new game.Game();
+    verify.initCore(0xCA12);
+    verify.setScripted(true);
+    verify.devSetSaveDir(saveDir);
+    verify.boot(true, false);
+    if verify.getScoring().getTotalKills() != kills {
+        fail("persisted campaign kills missed final-frame scoring"); return;
+    }
+
+    cleanupSaveDir(saveDir);
+    Terminal.Say("campaign=complete levels=9 kills=" + toString(kills) +
+                 " salvage=" + toString(g.getEconomy().available()));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

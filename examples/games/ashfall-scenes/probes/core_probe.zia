@@ -1,0 +1,52 @@
+module core_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/rng" as rng;
+bind "../core/events" as events;
+bind "../core/entity" as entity;
+
+func start() {
+    // RNG determinism: two identically seeded streams agree; checksum stable.
+    var s1 = new rng.RngStreams();
+    var s2 = new rng.RngStreams();
+    s1.reseed(12345);
+    s2.reseed(12345);
+    var i = 0;
+    while i < 50 {
+        var a = s1.getGameplay().next();
+        var b = s2.getGameplay().next();
+        if a != b { Terminal.Say("FAIL: rng diverged"); return; }
+        i = i + 1;
+    }
+    if s1.checksum() != s2.checksum() { Terminal.Say("FAIL: checksum diverged"); return; }
+
+    // Event bus round-trip.
+    var bus = new events.EventBus();
+    bus.pushAt(config.EV_GUNSHOT, 0, 8, 1.0, 2.0, 3.0);
+    bus.pushKind(config.EV_ENEMY_DIED, config.EN_HUSK, 42);
+    if bus.getCount() != 2 { Terminal.Say("FAIL: event count"); return; }
+    if bus.countKind(config.EV_GUNSHOT) != 1 { Terminal.Say("FAIL: countKind"); return; }
+    if M.absf(bus.yAt(0) - 2.0) > 0.001 { Terminal.Say("FAIL: event payload"); return; }
+    bus.drain();
+    if bus.getCount() != 0 { Terminal.Say("FAIL: drain"); return; }
+
+    // Entity registry: alloc/free/stale-handle.
+    var reg = new entity.EntityReg();
+    reg.setup();
+    var h1 = reg.alloc(config.ARCH_ENEMY);
+    var h2 = reg.alloc(config.ARCH_ENEMY);
+    if reg.valid(h1) == false || reg.valid(h2) == false { Terminal.Say("FAIL: alloc invalid"); return; }
+    if reg.localSlot(h1) != 0 || reg.localSlot(h2) != 1 { Terminal.Say("FAIL: slot order"); return; }
+    if reg.countOf(config.ARCH_ENEMY) != 2 { Terminal.Say("FAIL: live count"); return; }
+    reg.free(h1);
+    if reg.valid(h1) { Terminal.Say("FAIL: freed handle still valid"); return; }
+    var h3 = reg.alloc(config.ARCH_ENEMY);   // reuses slot 0 with bumped gen
+    if reg.localSlot(h3) != 0 { Terminal.Say("FAIL: slot not recycled"); return; }
+    if reg.valid(h1) { Terminal.Say("FAIL: stale handle aliases recycled slot"); return; }
+    if reg.valid(h3) == false { Terminal.Say("FAIL: recycled handle invalid"); return; }
+
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

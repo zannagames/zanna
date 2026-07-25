@@ -35,13 +35,22 @@
 
 namespace il::io {
 
-/// @brief Hand-rolled parser for textual IL subset.
+/// @brief Stateless façade for converting textual IL into core IR.
+/// @details Parsing is transactional: successful declarations are appended to
+///          the supplied module, while any syntax, I/O, or resource-limit error
+///          restores the module to its pre-call state. All per-invocation data
+///          lives in the internal parser state.
 class Parser {
   public:
     /// @brief Parse IL from stream into module @p m.
+    /// @details Consumes the stream from its current position through end of
+    ///          file, validates the required version directive, and enforces
+    ///          @p limits over both physical input and generated IR.
     /// @param is Input stream containing IL text.
     /// @param m Module to populate with parsed contents.
-    /// @return Expected success or diagnostic on failure.
+    /// @param limits Resource budgets for this parse operation.
+    /// @return Expected success or the first diagnostic on failure. Failure
+    ///         leaves @p m unchanged.
     [[nodiscard]] static il::support::Expected<void> parse(
         std::istream &is,
         il::core::Module &m,

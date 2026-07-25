@@ -4,14 +4,16 @@
 // See LICENSE in the project root for license information.
 //
 // File: src/frontends/basic/lower/detail/ExprLoweringHelper.cpp
-//
-// Summary:
-//   Implements ExprLoweringHelper which coordinates expression lowering
-//   operations. This helper delegates to existing expression lowering functions
-//   (NumericExprLowering, LogicalExprLowering, BuiltinExprLowering) while
-//   providing a unified interface for the Lowerer class.
+// Purpose: Implements the internal expression-lowering forwarding facade.
+// Key invariants: Operand r-values passed by value are consumed exactly once
+//                 by their selected domain lowerer.
+// Ownership/Lifetime: Borrows Lowerer state; AST nodes remain caller-owned.
+// Links: src/frontends/basic/lower/detail/LowererDetail.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements internal forwarding for BASIC expression lowering.
 
 #include "frontends/basic/LowerExprBuiltin.hpp"
 #include "frontends/basic/LowerExprLogical.hpp"
@@ -21,6 +23,8 @@
 
 namespace il::frontends::basic::lower::detail {
 
+/// @brief Creates an expression helper over an authorized Lowerer facade.
+/// @param access Borrowed forwarding facade retained by value.
 ExprLoweringHelper::ExprLoweringHelper(Lowerer::DetailAccess access) noexcept : access_(access) {}
 
 /// @brief Lower Var Expr.
@@ -60,21 +64,18 @@ RVal ExprLoweringHelper::lowerDivOrMod(const BinaryExpr &expr) {
 
 /// @brief Lower String Binary.
 RVal ExprLoweringHelper::lowerStringBinary(const BinaryExpr &expr, RVal lhs, RVal rhs) {
-    /// @brief Lower String Binary.
     return ::il::frontends::basic::lowerStringBinary(
         access_.lowerer(), expr, std::move(lhs), std::move(rhs));
 }
 
 /// @brief Lower Numeric Binary.
 RVal ExprLoweringHelper::lowerNumericBinary(const BinaryExpr &expr, RVal lhs, RVal rhs) {
-    /// @brief Lower Numeric Binary.
     return ::il::frontends::basic::lowerNumericBinary(
         access_.lowerer(), expr, std::move(lhs), std::move(rhs));
 }
 
 /// @brief Lower Pow Binary.
 RVal ExprLoweringHelper::lowerPowBinary(const BinaryExpr &expr, RVal lhs, RVal rhs) {
-    /// @brief Lower Pow Binary.
     return ::il::frontends::basic::lowerPowBinary(
         access_.lowerer(), expr, std::move(lhs), std::move(rhs));
 }

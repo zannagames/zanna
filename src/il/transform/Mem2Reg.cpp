@@ -43,25 +43,45 @@ using namespace il::core;
 
 namespace zanna::passes {
 namespace {
+/// @brief Maximum number of disjoint scalar fields produced from one allocation.
 constexpr unsigned kMaxSROAFields = 8;
+
+/// @brief Largest aggregate allocation considered by the scalar-replacement prepass.
 constexpr unsigned kMaxSROAAllocaSize = 128;
 
+/// @brief One typed byte range discovered within an SROA candidate.
 struct SROAField {
+    /// Scalar type used consistently by every access to the range.
     Type type{};
+    /// Width of the range in bytes.
     unsigned size = 0;
+    /// Fresh allocation id assigned when scalar replacement commits.
     unsigned allocaId = 0;
 };
 
+/// @brief Aggregate allocation and derived-pointer facts used by the SROA prepass.
+/// @details A candidate remains valid only while every observed use is a typed,
+///          in-bounds scalar load/store or a constant-offset GEP.
 struct SROACandidate {
+    /// Block containing the original allocation.
     BasicBlock *block = nullptr;
+    /// Original instruction index, used only as an initial location hint.
     std::size_t allocaIndex = 0;
+    /// Result id of the aggregate allocation.
     unsigned baseId = 0;
+    /// Constant aggregate size in bytes.
     unsigned allocSize = 0;
+    /// Whether all uses seen so far remain replaceable.
     bool ok = false;
+    /// Byte offset for the base and each derived pointer temporary.
     std::unordered_map<unsigned, unsigned> offsets; // temp id -> byte offset (includes base)
+    /// Scalar field information indexed by byte offset.
     std::unordered_map<unsigned, SROAField> fields; // offset -> field info
 };
 
+/// @brief Test whether mem2reg can represent a type directly in SSA.
+/// @param type Candidate allocation access type.
+/// @return `true` for supported integer, boolean, and floating-point scalar types.
 static bool isPromotableScalarType(const Type &type) {
     switch (type.kind) {
         case Type::Kind::I1:
@@ -75,6 +95,9 @@ static bool isPromotableScalarType(const Type &type) {
     }
 }
 
+/// @brief Return the storage width of a promotable scalar type.
+/// @param type Scalar type to measure.
+/// @return Width in bytes, or `std::nullopt` for an unsupported type.
 static std::optional<unsigned> scalarSize(const Type &type) {
     switch (type.kind) {
         case Type::Kind::I1:
@@ -91,6 +114,9 @@ static std::optional<unsigned> scalarSize(const Type &type) {
     }
 }
 
+/// @brief Extract an unsigned byte offset from an IL integer constant.
+/// @param v Candidate offset value.
+/// @return Offset when nonnegative and representable as `unsigned`, otherwise null.
 static std::optional<unsigned> constOffset(const Value &v) {
     if (v.kind != Value::Kind::ConstInt || v.i64 < 0)
         return std::nullopt;
@@ -99,6 +125,10 @@ static std::optional<unsigned> constOffset(const Value &v) {
     return static_cast<unsigned>(v.i64);
 }
 
+/// @brief Store a nonempty diagnostic name for an SSA id.
+/// @param F Function whose value-name table is extended.
+/// @param id Temporary or parameter id to name.
+/// @param name Name to record; an empty value is ignored.
 static void ensureValueName(Function &F, unsigned id, const std::string &name) {
     if (name.empty())
         return;
@@ -107,6 +137,7 @@ static void ensureValueName(Function &F, unsigned id, const std::string &name) {
     F.valueNames[id] = name;
 }
 
+/// @brief Use and type facts collected for one allocation.
 struct AllocaInfo {
     BasicBlock *block{nullptr};
     unsigned id{0};
@@ -118,31 +149,50 @@ struct AllocaInfo {
     std::vector<BasicBlock *> useBlocks; ///< Blocks (other than defining) containing uses.
 };
 
+/// @brief Current sealed-SSA state for one promoted allocation.
 struct VarState {
+    /// Scalar type of values stored in the allocation.
     Type type{};
+    /// Block that dynamically creates the original allocation.
     BasicBlock *allocaBlock = nullptr;
+    /// Value observed before the first promoted store.
     Value initialValue{};
+    /// Reaching promoted value at blocks already visited.
     std::unordered_map<BasicBlock *, Value> defs;
 };
 
+/// @brief Per-block bookkeeping for incremental SSA sealing.
 struct BlockState {
+    /// Whether every predecessor edge is known and may be queried.
     bool sealed = false;
+    /// Number of incoming CFG edges, including duplicate successor slots.
     unsigned totalPreds = 0;
+    /// Number of predecessor visits observed by the traversal.
     unsigned seenPreds = 0;
+    /// Destination parameter index allocated for each promoted variable.
     std::unordered_map<unsigned, unsigned> params;
+    /// Variables awaiting predecessor values before the block can be sealed.
     std::vector<unsigned> incomplete;
 };
 
+/// @brief Allocation metadata indexed by original pointer result id.
 using AllocaMap = std::unordered_map<unsigned, AllocaInfo>;
+/// @brief Promotion state indexed by original allocation id.
 using VarMap = std::unordered_map<unsigned, VarState>;
+/// @brief Sealing state indexed by block address.
 using BlockMap = std::unordered_map<BasicBlock *, BlockState>;
+/// @brief Transitive replacement values indexed by removed result id.
 using ReplacementMap = std::unordered_map<unsigned, Value>;
 
+/// @brief One concrete incoming successor slot and its predecessor block.
 struct IncomingEdge {
+    /// Block owning the terminator edge.
     BasicBlock *pred = nullptr;
+    /// Index into the terminator's label and branch-argument vectors.
     std::size_t edgeIndex = 0;
 };
 
+/// @brief Incoming edges indexed by their target block.
 using IncomingEdgeMap = std::unordered_map<const BasicBlock *, std::vector<IncomingEdge>>;
 
 /// @brief Return a zero literal compatible with @p type.
@@ -163,6 +213,10 @@ static Value zeroValueForType(const Type &type) {
     }
 }
 
+/// @brief Follow a chain of removed temporary substitutions to its final value.
+/// @param replacements Mapping from removed ids to replacement values.
+/// @param value Initial value to resolve.
+/// @return First non-temporary or unmapped/cyclic temporary reached.
 static Value resolveReplacementValue(const ReplacementMap &replacements, Value value) {
     std::unordered_set<unsigned> seen;
     while (value.kind == Value::Kind::Temp) {
@@ -175,10 +229,16 @@ static Value resolveReplacementValue(const ReplacementMap &replacements, Value v
     return value;
 }
 
+/// @brief Rewrite one value through the transitive replacement map.
+/// @param value Value updated in place.
+/// @param replacements Mapping produced while eliminating promoted loads.
 static void rewriteValue(Value &value, const ReplacementMap &replacements) {
     value = resolveReplacementValue(replacements, value);
 }
 
+/// @brief Apply promoted-value substitutions to all uses in an instruction.
+/// @param instr Instruction whose operands and branch bundles are rewritten.
+/// @param replacements Mapping from removed results to surviving values.
 static void rewriteInstructionUses(Instr &instr, const ReplacementMap &replacements) {
     if (replacements.empty())
         return;
@@ -189,6 +249,9 @@ static void rewriteInstructionUses(Instr &instr, const ReplacementMap &replaceme
             rewriteValue(arg, replacements);
 }
 
+/// @brief Apply all accumulated substitutions throughout a function.
+/// @param F Function whose instruction uses are rewritten.
+/// @param replacements Mapping from eliminated load results to promoted values.
 static void applyReplacements(Function &F, const ReplacementMap &replacements) {
     if (replacements.empty())
         return;
@@ -197,6 +260,9 @@ static void applyReplacements(Function &F, const ReplacementMap &replacements) {
             rewriteInstructionUses(I, replacements);
 }
 
+/// @brief Mark a variable as awaiting values without introducing duplicates.
+/// @param state Unsealed block state updated in place.
+/// @param varId Original allocation id to append when absent.
 static void addIncomplete(BlockState &state, unsigned varId) {
     if (std::find(state.incomplete.begin(), state.incomplete.end(), varId) ==
         state.incomplete.end()) {
@@ -368,6 +434,8 @@ static unsigned ensureParam(
 /// @param vars Variable state table.
 /// @param blocks Block state table used to lookup parameter indices.
 /// @param nextId Counter used when new parameters must be created.
+/// @param edgeIndex Concrete successor slot in @p Pred that targets @p B.
+/// @return `true` after populating the edge, or `false` if the indexed edge is stale.
 /// @sideeffect Mutates branch arguments in @p Pred and may add block params.
 static bool addIncoming(BasicBlock *B,
                         unsigned varId,
@@ -416,6 +484,8 @@ static Value renameUses(Function &F,
 /// @param blocks Block state table.
 /// @param nextId Counter for generating temp ids.
 /// @param incoming Edge-specific predecessor index for @p F.
+/// @param ctx CFG context retained by recursive rename operations.
+/// @param ok Shared success flag cleared when an incoming edge cannot be repaired.
 /// @return SSA value representing the variable at block entry.
 /// @sideeffect May mutate the CFG by adding parameters and arguments.
 static Value readFromPreds(Function &F,
@@ -457,6 +527,8 @@ static Value readFromPreds(Function &F,
 /// @param blocks Block state table indicating seal status.
 /// @param nextId Counter for generating temp ids.
 /// @param incoming Edge-specific predecessor index for @p F.
+/// @param ctx CFG context used to traverse successor and predecessor relationships.
+/// @param ok Shared success flag; false stops recursive processing and triggers rollback.
 /// @return SSA value for the variable within @p B.
 /// @sideeffect May add block parameters and update definition maps.
 static Value renameUses(Function &F,
@@ -519,6 +591,8 @@ static Value renameUses(Function &F,
 /// @param blocks Block state table.
 /// @param nextId Counter for generating temp ids.
 /// @param incoming Edge-specific predecessor index for @p F.
+/// @param ctx CFG context forwarded to recursive rename queries.
+/// @param ok Shared success flag cleared if edge wiring fails.
 /// @sideeffect May mutate the CFG with additional parameters and arguments.
 static void sealBlocks(Function &F,
                        BasicBlock *B,
@@ -566,6 +640,13 @@ static bool needsPromotedBranchArgRepair(const std::vector<Value> &args,
 ///          gaps for promoted variables, which prevents partially populated
 ///          branch-argument vectors when a block parameter is created before all
 ///          incoming edges have been visited.
+/// @param F Function whose terminator argument bundles are repaired.
+/// @param vars Promoted-variable state used to recover predecessor values.
+/// @param blocks Block parameter assignments and sealing state.
+/// @param nextId Counter used if repair discovers a missing parameter.
+/// @param incoming Stable edge index for the pre-rewrite CFG.
+/// @param ctx CFG context used by recursive value lookup.
+/// @param ok Shared success flag cleared on an unrecoverable edge.
 static void repairPromotedBranchArgs(Function &F,
                                      VarMap &vars,
                                      BlockMap &blocks,
@@ -631,6 +712,7 @@ static void repairPromotedBranchArgs(Function &F,
 /// @param F Function to optimize.
 /// @param infos Metadata about allocas gathered by @ref collectAllocas.
 /// @param stats Optional statistics accumulator.
+/// @param ctx CFG context used for edge traversal during sealed-SSA construction.
 /// @return True if promotion completed and all branch arguments were repaired;
 ///         false if the caller should discard the partially rewritten function.
 /// @sideeffect Mutates blocks and instructions in @p F and updates @p stats only
@@ -766,6 +848,10 @@ static bool promoteVariables(Function &F,
 ///          allocation site is re-executed by loop control flow. Promoting that
 ///          alloca as one long-lived SSA variable would incorrectly carry stores
 ///          from a previous dynamic allocation into the next execution.
+/// @param domTree Dominator tree for the containing function.
+/// @param ctx CFG context providing the allocation block's predecessors.
+/// @param block Candidate allocation block.
+/// @return `true` when a backedge-like predecessor is dominated by @p block.
 static bool hasDominatedPredecessor(const zanna::analysis::DomTree &domTree,
                                     const analysis::CFGContext &ctx,
                                     BasicBlock *block) {
@@ -777,6 +863,9 @@ static bool hasDominatedPredecessor(const zanna::analysis::DomTree &domTree,
     return false;
 }
 
+/// @brief Detect instructions whose exceptional control flow mem2reg does not model.
+/// @param F Function to scan.
+/// @return `true` when any exception-handler stack or resume opcode is present.
 static bool hasExceptionHandling(const Function &F) {
     for (const auto &B : F.blocks) {
         for (const auto &I : B.instructions) {
@@ -798,6 +887,14 @@ static bool hasExceptionHandling(const Function &F) {
 
 } // namespace
 
+/// @brief Split small aggregate allocas into independent scalar allocations.
+/// @param F Function whose constant-offset aggregate accesses are rewritten.
+/// @return `true` when at least one aggregate allocation is replaced.
+/// @details Candidates are limited by size and field-count budgets. Every
+///          derived pointer must use a constant in-bounds GEP, and every access
+///          at a given offset must agree on a promotable scalar type. Commit
+///          rewrites loads/stores to fresh field allocas and removes the
+///          original allocation and its derived GEP instructions.
 static bool runSROA(Function &F) {
     std::unordered_map<unsigned, SROACandidate> candidates;
     // Map temp id directly to candidate pointer to avoid two-step lookup.
@@ -869,6 +966,7 @@ static bool runSROA(Function &F) {
                 }
             }
 
+            /// Classify one value use and invalidate its SROA owner on escape or mismatch.
             auto classifyUse = [&](const Value &v, Instr &Inst, std::size_t operandIdx) {
                 if (v.kind != Value::Kind::Temp)
                     return;
@@ -935,6 +1033,7 @@ static bool runSROA(Function &F) {
         ordered.reserve(cand.fields.size());
         for (auto &[off, field] : cand.fields)
             ordered.emplace_back(off, &field);
+        /// Order fields by byte offset so overlap and bounds checks are deterministic.
         std::sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) {
             return a.first < b.first;
         });
@@ -957,6 +1056,7 @@ static bool runSROA(Function &F) {
             continue;
 
         BasicBlock &B = *cand.block;
+        /// Relocate the aggregate alloca after earlier candidate rewrites shifted indices.
         auto findAllocaIndex = [&]() -> std::size_t {
             for (std::size_t i = 0; i < B.instructions.size(); ++i) {
                 Instr &I = B.instructions[i];
@@ -977,6 +1077,7 @@ static bool runSROA(Function &F) {
         ordered.reserve(cand.fields.size());
         for (auto &[off, field] : cand.fields)
             ordered.emplace_back(off, &field);
+        /// Emit replacement field allocas in increasing byte-offset order.
         std::sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) {
             return a.first < b.first;
         });
@@ -1070,6 +1171,7 @@ void mem2reg(Module &M, Mem2RegStats *stats, bool enableParallel) {
     }
 
     analysis::CFGContext cfg(M);
+    /// Promote one EH-free function, rolling back if SSA edge repair fails.
     auto processFunction = [&](Function &F, Mem2RegStats *localStats) {
         if (hasExceptionHandling(F))
             return;
@@ -1145,6 +1247,7 @@ void mem2reg(Module &M, Mem2RegStats *stats, bool enableParallel) {
     std::vector<std::thread> workers;
     workers.reserve(workerCount);
     for (std::size_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
+        /// Claim function indices atomically and accumulate statistics per worker.
         workers.emplace_back([&, workerIndex]() {
             for (;;) {
                 const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);

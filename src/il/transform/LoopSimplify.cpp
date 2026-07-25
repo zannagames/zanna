@@ -46,11 +46,15 @@ namespace {
 ///          blocks are added to the function. The blockIdx field indexes into
 ///          function.blocks, and edgeIdx indexes into the terminator's labels.
 struct IncomingEdge {
+    /// Index of the predecessor block in `Function::blocks`.
     size_t blockIdx;
+    /// Successor slot in the predecessor terminator.
     size_t edgeIdx;
 };
 
 /// @brief Finds the index of a block with the given label in function.blocks.
+/// @param function Function whose block vector is searched.
+/// @param label Block label to locate.
 /// @return The index if found, or SIZE_MAX if not found.
 size_t findBlockIndex(const Function &function, const std::string &label) {
     for (size_t i = 0; i < function.blocks.size(); ++i) {
@@ -60,21 +64,35 @@ size_t findBlockIndex(const Function &function, const std::string &label) {
     return SIZE_MAX;
 }
 
+/// @brief Return a mutable block terminator using the shared CFG utility.
+/// @param block Block whose instruction tail is inspected.
+/// @return Terminator pointer, or null when no valid terminator is present.
 Instr *getTerminator(BasicBlock &block) {
     return il::transform::simplify_cfg::findTerminator(block);
 }
 
+/// @brief Return a read-only block terminator using the shared CFG utility.
+/// @param block Block whose instruction tail is inspected.
+/// @return Terminator pointer, or null when no valid terminator is present.
 const Instr *getTerminator(const BasicBlock &block) {
     return il::transform::simplify_cfg::findTerminator(block);
 }
 
+/// @brief Compute the first unused temporary id in a function.
+/// @param function Function whose SSA ids are scanned.
+/// @return Fresh id suitable as the start of a consecutive allocation range.
 static inline unsigned nextTempId(Function &function) {
     return zanna::il::nextTempId(function);
 }
 
+/// @brief Derive a block label that does not collide in a function.
+/// @param function Function defining the label namespace.
+/// @param base Preferred label before numeric suffixes.
+/// @return @p base or a dot-suffixed unique variant.
 std::string makeUniqueLabel(const Function &function, const std::string &base) {
     std::string candidate = base;
     unsigned suffix = 0;
+    /// Return whether a candidate label is already used by a block.
     auto labelExists = [&](const std::string &label) {
         for (const auto &block : function.blocks) {
             if (block.label == label)
@@ -127,10 +145,21 @@ std::string reserveUniqueValueName(std::unordered_set<std::string> &used, std::s
     return candidate;
 }
 
+/// @brief Compare two branch-argument lists using shared IL value equality.
+/// @param lhs First argument list.
+/// @param rhs Second argument list.
+/// @return `true` when both lists contain pairwise-equal values.
 static inline bool valueVectorsEqual(const std::vector<Value> &lhs, const std::vector<Value> &rhs) {
     return il::transform::simplify_cfg::valueVectorsEqual(lhs, rhs);
 }
 
+/// @brief Create a unique forwarding preheader when a loop has multiple entry edges.
+/// @param function Function receiving the new block and redirected edges.
+/// @param loop Loop whose header entry is canonicalized.
+/// @return `true` when a preheader is added, or `false` when none is needed or possible.
+/// @details The new block clones header parameters with fresh ids, redirects
+///          every out-of-loop edge to it, and forwards its parameters unchanged
+///          to the original header.
 bool ensurePreheader(Function &function, const Loop &loop) {
     size_t headerIdx = findBlockIndex(function, loop.headerLabel);
     if (headerIdx == SIZE_MAX)
@@ -219,6 +248,13 @@ bool ensurePreheader(Function &function, const Loop &loop) {
     return true;
 }
 
+/// @brief Merge multiple equivalent forwarding latches behind one dedicated block.
+/// @param function Function receiving the merged latch and redirected edges.
+/// @param loop Loop whose recorded latch set is examined.
+/// @return `true` when a new latch is created.
+/// @details All source latches must consist solely of an unconditional branch
+///          to the header and must carry identical argument vectors. Otherwise
+///          the loop is left unchanged.
 bool mergeTrivialLatches(Function &function, const Loop &loop) {
     if (loop.latchLabels.size() <= 1)
         return false;
@@ -318,10 +354,12 @@ bool mergeTrivialLatches(Function &function, const Loop &loop) {
 
 } // namespace
 
+/// @copydoc LoopSimplify::id()
 std::string_view LoopSimplify::id() const {
     return "loop-simplify";
 }
 
+/// @copydoc LoopSimplify::run()
 PreservedAnalyses LoopSimplify::run(Function &function, AnalysisManager &analysis) {
     bool changed = false;
     for (;;) {

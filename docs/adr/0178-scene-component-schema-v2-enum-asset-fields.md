@@ -67,18 +67,21 @@ field type, Studio offers — never performs automatically — a workspace
 migration:
 
 1. A bounded read-only scan of the schema's workspace root counts exact-kind
-   matches in every `.scene`/`.level` file and lists `.vscn` files as
-   manual-migration refusals. Directory, file, and matched-file ceilings mark
-   the result truncated, and a truncated scan is reported rather than treated
-   as complete.
+   matches in every 2D scene file (`.scene2d`, plus legacy `.scene`/`.level`)
+   and, since the 3D extension of this ADR, in every 3D scene file
+   (`.scene3d`, plus legacy `.vscn`) by loading the scene graph and counting
+   typed node metadata recursively. Directory, file, and matched-file
+   ceilings mark the result truncated, and a truncated scan is reported
+   rather than treated as complete.
 2. The author reviews the scan summary in the schema form's migration offer
    and must explicitly confirm before anything is written.
 3. Application is per-file transactional: each file is re-validated against
    its scanned modification time and match count, rewritten completely, and
-   saved through the scene document's atomic same-directory replacement — or
-   refused and reported, leaving it byte-identical. Documents open in Studio
-   surface the standard external-change conflict flow afterward instead of
-   being mutated behind their live buffers.
+   saved through the format's atomic replacement (`SceneDocument.Save` for
+   2D; `SceneGraph.Save` for 3D) — or refused and reported, leaving it
+   byte-identical. Documents open in Studio surface the standard
+   external-change conflict flow afterward instead of being mutated behind
+   their live buffers.
 4. Value conversion is limited to representation-preserving cases (rename
    within one kind; anything→string rendering). int→float is refused because
    the 2D format serializes integral floats without a decimal point, so the

@@ -35,11 +35,17 @@
 namespace zanna::analysis {
 namespace {
 
+/// @brief Return shared immutable storage for absent CFG edge lists.
+/// @return Process-lifetime empty block-pointer vector.
 const std::vector<il::core::Block *> &emptyBlockList() {
     static const std::vector<il::core::Block *> empty;
     return empty;
 }
 
+/// @brief Register a function's blocks and label identities in a CFG context.
+/// @param ctx Context receiving ownership, label, and empty edge-cache entries.
+/// @param fn Function whose blocks are indexed.
+/// @post Duplicate textual or interned labels are recorded in `ctx.issues`.
 void indexFunction(CFGContext &ctx, il::core::Function &fn) {
     auto &labelMap = ctx.functionLabelToBlock[&fn];
     auto &symbolMap = ctx.functionLabelSymbolToBlock[&fn];
@@ -57,6 +63,10 @@ void indexFunction(CFGContext &ctx, il::core::Function &fn) {
     }
 }
 
+/// @brief Resolve branch terminators into cached successor and predecessor edges.
+/// @param ctx Context whose label maps and edge caches are populated.
+/// @param fn Previously indexed function to scan.
+/// @post Unknown targets are recorded as issues and omitted from the edge graph.
 void buildFunctionEdges(CFGContext &ctx, il::core::Function &fn) {
     auto &labelMap = ctx.functionLabelToBlock[&fn];
     auto &symbolMap = ctx.functionLabelSymbolToBlock[&fn];
@@ -138,12 +148,19 @@ CFGContext::CFGContext(il::core::Module &module) : module(&module) {
     }
 }
 
+/// @brief Construct a CFG context containing only one function.
+/// @param module Module that owns the function and interned label storage.
+/// @param function Function whose blocks and edges are indexed.
 CFGContext::CFGContext(il::core::Module &module, il::core::Function &function)
     : module(&module) {
     indexFunction(*this, function);
     buildFunctionEdges(*this, function);
 }
 
+/// @brief Build a function-scoped context for IR with synchronized symbol sidecars.
+/// @param module Module owning @p function.
+/// @param function Sole function to index.
+/// @return Eagerly populated CFG context.
 CFGContext CFGContext::forInternedFunction(il::core::Module &module,
                                            il::core::Function &function) {
     return CFGContext(module, function);
@@ -295,7 +312,7 @@ std::vector<il::core::Block *> topoOrder(const CFGContext &ctx, il::core::Functi
     return out;
 }
 
-/// @brief Determine whether the CFG of @p F contains a cycle.
+/// @brief Determine whether the CFG of @p F is acyclic.
 ///
 /// @details Runs @ref topoOrder and compares the number of blocks produced
 ///          against the function's block count.  Because @ref topoOrder returns

@@ -1,0 +1,268 @@
+// =============================================================================
+// weapons/projectiles.zia — pooled kinematic projectiles (rivets, grenades)
+// =============================================================================
+//
+// Fixed pool of game-integrated projectiles. Each tick a projectile advances
+// pos += vel*dt (+ gravity for arcing ordnance) and sweeps a ray from its old
+// position to the new one; the first hit resolves as either a direct impact
+// (rivet: damage + DoT) or a blast (arc/EMP grenade), or — for bouncy ordnance —
+// reflects off world geometry. Deterministic (no physics body), so probes get
+// exact trajectories. Active projectiles are immediate-mode drawn each frame.
+// =============================================================================
+module projectiles;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+bind "./ballistics" as ballistics;
+bind "./targets" as targets;
+
+class Projectiles {
+    hide G3D.PhysicsWorld3D phys;
+    hide events.EventBus bus;
+    hide ballistics.Ballistics ball;
+    hide targets.TargetRegistry reg;
+    hide List[Float] px; hide List[Float] py; hide List[Float] pz;
+    hide List[Float] vx; hide List[Float] vy; hide List[Float] vz;
+    hide List[Float] life;
+    hide List[Integer] alive;
+    hide List[Float] damage;
+    hide List[Float] blastRadius;
+    hide List[Float] dotDPS;
+    hide List[Float] dotTime;
+    hide List[Float] gravity;
+    hide List[Integer] bouncesLeft;
+    hide List[Integer] dmgKind;
+    hide G3D.Mesh3D orbMesh;
+    hide G3D.Mesh3D dartMesh;
+    hide List[G3D.Material3D] visualMat;
+    hide Integer cap;
+    hide Integer activeCount;
+    hide Integer dotAppliedCount;
+
+    expose func init() {
+        px = []; py = []; pz = []; vx = []; vy = []; vz = [];
+        life = []; alive = []; damage = []; blastRadius = [];
+        dotDPS = []; dotTime = []; gravity = []; bouncesLeft = []; dmgKind = [];
+        visualMat = [];
+        cap = config.POOL_PROJECTILES;
+        activeCount = 0;
+        dotAppliedCount = 0;
+    }
+
+    expose func setup(p: G3D.PhysicsWorld3D, b: events.EventBus,
+                      bl: ballistics.Ballistics, r: targets.TargetRegistry) {
+        phys = p; bus = b; ball = bl; reg = r;
+        orbMesh = G3D.Mesh3D.Sphere(0.11, 8);
+        // Local +Z dart so its retained transform can follow velocity.
+        dartMesh = G3D.Mesh3D.Box(0.08, 0.08, 0.34);
+        addMaterial(1.0, 0.62, 0.16);   // explosive
+        addMaterial(1.0, 0.32, 0.12);   // corrosive rivet
+        addMaterial(0.20, 0.90, 1.0);   // EMP
+        addMaterial(0.75, 0.38, 1.0);   // decoy
+        addMaterial(1.0, 0.88, 0.36);   // generic projectile
+        var i = 0;
+        while i < cap {
+            px.Add(0.0); py.Add(0.0); pz.Add(0.0);
+            vx.Add(0.0); vy.Add(0.0); vz.Add(0.0);
+            life.Add(0.0); alive.Add(0); damage.Add(0.0); blastRadius.Add(0.0);
+            dotDPS.Add(0.0); dotTime.Add(0.0); gravity.Add(0.0); bouncesLeft.Add(0); dmgKind.Add(0);
+            i = i + 1;
+        }
+    }
+
+    hide func addMaterial(r: Float, g: Float, b: Float) {
+        var m = G3D.Material3D.FromColor(r, g, b);
+        G3D.Material3D.SetEmissiveColor(m, r, g, b);
+        m.EmissiveIntensity = 3.4;
+        visualMat.Add(m);
+    }
+
+    expose func activeProjectiles() -> Integer { return activeCount; }
+    expose func dotApplications() -> Integer { return dotAppliedCount; }
+
+    hide func freeSlot() -> Integer {
+        var i = 0;
+        while i < cap {
+            if alive[i] == 0 { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    // Spawn a projectile. `grav` !=0 makes it arc; `bounces`>0 makes it reflect
+    // off world geometry before its final blast; `br`>0 blasts on impact.
+    expose func spawn(ox: Float, oy: Float, oz: Float, dx: Float, dy: Float, dz: Float,
+                      speed: Float, dmg: Float, br: Float, ddps: Float, dtime: Float,
+                      grav: Float, bounces: Integer, life0: Float, dk: Integer) {
+        var s = freeSlot();
+        if s < 0 { return; }
+        px[s] = ox; py[s] = oy; pz[s] = oz;
+        vx[s] = dx * speed; vy[s] = dy * speed; vz[s] = dz * speed;
+        damage[s] = dmg; blastRadius[s] = br; dotDPS[s] = ddps; dotTime[s] = dtime;
+        gravity[s] = grav; bouncesLeft[s] = bounces; life[s] = life0; dmgKind[s] = dk;
+        alive[s] = 1;
+        activeCount = activeCount + 1;
+        ball.recordProjectileShot();
+    }
+
+    /// Park every projectile when changing scenes or restoring a checkpoint.
+    expose func clear() {
+        var i = 0;
+        while i < cap {
+            alive[i] = 0;
+            i = i + 1;
+        }
+        activeCount = 0;
+        dotAppliedCount = 0;
+    }
+
+    hide func kill(s: Integer) {
+        if alive[s] == 1 {
+            alive[s] = 0;
+            activeCount = activeCount - 1;
+        }
+    }
+
+    hide func detonate(s: Integer) {
+        if dmgKind[s] == config.DMG_DECOY {
+            bus.pushAt(config.EV_DECOY, 0, 36, px[s], py[s], pz[s]);
+            bus.pushAt(config.EV_EXPLOSION, 0, 3, px[s], py[s], pz[s]);
+            kill(s);
+            return;
+        }
+        if blastRadius[s] > 0.0 {
+            var hits = ball.blast(px[s], py[s], pz[s], blastRadius[s], damage[s], dmgKind[s]);
+            if hits > 0 { ball.recordProjectileHit(); }
+        }
+        kill(s);
+    }
+
+    expose func update(dt: Float) {
+        var i = 0;
+        while i < cap {
+            if alive[i] == 1 {
+                life[i] = life[i] - dt;
+                if life[i] <= 0.0 {
+                    detonate(i);
+                } else {
+                    stepOne(i, dt);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func stepOne(s: Integer, dt: Float) {
+        vy[s] = vy[s] + gravity[s] * dt;
+        var ox = px[s]; var oy = py[s]; var oz = pz[s];
+        var nx = ox + vx[s] * dt;
+        var ny = oy + vy[s] * dt;
+        var nz = oz + vz[s] * dt;
+        var dx = nx - ox; var dy = ny - oy; var dz = nz - oz;
+        var dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if dist < 0.0001 {
+            px[s] = nx; py[s] = ny; pz[s] = nz;
+            return;
+        }
+        var dirX = dx / dist; var dirY = dy / dist; var dirZ = dz / dist;
+        var origin = Math.Vec3.New(ox, oy, oz);
+        var dir = Math.Vec3.New(dirX, dirY, dirZ);
+        var hit = phys.Raycast(origin, dir, dist, config.MASK_SHOOTABLE);
+        if hit == null {
+            px[s] = nx; py[s] = ny; pz[s] = nz;
+            return;
+        }
+        // Impact.
+        var b = G3D.PhysicsHit3D.get_Body(hit);
+        var slot = reg.resolve(b);
+        var pt = G3D.PhysicsHit3D.get_Point(hit);
+        px[s] = Math.Vec3.get_X(pt);
+        py[s] = Math.Vec3.get_Y(pt);
+        pz[s] = Math.Vec3.get_Z(pt);
+        bus.pushAt(config.EV_IMPACT, 0, dmgKind[s], px[s], py[s], pz[s]);
+        if slot >= 0 {
+            // Direct hit on a target.
+            if blastRadius[s] > 0.0 {
+                detonate(s);
+            } else {
+                var sourceBearing = M.toDeg(Math.Atan2(0.0 - vx[s], vz[s]));
+                ball.applyDamage(reg.kindAt(slot), reg.indexAt(slot), reg.regionAt(slot),
+                                 damage[s], dmgKind[s], sourceBearing);
+                ball.recordProjectileHit();
+                // DoT registration is posted as an event the target drains.
+                if dotDPS[s] > 0.0 {
+                    bus.push(config.EV_DAMAGE, reg.kindAt(slot), reg.indexAt(slot),
+                             config.REGION_BODY, dotDPS[s], config.DMG_DOT + 0.0, dotTime[s]);
+                    dotAppliedCount = dotAppliedCount + 1;
+                }
+                kill(s);
+            }
+            return;
+        }
+        // Hit world geometry.
+        if bouncesLeft[s] > 0 {
+            var nrm = G3D.PhysicsHit3D.get_Normal(hit);
+            reflect(s, Math.Vec3.get_X(nrm), Math.Vec3.get_Y(nrm), Math.Vec3.get_Z(nrm));
+            bouncesLeft[s] = bouncesLeft[s] - 1;
+        } else {
+            detonate(s);
+        }
+    }
+
+    hide func reflect(s: Integer, nx: Float, ny: Float, nz: Float) {
+        var dot = vx[s] * nx + vy[s] * ny + vz[s] * nz;
+        vx[s] = (vx[s] - 2.0 * dot * nx) * 0.7;
+        vy[s] = (vy[s] - 2.0 * dot * ny) * 0.7;
+        vz[s] = (vz[s] - 2.0 * dot * nz) * 0.7;
+        // Nudge off the surface so the next sweep doesn't immediately re-hit.
+        px[s] = px[s] + nx * 0.05;
+        py[s] = py[s] + ny * 0.05;
+        pz[s] = pz[s] + nz * 0.05;
+    }
+
+    // Immediate-mode draw of active projectiles.
+    expose func draw(canvas: G3D.Canvas3D) {
+        var i = 0;
+        while i < cap {
+            if alive[i] == 1 {
+                var style = 4;
+                var mesh = dartMesh;
+                if blastRadius[i] > 0.0 { style = 0; mesh = orbMesh; }
+                if dotDPS[i] > 0.0 { style = 1; }
+                if dmgKind[i] == config.DMG_EMP { style = 2; mesh = orbMesh; }
+                if dmgKind[i] == config.DMG_DECOY { style = 3; mesh = orbMesh; }
+                var xf = Math.Mat4.Translate(px[i], py[i], pz[i]);
+                if mesh == dartMesh { xf = dartTransform(i); }
+                G3D.Canvas3D.DrawMesh(canvas, mesh, xf, visualMat[style]);
+            }
+            i = i + 1;
+        }
+    }
+
+    // Orient a dart's local +Z along its current velocity. The pole-safe basis
+    // avoids a degenerate cross product on nearly vertical grenade arcs.
+    hide func dartTransform(i: Integer) -> Math.Mat4 {
+        var dx = vx[i]; var dy = vy[i]; var dz = vz[i];
+        var len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if len < 0.001 { return Math.Mat4.Translate(px[i], py[i], pz[i]); }
+        dx = dx / len; dy = dy / len; dz = dz / len;
+        var ux = 0.0; var uy = 1.0; var uz = 0.0;
+        if M.absf(dy) > 0.99 { ux = 1.0; uy = 0.0; }
+        var rx = dy * uz - dz * uy;
+        var ry = dz * ux - dx * uz;
+        var rz = dx * uy - dy * ux;
+        var rl = Math.Sqrt(rx * rx + ry * ry + rz * rz);
+        rx = rx / rl; ry = ry / rl; rz = rz / rl;
+        var bx = ry * dz - rz * dy;
+        var by = rz * dx - rx * dz;
+        var bz = rx * dy - ry * dx;
+        return Math.Mat4.New(
+            rx, bx, dx, px[i],
+            ry, by, dy, py[i],
+            rz, bz, dz, pz[i],
+            0.0, 0.0, 0.0, 1.0);
+    }
+}

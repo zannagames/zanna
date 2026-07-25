@@ -62,6 +62,7 @@ BitVector markReachable(il::core::Function &function) {
         if (!terminator)
             continue;
 
+        /// Resolve and enqueue one successor label if it has not been visited.
         auto addLabel = [&](const std::string &label) {
             enqueueSuccessor(reachable, worklist, lookupBlockIndex(labelToIndex, label));
         };
@@ -99,8 +100,8 @@ BitVector markReachable(il::core::Function &function) {
 
 /// @brief Remove blocks that are not reachable according to @ref markReachable.
 /// @details Iterates unreachable blocks in reverse order, skipping those marked
-///          as EH-sensitive, updates branch targets to drop references to deleted
-///          blocks, erases the blocks, and updates statistics/logging hooks.
+///          as EH-sensitive or referenced by a retained EH-sensitive region,
+///          erases the remaining candidates, and updates statistics/logging hooks.
 /// @param ctx Pass context providing function, EH sensitivity checks, and stats.
 /// @return True when any block was removed.
 bool removeUnreachableBlocks(SimplifyCFG::SimplifyCFGPassContext &ctx) {

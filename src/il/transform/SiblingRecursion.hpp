@@ -33,11 +33,19 @@ namespace il::transform {
 /// second recursive call into a loop iteration, halving total function calls.
 class SiblingRecursion : public FunctionPass {
   public:
+    /// @brief Return the stable pipeline identifier.
+    /// @return The pass name `"sibling-recursion"`.
     std::string_view id() const override;
+
+    /// @brief Convert one eligible double-recursive function into an accumulator loop.
+    /// @param function Function inspected and possibly restructured.
+    /// @param analysis Analysis manager supplied by the pipeline; not queried.
+    /// @return All analyses if no pattern matches, otherwise no preserved analyses.
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 };
 
 /// @brief Register the SiblingRecursion pass with the provided registry.
+/// @param registry Registry that receives the parallel-safe function-pass factory.
 void registerSiblingRecursionPass(PassRegistry &registry);
 
 } // namespace il::transform

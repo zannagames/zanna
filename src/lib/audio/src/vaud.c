@@ -22,6 +22,9 @@
 
 /// @file
 /// @brief Core implementation of the ZannaAUD API.
+/// @details Owns platform-independent context, handle, voice, and streaming
+///          state. Control paths synchronize with the realtime mixer and keep
+///          file I/O and codec decoding outside render callbacks.
 
 #if !defined(VAUD_PLATFORM_WINDOWS) && !defined(_POSIX_C_SOURCE)
 #define _POSIX_C_SOURCE 200809L
@@ -47,6 +50,9 @@
 ///          decoder work at once. Remaining streams are serviced by later calls.
 #define VAUD_UPDATE_MAX_REFILLS_PER_CALL 4
 
+/// @brief Duplicate a null-terminated string into heap storage.
+/// @param s Source string, or NULL.
+/// @return Allocated copy owned by the caller, or NULL on invalid input/failure.
 static char *vaud_strdup(const char *s) {
     if (!s)
         return NULL;
@@ -60,6 +66,12 @@ static char *vaud_strdup(const char *s) {
     return copy;
 }
 
+/// @brief Compute a safe resampled frame count and publish format errors.
+/// @param in_frames Source frame count.
+/// @param in_rate Positive source sample rate.
+/// @param out_rate Positive destination sample rate.
+/// @param out_frames Output frame count set on success.
+/// @return 1 for a positive representable result; otherwise 0.
 static int vaud_checked_resampled_frames(int64_t in_frames,
                                          int32_t in_rate,
                                          int32_t out_rate,
@@ -75,6 +87,10 @@ static int vaud_checked_resampled_frames(int64_t in_frames,
     return 1;
 }
 
+/// @brief Allocate an interleaved signed-16 PCM buffer with overflow checking.
+/// @param frames Number of sample frames.
+/// @param channels Interleaved channel count.
+/// @return Heap buffer owned by the caller, or NULL after setting an error.
 static int16_t *vaud_alloc_pcm_frames(int64_t frames, int32_t channels) {
     size_t bytes = 0;
     if (!vaud_pcm_s16_buffer_size(frames, channels, &bytes)) {
@@ -87,6 +103,9 @@ static int16_t *vaud_alloc_pcm_frames(int64_t frames, int32_t channels) {
     return samples;
 }
 
+/// @brief Normalize a scalar to the inclusive unit interval.
+/// @param value Candidate value.
+/// @return Finite value clamped to [0, 1], or 0 for NaN/infinity.
 static float vaud_clamp_unit_float(float value) {
     if (!isfinite(value))
         return 0.0f;
@@ -97,6 +116,9 @@ static float vaud_clamp_unit_float(float value) {
     return value;
 }
 
+/// @brief Normalize a stereo pan value.
+/// @param value Candidate pan.
+/// @return Finite value clamped to [-1, 1], or center for NaN/infinity.
 static float vaud_clamp_pan_float(float value) {
     if (!isfinite(value))
         return 0.0f;
@@ -107,6 +129,7 @@ static float vaud_clamp_pan_float(float value) {
     return value;
 }
 
+/// @brief Yield a control thread for approximately one millisecond.
 static void vaud_control_sleep_1ms(void) {
 #if defined(VAUD_PLATFORM_WINDOWS)
     Sleep(1);
@@ -118,10 +141,18 @@ static void vaud_control_sleep_1ms(void) {
 #endif
 }
 
+/// @brief Test whether a context is absent or teardown has begun.
+/// @param ctx Audio context to inspect.
+/// @return Nonzero for NULL or a context with its destroying flag set.
 static int vaud_context_is_destroying(vaud_context_t ctx) {
     return !ctx || vaud_atomic_load_i32(&ctx->destroying) != 0;
 }
 
+/// @brief Remove a sound from a context's compact loaded-sound registry.
+/// @details The caller must hold @p ctx's mutex. Removal swaps in the final
+///          element and preserves no ordering.
+/// @param ctx Owning context.
+/// @param sound Sound handle to remove.
 static void sound_unregister_locked(vaud_context_t ctx, vaud_sound_t sound) {
     if (!ctx || !sound)
         return;
@@ -148,6 +179,12 @@ static int sound_is_attached_to_context_locked(vaud_sound_t sound, vaud_context_
     return sound && ctx && sound->ctx == ctx;
 }
 
+/// @brief Register a newly loaded sound with its context.
+/// @details Locks the context, appends within VAUD_MAX_SOUNDS, and publishes an
+///          error when the registry is full.
+/// @param ctx Owning context.
+/// @param sound Fully initialized sound handle.
+/// @return 1 when registered; otherwise 0.
 static int sound_register(vaud_context_t ctx, vaud_sound_t sound) {
     if (!ctx || !sound)
         return 0;
@@ -218,15 +255,18 @@ static const char *g_last_error = NULL;
 static vaud_error_t g_last_error_code = VAUD_OK;
 #endif
 
+/// @copydoc vaud_set_error
 void vaud_set_error(vaud_error_t code, const char *msg) {
     g_last_error_code = code;
     g_last_error = msg;
 }
 
+/// @copydoc vaud_get_last_error
 const char *vaud_get_last_error(void) {
     return g_last_error;
 }
 
+/// @copydoc vaud_clear_error
 void vaud_clear_error(void) {
     g_last_error = NULL;
     g_last_error_code = VAUD_OK;
@@ -238,44 +278,54 @@ void vaud_clear_error(void) {
 
 #if defined(VAUD_PLATFORM_WINDOWS)
 
+/// @copydoc vaud_mutex_init
 int vaud_mutex_init(vaud_mutex_t *mutex) {
     return mutex && InitializeCriticalSectionAndSpinCount(mutex, 4000) ? 1 : 0;
 }
 
+/// @copydoc vaud_mutex_destroy
 void vaud_mutex_destroy(vaud_mutex_t *mutex) {
     DeleteCriticalSection(mutex);
 }
 
+/// @copydoc vaud_mutex_lock
 void vaud_mutex_lock(vaud_mutex_t *mutex) {
     EnterCriticalSection(mutex);
 }
 
+/// @copydoc vaud_mutex_unlock
 void vaud_mutex_unlock(vaud_mutex_t *mutex) {
     LeaveCriticalSection(mutex);
 }
 
+/// @copydoc vaud_mutex_trylock
 int vaud_mutex_trylock(vaud_mutex_t *mutex) {
     return TryEnterCriticalSection(mutex) ? 1 : 0;
 }
 
 #else /* POSIX */
 
+/// @copydoc vaud_mutex_init
 int vaud_mutex_init(vaud_mutex_t *mutex) {
     return mutex && pthread_mutex_init(mutex, NULL) == 0;
 }
 
+/// @copydoc vaud_mutex_destroy
 void vaud_mutex_destroy(vaud_mutex_t *mutex) {
     pthread_mutex_destroy(mutex);
 }
 
+/// @copydoc vaud_mutex_lock
 void vaud_mutex_lock(vaud_mutex_t *mutex) {
     pthread_mutex_lock(mutex);
 }
 
+/// @copydoc vaud_mutex_unlock
 void vaud_mutex_unlock(vaud_mutex_t *mutex) {
     pthread_mutex_unlock(mutex);
 }
 
+/// @copydoc vaud_mutex_trylock
 int vaud_mutex_trylock(vaud_mutex_t *mutex) {
     return pthread_mutex_trylock(mutex) == 0;
 }
@@ -379,10 +429,12 @@ static void vaud_event_wait(vaud_event_t *event) {
 #define VAUD_STR_IMPL(value) #value
 #define VAUD_STR(value) VAUD_STR_IMPL(value)
 
+/// @copydoc vaud_version
 uint32_t vaud_version(void) {
     return (VAUD_VERSION_MAJOR << 16) | (VAUD_VERSION_MINOR << 8) | VAUD_VERSION_PATCH;
 }
 
+/// @copydoc vaud_version_string
 const char *vaud_version_string(void) {
     return VAUD_STR(VAUD_VERSION_MAJOR) "." VAUD_STR(VAUD_VERSION_MINOR) "." VAUD_STR(
         VAUD_VERSION_PATCH);
@@ -392,6 +444,7 @@ const char *vaud_version_string(void) {
 // Context Management
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_create
 vaud_context_t vaud_create(void) {
     vaud_context_t ctx = (vaud_context_t)calloc(1, sizeof(struct vaud_context));
     if (!ctx) {
@@ -443,6 +496,7 @@ vaud_context_t vaud_create(void) {
     return ctx;
 }
 
+/// @copydoc vaud_destroy
 void vaud_destroy(vaud_context_t ctx) {
     if (!ctx)
         return;
@@ -494,6 +548,7 @@ void vaud_destroy(vaud_context_t ctx) {
     free(ctx);
 }
 
+/// @copydoc vaud_set_master_volume
 void vaud_set_master_volume(vaud_context_t ctx, float volume) {
     if (vaud_context_is_destroying(ctx))
         return;
@@ -504,6 +559,7 @@ void vaud_set_master_volume(vaud_context_t ctx, float volume) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_get_master_volume
 float vaud_get_master_volume(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return 0.0f;
@@ -514,6 +570,7 @@ float vaud_get_master_volume(vaud_context_t ctx) {
     return vol;
 }
 
+/// @copydoc vaud_pause_all
 void vaud_pause_all(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return;
@@ -525,6 +582,7 @@ void vaud_pause_all(vaud_context_t ctx) {
     vaud_platform_pause(ctx);
 }
 
+/// @copydoc vaud_resume_all
 void vaud_resume_all(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return;
@@ -540,6 +598,7 @@ void vaud_resume_all(vaud_context_t ctx) {
 // Sound Effect Loading
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_load_sound
 vaud_sound_t vaud_load_sound(vaud_context_t ctx, const char *path) {
     if (vaud_context_is_destroying(ctx) || !path) {
         vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL context or path");
@@ -601,6 +660,7 @@ vaud_sound_t vaud_load_sound(vaud_context_t ctx, const char *path) {
     return sound;
 }
 
+/// @copydoc vaud_load_sound_mem
 vaud_sound_t vaud_load_sound_mem(vaud_context_t ctx, const void *data, size_t size) {
     if (vaud_context_is_destroying(ctx) || !data || size == 0) {
         vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL context or data");
@@ -662,6 +722,7 @@ vaud_sound_t vaud_load_sound_mem(vaud_context_t ctx, const void *data, size_t si
     return sound;
 }
 
+/// @copydoc vaud_free_sound
 void vaud_free_sound(vaud_sound_t sound) {
     if (!sound)
         return;
@@ -686,6 +747,7 @@ void vaud_free_sound(vaud_sound_t sound) {
     free(sound);
 }
 
+/// @copydoc vaud_detach_sound
 void vaud_detach_sound(vaud_sound_t sound) {
     if (!sound)
         return;
@@ -705,6 +767,7 @@ void vaud_detach_sound(vaud_sound_t sound) {
     }
 }
 
+/// @copydoc vaud_sound_is_attached
 int vaud_sound_is_attached(vaud_sound_t sound) {
     return (sound && sound->ctx) ? 1 : 0;
 }
@@ -713,14 +776,17 @@ int vaud_sound_is_attached(vaud_sound_t sound) {
 // Sound Effect Playback
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_play
 vaud_voice_id vaud_play(vaud_sound_t sound) {
     return vaud_play_ex(sound, VAUD_DEFAULT_SOUND_VOLUME, VAUD_DEFAULT_PAN);
 }
 
+/// @copydoc vaud_play_ex
 vaud_voice_id vaud_play_ex(vaud_sound_t sound, float volume, float pan) {
     return vaud_play_ex_group(sound, volume, pan, 0);
 }
 
+/// @copydoc vaud_play_ex_group
 vaud_voice_id vaud_play_ex_group(vaud_sound_t sound, float volume, float pan, int64_t group_id) {
     if (!sound)
         return VAUD_INVALID_VOICE;
@@ -758,6 +824,7 @@ vaud_voice_id vaud_play_ex_group(vaud_sound_t sound, float volume, float pan, in
     return id;
 }
 
+/// @copydoc vaud_play_ex2
 vaud_voice_id vaud_play_ex2(vaud_sound_t sound, float volume, float pan, float pitch) {
     vaud_voice_id id = vaud_play_ex(sound, volume, pan);
     if (id != VAUD_INVALID_VOICE && sound && sound->ctx)
@@ -765,10 +832,12 @@ vaud_voice_id vaud_play_ex2(vaud_sound_t sound, float volume, float pan, float p
     return id;
 }
 
+/// @copydoc vaud_play_loop
 vaud_voice_id vaud_play_loop(vaud_sound_t sound, float volume, float pan) {
     return vaud_play_loop_group(sound, volume, pan, 0);
 }
 
+/// @copydoc vaud_play_loop_group
 vaud_voice_id vaud_play_loop_group(vaud_sound_t sound, float volume, float pan, int64_t group_id) {
     if (!sound)
         return VAUD_INVALID_VOICE;
@@ -806,6 +875,7 @@ vaud_voice_id vaud_play_loop_group(vaud_sound_t sound, float volume, float pan, 
     return id;
 }
 
+/// @copydoc vaud_stop_voice
 void vaud_stop_voice(vaud_context_t ctx, vaud_voice_id voice_id) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -819,6 +889,7 @@ void vaud_stop_voice(vaud_context_t ctx, vaud_voice_id voice_id) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_set_voice_volume
 void vaud_set_voice_volume(vaud_context_t ctx, vaud_voice_id voice_id, float volume) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -831,6 +902,7 @@ void vaud_set_voice_volume(vaud_context_t ctx, vaud_voice_id voice_id, float vol
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_set_voice_pan
 void vaud_set_voice_pan(vaud_context_t ctx, vaud_voice_id voice_id, float pan) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -843,6 +915,7 @@ void vaud_set_voice_pan(vaud_context_t ctx, vaud_voice_id voice_id, float pan) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_set_voice_group
 void vaud_set_voice_group(vaud_context_t ctx, vaud_voice_id voice_id, int64_t group_id) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -854,6 +927,7 @@ void vaud_set_voice_group(vaud_context_t ctx, vaud_voice_id voice_id, int64_t gr
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_voice_is_playing
 int vaud_voice_is_playing(vaud_context_t ctx, vaud_voice_id voice_id) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return 0;
@@ -866,6 +940,7 @@ int vaud_voice_is_playing(vaud_context_t ctx, vaud_voice_id voice_id) {
     return playing;
 }
 
+/// @copydoc vaud_set_voice_pitch
 void vaud_set_voice_pitch(vaud_context_t ctx, vaud_voice_id voice_id, float pitch) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -888,6 +963,7 @@ void vaud_set_voice_pitch(vaud_context_t ctx, vaud_voice_id voice_id, float pitc
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_get_voice_pitch
 float vaud_get_voice_pitch(vaud_context_t ctx, vaud_voice_id voice_id) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return 1.0f;
@@ -899,6 +975,7 @@ float vaud_get_voice_pitch(vaud_context_t ctx, vaud_voice_id voice_id) {
     return pitch;
 }
 
+/// @copydoc vaud_set_voice_lowpass
 void vaud_set_voice_lowpass(vaud_context_t ctx, vaud_voice_id voice_id, float cutoff_hz) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -913,6 +990,7 @@ void vaud_set_voice_lowpass(vaud_context_t ctx, vaud_voice_id voice_id, float cu
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_set_voice_occlusion
 void vaud_set_voice_occlusion(vaud_context_t ctx, vaud_voice_id voice_id, float amount) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -929,7 +1007,7 @@ void vaud_set_voice_occlusion(vaud_context_t ctx, vaud_voice_id voice_id, float 
     vaud_mutex_unlock(&ctx->mutex);
 }
 
-/// @brief Enable/disable per-voice RMS metering (zero mixing cost when off).
+/// @copydoc vaud_set_voice_metering
 void vaud_set_voice_metering(vaud_context_t ctx, vaud_voice_id voice_id, int enabled) {
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
         return;
@@ -943,7 +1021,7 @@ void vaud_set_voice_metering(vaud_context_t ctx, vaud_voice_id voice_id, int ena
     vaud_mutex_unlock(&ctx->mutex);
 }
 
-/// @brief RMS source level of the last mixed block (0 when unmetered/stopped).
+/// @copydoc vaud_get_voice_level
 float vaud_get_voice_level(vaud_context_t ctx, vaud_voice_id voice_id) {
     float level = 0.0f;
     if (vaud_context_is_destroying(ctx) || voice_id == VAUD_INVALID_VOICE)
@@ -956,6 +1034,7 @@ float vaud_get_voice_level(vaud_context_t ctx, vaud_voice_id voice_id) {
     return level;
 }
 
+/// @copydoc vaud_set_group_duck
 void vaud_set_group_duck(vaud_context_t ctx,
                          int64_t trigger_group,
                          int64_t target_group,
@@ -1015,10 +1094,17 @@ void vaud_set_group_duck(vaud_context_t ctx,
 // Compressed stream read helpers
 //===----------------------------------------------------------------------===//
 
+/// @brief Recognize one Vorbis identification/comment/setup packet header.
+/// @param data Packet bytes.
+/// @param len Packet length.
+/// @param type Expected Vorbis header type byte.
+/// @return Nonzero when the packet starts with the typed `vorbis` signature.
 static int packet_is_vorbis_header(const uint8_t *data, size_t len, uint8_t type) {
     return data && len >= 7 && data[0] == type && memcmp(data + 1, "vorbis", 6) == 0;
 }
 
+/// @brief Reset decoded-buffer cursors and stream-progress bookkeeping.
+/// @param music Stream whose buffers are logically emptied.
 static void vaud_music_clear_buffers(struct vaud_music *music) {
     if (!music)
         return;
@@ -1035,6 +1121,10 @@ static void vaud_music_clear_buffers(struct vaud_music *music) {
     music->stream_loop_pending = 0;
 }
 
+/// @brief Ensure capacity for interleaved-stereo leftover decoded frames.
+/// @param music Stream owning the leftover buffer.
+/// @param frames Minimum required frame capacity.
+/// @return 1 when capacity is available; otherwise 0.
 static int vaud_music_reserve_leftover(struct vaud_music *music, int32_t frames) {
     if (!music || frames <= 0)
         return 0;
@@ -1058,6 +1148,11 @@ static int vaud_music_reserve_leftover(struct vaud_music *music, int32_t frames)
     return 1;
 }
 
+/// @brief Decode the three Vorbis headers for a selected logical stream.
+/// @param reader OGG packet reader positioned at or before the headers.
+/// @param serial Logical stream serial number to accept.
+/// @param dec Decoder receiving headers in order.
+/// @return 1 after all three headers decode; otherwise 0.
 static int vaud_ogg_parse_headers_for_serial(ogg_reader_t *reader,
                                              uint32_t serial,
                                              vorbis_decoder_t *dec) {
@@ -1077,6 +1172,11 @@ static int vaud_ogg_parse_headers_for_serial(ogg_reader_t *reader,
     return 0;
 }
 
+/// @brief Reset a music decoder/file to its first source frame.
+/// @details Clears output state, recreates the Vorbis decoder and reparses
+///          headers, rewinds MP3 state, or seeks WAV data to its payload offset.
+/// @param music Stream to rewind.
+/// @return 1 when its format-specific source is ready; otherwise 0.
 static int vaud_music_reset_source(struct vaud_music *music) {
     if (!music)
         return 0;
@@ -1114,6 +1214,13 @@ static int vaud_music_reset_source(struct vaud_music *music) {
 }
 
 /// @brief Read decoded PCM frames from an OGG Vorbis stream.
+/// @details Drains saved excess first, decodes packets from the selected logical
+///          stream, converts mono to stereo, and preserves frames beyond the
+///          caller's capacity for the next request.
+/// @param music Initialized OGG music stream.
+/// @param output Interleaved-stereo signed-16 output.
+/// @param max_frames Output frame capacity.
+/// @return Number of frames written.
 static int32_t ogg_stream_read_frames(struct vaud_music *music,
                                       int16_t *output,
                                       int32_t max_frames) {
@@ -1196,6 +1303,12 @@ static int32_t ogg_stream_read_frames(struct vaud_music *music,
 }
 
 /// @brief Read decoded PCM frames from an MP3 stream.
+/// @details Drains saved excess, decodes frames until capacity or EOF, converts
+///          mono to stereo, and preserves excess decoded frames.
+/// @param music Initialized MP3 music stream.
+/// @param output Interleaved-stereo signed-16 output.
+/// @param max_frames Output frame capacity.
+/// @return Number of frames written.
 static int32_t mp3_stream_read_frames_music(struct vaud_music *music,
                                             int16_t *output,
                                             int32_t max_frames) {
@@ -1260,6 +1373,11 @@ static int32_t mp3_stream_read_frames_music(struct vaud_music *music,
     return written;
 }
 
+/// @brief Allocate WAV raw-byte scratch sufficient for one output buffer.
+/// @details Accounts for the larger source-frame request required by resampling
+///          and replaces any previous scratch buffer only after allocation succeeds.
+/// @param music WAV stream to prepare; non-WAV streams need no buffer.
+/// @return 1 when ready or unnecessary; otherwise 0.
 static int vaud_music_prepare_wav_read_buffer(struct vaud_music *music) {
     if (!music || music->format != 0)
         return 1;
@@ -1291,6 +1409,9 @@ static int vaud_music_prepare_wav_read_buffer(struct vaud_music *music) {
     return 1;
 }
 
+/// @brief Compute encoded bytes per source WAV frame.
+/// @param music WAV stream metadata.
+/// @return Positive byte count, or 0 for invalid/overflowing metadata.
 static int32_t vaud_music_wav_bytes_per_frame(const struct vaud_music *music) {
     if (!music || music->channels <= 0 || music->bits_per_sample <= 0)
         return 0;
@@ -1300,6 +1421,10 @@ static int32_t vaud_music_wav_bytes_per_frame(const struct vaud_music *music) {
     return bytes_per_sample * music->channels;
 }
 
+/// @brief Clamp a WAV read request to complete frames remaining in the data chunk.
+/// @param music WAV stream whose source position may be normalized.
+/// @param requested Requested source frames.
+/// @return Safe nonnegative frame count.
 static int32_t vaud_music_clamp_wav_read_frames(struct vaud_music *music, int32_t requested) {
     if (!music || music->format != 0 || requested <= 0)
         return 0;
@@ -1318,6 +1443,9 @@ static int32_t vaud_music_clamp_wav_read_frames(struct vaud_music *music, int32_
     return remaining < requested ? (int32_t)remaining : requested;
 }
 
+/// @brief Advance a WAV source cursor with saturation.
+/// @param music WAV stream to update.
+/// @param frames_read Positive number of source frames consumed.
 static void vaud_music_advance_wav_source(struct vaud_music *music, int32_t frames_read) {
     if (!music || music->format != 0 || frames_read <= 0)
         return;
@@ -1327,6 +1455,9 @@ static void vaud_music_advance_wav_source(struct vaud_music *music, int32_t fram
         music->source_position += frames_read;
 }
 
+/// @brief Calculate source frames needed to produce one mixer-rate buffer.
+/// @param source_rate Positive source rate.
+/// @return Required frames including interpolation lookahead, or 0 on invalid range.
 static int32_t vaud_music_resample_source_request(int32_t source_rate) {
     if (source_rate <= 0)
         return 0;
@@ -1339,6 +1470,11 @@ static int32_t vaud_music_resample_source_request(int32_t source_rate) {
     return (int32_t)raw_needed;
 }
 
+/// @brief Prepend source frames to a stream's stereo leftover queue.
+/// @param music Stream owning the queue.
+/// @param frames Interleaved-stereo frames to prepend.
+/// @param frame_count Number of frames.
+/// @return 1 on success or empty input; 0 on overflow/allocation failure.
 static int vaud_music_stash_leftover(struct vaud_music *music,
                                      const int16_t *frames,
                                      int32_t frame_count) {
@@ -1369,6 +1505,11 @@ static int vaud_music_stash_leftover(struct vaud_music *music,
     return 1;
 }
 
+/// @brief Read WAV source frames while honoring previously stashed frames.
+/// @param music Initialized WAV stream.
+/// @param output Interleaved-stereo signed-16 destination.
+/// @param max_frames Destination capacity.
+/// @return Number of frames copied and decoded.
 static int32_t wav_stream_read_frames_with_leftover(struct vaud_music *music,
                                                     int16_t *output,
                                                     int32_t max_frames) {
@@ -1404,6 +1545,11 @@ static int32_t wav_stream_read_frames_with_leftover(struct vaud_music *music,
     return written + read;
 }
 
+/// @brief Dispatch source-frame reading by compressed/WAV format.
+/// @param music Initialized stream.
+/// @param output Interleaved-stereo destination.
+/// @param max_frames Destination capacity.
+/// @return Number of decoded source-rate frames.
 static int32_t vaud_music_read_source_frames(struct vaud_music *music,
                                              int16_t *output,
                                              int32_t max_frames) {
@@ -1467,6 +1613,13 @@ static inline double vaud_music_cubic_sample(
     return ((a0 * frac + a1) * frac + a2) * frac + a3;
 }
 
+/// @brief Decode source-rate frames and resample them into one output buffer.
+/// @details Maintains fractional phase and stashes unconsumed source frames so
+///          interpolation remains continuous across buffer boundaries.
+/// @param music Stream owning resampling scratch and phase.
+/// @param out Interleaved-stereo mixer-rate destination.
+/// @param source_rate Positive source sample rate.
+/// @return Number of output frames produced.
 static int32_t vaud_music_resample_source_into(struct vaud_music *music,
                                                int16_t *out,
                                                int32_t source_rate) {
@@ -1532,6 +1685,10 @@ static int32_t vaud_music_resample_source_into(struct vaud_music *music,
     return out_frames;
 }
 
+/// @brief Clamp produced frames to known duration and update progress.
+/// @param music Stream whose generated-frame count is advanced.
+/// @param frames Candidate positive output frame count.
+/// @return Frames committed after duration clamping.
 static int32_t vaud_music_commit_output_frames(struct vaud_music *music, int32_t frames) {
     if (!music || frames <= 0)
         return 0;
@@ -1550,6 +1707,7 @@ static int32_t vaud_music_commit_output_frames(struct vaud_music *music, int32_t
 // Music Buffer Fill (with resampling)
 //===----------------------------------------------------------------------===//
 
+/// @copydoc vaud_music_fill_buffer
 int32_t vaud_music_fill_buffer(struct vaud_music *music, int32_t buf_idx) {
     if (!music || buf_idx < 0 || buf_idx >= VAUD_MUSIC_BUFFER_COUNT)
         return 0;
@@ -1598,6 +1756,7 @@ int32_t vaud_music_fill_buffer(struct vaud_music *music, int32_t buf_idx) {
         music, vaud_music_resample_source_into(music, out, source_rate));
 }
 
+/// @copydoc vaud_music_seek_output_frame
 int vaud_music_seek_output_frame(struct vaud_music *music, int64_t target_frame) {
     if (!music)
         return 0;
@@ -1649,6 +1808,7 @@ int vaud_music_seek_output_frame(struct vaud_music *music, int64_t target_frame)
     return music->buffer_frames[0] > 0;
 }
 
+/// @copydoc vaud_music_prefill_locked
 void vaud_music_prefill_locked(struct vaud_music *music) {
     if (!music)
         return;
@@ -1702,6 +1862,10 @@ static void vaud_music_prefill_forced(vaud_music_t music) {
     }
 }
 
+/// @brief Test whether a playing/paused stream needs control-thread refill work.
+/// @details The caller must hold the owning context mutex.
+/// @param music Stream to inspect.
+/// @return 1 for pending loop rewind or an empty unclaimed non-EOF buffer.
 static int vaud_music_needs_refill_locked(vaud_music_t music) {
     if (!music || music->refill_in_progress)
         return 0;
@@ -1717,6 +1881,15 @@ static int vaud_music_needs_refill_locked(vaud_music_t music) {
     return 0;
 }
 
+/// @brief Claim refill work and identify buffers that may be decoded unlocked.
+/// @details The caller holds the context mutex. The helper resets the completion
+///          event, marks ownership, and either claims every slot for a loop
+///          rewind or returns individual empty buffer indices.
+/// @param music Stream to claim.
+/// @param fill_indices Output array with VAUD_MUSIC_BUFFER_COUNT capacity.
+/// @param fill_count Output number of claimed indices.
+/// @param loop_pending Output nonzero when a rewind must precede filling.
+/// @return 1 when work was claimed; otherwise 0.
 static int vaud_music_begin_refill_locked(vaud_music_t music,
                                           int32_t *fill_indices,
                                           int32_t *fill_count,
@@ -1755,6 +1928,9 @@ static int vaud_music_begin_refill_locked(vaud_music_t music,
     return 1;
 }
 
+/// @brief Claim every stream buffer for an exclusive seek/play refill.
+/// @param music Stream protected by its context mutex.
+/// @return 1 when ownership was acquired; otherwise 0.
 static int vaud_music_begin_forced_refill_locked(vaud_music_t music) {
     if (!music || music->refill_in_progress)
         return 0;
@@ -1766,6 +1942,9 @@ static int vaud_music_begin_forced_refill_locked(vaud_music_t music) {
     return 1;
 }
 
+/// @brief Release all refill claims and signal completion.
+/// @details The caller must hold the owning context mutex.
+/// @param music Stream whose refill operation has finished.
 static void vaud_music_finish_refill_locked(vaud_music_t music) {
     if (music) {
         for (int32_t i = 0; i < VAUD_MUSIC_BUFFER_COUNT; i++)
@@ -1776,6 +1955,8 @@ static void vaud_music_finish_refill_locked(vaud_music_t music) {
     }
 }
 
+/// @brief Empty all decoded stream buffers and clear per-slot claims.
+/// @param music Stream whose buffer cursors are reset.
 static void vaud_music_clear_stream_buffers(vaud_music_t music) {
     if (!music)
         return;

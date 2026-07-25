@@ -11,6 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements bounds-proof-driven numeric array fast-path selection.
+/// @details The pass recognizes lowered out-of-bounds guards and explicit
+///          `idx.chk` instructions, tracks facts until memory or ownership
+///          effects invalidate them, and rewrites only dominated accesses.
+
 #include "il/transform/ArrayFastPathOpt.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -31,15 +37,24 @@ using namespace il::core;
 namespace il::transform {
 namespace {
 
+/// @brief Records that one array/index pair has passed a bounds check.
 struct BoundsFact {
+    /// Array payload value covered by the proof.
     Value array;
+    /// Index value covered by the proof.
     Value index;
 };
 
+/// @brief Test whether a callee returns a supported numeric array length.
+/// @param callee Direct runtime helper name.
+/// @return True for I32, I64, or F64 array length helpers.
 [[nodiscard]] bool isNumericArrayLen(std::string_view callee) {
     return callee == "rt_arr_i32_len" || callee == "rt_arr_i64_len" || callee == "rt_arr_f64_len";
 }
 
+/// @brief Map a checked numeric array accessor to its unchecked equivalent.
+/// @param callee Direct runtime helper name.
+/// @return Fast helper name, or an empty view when no rewrite exists.
 [[nodiscard]] std::string_view fastArrayHelper(std::string_view callee) {
     if (callee == "rt_arr_i32_get")
         return "rt_arr_i32_get_fast";
@@ -56,6 +71,9 @@ struct BoundsFact {
     return {};
 }
 
+/// @brief Test whether a helper preserves established array bounds facts.
+/// @param callee Direct runtime helper name.
+/// @return True for length queries and non-resizing numeric accessors.
 [[nodiscard]] bool isBoundsPreservingArrayHelper(std::string_view callee) {
     return isNumericArrayLen(callee) || callee == "rt_arr_i32_get" ||
            callee == "rt_arr_i32_get_fast" || callee == "rt_arr_i32_set" ||
@@ -66,6 +84,12 @@ struct BoundsFact {
            callee == "rt_arr_f64_set_fast";
 }
 
+/// @brief Determine whether an instruction invalidates active bounds facts.
+/// @details Stores always invalidate. Calls invalidate unless they are known
+///          numeric accessors or their metadata proves memory reordering safe
+///          with no ownership effects.
+/// @param instr Instruction to classify.
+/// @return True when subsequent array accesses require a new proof.
 [[nodiscard]] bool mayInvalidateBoundsFacts(const Instr &instr) {
     if (instr.op == Opcode::Store)
         return true;
@@ -80,6 +104,10 @@ struct BoundsFact {
     return !effects.canReorderWithMemory() || effects.hasOwnershipEffects();
 }
 
+/// @brief Resolve a temporary value to its defining instruction.
+/// @param defs Function-wide temporary-definition map.
+/// @param value Candidate temporary.
+/// @return Borrowed defining instruction, or null for constants and unknown IDs.
 [[nodiscard]] const Instr *findDef(const std::unordered_map<unsigned, const Instr *> &defs,
                                    const Value &value) {
     if (value.kind != Value::Kind::Temp)
@@ -88,6 +116,10 @@ struct BoundsFact {
     return it == defs.end() ? nullptr : it->second;
 }
 
+/// @brief Peel boolean widen/narrow instructions from a condition value.
+/// @param defs Function-wide temporary-definition map.
+/// @param value Condition value to normalize.
+/// @return First value not defined by `zext1` or `trunc1`.
 [[nodiscard]] Value stripBoolWidening(const std::unordered_map<unsigned, const Instr *> &defs,
                                       Value value) {
     while (value.kind == Value::Kind::Temp) {
@@ -101,6 +133,10 @@ struct BoundsFact {
     return value;
 }
 
+/// @brief Match the `index < 0` half of a lowered bounds guard.
+/// @param instr Candidate signed comparison.
+/// @param index Receives the guarded index on success.
+/// @return True when @p instr has the expected lower-bound shape.
 [[nodiscard]] bool matchLowerBoundCheck(const Instr &instr, Value &index) {
     if (instr.operands.size() != 2)
         return false;
@@ -112,6 +148,12 @@ struct BoundsFact {
     return false;
 }
 
+/// @brief Match the `index >= array.length` half of a lowered bounds guard.
+/// @param instr Candidate comparison.
+/// @param lenArray Mapping from length temporaries to source arrays.
+/// @param array Receives the guarded array on success.
+/// @param index Receives the guarded index on success.
+/// @return True when the upper-bound shape and length definition match.
 [[nodiscard]] bool matchUpperBoundCheck(const Instr &instr,
                                         const std::unordered_map<unsigned, Value> &lenArray,
                                         Value &array,
@@ -132,6 +174,13 @@ struct BoundsFact {
     return true;
 }
 
+/// @brief Recover an array/index proof from a lowered out-of-bounds condition.
+/// @details Accepts optional boolean widening and comparison-to-zero wrappers
+///          around the disjunction of lower- and upper-bound failures.
+/// @param defs Function-wide temporary-definition map.
+/// @param lenArray Mapping from length temporaries to source arrays.
+/// @param condition Conditional-branch value to inspect.
+/// @return Matched fact when both comparisons guard the same index.
 [[nodiscard]] std::optional<BoundsFact> matchOobCondition(
     const std::unordered_map<unsigned, const Instr *> &defs,
     const std::unordered_map<unsigned, Value> &lenArray,
@@ -182,6 +231,11 @@ struct BoundsFact {
     return BoundsFact{upperArray, upperIndex};
 }
 
+/// @brief Test whether a fact set contains an equivalent array/index pair.
+/// @param facts Active bounds facts.
+/// @param array Array value to match.
+/// @param index Index value to match.
+/// @return True when both values equal a stored fact.
 [[nodiscard]] bool hasFact(const std::vector<BoundsFact> &facts,
                            const Value &array,
                            const Value &index) {
@@ -191,6 +245,9 @@ struct BoundsFact {
     return false;
 }
 
+/// @brief Add a bounds fact unless an equivalent fact is already present.
+/// @param facts Fact set updated in place.
+/// @param fact New array/index proof.
 void addFact(std::vector<BoundsFact> &facts, BoundsFact fact) {
     if (!hasFact(facts, fact.array, fact.index))
         facts.push_back(std::move(fact));
@@ -198,10 +255,17 @@ void addFact(std::vector<BoundsFact> &facts, BoundsFact fact) {
 
 } // namespace
 
+/// @brief Return the pass registry identifier.
+/// @return Stable `array-fastpath` identifier.
 std::string_view ArrayFastPathOpt::id() const {
     return "array-fastpath";
 }
 
+/// @brief Rewrite dominated checked numeric array accesses to fast helpers.
+/// @param function Function analyzed and updated in place.
+/// @param analysis Unused analysis manager; this pass derives local facts.
+/// @return All analyses when unchanged, otherwise preservation of module, CFG,
+///         dominator, and loop structure.
 PreservedAnalyses ArrayFastPathOpt::run(Function &function, AnalysisManager & /*analysis*/) {
     std::unordered_map<unsigned, const Instr *> defs;
     std::unordered_map<unsigned, Value> lenArray;
@@ -281,7 +345,10 @@ PreservedAnalyses ArrayFastPathOpt::run(Function &function, AnalysisManager & /*
     return preserved;
 }
 
+/// @brief Register the array fast-path function-pass factory.
+/// @param registry Pass registry updated with the `array-fastpath` entry.
 void registerArrayFastPathOptPass(PassRegistry &registry) {
+    /// Construct a fresh pass instance for each pipeline request.
     registry.registerFunctionPass(
         "array-fastpath", []() { return std::make_unique<ArrayFastPathOpt>(); }, true);
 }

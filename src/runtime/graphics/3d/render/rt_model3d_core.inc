@@ -799,6 +799,14 @@ static rt_scene_node3d *model_clone_node_shallow(const rt_scene_node3d *src,
         rt_obj_retain_maybe(src->name);
         dst->name = src->name;
     }
+    /* VSCN v7 prefab identity (ADR 0187): instances stay instances through
+     * SceneAsset instantiation, so Studio and games keep the reference and
+     * the transient content flag after every reload path. */
+    if (src->prefab_path && rt_string_is_handle(src->prefab_path)) {
+        rt_obj_retain_maybe(src->prefab_path);
+        dst->prefab_path = src->prefab_path;
+    }
+    dst->is_instance_content = src->is_instance_content ? 1 : 0;
     if (!model_clone_node_metadata(dst, src)) {
         model_release_local(dst);
         return NULL;
@@ -947,6 +955,10 @@ static rt_scene_node3d *model_clone_node(const rt_scene_node3d *src, int clone_m
 static int model_clone_children_to_root(rt_scene_node3d *dst_root,
                                         const rt_scene_node3d *src_root) {
     if (!dst_root || !src_root)
+        return 0;
+    /* Scene-scoped root metadata (bake.*, env.* conventions) travels with
+     * the template so instantiation matches direct SceneGraph.Load. */
+    if (!model_clone_node_metadata(dst_root, src_root))
         return 0;
     for (int32_t i = 0, child_count = model_node_child_count(src_root); i < child_count; i++) {
         const rt_scene_node3d *src_child = (const rt_scene_node3d *)rt_g3d_checked_or_null(
@@ -1272,8 +1284,8 @@ static rt_scene_node3d *model_find_node_safe(rt_scene_node3d *root, rt_string na
 
 /// @brief Case-insensitive extension match. Returns 1 when `path_cstr` ends with `ext`
 /// (which must start with `.`), ignoring ASCII case. Used by `Model3D.Load` to pick the
-/// right importer (.vscn / .gltf / .glb / .fbx) without relying on platform-dependent
-/// filename normalization.
+/// right importer (.scene3d/.vscn / .gltf / .glb / .fbx) without relying on
+/// platform-dependent filename normalization.
 static int model_has_ext(const char *path_cstr, const char *ext) {
     const char *dot;
     if (!path_cstr || !ext)

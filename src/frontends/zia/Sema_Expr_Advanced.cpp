@@ -9,6 +9,9 @@
 /// @brief Advanced expression analysis (index, field, optional chain, type
 ///        operators, pattern matching, collections, etc.) for the Zia semantic
 ///        analyzer.
+/// @details Resolves user and runtime members, validates null-safe operations and casts,
+///          computes pattern coverage and bindings, selects construction strategies, and
+///          synthesizes semantic types for lambdas and aggregate literals.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -46,6 +49,8 @@ static bool extractDottedName(Expr *expr, std::string &out) {
 
 /// @brief True if @p name is one of the size/length property spellings
 ///        (Length/Len/Count/size, any case) treated as a count accessor.
+/// @param name Member spelling to classify.
+/// @return True for the count aliases recognized on built-in collections.
 static bool isCountLikeProperty(const std::string &name) {
     return name == "Length" || name == "length" || name == "Len" || name == "Count" ||
            name == "count" || name == "size";
@@ -300,7 +305,12 @@ TypeRef Sema::analyzeField(FieldExpr *expr) {
     return types::unknown();
 }
 
-/// @brief Resolve a paren-less member access on a runtime class. See header.
+/// @brief Resolve a parenthesis-free property access on a runtime class.
+/// @param expr Field access carrying the requested member name.
+/// @param baseType Named runtime pointer type of the receiver.
+/// @return Normalized property type, or Unknown after diagnosing a method or missing member.
+/// @details Registered properties resolve through their getter target. A bare method access gets
+///          targeted call-parentheses guidance instead of being treated as a value.
 TypeRef Sema::resolveRuntimeClassFieldAccess(FieldExpr *expr, TypeRef baseType) {
     const auto &registry = il::runtime::RuntimeRegistry::instance();
     std::string getterName = baseType->name + ".get_" + expr->field;
@@ -341,6 +351,11 @@ TypeRef Sema::resolveRuntimeClassFieldAccess(FieldExpr *expr, TypeRef baseType) 
     return types::unknown();
 }
 
+/// @brief Resolve a static field exposed through a type/module expression.
+/// @param expr Field access to resolve.
+/// @param ownerName Semantic owner type.
+/// @return Static field type, nullptr when the name is not a static field, or Unknown after an
+///         access-control error.
 TypeRef Sema::resolveStaticField(FieldExpr *expr, const std::string &ownerName) {
     std::string fieldKey = ownerName + "." + expr->field;
     if (!staticFields_.contains(fieldKey))
@@ -362,6 +377,12 @@ TypeRef Sema::resolveStaticField(FieldExpr *expr, const std::string &ownerName) 
     return fieldIt->second;
 }
 
+/// @brief Resolve a member selected from a module-valued base expression.
+/// @param expr Field access carrying the source member spelling.
+/// @param baseType Module type containing the canonical qualifier.
+/// @return Export, type, function, or property type; Unknown after a missing-export diagnostic.
+/// @details File-module export maps take precedence over qualified runtime and type-registry
+///          lookup. Zero-argument extern functions may be recorded as auto-evaluated getters.
 TypeRef Sema::resolveModuleFieldAccess(FieldExpr *expr, TypeRef baseType) {
     if (TypeRef staticFieldType = resolveStaticField(expr, baseType->name))
         return staticFieldType;
@@ -446,6 +467,12 @@ TypeRef Sema::resolveModuleFieldAccess(FieldExpr *expr, TypeRef baseType) {
     return types::unknown();
 }
 
+/// @brief Resolve a method, field, or property on a user-defined class or struct.
+/// @param expr Field access to resolve.
+/// @param baseType Semantic receiver type.
+/// @return Visible member type, or Unknown after an overload, visibility, or missing-member error.
+/// @details Methods include inherited overloads, fields preserve their declaring owner, and
+///          property reads record the generated getter symbol for lowering.
 TypeRef Sema::resolveClassStructFieldAccess(FieldExpr *expr, TypeRef baseType) {
     std::string memberKey = baseType->name + "." + expr->field;
     bool isInsideType = currentSelfType_ && currentSelfType_->name == baseType->name;
@@ -529,6 +556,11 @@ TypeRef Sema::resolveClassStructFieldAccess(FieldExpr *expr, TypeRef baseType) {
 // Optional and Type Operators
 //=============================================================================
 
+/// @brief Analyze explicit optional force-unwrapping.
+/// @param expr Force-unwrap expression.
+/// @return Optional inner type, a reference-like operand type for a redundant unwrap, or Unknown.
+/// @details Non-optional scalar operands are rejected; reference-like values remain accepted after
+///          flow narrowing has already removed an Optional wrapper.
 TypeRef Sema::analyzeForceUnwrap(ForceUnwrapExpr *expr) {
     TypeRef operandType = analyzeExpr(expr->operand.get());
     operandType = declaredOptionalSurfaceType(expr->operand.get(), operandType);
@@ -561,6 +593,11 @@ TypeRef Sema::analyzeForceUnwrap(ForceUnwrapExpr *expr) {
     return inner ? inner : types::unknown();
 }
 
+/// @brief Analyze null-safe member access through an Optional receiver.
+/// @param expr Optional-chain expression.
+/// @return Optional member type, without adding a second wrapper to an already optional member.
+/// @details Supports user fields/properties, built-in collection counts, strings, and runtime
+///          properties while enforcing visibility and write-only restrictions.
 TypeRef Sema::analyzeOptionalChain(OptionalChainExpr *expr) {
     TypeRef baseType = analyzeExpr(expr->base.get());
     baseType = declaredOptionalSurfaceType(expr->base.get(), baseType);
@@ -713,6 +750,11 @@ TypeRef Sema::analyzeCoalesce(CoalesceExpr *expr) {
     return innerType;
 }
 
+/// @brief Analyze propagation with the postfix try operator.
+/// @param expr Try expression whose operand must be Optional or Result.
+/// @return Unwrapped success/inner type.
+/// @details Validates that the enclosing function returns the matching carrier kind and that an
+///          optional inner value is compatible with the enclosing optional result.
 TypeRef Sema::analyzeTry(TryExpr *expr) {
     TypeRef operandType = analyzeExpr(expr->operand.get());
     operandType = declaredOptionalSurfaceType(expr->operand.get(), operandType);
@@ -1118,6 +1160,11 @@ bool Sema::analyzeMatchPattern(const MatchArm::Pattern &pattern,
     return false;
 }
 
+/// @brief Analyze a match expression and unify all arm result types.
+/// @param expr Match expression to type-check.
+/// @return Common arm type, or Unknown for an empty or incompatible match.
+/// @details Each arm receives its own scope and initialization state. Coverage diagnostics are
+///          exact for Boolean, enum, Optional, and Result scrutinees and conservative otherwise.
 TypeRef Sema::analyzeMatchExpr(MatchExpr *expr) {
     TypeRef scrutineeType = analyzeExpr(expr->scrutinee.get());
     scrutineeType = declaredOptionalSurfaceType(expr->scrutinee.get(), scrutineeType);
@@ -1234,6 +1281,11 @@ TypeRef Sema::analyzeMatchExpr(MatchExpr *expr) {
 // New, Lambda, and Collection Literals
 //=============================================================================
 
+/// @brief Analyze allocation or constructor-style initialization.
+/// @param expr New expression containing a target type and arguments.
+/// @return Constructed semantic type, or Unknown when construction or binding fails.
+/// @details Selects runtime constructors, explicit `init` overloads, or synthesized field-wise
+///          initialization and records the resulting argument binding for lowering.
 TypeRef Sema::analyzeNew(NewExpr *expr) {
     TypeRef type = resolveTypeNode(expr->type.get());
     if (!type) {
@@ -1379,6 +1431,11 @@ TypeRef Sema::analyzeNew(NewExpr *expr) {
     return type;
 }
 
+/// @brief Analyze a lambda under an optional expected function-type hint.
+/// @param expr Lambda expression.
+/// @return Function type formed from explicit or contextually inferred parameters and body result.
+/// @details Parameters are scoped as initialized finals; after body analysis, free-variable
+///          captures are collected for closure lowering.
 TypeRef Sema::analyzeLambda(LambdaExpr *expr) {
     // Consume any expected-type hint (set by a function-typed variable
     // initializer or a combinator argument). Clearing it first prevents the hint
@@ -1435,6 +1492,9 @@ TypeRef Sema::analyzeLambda(LambdaExpr *expr) {
     return types::function(paramTypes, returnType);
 }
 
+/// @brief Infer a homogeneous list-literal type.
+/// @param expr List literal.
+/// @return List of the common element type, using Error after incompatible known elements.
 TypeRef Sema::analyzeListLiteral(ListLiteralExpr *expr) {
     TypeRef elementType = types::unknown();
     bool incompatible = false;
@@ -1462,6 +1522,11 @@ TypeRef Sema::analyzeListLiteral(ListLiteralExpr *expr) {
     return types::list(elementType);
 }
 
+/// @brief Infer a homogeneous map-literal type.
+/// @param expr Map literal.
+/// @return Map of the common key and value types; incompatible values produce an Error value type.
+/// @details Unit is rejected in either stored position and key/value compatibility is diagnosed
+///          independently.
 TypeRef Sema::analyzeMapLiteral(MapLiteralExpr *expr) {
     TypeRef keyType = types::unknown();
     TypeRef valueType = types::unknown();
@@ -1507,6 +1572,9 @@ TypeRef Sema::analyzeMapLiteral(MapLiteralExpr *expr) {
     return types::map(keyType, valueType);
 }
 
+/// @brief Infer a homogeneous set-literal type.
+/// @param expr Set literal.
+/// @return Set of the common element type, using Error after incompatible known elements.
 TypeRef Sema::analyzeSetLiteral(SetLiteralExpr *expr) {
     TypeRef elementType = types::unknown();
     bool incompatible = false;
@@ -1538,6 +1606,9 @@ TypeRef Sema::analyzeSetLiteral(SetLiteralExpr *expr) {
 // Tuple and Block Expressions
 //=============================================================================
 
+/// @brief Analyze a tuple literal element by element.
+/// @param expr Tuple expression.
+/// @return Tuple type preserving each element's semantic type and order.
 TypeRef Sema::analyzeTuple(TupleExpr *expr) {
     std::vector<TypeRef> elementTypes;
     for (auto &elem : expr->elements) {
@@ -1546,6 +1617,9 @@ TypeRef Sema::analyzeTuple(TupleExpr *expr) {
     return types::tuple(std::move(elementTypes));
 }
 
+/// @brief Analyze compile-time tuple-index selection.
+/// @param expr Tuple-index expression with a constant element index.
+/// @return Selected element type, or Unknown after a non-tuple or bounds diagnostic.
 TypeRef Sema::analyzeTupleIndex(TupleIndexExpr *expr) {
     TypeRef tupleType = analyzeExpr(expr->tuple.get());
 
@@ -1567,6 +1641,9 @@ TypeRef Sema::analyzeTupleIndex(TupleIndexExpr *expr) {
     return tupleType->tupleElementType(expr->index);
 }
 
+/// @brief Analyze a scoped block expression.
+/// @param expr Block expression containing statements and an optional final value.
+/// @return Final value type, or Unit when the block has no value expression.
 TypeRef Sema::analyzeBlockExpr(BlockExpr *expr) {
     pushScope(expr->loc);
 

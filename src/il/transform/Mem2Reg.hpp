@@ -36,11 +36,14 @@ struct Mem2RegStats {
     unsigned removedStores{0}; ///< Number of store instructions eliminated.
 };
 
-/// \brief Promote simple allocas to SSA form.
-/// \param M Module to transform in place.
-/// \param stats Optional statistics output.
-/// \param enableParallel Allow function-level parallel promotion. Defaults to
+/// @brief Promote simple allocas to SSA form.
+/// @param M Module whose functions are transformed in place.
+/// @param stats Optional borrowed accumulator for successful promotions and removals.
+/// @param enableParallel Allow independent function-level workers. Defaults to
 ///        false so standalone calls follow the pass manager's deterministic policy.
+/// @details Runs bounded scalar replacement before sealed-SSA construction,
+///          skips exception-handling functions, and restores a function snapshot
+///          if branch-argument repair cannot complete safely.
 void mem2reg(il::core::Module &M, Mem2RegStats *stats = nullptr, bool enableParallel = false);
 
 } // namespace zanna::passes

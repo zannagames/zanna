@@ -140,6 +140,7 @@ PreservedAnalyses LateCleanup::run(Module &module, AnalysisManager &analysis) {
 ///          callback that constructs and runs the pass.
 /// @param registry Pass registry to update.
 void registerLateCleanupPass(PassRegistry &registry) {
+    /// Construct and execute late cleanup for a pass-manager module callback.
     registry.registerModulePass("late-cleanup", [](Module &module, AnalysisManager &analysis) {
         LateCleanup pass;
         return pass.run(module, analysis);

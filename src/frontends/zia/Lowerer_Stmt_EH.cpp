@@ -4,20 +4,6 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: frontends/zia/Lowerer_Stmt_EH.cpp
-// Purpose: Lower Zia try, catch, finally, and throw statements into verified IL.
-// Key invariants:
-//   - Every handler entry uses the canonical `%err`/`%tok` ABI.
-//   - Catch bodies forward active tokens through uniquely named continuation parameters.
-// Ownership/Lifetime:
-//   - The lowerer appends blocks and instructions to its currently owned function.
-//   - AST nodes and semantic types are borrowed only for the active lowering call.
-// Links: frontends/zia/Lowerer.hpp, il/verify/EhChecks.cpp,
-//        docs/adr/0005-resume-token-provenance.md
-//
-//===----------------------------------------------------------------------===//
-
 /// @file Lowerer_Stmt_EH.cpp
 /// @brief Exception handling statement lowering for the Zia IL lowerer.
 ///
@@ -94,6 +80,9 @@ namespace il::frontends::zia {
 using namespace runtime;
 
 /// @brief Map a typed-catch error type name to its TrapKind integer value.
+/// @param name Zia catch type name.
+/// @return Runtime trap-kind integer, or -1 for `Error` and unrecognized
+///         names.
 /// @details Returns -1 for "Error" (catch-all) or unrecognised names.
 static int trapKindFromName(const std::string &name) {
     if (name == "DivideByZero")
@@ -123,8 +112,10 @@ static int trapKindFromName(const std::string &name) {
     return -1; // "Error" catch-all or unknown
 }
 
+/// @brief Trap-kind value used for language-level RuntimeError throws.
 static constexpr int kErrRuntimeError = 9;
 
+/// @brief Emit `eh.pop` in the current block.
 void Lowerer::emitEhPop() {
     il::core::Instr ehPopInstr;
     ehPopInstr.op = Opcode::EhPop;
@@ -133,10 +124,16 @@ void Lowerer::emitEhPop() {
     blockMgr_.currentBlock()->instructions.push_back(std::move(ehPopInstr));
 }
 
+/// @brief Emit every currently active deferred cleanup.
 void Lowerer::emitActiveCleanups() {
     emitCleanupsFrom(0);
 }
 
+/// @brief Emit cleanup frames from one lexical boundary in reverse order.
+/// @param startIndex First cleanup-stack entry belonging to the exiting scope.
+/// @details Temporarily truncates the live stack while lowering each finally
+///          body so nested abrupt exits do not re-run the same cleanup, then
+///          restores the caller's cleanup metadata.
 void Lowerer::emitCleanupsFrom(size_t startIndex) {
     if (cleanupStack_.size() <= startIndex || isTerminated())
         return;
@@ -161,6 +158,9 @@ void Lowerer::emitCleanupsFrom(size_t startIndex) {
     cleanupStack_ = std::move(savedFrames);
 }
 
+/// @brief Emit catch-local cleanup frames before a throw or rethrow.
+/// @details Walks outward only to the nearest exception-handler boundary,
+///          leaving outer handler cleanup for normal EH propagation.
 void Lowerer::emitCatchBodyCleanupsBeforeThrow() {
     if (cleanupStack_.empty() || isTerminated())
         return;
@@ -185,6 +185,14 @@ void Lowerer::emitCatchBodyCleanupsBeforeThrow() {
     cleanupStack_ = std::move(savedFrames);
 }
 
+/// @brief Lower a `try` statement with typed catches and optional `finally`.
+/// @param stmt Try statement to lower.
+/// @details Emits canonical error/resume-token handler entries, typed
+///          trap-kind tests, uniquely parameterized catch continuations,
+///          captured error metadata, normal and exceptional finally paths,
+///          rethrow fallback, and resume-label transfer to the shared
+///          continuation. Cleanup metadata is coordinated with abrupt exits
+///          from nested statements.
 void Lowerer::lowerTryStmt(TryStmt *stmt) {
     ZiaLocationScope locScope(*this, stmt->loc);
 
@@ -493,6 +501,11 @@ void Lowerer::lowerTryStmt(TryStmt *stmt) {
     setBlock(afterIdx);
 }
 
+/// @brief Lower a language-level `throw` or catch-local rethrow.
+/// @param stmt Throw statement with an optional message expression.
+/// @details Runs catch-local cleanups, preserves captured kind/code/line for a
+///          value-less rethrow, converts explicit values to stored runtime
+///          messages, and terminates with the RuntimeError trap kind.
 void Lowerer::lowerThrowStmt(ThrowStmt *stmt) {
     ZiaLocationScope locScope(*this, stmt->loc);
 

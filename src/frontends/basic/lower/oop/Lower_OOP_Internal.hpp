@@ -21,6 +21,10 @@
 #include <string>
 #include <string_view>
 
+/// @file
+/// @brief Declares implementation-only class-field type resolvers shared by
+///        BASIC OOP lowering translation units.
+
 namespace il::frontends::basic {
 
 // Internal helper functions shared between OOP lowering translation units.

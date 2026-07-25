@@ -57,6 +57,8 @@ std::unordered_map<std::string, std::string> g_class_parents;
 std::mutex g_relationship_mutex;
 
 /// @brief Recursively append a human-readable spelling of @p type to @p ss.
+/// @param ss Destination stream.
+/// @param type Semantic type to render.
 /// @param developerFacing When true, emit internal/developer detail; when
 ///        false, the user-facing form. Type arguments render as `[A, B]`,
 ///        with `?` for an unresolved argument.
@@ -241,6 +243,9 @@ void appendTypeString(std::ostringstream &ss, const ZannaType &type, bool develo
 // ZannaType Implementation
 //=============================================================================
 
+/// @brief Compare two semantic types structurally.
+/// @param other Type to compare.
+/// @return True when kind, name, argument count, and every nested argument are equal.
 bool ZannaType::equals(const ZannaType &other) const {
     if (kind != other.kind)
         return false;
@@ -257,6 +262,10 @@ bool ZannaType::equals(const ZannaType &other) const {
     return true;
 }
 
+/// @brief Test whether a value of @p source may be assigned to this type.
+/// @param source Source value type.
+/// @return True for exact/compatible types, supported promotions, optional lifting, declared
+///         interface/class relationships, and unresolved recovery placeholders.
 bool ZannaType::isAssignableFrom(const ZannaType &source) const {
     // Exact match
     if (equals(source))
@@ -356,6 +365,9 @@ bool ZannaType::isAssignableFrom(const ZannaType &source) const {
     return false;
 }
 
+/// @brief Test whether an explicit semantic conversion to @p target is supported.
+/// @param target Destination type.
+/// @return True for assignment-compatible types and implemented numeric conversions.
 bool ZannaType::isConvertibleTo(const ZannaType &target) const {
     // Assignment is conversion
     if (target.isAssignableFrom(*this))
@@ -379,12 +391,17 @@ bool ZannaType::isConvertibleTo(const ZannaType &target) const {
     return false;
 }
 
+/// @brief Format the user-facing semantic spelling.
+/// @return Source-oriented type spelling; an untyped null optional is rendered as `?`.
 std::string ZannaType::toString() const {
     std::ostringstream ss;
     appendTypeString(ss, *this, false);
     return ss.str();
 }
 
+/// @brief Format the developer/tooling semantic spelling.
+/// @return Detailed spelling retaining named runtime pointer identity and rendering an untyped
+///         null optional as `null`.
 std::string ZannaType::toDisplayString() const {
     std::ostringstream ss;
     appendTypeString(ss, *this, true);
@@ -397,17 +414,26 @@ std::string ZannaType::toDisplayString() const {
 
 namespace types {
 
+/// @brief Remove all process-wide type-to-interface relationships.
+/// @details Called when a new semantic analyzer begins so prior compilation state cannot leak.
 void clearInterfaceImplementations() {
     std::lock_guard<std::mutex> lock(g_relationship_mutex);
     g_interface_impls.clear();
 }
 
+/// @brief Record that a nominal type implements an interface.
+/// @param typeName Concrete semantic type name.
+/// @param interfaceName Canonical interface name.
 void registerInterfaceImplementation(const std::string &typeName,
                                      const std::string &interfaceName) {
     std::lock_guard<std::mutex> lock(g_relationship_mutex);
     g_interface_impls[typeName].insert(interfaceName);
 }
 
+/// @brief Test direct or inherited implementation of an interface.
+/// @param typeName Concrete class or struct name.
+/// @param interfaceName Canonical interface name.
+/// @return True when the type or one of its registered base classes implements the interface.
 bool implementsInterface(const std::string &typeName, const std::string &interfaceName) {
     std::lock_guard<std::mutex> lock(g_relationship_mutex);
     std::string current = typeName;
@@ -425,16 +451,24 @@ bool implementsInterface(const std::string &typeName, const std::string &interfa
 }
 
 // BUG-VL-007 fix: Class inheritance tracking
+/// @brief Remove all process-wide class-parent relationships.
 void clearClassInheritance() {
     std::lock_guard<std::mutex> lock(g_relationship_mutex);
     g_class_parents.clear();
 }
 
+/// @brief Record a direct class inheritance edge.
+/// @param childName Derived class name.
+/// @param parentName Direct base class name.
 void registerClassInheritance(const std::string &childName, const std::string &parentName) {
     std::lock_guard<std::mutex> lock(g_relationship_mutex);
     g_class_parents[childName] = parentName;
 }
 
+/// @brief Test whether one class transitively derives from another.
+/// @param childName Candidate derived class.
+/// @param parentName Candidate ancestor.
+/// @return True when @p parentName appears in the registered parent chain of @p childName.
 bool isSubclassOf(const std::string &childName, const std::string &parentName) {
     std::lock_guard<std::mutex> lock(g_relationship_mutex);
     // Walk up the inheritance chain
@@ -492,66 +526,102 @@ struct TypeCache {
 };
 } // anonymous namespace
 
+/// @brief Return the interned Integer type.
+/// @return Process-wide immutable singleton.
 TypeRef integer() {
     return TypeCache::instance().integerType;
 }
 
+/// @brief Return the interned Number type.
+/// @return Process-wide immutable singleton.
 TypeRef number() {
     return TypeCache::instance().numberType;
 }
 
+/// @brief Return the interned Boolean type.
+/// @return Process-wide immutable singleton.
 TypeRef boolean() {
     return TypeCache::instance().booleanType;
 }
 
+/// @brief Return the interned String type.
+/// @return Process-wide immutable singleton.
 TypeRef string() {
     return TypeCache::instance().stringType;
 }
 
+/// @brief Return the interned Byte type.
+/// @return Process-wide immutable singleton.
 TypeRef byte() {
     return TypeCache::instance().byteType;
 }
 
+/// @brief Return the interned Unit type.
+/// @return Process-wide immutable singleton.
 TypeRef unit() {
     return TypeCache::instance().unitType;
 }
 
+/// @brief Return the interned Void type.
+/// @return Process-wide immutable singleton.
 TypeRef voidType() {
     return TypeCache::instance().voidType;
 }
 
+/// @brief Return the interned Error type.
+/// @return Process-wide immutable singleton.
 TypeRef error() {
     return TypeCache::instance().errorType;
 }
 
+/// @brief Return the interned anonymous pointer type.
+/// @return Process-wide immutable singleton.
 TypeRef ptr() {
     return TypeCache::instance().ptrType;
 }
 
+/// @brief Return the interned Unknown inference placeholder.
+/// @return Process-wide immutable singleton.
 TypeRef unknown() {
     return TypeCache::instance().unknownType;
 }
 
+/// @brief Return the interned Never type.
+/// @return Process-wide immutable singleton.
 TypeRef never() {
     return TypeCache::instance().neverType;
 }
 
+/// @brief Return the interned Any type.
+/// @return Process-wide immutable singleton.
 TypeRef any() {
     return TypeCache::instance().anyType;
 }
 
+/// @brief Construct an Optional type.
+/// @param inner Wrapped value type.
+/// @return New Optional semantic type.
 TypeRef optional(TypeRef inner) {
     return std::make_shared<ZannaType>(TypeKindSem::Optional, std::vector<TypeRef>{inner});
 }
 
+/// @brief Construct a Result type.
+/// @param successType Success payload type; the error payload is implicit.
+/// @return New Result semantic type.
 TypeRef result(TypeRef successType) {
     return std::make_shared<ZannaType>(TypeKindSem::Result, std::vector<TypeRef>{successType});
 }
 
+/// @brief Construct a List type.
+/// @param element Element type.
+/// @return New List semantic type.
 TypeRef list(TypeRef element) {
     return std::make_shared<ZannaType>(TypeKindSem::List, std::vector<TypeRef>{element});
 }
 
+/// @brief Construct a typed runtime sequence handle.
+/// @param element Sequence element type.
+/// @return Named pointer type that preserves `rt_seq` layout and element metadata.
 TypeRef seqOf(TypeRef element) {
     // Represent a typed rt_seq as Ptr{name="Zanna.Collections.Seq", typeArgs=[element]}.
     // This sentinel allows the lowerer to route to kSeqLen/kSeqGet rather than
@@ -561,65 +631,114 @@ TypeRef seqOf(TypeRef element) {
                                        std::vector<TypeRef>{std::move(element)});
 }
 
+/// @brief Construct a typed runtime Future handle.
+/// @param payload Awaited result type.
+/// @return Named `Zanna.Threads.Future` pointer with payload metadata.
 TypeRef futureOf(TypeRef payload) {
     return std::make_shared<ZannaType>(TypeKindSem::Ptr,
                                        std::string("Zanna.Threads.Future"),
                                        std::vector<TypeRef>{std::move(payload)});
 }
 
+/// @brief Construct a Set type.
+/// @param element Element type.
+/// @return New Set semantic type.
 TypeRef set(TypeRef element) {
     return std::make_shared<ZannaType>(TypeKindSem::Set, std::vector<TypeRef>{element});
 }
 
+/// @brief Construct a Map type.
+/// @param key Key type.
+/// @param value Value type.
+/// @return New Map semantic type.
 TypeRef map(TypeRef key, TypeRef value) {
     return std::make_shared<ZannaType>(TypeKindSem::Map, std::vector<TypeRef>{key, value});
 }
 
+/// @brief Construct a function type.
+/// @param params Parameter types in source order.
+/// @param ret Return type.
+/// @return New Function type storing the return type after all parameters.
 TypeRef function(std::vector<TypeRef> params, TypeRef ret) {
     params.push_back(ret); // Store return type at the end
     return std::make_shared<ZannaType>(TypeKindSem::Function, std::move(params));
 }
 
+/// @brief Construct a tuple type.
+/// @param elements Element types in positional order.
+/// @return New Tuple semantic type.
 TypeRef tuple(std::vector<TypeRef> elements) {
     return std::make_shared<ZannaType>(TypeKindSem::Tuple, std::move(elements));
 }
 
+/// @brief Construct a named struct type.
+/// @param name Semantic struct name.
+/// @param typeParams Concrete or placeholder type arguments.
+/// @return New Struct semantic type.
 TypeRef structType(const std::string &name, std::vector<TypeRef> typeParams) {
     return std::make_shared<ZannaType>(TypeKindSem::Struct, name, std::move(typeParams));
 }
 
+/// @brief Construct a named class type.
+/// @param name Semantic class name.
+/// @param typeParams Concrete or placeholder type arguments.
+/// @return New Class semantic type.
 TypeRef classType(const std::string &name, std::vector<TypeRef> typeParams) {
     return std::make_shared<ZannaType>(TypeKindSem::Class, name, std::move(typeParams));
 }
 
+/// @brief Construct a named interface type.
+/// @param name Semantic interface name.
+/// @param typeParams Concrete or placeholder type arguments.
+/// @return New Interface semantic type.
 TypeRef interface(const std::string &name, std::vector<TypeRef> typeParams) {
     return std::make_shared<ZannaType>(TypeKindSem::Interface, name, std::move(typeParams));
 }
 
+/// @brief Construct a named enum type.
+/// @param name Semantic enum name.
+/// @return New Enum semantic type.
 TypeRef enumType(const std::string &name) {
     return std::make_shared<ZannaType>(TypeKindSem::Enum, name);
 }
 
+/// @brief Construct a generic type-parameter placeholder.
+/// @param name Parameter name.
+/// @return New TypeParam semantic type.
 TypeRef typeParam(const std::string &name) {
     return std::make_shared<ZannaType>(TypeKindSem::TypeParam, name);
 }
 
+/// @brief Construct a named runtime-class pointer type.
+/// @param name Fully qualified runtime class name.
+/// @return New named Ptr semantic type.
 TypeRef runtimeClass(const std::string &name) {
     // Create a Ptr type with the runtime class name
     // This allows us to track the class name for method resolution
     return std::make_shared<ZannaType>(TypeKindSem::Ptr, name);
 }
 
+/// @brief Construct a parameterized runtime-class pointer type.
+/// @param name Fully qualified runtime class name.
+/// @param typeArgs Container or class type arguments.
+/// @return New named Ptr semantic type retaining its type arguments.
 TypeRef runtimeClass(const std::string &name, std::vector<TypeRef> typeArgs) {
     return std::make_shared<ZannaType>(TypeKindSem::Ptr, name, std::move(typeArgs));
 }
 
+/// @brief Construct a non-value module namespace type.
+/// @param name Qualified module name.
+/// @return New Module semantic type used for qualified lookup.
 TypeRef module(const std::string &name) {
     // Create a Module type with the module name
     // This allows qualified access like moduleName.symbol
     return std::make_shared<ZannaType>(TypeKindSem::Module, name);
 }
 
+/// @brief Construct a fixed-size inline array type.
+/// @param elemType Element type.
+/// @param count Compile-time element count.
+/// @return New FixedArray semantic type.
 TypeRef fixedArray(TypeRef elemType, size_t count) {
     return std::make_shared<ZannaType>(TypeKindSem::FixedArray, std::move(elemType), count);
 }
@@ -630,6 +749,11 @@ TypeRef fixedArray(TypeRef elemType, size_t count) {
 // IL Type Mapping
 //=============================================================================
 
+/// @brief Map a Zia semantic type to its lowered IL value kind.
+/// @param type Semantic type to lower.
+/// @return IL scalar/storage kind used at instruction boundaries.
+/// @details Aggregate and reference-like types lower to pointers; nullable reference types retain
+///          their pointer/string representation while other optionals use boxed pointer storage.
 il::core::Type::Kind toILType(const ZannaType &type) {
     switch (type.kind) {
         case TypeKindSem::Integer:
@@ -721,6 +845,11 @@ il::core::Type::Kind toILType(const ZannaType &type) {
     return il::core::Type::Kind::Void;
 }
 
+/// @brief Compute the semantic storage size used by aggregate layout helpers.
+/// @param type Semantic type.
+/// @return Size in bytes, or zero for unsized/non-value kinds.
+/// @details Tuple and fixed-array sizes include inline layout. User struct size remains dependent
+///          on declaration metadata and is therefore not computed here.
 size_t typeSize(const ZannaType &type) {
     switch (type.kind) {
         case TypeKindSem::Integer:
@@ -797,6 +926,9 @@ size_t typeSize(const ZannaType &type) {
     return 0;
 }
 
+/// @brief Compute the semantic storage alignment used by aggregate layout helpers.
+/// @param type Semantic type.
+/// @return Required alignment in bytes under the current portable layout policy.
 size_t typeAlignment(const ZannaType &type) {
     switch (type.kind) {
         case TypeKindSem::Integer:
@@ -837,6 +969,9 @@ size_t typeAlignment(const ZannaType &type) {
     return 1;
 }
 
+/// @brief Convert a semantic kind enumerator to its canonical name.
+/// @param kind Semantic type kind.
+/// @return Static null-terminated name, or `?` if no enumerator matches.
 const char *kindToString(TypeKindSem kind) {
     switch (kind) {
         case TypeKindSem::Integer:

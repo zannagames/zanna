@@ -1,0 +1,128 @@
+// =============================================================================
+// meta/scoring.zia — per-level scoring, medals, and run stats
+// =============================================================================
+//
+// Tracks a level run: elapsed time, shots fired/hit (accuracy), kills, damage
+// taken, secrets found. At level end it computes a score and a medal tier
+// (Bronze/Silver/Gold/Ashborn) from time + accuracy + no-damage bonuses. Also
+// accumulates campaign-wide stats. Pure logic — probes assert medal thresholds.
+// =============================================================================
+module scoring;
+
+bind "../config" as config;
+bind "../core/mathutil" as M;
+
+var MEDAL_NONE: Integer = 0;
+var MEDAL_BRONZE: Integer = 1;
+var MEDAL_SILVER: Integer = 2;
+var MEDAL_GOLD: Integer = 3;
+var MEDAL_ASHBORN: Integer = 4;
+
+class Scoring {
+    // Current level run.
+    hide Float levelTime;
+    hide Integer kills;
+    hide Integer damageTaken;
+    hide Integer secrets;
+    hide Integer secretsTotal;
+    hide Integer parTimeSec;
+    // Campaign totals.
+    hide Integer totalKills;
+    hide Integer totalDeaths;
+    hide Float totalTime;
+    hide List[Integer] levelMedals;
+
+    expose func init() {
+        levelTime = 0.0; kills = 0; damageTaken = 0; secrets = 0; secretsTotal = 0; parTimeSec = 120;
+        totalKills = 0; totalDeaths = 0; totalTime = 0.0;
+        levelMedals = [];
+        var i = 0;
+        while i < config.LV_COUNT { levelMedals.Add(MEDAL_NONE); i = i + 1; }
+    }
+
+    // Begin a level run.
+    expose func beginLevel(parSec: Integer, secretCount: Integer) {
+        levelTime = 0.0; kills = 0; damageTaken = 0; secrets = 0;
+        parTimeSec = parSec; secretsTotal = secretCount;
+    }
+
+    expose func tick(dt: Float) { levelTime = levelTime + dt; totalTime = totalTime + dt; }
+    expose func addKill() { kills = kills + 1; totalKills = totalKills + 1; }
+    expose func addDamage(amt: Integer) { damageTaken = damageTaken + amt; }
+    expose func addSecret() { if secrets < secretsTotal { secrets = secrets + 1; } }
+    expose func addDeath() { totalDeaths = totalDeaths + 1; }
+
+    expose func getLevelTime() -> Float { return levelTime; }
+    expose func getKills() -> Integer { return kills; }
+    expose func getDamageTaken() -> Integer { return damageTaken; }
+    expose func getSecrets() -> Integer { return secrets; }
+    expose func getSecretsTotal() -> Integer { return secretsTotal; }
+    expose func getParTime() -> Integer { return parTimeSec; }
+    expose func getTotalKills() -> Integer { return totalKills; }
+    expose func getTotalDeaths() -> Integer { return totalDeaths; }
+    expose func getTotalTime() -> Float { return totalTime; }
+
+    expose func restoreRun(timeSec: Float, killCount: Integer, damage: Integer,
+                           foundSecrets: Integer, totalSecrets0: Integer, parSec: Integer) {
+        levelTime = M.maxf(0.0, timeSec);
+        kills = M.clampi(killCount, 0, 1000000);
+        damageTaken = M.clampi(damage, 0, 1000000000);
+        secrets = M.clampi(foundSecrets, 0, 1000000);
+        secretsTotal = M.clampi(totalSecrets0, 0, 1000000);
+        parTimeSec = M.clampi(parSec, 1, 1000000);
+    }
+
+    expose func restoreTotals(killCount: Integer, deaths: Integer, timeSec: Float) {
+        totalKills = M.clampi(killCount, 0, 1000000000);
+        totalDeaths = M.clampi(deaths, 0, 1000000000);
+        totalTime = M.maxf(0.0, timeSec);
+    }
+
+    expose func restoreMedal(levelId: Integer, value: Integer) {
+        if levelId < 0 || levelId >= levelMedals.Count { return; }
+        levelMedals[levelId] = M.clampi(value, MEDAL_NONE, MEDAL_ASHBORN);
+    }
+
+    // Compute the level score.
+    expose func score() -> Integer {
+        var s = kills * 100;
+        // Time bonus: up to 5000 for beating par.
+        var timeBonus = M.roundi((parTimeSec - levelTime) * 40.0);
+        if timeBonus < 0 { timeBonus = 0; }
+        s = s + timeBonus;
+        // No-damage bonus.
+        if damageTaken == 0 { s = s + 3000; }
+        // Secrets.
+        s = s + secrets * 500;
+        return s;
+    }
+
+    // Medal tier from time + damage + secrets.
+    expose func medal() -> Integer {
+        var m = MEDAL_BRONZE;
+        if levelTime < parTimeSec + 0.0 { m = MEDAL_SILVER; }
+        if levelTime < parTimeSec * 0.7 && damageTaken < 40 { m = MEDAL_GOLD; }
+        if levelTime < parTimeSec * 0.6 && damageTaken == 0 && secrets >= secretsTotal { m = MEDAL_ASHBORN; }
+        return m;
+    }
+
+    // Record the level's medal (best-of).
+    expose func recordLevel(levelId: Integer) {
+        if levelId < 0 || levelId >= config.LV_COUNT { return; }
+        var m = medal();
+        if m > levelMedals[levelId] { levelMedals[levelId] = m; }
+    }
+
+    expose func medalOf(levelId: Integer) -> Integer {
+        if levelId < 0 || levelId >= config.LV_COUNT { return MEDAL_NONE; }
+        return levelMedals[levelId];
+    }
+
+    expose func medalName(m: Integer) -> String {
+        if m == MEDAL_BRONZE { return "Bronze"; }
+        if m == MEDAL_SILVER { return "Silver"; }
+        if m == MEDAL_GOLD { return "Gold"; }
+        if m == MEDAL_ASHBORN { return "Ashborn"; }
+        return "—";
+    }
+}

@@ -1,0 +1,40 @@
+{
+  "format": "vscn",
+  "version": 7,
+  "textures": [
+  ],
+  "cubemaps": [
+  ],
+  "materials": [
+  ],
+  "cameras": [
+  ],
+  "meshes": [
+  ],
+  "nodes": [
+    {
+      "name": "Pillar Instance",
+      "position": [3, 0, -2],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "prefab": "prefab_source_v7.scene3d",
+      "metadata": {
+        "row": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Origin Marker",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1
+    }
+  ]
+}

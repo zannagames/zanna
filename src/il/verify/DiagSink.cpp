@@ -29,6 +29,9 @@ namespace {
 ///          grouped by subsystem.  This helper translates the enumerator into a
 ///          stable string used as part of the user-facing diagnostic identifier
 ///          (for example "verify.eh.underflow").
+/// @param code Verifier diagnostic category to translate.
+/// @return Stable prefix for a known code, or an empty view for `Unknown` and
+///         unrecognized enum values.
 std::string_view diagCodeToPrefix(il::verify::VerifyDiagCode code) {
     using il::verify::VerifyDiagCode;
     switch (code) {
@@ -63,6 +66,8 @@ namespace il::verify {
 /// @details Thin wrapper that forwards to @ref diagCodeToPrefix so external
 ///          callers do not need to reach into the anonymous namespace when they
 ///          only care about the string form of the code.
+/// @param code Verifier diagnostic category to translate.
+/// @return Stable textual prefix, or an empty view when no prefix is defined.
 std::string_view toString(VerifyDiagCode code) {
     return diagCodeToPrefix(code);
 }
@@ -71,6 +76,11 @@ std::string_view toString(VerifyDiagCode code) {
 /// @details Uses the Diagnostic struct's code field to store the verifier code
 ///          prefix, ensuring consistent formatting through the shared printDiag()
 ///          function.  The code appears as `[verify.eh.underflow]` in the output.
+/// @param code Verifier category converted into the diagnostic code field.
+/// @param severity Severity assigned to the resulting diagnostic.
+/// @param loc Source location copied into the diagnostic.
+/// @param message Human-readable payload moved into the diagnostic.
+/// @return Diagnostic with its stage set to `verify`.
 il::support::Diag makeVerifierDiag(VerifyDiagCode code,
                                    il::support::Severity severity,
                                    il::support::SourceLoc loc,
@@ -85,6 +95,10 @@ il::support::Diag makeVerifierDiag(VerifyDiagCode code,
 /// @details Calls @ref makeVerifierDiag with @ref il::support::Severity::Error,
 ///          saving callers from repeating the severity constant at each call
 ///          site.
+/// @param code Verifier category converted into the diagnostic code field.
+/// @param loc Source location copied into the diagnostic.
+/// @param message Human-readable payload moved into the diagnostic.
+/// @return Error-severity diagnostic with its stage set to `verify`.
 il::support::Diag makeVerifierError(VerifyDiagCode code,
                                     il::support::SourceLoc loc,
                                     std::string message) {
@@ -94,6 +108,7 @@ il::support::Diag makeVerifierError(VerifyDiagCode code,
 /// @brief Append a diagnostic to the collection in arrival order.
 /// @details The sink simply stores diagnostics in a vector, preserving the order
 ///          they were reported so clients can iterate deterministically.
+/// @param diag Diagnostic moved into the retained collection.
 void CollectingDiagSink::report(il::support::Diag diag) {
     diags_.push_back(std::move(diag));
 }
@@ -101,6 +116,8 @@ void CollectingDiagSink::report(il::support::Diag diag) {
 /// @brief Access the accumulated diagnostics without copying.
 /// @details Returns a reference to the internal vector so callers can inspect or
 ///          iterate the collected diagnostics without incurring a copy.
+/// @return Const reference valid until the sink is destroyed or a subsequent
+///         mutating operation invalidates the vector's storage.
 const std::vector<il::support::Diag> &CollectingDiagSink::diagnostics() const {
     return diags_;
 }

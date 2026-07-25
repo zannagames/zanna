@@ -15,6 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements intra-block and MemorySSA-backed dead-store elimination.
+/// @details Stores are erased only with alias, overwrite-coverage, and
+///          nontrapping proofs; exception-handling functions conservatively
+///          bypass cross-block elimination.
+
 #include "il/transform/DSE.hpp"
 
 #include "il/analysis/AllocaRoots.hpp"
@@ -39,6 +45,7 @@ using namespace il::core;
 namespace il::transform {
 
 namespace {
+/// @brief Identifies an instruction by owning block and stable pre-erasure index.
 using InstructionSite = std::pair<Block *, size_t>;
 
 /// @brief Erase instruction sites without relying on raw pointer ordering.
@@ -55,6 +62,7 @@ std::size_t eraseInstructionSites(Function &F, std::vector<InstructionSite> &sit
     for (std::size_t i = 0; i < F.blocks.size(); ++i)
         blockOrder.emplace(&F.blocks[i], i);
 
+    /// Order sites by block and then back-to-front within each block.
     std::sort(sites.begin(), sites.end(), [&](const auto &a, const auto &b) {
         const std::size_t aOrder = blockOrder.at(a.first);
         const std::size_t bOrder = blockOrder.at(b.first);
@@ -71,13 +79,20 @@ std::size_t eraseInstructionSites(Function &F, std::vector<InstructionSite> &sit
     return erased;
 }
 
+/// @brief Memory location key with optional access width.
 struct Addr {
     // We track by Value plus optional byte width for more precise AA queries.
+    /// Pointer value naming the location.
     Value v;
+    /// Access width in bytes when known.
     std::optional<unsigned> size;
 };
 
+/// @brief Hash memory location keys for the intra-block kill set.
 struct AddrHash {
+    /// @brief Hash a location's value identity and optional width.
+    /// @param a Address key.
+    /// @return Combined hash value.
     size_t operator()(const Addr &a) const noexcept {
         // Hash by kind and id/str
         size_t h = static_cast<size_t>(a.v.kind) * 1315423911u;
@@ -102,7 +117,12 @@ struct AddrHash {
     }
 };
 
+/// @brief Exact equality comparator for memory location keys.
 struct AddrEq {
+    /// @brief Compare value identity and access width.
+    /// @param a First location.
+    /// @param b Second location.
+    /// @return True only for structurally identical address keys.
     bool operator()(const Addr &a, const Addr &b) const noexcept {
         // Exact match only; potential aliasing is handled via AA when needed.
         if (a.v.kind != b.v.kind)
@@ -124,18 +144,35 @@ struct AddrEq {
     }
 };
 
+/// @brief Test whether an instruction stores through an SSA temporary pointer.
+/// @param I Instruction to inspect.
+/// @return True for well-shaped temporary-address stores.
 inline bool isStoreToTempPtr(const Instr &I) {
     return I.op == Opcode::Store && !I.operands.empty() && I.operands[0].kind == Value::Kind::Temp;
 }
 
+/// @brief Test whether an instruction loads through an SSA temporary pointer.
+/// @param I Instruction to inspect.
+/// @return True for well-shaped temporary-address loads.
 inline bool isLoadFromTempPtr(const Instr &I) {
     return I.op == Opcode::Load && !I.operands.empty() && I.operands[0].kind == Value::Kind::Temp;
 }
 
+/// @brief Derive a memory instruction's access width from its IL type.
+/// @param I Load or store instruction.
+/// @return Width in bytes when the type has a known fixed size.
 inline std::optional<unsigned> accessSize(const Instr &I) {
     return zanna::analysis::BasicAA::typeSizeBytes(I.type);
 }
 
+/// @brief Prove that a later store completely covers an earlier store.
+/// @param laterPtr Pointer written by the later store.
+/// @param laterSize Later access width.
+/// @param earlierPtr Pointer written by the candidate dead store.
+/// @param earlierSize Earlier access width.
+/// @param AA Alias analysis used to require identical starting locations.
+/// @return True when both widths are known, the later write is at least as wide,
+///         and the pointers must alias.
 bool fullyOverwrites(const Value &laterPtr,
                      std::optional<unsigned> laterSize,
                      const Value &earlierPtr,
@@ -151,7 +188,10 @@ bool fullyOverwrites(const Value &laterPtr,
 
 } // namespace
 
-/// @brief Run dse.
+/// @brief Eliminate overwritten stores within individual basic blocks.
+/// @param F Function updated in place.
+/// @param AM Analysis manager providing BasicAA.
+/// @return True when at least one nontrapping store was removed.
 bool runDSE(Function &F, AnalysisManager &AM) {
     // Acquire BasicAA when available
     zanna::analysis::BasicAA &AA =
@@ -218,6 +258,9 @@ bool runDSE(Function &F, AnalysisManager &AM) {
 
 namespace {
 
+/// @brief Detect exception-handling state that blocks cross-block DSE.
+/// @param F Function to scan.
+/// @return True when any EH stack, entry, or resume opcode is present.
 bool hasExceptionHandling(const Function &F) {
     for (const auto &B : F.blocks) {
         for (const auto &I : B.instructions) {
@@ -237,6 +280,10 @@ bool hasExceptionHandling(const Function &F) {
     return false;
 }
 
+/// @brief Erase stores identified dead by a MemorySSA result.
+/// @param function Function updated in place.
+/// @param memorySSA MemorySSA proof corresponding to @p function.
+/// @return True when at least one proven nontrapping store was removed.
 bool eliminateMemorySSADeadStores(Function &function,
                                   const zanna::analysis::MemorySSA &memorySSA) {
     std::vector<InstructionSite> toRemove;
@@ -253,9 +300,12 @@ bool eliminateMemorySSADeadStores(Function &function,
 
 } // namespace
 
-/// Cross-block DSE compatibility entry point.
+/// @brief Cross-block DSE compatibility entry point.
 /// @details The MemorySSA implementation is the single authoritative
 ///          cross-block path proof, avoiding divergent call/loop semantics.
+/// @param F Function updated in place.
+/// @param AM Analysis manager providing BasicAA.
+/// @return True when MemorySSA proves and removes at least one store.
 bool runCrossBlockDSE(Function &F, AnalysisManager &AM) {
     if (hasExceptionHandling(F))
         return false;
@@ -266,13 +316,16 @@ bool runCrossBlockDSE(Function &F, AnalysisManager &AM) {
     return eliminateMemorySSADeadStores(F, memorySSA);
 }
 
-/// MemorySSA-based dead store elimination.
+/// @brief Eliminate cross-block dead stores using cached MemorySSA.
 ///
 /// Uses the MemorySSA analysis as the canonical cross-block proof. Since its
 /// dead-store computation skips calls for
 /// non-escaping allocas (they cannot access non-escaping stack memory), this
 /// pass eliminates stores in functions that contain runtime calls inside loops
 /// or conditional branches — the most common pattern in Zia-lowered code.
+/// @param F Function updated in place.
+/// @param AM Analysis manager providing MemorySSA.
+/// @return True when at least one store was removed.
 bool runMemorySSADSE(Function &F, AnalysisManager &AM) {
     if (hasExceptionHandling(F))
         return false;

@@ -14,6 +14,9 @@
 
 /// @file
 /// @brief ZannaAUD build configuration constants.
+/// @details Defines overridable output format, buffering, resource limits, and
+///          defaults, plus the single platform-backend selection macro derived
+///          from the compiler target.
 
 #pragma once
 

@@ -125,7 +125,7 @@ func argValue(flag: String) -> String {
 /// @brief Map one region scene path to its campaign region number, or 0.
 /// @details Zanna Studio's Run Scene command appends `--scene <path>`; the
 ///          game owns the interpretation (ADR 0181). Region scenes follow the
-///          `region-NN.scene` naming exported alongside this project.
+///          `region-NN.scene2d` naming exported alongside this project.
 func sceneRegionFromPath(path: String) -> Integer {
     var name = Path.Name(path);
     if Str.StartsWith(name, "region-") == false { return 0; }
@@ -148,7 +148,7 @@ func start() {
         sceneStartRegion = sceneRegionFromPath(scenePath);
         if sceneStartRegion == 0 {
             Terminal.Say(
-                "XENOSCAPE: --scene expects an exported region-NN.scene");
+                "XENOSCAPE: --scene expects an exported region-NN.scene2d");
         }
     }
 

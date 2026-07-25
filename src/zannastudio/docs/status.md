@@ -94,7 +94,8 @@ For Zia and BASIC developers, the biggest strengths are:
 - Build/run/debug are wired to the Zanna toolchain without leaving the IDE.
 - Session restore and recovery reduce the risk of losing active work.
 
-For a game developer, `.scene`/`.level` and `.vscn` documents mount built-in
+For a game developer, `.scene2d` and `.scene3d` documents (plus the legacy
+`.scene`/`.level`/`.vscn` aliases) mount built-in
 2D and 3D authoring surfaces. They cover a useful first hierarchy, viewport,
 property, undo/redo, save, and import workflow. The 2D editor resolves layer
 tileset images, renders their real frames in the canvas, and exposes a bounded
@@ -153,8 +154,12 @@ schemas accept version 2 with validated enum-choice and asset-reference
 fields (authored as ordinary string values), the structured schema form
 authors both kinds and writes the lowest required file version, and a saved
 field rename/retype offers an explicit scan-review-confirm migration across
-the workspace root's 2D scenes with per-file transactional refusals; 3D
-scenes are reported for manual migration. The 2D tile
+the workspace root's 2D and 3D scenes with per-file transactional refusals:
+2D scenes convert through SceneDocument and 3D scenes through the canonical
+VSCN loader (load, convert with the same representation-preserving rules,
+save), each guarded by the scanned mtime and an exact match-count recheck;
+grafted prefab instance content is excluded from counts and conversion since
+it never serializes back. The 2D tile
 palette owns a per-tile behavior inspector: collision kind (solid or
 one-way-up), typed int/bool tile properties, per-frame tile animations, and
 16-variant autotile rules author through the typed SceneDocument sections of
@@ -208,7 +213,7 @@ scene authoring, and panel virtualization for very large result sets.
 | Zia IntelliSense | Implemented with limits | Completion, diagnostics, hover, signature help, symbols, definition, references, rename, workspace symbols. |
 | BASIC IntelliSense | Implemented with limits | Completion, diagnostics, hover, document symbols, scanner-backed definition, references, rename, workspace symbols, call hierarchy, and signature help. |
 | Plain text | Implemented | Opens unknown/text-like files as text without semantic features. |
-| Scene files | Implemented with limits | `.scene`/`.level` mount the 2D editor and `.vscn` mounts the 3D editor. Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, and single-node authoring for every runtime light type with hierarchy/viewport feedback. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. The 2D tile palette authors per-tile collision, typed int/bool properties, per-frame animations, and 16-variant autotile rules as one-transaction typed-section edits with palette behavior badges. Schema v2 enum/asset fields, the explicit 2D migration assistant, and the per-root asset library with tag filtering and import-grid surfacing are present; automatic unattended migration, 3D scene migration, generalized runtime components, batch light editing, material-library/thumbnail workflows, and cubemap/lightmap authoring are not. |
+| Scene files | Implemented with limits | `.scene2d` mounts the 2D editor and `.scene3d` mounts the 3D editor (legacy `.scene`/`.level`/`.vscn` remain accepted). Both retain per-document workspace/history state and provide real expandable multi-select hierarchies, transactional before/into/after row drops, group edits, typed gameplay data, searchable project assets, hierarchy-preserving clipboard transfer, undo/redo, and safe save/import flows. The 2D surface includes a runtime-backed organizational hierarchy with absolute positions, one-step root/child creation, explicit cycle-safe multi-root reparenting, stable subtree/sibling ordering, real bounded atlas rendering/palettes, captured gap-free paint/erase with exact cancellation, inclusive rectangle paint, four-connected fill, active-layer tile picking, modifier-aware point and inclusive authored-cell marquee selection, object dragging, scene/object properties, nudging, alignment, and distribution. The 3D surface includes a runtime-backed shaded/triangle-wireframe viewport with exact editor-overlay alignment, exact preserve-world chooser/direct reparenting with preserve-local opt-out, stable sibling ordering, mixed-state batch visibility, switchable Local/World Move/Rotate/Scale with snapping and atomic exact-or-reject world conversion, filled Move-plane and crossed Scale-plane XY/XZ/YZ handles, projected X/Y/Z rotation rings with wrap-safe angular dragging, truthful mixed-value batch PBR materials, batch embedded texture maps, mixed-value batch authoring for every runtime light type with hierarchy/viewport feedback, authored camera nodes with look-through and a bounded preview inset, collider-convention authoring with wireframe overlays, and route polylines/badges for project gameplay components. Both load compatible definitions from bounded root-local `scene-components.json`; Add Missing preserves same-kind values, rejects any type conflict before mutation, and commits the complete selection once. A shared structured form maintains the complete cross-target schema through parser-validated atomic writes, external-conflict detection, and separate bounded file undo/redo. The 2D tile palette authors per-tile collision, typed int/bool properties, per-frame animations, and 16-variant autotile rules as one-transaction typed-section edits with palette behavior badges. Schema v2 enum/asset fields, the explicit 2D/3D migration assistant, the per-root asset library with tag filtering and import-grid surfacing, and the project material library are present; automatic unattended migration and generalized runtime components are not. |
 | 3D node gameplay metadata | Implemented with limits | One selected `SceneNode` exposes deterministically ordered null, Boolean, integer, float, and string values for roles, IDs, spawn/trigger data, and component parameters. Create, rename, update, and remove validate bounds/no-ops before one canonical VSCN history transaction; values round-trip through VSCN v6 and row selection stays with its tab/session. Project schemas can batch-add missing metadata to multiple nodes, while arbitrary raw metadata editing remains single-node. |
 | Scene clipboard | Implemented with limits | Standard Cut/Copy/Paste/Select All commands follow the active visual editor. A versioned, typed text envelope supports same-kind cross-tab transfer of up to 1,024 selected identities and 64 MB total, preserving typed 2D properties and internal parent links or serializable 3D subtrees. Cut and paste are one-step history transactions with exact rollback. Mixed 2D/3D paste and interchange with other editors are intentionally rejected. |
 | Project explorer | Implemented with limits | Demand-loaded, scrollable tree; multi-root support; Quick Open cache; file actions; ignores. Rename/move preserve live editor buffers and undo state, while delete releases any removed split-pane owner. |
@@ -306,7 +311,8 @@ language service for these file kinds.
 
 ### Scene Files
 
-`.scene` and `.level` files open in the built-in 2D scene editor; `.vscn` files
+`.scene2d` files (plus legacy `.scene`/`.level`) open in the built-in 2D
+scene editor; `.scene3d` (plus legacy `.vscn`) files
 open in the built-in 3D scene editor. Each open scene owns its selection,
 viewport/camera, inspector, and undo/redo workspace state independently, while
 document dirty/save/session behavior remains integrated with ordinary tabs.
@@ -385,13 +391,137 @@ Replacing or clearing a reference is one undoable transaction; unchanged or
 rejected references do not alter history. Studio quietly checks one referenced
 image per polling interval and refreshes changed pixels without dirtying the
 scene; Reload Image remains available for an explicit reread. References remain
-external rather than being embedded in `.scene`. The layer inspector and Tiled
+external rather than being embedded in the scene document. The layer inspector and Tiled
 import section can search supported files already inside any open workspace
 root, with at most 512 realized matches and bounded image previews. Studio
 bounds each source to 16 MB, each
 decoded atlas to 4,194,304 pixels, and aggregate decoded/cached scene imagery to
 8,388,608 pixels. Missing, invalid, over-budget, or out-of-range frames retain a
 deterministic placeholder and contextual inspector status.
+
+The 3D viewport is projection-switchable through one retained camera:
+perspective is the default and orthographic is one toggle away. Every overlay
+and pick — markers, hierarchy links, gizmo axes, rotation rings, plane
+handles, and the grid — projects through the same camera that renders the
+shaded frame, so exact render/overlay/pick alignment holds in both modes, and
+the derived perspective eye distance keeps pixels-per-unit at the view target
+equal to the ortho scale so zoom, pan, and framing keep their meaning across
+the toggle. Behind-eye projections are neither drawn nor pickable. Holding
+right-mouse flies: mouse-look turns about the fixed eye, WASD moves in the
+camera basis with Q/E world down/up, Shift is a fast multiplier, and the wheel
+retunes a bounded speed while flying; release or Escape ends the capture, and
+the W/E/R tool shortcuts stay suppressed during it. Otherwise the wheel
+dollies about the pointer, middle-drag orbits, Shift+drag pans, and F frames
+the selection or the whole scene. A Persp/Ortho toggle and a View... options
+row (grid, marker, and light-overlay visibility, a live visible/culled stats
+readout, and the three snap increments) live in the view toolbar; the
+perspective grid distance-fades while the ortho grid is unchanged. All of this
+state — projection, overlay toggles, stats, and snap increments — is
+per-scene workspace state that follows the owning tab and session and never
+touches VSCN content or history (ADR 0183).
+
+Camera nodes are first-class authored components (ADR 0184). **+ Camera**
+creates a node carrying an independent `Camera3D`; the Camera component
+inspector authors projection (perspective fov or orthographic size) and clip
+planes as one-transaction VSCN edits with no-op refusal and exact undo, inside
+the runtime's sanitized clip envelope so inspector values always equal
+effective renderer values. Camera nodes draw a pickable marker and an authored
+frustum wireframe (near/far rectangles and edge lines) derived from the node
+world transform and projected through the shared viewport camera, honoring
+the camera-overlay toggle. **Look Through** drives the editor viewport from
+the authored camera without touching the editor pose, navigation stays
+suppressed while active, exiting restores the prior pose exactly, and
+removing the camera or switching documents exits automatically. A bounded
+picture-in-picture inset (256×144, refreshed at most every eight editor
+frames during damaged frames only) renders the selected camera's actual view
+and can be toggled off; look-through and the inset never change canonical
+bytes, history, or dirty state. Editing a shared imported camera constructs a
+replacement before assignment, so shared instances are never mutated in
+place.
+
+Each workspace root may carry a project material library:
+`materials.scene3d`, an ordinary VSCN scene whose top-level nodes each hold
+one named material (ADR 0189). The Material library group lists entries
+fail-closed (byte budgets, parse failures, and naming violations publish a
+truthful error instead of a partial list), **Save to Library** stores an
+independent clone of the selected node's material through a staged,
+conflict-guarded atomic replacement (overwrites need an explicit second
+click), and **Apply from Library** clones the chosen material per selected
+node as one canonical undoable transaction — scenes never reference the
+library file, so they stay self-contained and games need no library
+awareness. External library changes reload on a bounded polling cadence,
+and library operations never touch scene content, history, or dirty state.
+
+Baked global illumination is a one-panel workflow over the runtime's
+deterministic CPU path tracer (ADR 0188). Nodes opt into bakes with the new
+batch **Static (baked)** checkbox; the Bake panel authors texels-per-unit,
+samples, bounces, and sky color (persisted as root `bake.*` metadata, which
+VSCN now serializes at the document level), refuses shared meshes with the
+offending node list, and offers **Make Meshes Unique for Baking** as one
+undoable deep-copy transaction. The bake itself runs chunked inside the
+editor pump with live progress; edits during an active bake are refused with
+a truthful message, Cancel restores the exact prior document, and completion
+commits chart UVs, per-node atlas materials, and settings as one canonical
+transaction whose lightmaps survive save/reload with no rebake. The Light
+probe grid group authors the `probes.*` node convention and **Bake Probes**
+writes the `.vlpg` sidecar beside the scene without dirtying the document.
+The Environment group writes the root `env.skybox`/`env.iblEnabled`/
+`env.iblIntensity` convention in one transaction; the editor viewport (and
+the camera preview inset) applies it live as workspace-only render state,
+and games consume the same metadata through
+`Canvas3D.SetSkybox`/`IblEnabled`/`IblIntensity`.
+
+Prefab instancing places scenes by reference (VSCN v7, ADR 0187). **Import
+Instance** creates a node whose file stores only the reference (a portable
+relative path) plus the node's overrides — transform, name, visibility, and
+typed metadata; the canonical loader grafts the referenced scene's content on
+every load path (SceneGraph.Load, SceneAsset, async handles, streaming) with
+cycle, depth (8), and fan-out (4096) guards that resolve to
+reference-retaining placeholders instead of failures. Grafted content is
+locked: hierarchy rows carry prefab/instance badges, selection resolves to
+the owning instance, and authored children inside instances are refused with
+a truthful message. The Prefab instance inspector offers Open Source (opens
+the referenced file as its own document), Reload (re-grafts every instance,
+preserving overrides), Unpack (one undoable transaction converting the
+instance to plain editable nodes), and Re-link. Scenes without prefab nodes
+keep serializing at v6 or lower, and legacy files load unchanged.
+`SceneNode.PrefabPath`/`IsInstanceContent` expose instance identity to games
+without JSON parsing.
+
+The Light component group accepts multi-node selections with the material
+inspector's exact semantics (ADR 0186): every retained light field presents a
+native mixed state when selected lights disagree (kind itself may be mixed),
+Apply resolves only determined fields while mixed fields preserve each
+node's value, and choosing a concrete kind on a mixed selection rebuilds each
+light keeping kind-compatible fields and defaulting the rest. Replacement
+lights are constructed independently per node before any assignment, selected
+sharing groups reuse one staged replacement so they stay shared, and
+unselected users of a shared light are untouched. With no light-bearing nodes
+selected, Apply creates independent lights on the whole selection; with
+partial coverage it patches the light-bearing nodes and says so; Remove
+clears every selected light-bearing node. Each accepted add, apply, or
+remove is one canonical VSCN transaction with exact rollback and no-op
+refusal.
+
+Colliders are authored as the documented typed-metadata convention
+(ADR 0185): `collider.kind` (`box`, `sphere`, `capsule`, `mesh-bounds`),
+kind-specific node-local dimensions, and `collider.trigger`. The Collider
+inspector writes only kind-applicable keys and removes stale ones as one
+undoable transaction with no-op refusal; Remove deletes the complete key set
+while keeping the node. Games derive physics at spawn from the metadata plus
+node world transforms and mesh bounds — the editor never instantiates
+physics. The viewport draws collider wireframes (box edges, sphere
+three-circle wire, capsule profile; trigger colliders dash), route polylines
+through the ordered direct children of nodes carrying the project `route`
+component (at most 256 drawn waypoints), hierarchy badges naming each node's
+first recognized project component, and a deterministic per-component marker
+tint — all workspace-only, projected through the shared camera, and gated by
+the Cameras/Colliders/Routes visibility toggles in the View options row.
+Asset-kind schema fields now open the bounded project asset browser filtered
+by the field's declared asset kinds in both scene editors; picking stages a
+portable reference into the raw metadata/property draft and the canonical
+write still flows through the normal one-transaction path (closing the ADR
+0178 deferral).
 
 The 3D editor has distinct Move, Rotate, and Scale handles, mode-aware snapping,
 pointer capture, Escape cancelation, per-scene tool persistence, group framing,
@@ -476,15 +606,18 @@ stale picker-path preview behind. Scalar apply/remove and map replace/clear
 operate across the complete selection, retain it, and each create one history
 transaction that round-trips through VSCN.
 
-The Light component is a truthful single-node editor for directional, point,
-ambient, spot, rectangle-area, sphere-area, and volume lights. It authors every
-applicable retained field, including light-local position/direction, falloff,
-dimensions, radius, range, and spot cone. Studio constructs an independent
-replacement before assignment so a shared imported light is never edited in
-place. Add/apply/remove are exact no-op-aware one-step VSCN transactions.
-Hierarchy badges and viewport color, direction, offset, and range markers keep
-meshless emitters visible and pickable. Multi-node light editing remains
-explicitly disabled rather than presenting false mixed-state behavior.
+The Light component authors directional, point, ambient, spot,
+rectangle-area, sphere-area, and volume lights with every applicable retained
+field, including light-local position/direction, falloff, dimensions, radius,
+range, and spot cone. Studio constructs an independent replacement before
+assignment so a shared imported light is never edited in place.
+Add/apply/remove are exact no-op-aware one-step VSCN transactions. Hierarchy
+badges and viewport color, direction, offset, and range markers keep meshless
+emitters visible and pickable. Multi-node selections edit with truthful
+native mixed-value fields (ADR 0186): mixed fields preserve each node's
+value, concrete kinds rebuild each light keeping compatible fields, selected
+sharing groups reuse one staged replacement, and unselected sharers stay
+untouched.
 
 The 2D tile palette's behavior inspector authors the typed scene sections of
 ADR 0176 for the selected palette tile: a collision dropdown (none, solid,

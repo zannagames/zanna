@@ -155,6 +155,14 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0179](0179-2d-object-sprite-preview-and-route-conventions.md) — Add 2D Object Sprite Previews and Route Visualization Conventions
 - [ADR 0180](0180-workspace-asset-library.md) — Add Workspace Asset Libraries
 - [ADR 0181](0181-2d-scene-preview-and-run-scene.md) — Add 2D Scene Preview and Run Scene
+- [ADR 0182](0182-canonical-scene2d-scene3d-extensions.md) — Adopt Canonical .scene2d and .scene3d Extensions
+- [ADR 0183](0183-perspective-editor-viewport-and-fly-navigation.md) — Add a Perspective Editor Viewport with Fly Navigation
+- [ADR 0184](0184-scene-camera-nodes-look-through-and-preview.md) — Author Scene Camera Nodes with Look-Through and Preview
+- [ADR 0185](0185-collider-authoring-and-gameplay-overlays.md) — Author Colliders and Gameplay Overlays on Scene Nodes
+- [ADR 0186](0186-batch-light-editing.md) — Add Mixed-Value Batch Light Editing
+- [ADR 0187](0187-vscn-v7-prefab-reference-nodes.md) — Add VSCN v7 Prefab Reference Nodes
+- [ADR 0188](0188-studio-bake-and-environment-workflow.md) — Add the Studio Bake and Environment Workflow
+- [ADR 0189](0189-project-material-library.md) — Add a Project Material Library
 - [ADR 0004](0004-graphics3d-runtime-surface-expansion.md) — Graphics3D Runtime Surface Expansion Uses Registry-Only Semantics
 - [ADR 0046](0046-game3d-prefab-loading-api.md) — Game3D Prefab Loading API
 - [ADR 0059](0059-graphics3d-lookup-option-apis.md) — Graphics3D Lookup Option APIs

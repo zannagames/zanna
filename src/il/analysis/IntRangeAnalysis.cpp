@@ -48,6 +48,10 @@ using ::il::utils::mergeIncomingRange;
 using ::il::utils::mulRanges;
 using ::il::utils::subRanges;
 
+/// @brief Resolve a constant or SSA temporary to its current interval.
+/// @param value Operand whose integer range is requested.
+/// @param ranges Current temporary facts.
+/// @return Exact constant range, mapped temporary range, or no value when unknown.
 std::optional<IntRange> rangeForValue(const Value &value, const RangeMap &ranges) {
     if (value.kind == Value::Kind::ConstInt)
         return exactRange(value.i64);
@@ -59,6 +63,12 @@ std::optional<IntRange> rangeForValue(const Value &value, const RangeMap &ranges
     return it->second;
 }
 
+/// @brief Derive a signed interval refinement from a compare-controlled edge.
+/// @param cmp Compare instruction with one temporary and one integer constant.
+/// @param branchIndex Zero for the true edge and one for the false edge.
+/// @param constrainedValue Receives the temporary constrained by the comparison.
+/// @param range Receives the inclusive edge-specific interval.
+/// @return True when the comparison and edge imply a representable range fact.
 bool deriveCompareBranchRange(const Instr &cmp,
                               size_t branchIndex,
                               Value &constrainedValue,
@@ -157,6 +167,9 @@ bool deriveCompareBranchRange(const Instr &cmp,
 namespace {
 
 /// @brief Inclusive value range of a narrowing-cast target type.
+/// @param kind Target integer type kind.
+/// @param isUnsigned Whether to use the target's unsigned domain.
+/// @return Inclusive target range for supported I16/I32 casts, otherwise no value.
 std::optional<IntRange> narrowTypeRange(Type::Kind kind, bool isUnsigned) {
     switch (kind) {
         case Type::Kind::I16:
@@ -171,6 +184,9 @@ std::optional<IntRange> narrowTypeRange(Type::Kind kind, bool isUnsigned) {
 }
 
 /// @brief Intersect a temp's recorded range in place with a new fact.
+/// @param ranges Mutable temporary facts.
+/// @param value Temporary to refine; non-temporary values are ignored.
+/// @param fact New inclusive constraint.
 void refineTemp(RangeMap &ranges, const Value &value, const IntRange &fact) {
     if (value.kind != Value::Kind::Temp)
         return;
@@ -184,6 +200,8 @@ void refineTemp(RangeMap &ranges, const Value &value, const IntRange &fact) {
 }
 
 /// @brief True when the compare-family opcode always yields a 0/1 result.
+/// @param op Opcode to classify.
+/// @return True for integer/floating comparisons and one-bit extend/truncate operations.
 bool producesBool(Opcode op) {
     switch (op) {
         case Opcode::SCmpLT:
@@ -214,6 +232,10 @@ bool producesBool(Opcode op) {
 
 } // namespace
 
+/// @brief Apply one instruction's integer-range transfer and check postconditions.
+/// @param instr Instruction to interpret.
+/// @param ranges Mutable facts before the instruction; updated to the fall-through state.
+/// @return Computed result interval when sufficient operand/type facts are available.
 std::optional<IntRange> applyRangeTransfer(const Instr &instr, RangeMap &ranges) {
     std::optional<IntRange> result;
     // For add/sub, `stored` differs from `result`: addRanges/subRanges treat a
@@ -396,6 +418,11 @@ std::optional<IntRange> applyRangeTransfer(const Instr &instr, RangeMap &ranges)
     return result;
 }
 
+/// @brief Recover the bound of a lowered signed power-of-two remainder idiom.
+/// @param block Block containing the complete straight-line defining chain.
+/// @param subInstr Candidate outer subtract.
+/// @param ranges Facts available before @p subInstr.
+/// @return Symmetric remainder interval on an exact safe match, otherwise no value.
 std::optional<IntRange> matchPow2ModuloRange(const BasicBlock &block, const Instr &subInstr,
                                              const RangeMap &ranges) {
     if (subInstr.op != Opcode::Sub && subInstr.op != Opcode::ISubOvf)
@@ -477,6 +504,7 @@ namespace {
 /// @param branchIndex Index of the edge within the terminator's label list.
 /// @param target Destination block (for param binding).
 /// @param outState Exit range state of @p pred.
+/// @return Edge-refined facts with destination parameters rebound.
 RangeMap edgeFacts(const BasicBlock &pred,
                    const Instr &term,
                    size_t branchIndex,
@@ -533,10 +561,18 @@ RangeMap edgeFacts(const BasicBlock &pred,
     return facts;
 }
 
+/// @brief Compare both optional endpoints of two intervals.
+/// @param lhs First interval.
+/// @param rhs Second interval.
+/// @return True when lower and upper bounds are identical.
 bool rangesEqual(const IntRange &lhs, const IntRange &rhs) {
     return lhs.lower == rhs.lower && lhs.upper == rhs.upper;
 }
 
+/// @brief Compare two temporary-range maps by key and interval.
+/// @param lhs First map.
+/// @param rhs Second map.
+/// @return True when both maps contain exactly the same facts.
 bool mapsEqual(const RangeMap &lhs, const RangeMap &rhs) {
     if (lhs.size() != rhs.size())
         return false;
@@ -552,6 +588,8 @@ bool mapsEqual(const RangeMap &lhs, const RangeMap &rhs) {
 /// @details Keys absent from either side are unknown at the join and removed.
 ///          Mutating the accumulator avoids allocating and copying a complete
 ///          RangeMap for every predecessor beyond the first.
+/// @param accumulator Existing join facts, replaced with the pointwise union.
+/// @param incoming Facts from one additional predecessor edge.
 void mergeMapInto(RangeMap &accumulator, const RangeMap &incoming) {
     for (auto it = accumulator.begin(); it != accumulator.end();) {
         auto incomingIt = incoming.find(it->first);
@@ -570,6 +608,9 @@ void mergeMapInto(RangeMap &accumulator, const RangeMap &incoming) {
 
 } // namespace
 
+/// @brief Compute conservative block-entry integer ranges to a widened fixpoint.
+/// @param fn Function whose label CFG and SSA instructions are analyzed.
+/// @return Entry facts for reachable blocks, including bounded narrowing recovery.
 IntRangeInfo computeIntRanges(const Function &fn) {
     IntRangeInfo info;
     if (fn.blocks.empty())

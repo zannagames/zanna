@@ -14,6 +14,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Documents the intentionally empty debug OOP signature group.
+/// @details OOP helpers use the VM extern registry rather than the runtime
+///          descriptor registry validated by these signature modules.
+
 #include "il/runtime/signatures/Registry.hpp"
 
 namespace il::runtime::signatures {

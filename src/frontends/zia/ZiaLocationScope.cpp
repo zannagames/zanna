@@ -15,11 +15,17 @@
 
 namespace il::frontends::zia {
 
+/// @brief Install a temporary source location on a lowerer.
+/// @param lowerer Lowerer whose current diagnostic/emission location is changed.
+/// @param loc Source location to expose for the lifetime of this guard.
+/// @post `lowerer.sourceLocation()` equals @p loc until this guard is destroyed.
 ZiaLocationScope::ZiaLocationScope(Lowerer &lowerer, il::support::SourceLoc loc)
     : lowerer_(lowerer), previousLoc_(lowerer.sourceLocation()) {
     lowerer_.setSourceLocation(loc);
 }
 
+/// @brief Restore the source location captured by the constructor.
+/// @post The guarded lowerer again exposes its pre-construction source location.
 ZiaLocationScope::~ZiaLocationScope() {
     lowerer_.setSourceLocation(previousLoc_);
 }

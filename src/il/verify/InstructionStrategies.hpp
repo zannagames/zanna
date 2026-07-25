@@ -30,6 +30,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares construction of the standard instruction strategy chain.
+/// @details The returned owned strategies place dedicated control-flow
+///          verification before the generic table-driven fallback.
+
 #pragma once
 
 #include "il/verify/FunctionVerifier.hpp"
@@ -40,6 +45,7 @@
 namespace il::verify {
 
 /// @brief Construct the default set of instruction strategies used by FunctionVerifier.
+/// @return Owned strategies in dispatch priority order.
 std::vector<std::unique_ptr<FunctionVerifier::InstructionStrategy>>
 makeDefaultInstructionStrategies();
 

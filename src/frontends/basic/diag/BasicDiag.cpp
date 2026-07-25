@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/diag/BasicDiag.cpp
+// File: src/frontends/basic/diag/BasicDiag.cpp
 // Purpose: Backing catalog for the BASIC frontend's structured diagnostics:
 //          maps each BasicDiag enumerator to its stable id, code, severity, and
 //          message format string, and renders messages by substituting
@@ -119,29 +119,41 @@ constexpr std::array<BasicDiagInfo, 22> kDiagTable = {
       "User code may not declare symbols under the reserved root 'Zanna'."}}};
 }
 
-/// @brief Look up the catalog record for a diagnostic enumerator (positional index into
-/// kDiagTable).
+/// @brief Look up the catalog record for a diagnostic enumerator.
+/// @details BasicDiag values are positional indices into @ref kDiagTable;
+///          std::array::at preserves bounds checking for invalid enum values.
+/// @param diag Diagnostic enumerator to resolve.
+/// @return Immutable process-lifetime catalog entry for @p diag.
+/// @throws std::out_of_range if @p diag is not a valid table index.
 const BasicDiagInfo &getInfo(BasicDiag diag) {
     const auto index = static_cast<std::size_t>(diag);
     return kDiagTable.at(index);
 }
 
 /// @brief Get a diagnostic's stable string id (e.g. `BASIC_UNKNOWN_VARIABLE`).
+/// @param diag Diagnostic enumerator to resolve.
+/// @return Non-owning view of the process-lifetime symbolic identifier.
 std::string_view getId(BasicDiag diag) {
     return getInfo(diag).id;
 }
 
 /// @brief Get a diagnostic's stable code (e.g. `B1001`).
+/// @param diag Diagnostic enumerator to resolve.
+/// @return Non-owning view of the process-lifetime user-facing code.
 std::string_view getCode(BasicDiag diag) {
     return getInfo(diag).code;
 }
 
 /// @brief Get a diagnostic's severity.
+/// @param diag Diagnostic enumerator to resolve.
+/// @return Severity stored in the catalog entry.
 il::support::Severity getSeverity(BasicDiag diag) {
     return getInfo(diag).severity;
 }
 
 /// @brief Get a diagnostic's raw message format string (with `{placeholder}` tokens).
+/// @param diag Diagnostic enumerator to resolve.
+/// @return Non-owning view of the process-lifetime format template.
 std::string_view getFormat(BasicDiag diag) {
     return getInfo(diag).format;
 }

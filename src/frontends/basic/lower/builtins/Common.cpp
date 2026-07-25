@@ -5,13 +5,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the shared lowering context used by BASIC builtin handlers along
-// with the reusable rule-driven helpers consumed by the family-specific
-// emitters.  The utilities in this file are independent of any particular
-// builtin family and focus on common tasks such as argument coercion, runtime
-// feature application, and control-flow construction for guarded conversions.
+// File: src/frontends/basic/lower/builtins/Common.cpp
+// Purpose: Implements the shared builtin lowering context, coercion matrix,
+//          variant selection, feature application, and guarded conversion CFGs.
+// Key invariants:
+//   - Registry variants are selected in declaration order.
+//   - Arguments are lowered lazily and cached once per call.
+//   - Coercion failures emit diagnostics and deterministic typed fallbacks.
+// Ownership/Lifetime:
+//   - BuiltinLowerContext borrows the Lowerer, AST call, and registry entries.
+//   - Synthetic arguments are owned by the context for the duration of lowering.
+// Links: src/frontends/basic/lower/BuiltinCommon.hpp,
+//        src/frontends/basic/BuiltinRegistry.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements registry-driven BASIC builtin lowering infrastructure.
 
 #include "frontends/basic/lower/BuiltinCommon.hpp"
 
@@ -47,10 +57,15 @@ using Emitter = lower::Emitter;
 constexpr const char *kDiagBuiltinCoerceFailed = "B4005";
 
 enum class CoerceRule : std::uint8_t {
+    /// Source and destination representations already agree.
     Exact,
+    /// Widen or sign-extend an integral value.
     PromoteInt,
+    /// Convert an integral or narrower numeric value to floating point.
     PromoteFloat,
+    /// Convert a numeric value through a runtime string formatter.
     ToString,
+    /// Reject the source/destination combination.
     Forbid,
 };
 

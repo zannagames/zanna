@@ -46,10 +46,13 @@ namespace il::transform {
 
 namespace {
 
+/// @brief Previously computed value available for an expression key.
 struct AvailableExpr {
+    /// SSA value that may replace a dominated redundant computation.
     Value value;
 };
 
+/// @brief Expression table scoped to one dominator-tree level.
 using CSETable = std::unordered_map<ValueKey, AvailableExpr, ValueKeyHash>;
 
 /// @brief Process one basic block during the dominator-tree CSE walk.
@@ -118,6 +121,7 @@ bool runEarlyCSE(Module &M, Function &F) {
         // Each worklist entry is either "enter B" (push scope, process B, then
         // schedule children) or "leave" (pop scope).  We encode "leave" as
         // nullptr in the block slot.
+        /// @brief Enter/leave marker for iterative dominator-tree traversal.
         struct WorkItem {
             BasicBlock *block; // nullptr → pop scope
         };

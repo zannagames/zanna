@@ -5,15 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/StringHash.hpp
+// File: src/frontends/common/StringHash.hpp
 // Purpose: Heterogeneous string hash functor for C++20 unordered containers.
 //
-// This enables lookup with std::string_view keys in unordered_map/set
-// without allocating temporary std::string objects.
-// Key invariants: Equal string and string_view inputs have identical hashes;
-//                 case-insensitive hashing uses ASCII folding only.
-// Ownership/Lifetime: Header-only, stateless hash functors.
-// Links: src/frontends/common/CharUtils.hpp
+// Key invariants:
+//   * Equal string and string_view inputs have identical hashes.
+//   * Case-insensitive hashing and equality use ASCII folding only.
+//   * Transparent functors permit string_view lookup without temporary strings.
+// Ownership: Header-only stateless functors; all key storage remains
+//            container- or caller-owned.
+// References: src/frontends/common/CharUtils.hpp
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares transparent ASCII string hashing and equality helpers.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -32,6 +38,10 @@ namespace il::frontends::common {
 struct StringHash {
     using is_transparent = void;
 
+    /// @brief Hash any key convertible to std::string_view.
+    /// @tparam T String-like key type.
+    /// @param key Key whose bytes are hashed.
+    /// @return std::hash value of the equivalent string view.
     template <typename T> [[nodiscard]] std::size_t operator()(const T &key) const noexcept {
         return std::hash<std::string_view>{}(std::string_view(key));
     }
@@ -66,6 +76,9 @@ inline bool equalsIgnoreCase(std::string_view a, std::string_view b) {
 struct CaseInsensitiveHash {
     using is_transparent = void;
 
+    /// @brief Hash a string view using ASCII case folding.
+    /// @param key Key bytes to hash.
+    /// @return Case-insensitive polynomial hash value.
     [[nodiscard]] std::size_t operator()(std::string_view key) const noexcept {
         std::size_t hash = 0;
         for (char c : key) {
@@ -75,6 +88,9 @@ struct CaseInsensitiveHash {
         return hash;
     }
 
+    /// @brief Hash an owned string using the string-view overload.
+    /// @param key Key string to hash.
+    /// @return Case-insensitive hash value.
     [[nodiscard]] std::size_t operator()(const std::string &key) const noexcept {
         return (*this)(std::string_view(key));
     }
@@ -84,6 +100,10 @@ struct CaseInsensitiveHash {
 struct CaseInsensitiveEqual {
     using is_transparent = void;
 
+    /// @brief Compare two keys with ASCII case folding.
+    /// @param a First key.
+    /// @param b Second key.
+    /// @return True when the strings are equal ignoring ASCII case.
     [[nodiscard]] bool operator()(std::string_view a, std::string_view b) const noexcept {
         return equalsIgnoreCase(a, b);
     }

@@ -45,7 +45,8 @@ root of a Studio workspace:
 }
 ```
 
-Open a `.scene`, `.level`, or `.vscn` file inside that workspace. The
+Open a 2D scene (`.scene2d`, or legacy `.scene`/`.level`) or 3D scene
+(`.scene3d`, or legacy `.vscn`) file inside that workspace. The
 **Project components** inspector lists definitions compatible with the active
 editor.
 
@@ -154,9 +155,12 @@ an older Studio is rejected wholesale, exactly like any unknown version.
 
 Renaming or retyping a saved field offers — never performs automatically — a
 bounded workspace migration. The offer first scans the schema's workspace root
-read-only, counting exact-kind matches in `.scene`/`.level` files and listing
-`.vscn` files as manual-migration refusals, then requires a second explicit
-confirmation before writing. Application is per-file transactional: each file
+read-only, counting exact-kind matches in 2D scene files (`.scene2d`, plus
+legacy `.scene`/`.level`) through SceneDocument and in 3D scenes
+(`.scene3d`/`.vscn`) through the canonical VSCN loader, then requires a
+second explicit confirmation before writing. Grafted prefab instance content
+is excluded from 3D counts and conversion — it never serializes back into
+the referencing file. Application is per-file transactional: each file
 re-validates its scanned modification time and match count, rewrites
 completely, and saves atomically — or is refused and reported byte-identical.
 Conversions are limited to representation-preserving cases (rename within one

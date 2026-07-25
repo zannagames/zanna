@@ -5,19 +5,25 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/KeywordTable.hpp
+// File: src/frontends/common/KeywordTable.hpp
 // Purpose: Common keyword lookup utilities for language frontends.
 //
 // This header provides template utilities for efficient keyword matching
 // that are shared across language frontends.
 //
-// Key Features:
-//   - Sorted array with binary search for compile-time keyword tables
-//   - constexpr verification of table sorting
-//   - Case-insensitive matching support
-// Key invariants: Runtime lookup accepts string_view without allocating.
-// Ownership/Lifetime: Runtime tables own copied keyword strings and tokens.
-// Links: src/frontends/common/StringHash.hpp
+// Key invariants:
+//   * Compile-time arrays must be strictly lexicographically sorted before
+//     binary lookup.
+//   * Runtime lookup accepts string_view without allocating.
+//   * KeywordMap owns copied keyword strings and token values.
+// Ownership: Static entries borrow string literals; KeywordMap copies keys into
+//            its own heterogeneous-lookup hash table.
+// References: src/frontends/common/StringHash.hpp
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares compile-time and runtime keyword lookup utilities.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -128,21 +134,26 @@ template <typename TokenKind> class KeywordMap {
     }
 
     /// @brief Check if a lexeme is a keyword.
+    /// @param lexeme Candidate source spelling.
+    /// @return True when @p lexeme is present in the map.
     [[nodiscard]] bool contains(std::string_view lexeme) const {
         return map_.find(lexeme) != map_.end();
     }
 
     /// @brief Get the number of keywords in the map.
+    /// @return Number of stored keyword entries.
     [[nodiscard]] std::size_t size() const noexcept {
         return map_.size();
     }
 
     /// @brief Check if the map is empty.
+    /// @return True when no keyword entries are stored.
     [[nodiscard]] bool empty() const noexcept {
         return map_.empty();
     }
 
   private:
+    /// @brief Owned keyword-to-token mapping with heterogeneous string lookup.
     std::unordered_map<std::string, TokenKind, StringHash, std::equal_to<>> map_;
 };
 

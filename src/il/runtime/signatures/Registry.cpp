@@ -51,16 +51,24 @@ std::vector<Signature> &registry() {
     return g_signatures;
 }
 
+/// @brief Access the mutex serializing registry reads and writes.
+/// @return Process-lifetime mutex shared by every registry operation.
 std::mutex &registry_mutex() {
     static std::mutex g_mutex;
     return g_mutex;
 }
 
+/// @brief Access storage for the append-generation counter.
+/// @return Mutable process-lifetime registry version value.
 std::size_t &registry_version_storage() {
     static std::size_t g_version = 0;
     return g_version;
 }
 
+/// @brief Compare two coarse ABI kind sequences.
+/// @param lhs First ordered parameter or result sequence.
+/// @param rhs Second ordered parameter or result sequence.
+/// @return True when both sequences have identical length and kinds.
 bool sameKinds(const std::vector<SigParam> &lhs, const std::vector<SigParam> &rhs) {
     if (lhs.size() != rhs.size())
         return false;
@@ -70,6 +78,10 @@ bool sameKinds(const std::vector<SigParam> &lhs, const std::vector<SigParam> &rh
     return true;
 }
 
+/// @brief Compare complete normalized signature metadata.
+/// @param lhs First signature.
+/// @param rhs Second signature.
+/// @return True when ABI shape and all effect/ownership facts match.
 bool sameSignature(const Signature &lhs, const Signature &rhs) {
     return lhs.name == rhs.name && sameKinds(lhs.params, rhs.params) &&
            sameKinds(lhs.rets, rhs.rets) && lhs.nothrow == rhs.nothrow &&
@@ -82,12 +94,10 @@ bool sameSignature(const Signature &lhs, const Signature &rhs) {
 }
 } // namespace
 
-/// @brief Register a runtime signature in the diagnostic registry.
-/// @details Each call records a @ref Signature entry describing a runtime
-///          helper.  Re-registering identical metadata is a no-op, while a
-///          duplicate name with different metadata is rejected so consumers do
-///          not observe order-dependent ABI facts.
-/// @param signature Signature metadata describing a runtime helper.
+/// @brief Merge shared effect and ownership classifications into a signature.
+/// @param signature Signature value to normalize.
+/// @return Normalized copy preserving explicit facts and adding table-derived
+///         facts for the named helper.
 Signature apply_effect_overrides(Signature signature) {
     const auto effects = il::runtime::classifyHelperEffects(signature.name);
     signature.nothrow = signature.nothrow || effects.nothrow;
@@ -104,6 +114,12 @@ Signature apply_effect_overrides(Signature signature) {
     return signature;
 }
 
+/// @brief Register a runtime signature in the diagnostic registry.
+/// @details Re-registering identical normalized metadata is a no-op. A duplicate
+///          name with conflicting ABI or effects throws to prevent order-dependent
+///          validation behavior.
+/// @param signature Signature metadata describing a runtime helper.
+/// @throws std::logic_error When an existing name has different metadata.
 void register_signature(const Signature &signature) {
     Signature normalized = apply_effect_overrides(signature);
     std::lock_guard<std::mutex> lock(registry_mutex());
@@ -131,6 +147,12 @@ const std::vector<Signature> &all_signatures() {
     return registry();
 }
 
+/// @brief Look up normalized pure and readonly flags by symbol name.
+/// @param name Exact registered runtime symbol.
+/// @param pure Receives the pure flag on success.
+/// @param readonly Receives the readonly flag on success.
+/// @return True when a matching signature was found; outputs are unchanged
+///         otherwise.
 bool find_signature_effects(std::string_view name, bool &pure, bool &readonly) {
     std::lock_guard<std::mutex> lock(registry_mutex());
     for (const auto &signature : registry()) {
@@ -143,6 +165,8 @@ bool find_signature_effects(std::string_view name, bool &pure, bool &readonly) {
     return false;
 }
 
+/// @brief Read the current append-generation counter.
+/// @return Monotonic version incremented for each newly appended unique entry.
 std::size_t registry_version() {
     std::lock_guard<std::mutex> lock(registry_mutex());
     return registry_version_storage();

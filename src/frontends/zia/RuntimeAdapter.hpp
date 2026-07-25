@@ -56,7 +56,7 @@
 /// // In Sema_Runtime.cpp when registering runtime functions:
 /// auto sig = il::runtime::parseRuntimeSignature(method.signature);
 /// if (sig.isValid()) {
-///     TypeRef returnType = toZiaType(sig.returnType);
+///     TypeRef returnType = toZiaReturnType(sig);
 ///     std::vector<TypeRef> paramTypes = toZiaParamTypes(sig);
 ///     defineExternFunction(method.target, returnType, paramTypes);
 /// }

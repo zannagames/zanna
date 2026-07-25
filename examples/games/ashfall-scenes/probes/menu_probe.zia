@@ -1,0 +1,201 @@
+// =============================================================================
+// probes/menu_probe.zia — frontend state-flow + settings persistence probe
+// =============================================================================
+//
+// Headless walk of the whole frontend: boot lands in ST_PLAYING (the standing
+// contract), enterTitle() raises the title screen, options edits round-trip
+// through settings.json, the Armory purchase/profile and full checkpoint state
+// round-trip, NEW GAME lands in L1 PLAYING, pause/resume works, scripted death
+// raises the death screen and RETRY restarts the level, and a forced
+// LEVEL_COMPLETE continues to the next level. Menu navigation is driven through
+// the dev hooks (no key input source headless).
+// =============================================================================
+module menu_probe;
+
+bind Zanna.Terminal as Terminal;
+bind Zanna.IO.File as File;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.TempFile as TempFile;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../game" as game;
+bind "../ui/menu" as menu;
+bind "../audio/mix" as mix;
+
+var failures: Integer = 0;
+
+func expect(ok: Boolean, what: String) {
+    if ok == false {
+        failures = failures + 1;
+        Terminal.Say("FAIL: " + what);
+    }
+}
+
+func tick(g: game.Game, n: Integer) {
+    var i = 0;
+    while i < n {
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        i = i + 1;
+    }
+}
+
+func cleanupSaveDir(saveDir: String) {
+    var settingsPath = Path.Join(saveDir, "settings.json");
+    var checkpointPath = Path.Join(saveDir, "checkpoint.json");
+    var profilePath = Path.Join(saveDir, "profile.json");
+    if File.Exists(settingsPath) { File.Delete(settingsPath); }
+    if File.Exists(checkpointPath) { File.Delete(checkpointPath); }
+    if File.Exists(profilePath) { File.Delete(profilePath); }
+    if Dir.Exists(saveDir) { Dir.Remove(saveDir); }
+}
+
+func start() {
+    // A unique system-temp directory makes this persistence probe independent
+    // of caller CWD and safe beside the render/campaign probes under parallel
+    // CTest scheduling.
+    var saveDir = TempFile.CreateDirWithPrefix("ashfall_menu_");
+    var g = new game.Game();
+    g.setHeadless(true);
+    g.initCore(0x5A17F00D);
+    g.devSetSaveDir(saveDir);
+    g.boot(true, false);
+    expect(g.inState(config.ST_PLAYING), "boot must land in PLAYING");
+    expect(g.getArena().isBuilt(), "arena built at standing boot");
+
+    // Title entry (interactive path, callable headless). Seed enough salvage to
+    // exercise the player-facing Armory rather than only the Economy unit API.
+    g.getEconomy().addSalvage(200);
+    g.enterTitle();
+    tick(g, 2);
+    expect(g.inState(config.ST_TITLE), "enterTitle -> ST_TITLE");
+    expect(g.devMenuCtx() == menu.CTX_TITLE, "menu ctx TITLE");
+    expect(g.getArena().isBuilt() == false, "arena unloaded before title vista");
+
+    // Armory: buy Bolt tier 1 and persist the profile immediately.
+    g.devMenuNav(true);            // NEW GAME -> LEVEL SELECT
+    g.devMenuNav(true);            // -> ARMORY
+    g.devMenuConfirm();
+    expect(g.devMenuSub() == menu.SUB_ARMORY, "armory submode open");
+    g.devMenuConfirm();            // buy selected Bolt upgrade
+    expect(g.getEconomy().tierOf(config.W_BOLT) == 1, "armory purchase applied");
+    expect(g.getEconomy().available() < 200, "armory purchase spent salvage");
+    expect(File.Exists(Path.Join(saveDir, "profile.json")), "armory profile persisted");
+    g.devMenuBack();
+
+    // Options: bump FOV, reduce flashes, enable high-contrast reticle, persist.
+    var fov0 = g.devMenuFov();
+    g.devMenuNav(true);            // NEW GAME -> LEVEL SELECT
+    g.devMenuNav(true);            // -> ARMORY
+    g.devMenuNav(true);            // -> OPTIONS
+    g.devMenuConfirm();            // open options
+    expect(g.devMenuSub() == menu.SUB_OPTIONS, "options submode open");
+    g.devMenuNav(true);            // QUALITY -> FOV row
+    g.devMenuAdjust(true);
+    g.devMenuAdjust(true);
+    var downToFlash = 0;
+    while downToFlash < 7 {
+        g.devMenuNav(true);
+        downToFlash = downToFlash + 1;
+    }
+    g.devMenuAdjust(false);
+    expect(g.devMenuFlash() < 1.0, "flash accessibility edit applied");
+    g.devMenuNav(true);            // HIGH-CONTRAST HUD row
+    g.devMenuAdjust(true);
+    expect(g.devMenuHighContrast(), "high-contrast HUD edit applied");
+    g.devMenuBack();               // save + close
+    expect(g.devMenuFov() > fov0 + 5.0, "fov edit applied");
+    expect(File.Exists(Path.Join(saveDir, "settings.json")), "settings.json persisted");
+
+    var gp = new game.Game();
+    gp.initCore(0x5A17F00E);
+    gp.devSetSaveDir(saveDir);
+    gp.boot(true, false);
+    expect(gp.getEconomy().tierOf(config.W_BOLT) == 1, "profile upgrade round-trip");
+    expect(gp.getEconomy().available() == g.getEconomy().available(),
+           "profile salvage round-trip");
+
+    // New game: back reset the selector to the top row (NEW GAME).
+    g.devMenuConfirm();
+    tick(g, 2);
+    expect(g.inState(config.ST_PLAYING), "new game -> PLAYING");
+    expect(g.devCurrentLevel() == config.LV_L1, "new game loads L1");
+
+    // Checkpoint is a real combat snapshot, not merely a Continue flag.
+    g.getWeapons().switchTo(config.W_RAIL);
+    g.devDamagePlayer(75.0);
+    g.scriptMove(0.0, 1.0);
+    tick(g, 18);
+    g.scriptMove(0.0, 0.0);
+    var savedX = g.getPlayer().getX();
+    var savedZ = g.getPlayer().getZ();
+    var savedHp = g.getPlayerHealth().getHealth();
+    var savedSalvage = g.getEconomy().available();
+    var savedTier = g.getEconomy().tierOf(config.W_BOLT);
+    expect(g.saveCheckpointNow(), "checkpoint write");
+    g.getWeapons().switchTo(config.W_BOLT);
+    g.devDamagePlayer(20.0);
+    g.getEconomy().setSalvage(999);
+    g.getEconomy().setTier(config.W_BOLT, 3);
+    g.scriptMove(1.0, 0.0);
+    tick(g, 12);
+    g.scriptMove(0.0, 0.0);
+    expect(g.continueCheckpoint(), "checkpoint load");
+    expect(g.getWeapons().getCurrent() == config.W_RAIL, "checkpoint weapon restore");
+    expect(M.absf(g.getPlayerHealth().getHealth() - savedHp) < 0.01, "checkpoint health restore");
+    expect(g.getEconomy().available() == savedSalvage, "checkpoint salvage restore");
+    expect(g.getEconomy().tierOf(config.W_BOLT) == savedTier, "checkpoint upgrade restore");
+    expect(M.distXZ(g.getPlayer().getX(), g.getPlayer().getZ(), savedX, savedZ) < 0.05,
+           "checkpoint position restore");
+
+    // Pause / resume.
+    g.requestState(config.ST_PAUSED);
+    tick(g, 2);
+    expect(g.inState(config.ST_PAUSED), "pause");
+    expect(g.devMenuCtx() == menu.CTX_PAUSE, "menu ctx PAUSE");
+    g.devMenuConfirm();            // RESUME
+    tick(g, 2);
+    expect(g.inState(config.ST_PLAYING), "resume");
+
+    // Death -> retry.
+    var deathsBefore = g.getScoring().getTotalDeaths();
+    var cuesBeforeDeath = g.getMixer().getMappedCueCount();
+    g.devKillPlayer();
+    tick(g, 3);
+    expect(g.inState(config.ST_DEATH), "death screen");
+    expect(g.devMenuCtx() == menu.CTX_DEATH, "menu ctx DEATH");
+    expect(g.getScoring().getTotalDeaths() == deathsBefore + 1, "death counted once");
+    expect(g.getMixer().getMappedCueCount() > cuesBeforeDeath, "defeat cue mapped");
+    expect(g.getMixer().getMusicState() == mix.MUS_DEFEAT, "defeat music latch");
+    g.devMenuConfirm();            // RETRY
+    tick(g, 2);
+    expect(g.inState(config.ST_PLAYING), "retry -> PLAYING");
+    expect(g.getScoring().getTotalDeaths() == deathsBefore + 1, "retry preserved death total");
+    var gd = new game.Game();
+    gd.initCore(0x5A17F00F);
+    gd.devSetSaveDir(saveDir);
+    gd.boot(true, false);
+    expect(gd.getScoring().getTotalDeaths() == deathsBefore + 1,
+           "retry death total persisted to profile");
+
+    // Complete -> continue to the next level.
+    g.requestState(config.ST_LEVEL_COMPLETE);
+    tick(g, 2);
+    expect(g.inState(config.ST_LEVEL_COMPLETE), "complete screen");
+    expect(g.devMenuCtx() == menu.CTX_COMPLETE, "menu ctx COMPLETE");
+    g.devMenuConfirm();            // CONTINUE
+    tick(g, 2);
+    expect(g.inState(config.ST_PLAYING), "continue -> PLAYING");
+    expect(g.devCurrentLevel() == config.LV_L2, "continue advances to L2");
+    expect(g.getMixer().getMusicState() != mix.MUS_VICTORY, "new level released victory music");
+
+    cleanupSaveDir(saveDir);
+    if failures == 0 {
+        Terminal.Say("menu flow=ok armory=ok settings=ok checkpoint=ok death=ok complete=ok");
+        Terminal.Say("RESULT: ok");
+        Terminal.Say("PASS");
+    } else {
+        Terminal.Say("RESULT: fail (" + failures + ")");
+    }
+}

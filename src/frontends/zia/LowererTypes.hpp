@@ -4,21 +4,17 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: frontends/zia/LowererTypes.hpp
-// Purpose: Type layout structures for the Zia IL lowerer.
-//
-// Key invariants:
-//   - Field offsets respect alignment requirements
-//   - Entity field offsets start after the 16-byte object header
-//   - Class and interface IDs are unique within a module
-//
-// Ownership/Lifetime:
-//   - Instances are owned by Lowerer (via unordered_map members)
-//   - Persist for the duration of module lowering
-//
-// Links: frontends/zia/LowererTypeLayout.hpp, frontends/zia/Lowerer.hpp
-//
+///
+/// @file LowererTypes.hpp
+/// @brief Layout metadata produced while lowering Zia aggregate and nominal
+///        types.
+///
+/// @details These records capture field offsets, method lookup tables, runtime
+///          identifiers, and dispatch slots for structs, classes, and
+///          interfaces. Instances live in LowererTypeLayout for the duration
+///          of module lowering and refer non-owningly to AST method
+///          declarations.
+///
 //===----------------------------------------------------------------------===//
 #pragma once
 
@@ -55,6 +51,7 @@ struct StructTypeInfo {
     std::set<std::string> implementedInterfaces;             ///< Names of implemented interfaces.
 
     /// @brief Look up a field by name.
+    /// @param n Source field name to resolve.
     /// @return Pointer to the field layout, or nullptr if absent.
     const FieldLayout *findField(const std::string &n) const {
         auto it = fieldIndex.find(n);
@@ -62,6 +59,7 @@ struct StructTypeInfo {
     }
 
     /// @brief Look up a method by name.
+    /// @param n Source method name to resolve.
     /// @return The method declaration, or nullptr if absent.
     MethodDecl *findMethod(const std::string &n) const {
         auto it = methodMap.find(n);
@@ -90,6 +88,7 @@ struct ClassTypeInfo {
     std::set<std::string> propertySetters;               ///< Synthesized `set_<Prop>` names.
 
     /// @brief Look up a field by name.
+    /// @param n Source field name to resolve.
     /// @return Pointer to the field layout, or nullptr if absent.
     const FieldLayout *findField(const std::string &n) const {
         auto it = fieldIndex.find(n);
@@ -97,6 +96,7 @@ struct ClassTypeInfo {
     }
 
     /// @brief Look up a method by name.
+    /// @param n Source method name to resolve.
     /// @return The method declaration, or nullptr if absent.
     MethodDecl *findMethod(const std::string &n) const {
         auto it = methodMap.find(n);
@@ -104,6 +104,7 @@ struct ClassTypeInfo {
     }
 
     /// @brief Resolve a method slot key to its vtable index.
+    /// @param n Canonical dispatch slot key to resolve.
     /// @return The slot index, or SIZE_MAX if the key is not in the vtable.
     size_t findVtableSlot(const std::string &n) const {
         auto it = vtableIndex.find(n);
@@ -120,6 +121,7 @@ struct InterfaceTypeInfo {
     std::unordered_map<std::string, size_t> slotIndex;       ///< Method slot key -> itable slot.
 
     /// @brief Look up an interface method by name.
+    /// @param n Source method name to resolve.
     /// @return The method declaration, or nullptr if absent.
     MethodDecl *findMethod(const std::string &n) const {
         auto it = methodMap.find(n);
@@ -127,6 +129,7 @@ struct InterfaceTypeInfo {
     }
 
     /// @brief Resolve a method slot key to its itable slot index.
+    /// @param n Canonical interface dispatch slot key to resolve.
     /// @return The slot index, or SIZE_MAX if the key is unknown.
     size_t findSlot(const std::string &n) const {
         auto it = slotIndex.find(n);

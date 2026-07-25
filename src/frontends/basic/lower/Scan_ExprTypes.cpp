@@ -13,6 +13,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements side-effect-free scan-time expression classification.
+
 #include "frontends/basic/AstWalker.hpp"
 #include "frontends/basic/BuiltinRegistry.hpp"
 #include "frontends/basic/Lowerer.hpp"
@@ -53,6 +56,9 @@ Lowerer::ExprType exprTypeFromAstType(Type ty) {
     }
 }
 
+/// @brief Converts a lowering expression category to semantic BasicType.
+/// @param ty Scan-time expression category.
+/// @return Corresponding semantic type; I64 maps to BasicType::Int.
 BasicType basicTypeFromExprType(Lowerer::ExprType ty) {
     switch (ty) {
         case Lowerer::ExprType::F64:
@@ -69,6 +75,10 @@ BasicType basicTypeFromExprType(Lowerer::ExprType ty) {
     }
 }
 
+/// @brief Converts a semantic BasicType to the lowerer's scan category.
+/// @param ty Semantic type returned by runtime method lookup.
+/// @return Corresponding expression category; void, unknown, and integer types
+///         conservatively map to I64.
 Lowerer::ExprType exprTypeFromBasicType(BasicType ty) {
     switch (ty) {
         case BasicType::Float:
@@ -112,69 +122,60 @@ class ExprTypeScanner final : public BasicAstWalker<ExprTypeScanner> {
     }
 
     /// @brief Skip builtin arguments because specialised rules handle them.
-    ///
-    /// @param expr Builtin call under inspection.
+    /// The borrowed call node is handled manually by @ref after.
     /// @return False to prevent recursive descent.
     bool shouldVisitChildren(const BuiltinCallExpr &) {
         return false;
     }
 
     /// @brief Skip procedure call children to avoid double counting side effects.
-    ///
-    /// @param expr Procedure call expression.
+    /// The borrowed call node's arguments are consumed manually by @ref after.
     /// @return False so the walker avoids visiting argument subtrees automatically.
     bool shouldVisitChildren(const CallExpr &) {
         return false;
     }
 
     /// @brief Skip constructor arguments because custom logic consumes them.
-    ///
-    /// @param expr Constructor call expression.
+    /// The borrowed construction node is handled manually by @ref after.
     /// @return False to defer traversal to helper routines.
     bool shouldVisitChildren(const NewExpr &) {
         return false;
     }
 
     /// @brief Skip member access children; the base is handled manually.
-    ///
-    /// @param expr Member access node.
+    /// The borrowed member node is handled manually by @ref after.
     /// @return False to avoid automatic recursion.
     bool shouldVisitChildren(const MemberAccessExpr &) {
         return false;
     }
 
     /// @brief Skip method call arguments because explicit handling is required.
-    ///
-    /// @param expr Method call expression.
+    /// The borrowed method-call node is handled manually by @ref after.
     /// @return False to maintain manual traversal order.
     bool shouldVisitChildren(const MethodCallExpr &) {
         return false;
     }
 
     /// @brief Classify integer literals as 64-bit integers.
-    ///
-    /// @param expr Integer literal (value unused).
+    /// The borrowed literal value is not needed for this classification.
     void after(const IntExpr &) {
         push(ExprType::I64);
     }
 
     /// @brief Classify floating literals as 64-bit floats.
-    ///
-    /// @param expr Floating literal.
+    /// The borrowed literal value is not needed for this classification.
     void after(const FloatExpr &) {
         push(ExprType::F64);
     }
 
     /// @brief Classify string literals as strings.
-    ///
-    /// @param expr String literal node.
+    /// The borrowed literal value is not needed for this classification.
     void after(const StringExpr &) {
         push(ExprType::Str);
     }
 
     /// @brief Treat boolean literals as integer flags (historical BASIC rule).
-    ///
-    /// @param expr Boolean literal node.
+    /// The borrowed literal value is not needed for this classification.
     void after(const BoolExpr &) {
         push(ExprType::I64);
     }
@@ -432,7 +433,9 @@ class ExprTypeScanner final : public BasicAstWalker<ExprTypeScanner> {
         return ExprType::I64;
     }
 
+    /// Borrowed lowering context supplying symbol, layout, and signature data.
     Lowerer &lowerer_;
+    /// LIFO classifications produced by child visits.
     std::vector<ExprType> exprStack_{};
 };
 

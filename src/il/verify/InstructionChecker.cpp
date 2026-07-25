@@ -81,6 +81,7 @@ using il::utils::mergeIncomingRange;
 using il::utils::mulRanges;
 using il::utils::subRanges;
 
+/// @brief Function signature for one table-dispatched verification strategy.
 using StrategyFn = Expected<void> (*)(const VerifyCtx &, const InstructionSpec &);
 
 /// @brief Derive the result type that should be recorded for an instruction.
@@ -122,8 +123,8 @@ Expected<void> applyDefault(const VerifyCtx &ctx, const InstructionSpec &spec) {
 }
 
 /// @brief Validate semantics specific to @c alloca instructions.
-/// @details Delegates to @ref checker::checkAlloca which enforces pointer type
-///          constraints and stack lifetime rules.
+/// @details Delegates to @ref checker::checkAlloca which validates the size,
+///          warns for unusually large constants, and records a pointer result.
 /// @param ctx Verification context for the instruction.
 /// @return Verification success or failure.
 Expected<void> applyAlloca(const VerifyCtx &ctx, const InstructionSpec &) {
@@ -149,8 +150,8 @@ Expected<void> applyLoad(const VerifyCtx &ctx, const InstructionSpec &) {
 }
 
 /// @brief Validate @c store instructions.
-/// @details Confirms pointer types, writeability, and operand arity using the
-///          shared checker helper.
+/// @details Confirms pointer type, constant value range, and any statically
+///          provable alloca bounds using the shared checker helper.
 /// @param ctx Verification context for the instruction.
 /// @return Success or diagnostic error.
 Expected<void> applyStore(const VerifyCtx &ctx, const InstructionSpec &) {
@@ -158,8 +159,8 @@ Expected<void> applyStore(const VerifyCtx &ctx, const InstructionSpec &) {
 }
 
 /// @brief Validate @c addr_of instructions.
-/// @details Ensures the operand references an addressable entity, deferring to
-///          @ref checker::checkAddrOf for detailed diagnostics.
+/// @details Requires a known string global and delegates result recording to
+///          @ref checker::checkAddrOf.
 /// @param ctx Verification context for the instruction.
 /// @return Success or diagnostic error.
 Expected<void> applyAddrOf(const VerifyCtx &ctx, const InstructionSpec &) {
@@ -167,7 +168,7 @@ Expected<void> applyAddrOf(const VerifyCtx &ctx, const InstructionSpec &) {
 }
 
 /// @brief Validate @c const_str instructions.
-/// @details Confirms literal encoding and type annotations through the shared
+/// @details Confirms the operand names a known string global through the shared
 ///          checker helper.
 /// @param ctx Verification context for the instruction.
 /// @return Success or diagnostic error.
@@ -184,7 +185,8 @@ Expected<void> applyGAddr(const VerifyCtx &ctx, const InstructionSpec &) {
 }
 
 /// @brief Validate @c const_null instructions.
-/// @details Delegates to the shared checker to enforce pointer typing rules.
+/// @details Delegates to the shared checker to enforce nullable-kind rules for
+///          ptr, str, error, and resumetok.
 /// @param ctx Verification context for the instruction.
 /// @return Success or diagnostic error.
 Expected<void> applyConstNull(const VerifyCtx &ctx, const InstructionSpec &) {
@@ -286,6 +288,13 @@ Expected<void> applyCastUiNarrowChk(const VerifyCtx &ctx, const InstructionSpec 
     return {};
 }
 
+/// @brief Validate one operand of a width-annotated integer binary operation.
+/// @details Constants must fit the selected width; other values must have a
+///          known inferred kind exactly matching that width.
+/// @param ctx Verification context containing the operation.
+/// @param index Operand index to validate.
+/// @param expectedKind Selected i16, i32, or i64 width.
+/// @return Success when compatible; otherwise a range or type diagnostic.
 Expected<void> validateIntegerBinaryOperand(const VerifyCtx &ctx,
                                             size_t index,
                                             il::core::Type::Kind expectedKind) {
@@ -352,7 +361,7 @@ Expected<void> applyIntegerBinary(const VerifyCtx &ctx, const InstructionSpec &)
 ///          for any semantic rules beyond the generated structural checks.
 /// @param ctx Verification context for the instruction.
 /// @param spec Specification entry driving strategy selection.
-/// @return Empty on success (warnings do not block verification).
+/// @return Success for an i64 result, or a diagnostic for another width.
 Expected<void> applyShift(const VerifyCtx &ctx, const InstructionSpec &spec) {
     const auto kind = ctx.instr.type.kind;
     if (kind != Type::Kind::I64)
@@ -376,6 +385,10 @@ const Instr *findLocalDef(const BasicBlock &block, unsigned id) {
     return nullptr;
 }
 
+/// @brief Obtain a locally known range for a constant or temporary.
+/// @param value Value to query.
+/// @param ranges Current temporary-to-range facts.
+/// @return Exact constant range, mapped temporary range, or no value.
 std::optional<IntRange> rangeForValue(const Value &value,
                                       const std::unordered_map<unsigned, IntRange> &ranges) {
     if (value.kind == Value::Kind::ConstInt)
@@ -388,6 +401,15 @@ std::optional<IntRange> rangeForValue(const Value &value,
     return it->second;
 }
 
+/// @brief Derive a signed range fact from one conditional-branch edge.
+/// @details Accepts signed order comparisons and true-edge equality where one
+///          operand is a temporary and the other is a constant. Comparisons
+///          with the constant on the left are normalized before deriving bounds.
+/// @param cmp Comparison defining the branch condition.
+/// @param branchIndex Label index; zero denotes the true edge.
+/// @param constrainedValue Output temporary constrained by the comparison.
+/// @param range Output range known on the selected edge.
+/// @return `true` when a non-overflowing supported fact was derived.
 bool deriveCompareBranchRange(const Instr &cmp,
                               size_t branchIndex,
                               Value &constrainedValue,
@@ -483,6 +505,15 @@ bool deriveCompareBranchRange(const Instr &cmp,
     return true;
 }
 
+/// @brief Collect range facts established on one predecessor edge.
+/// @details Seeds exact facts for constant block arguments, derives a fact from
+///          a local compare feeding `cbr`, and transfers that fact to matching
+///          destination parameters.
+/// @param pred Predecessor block containing @p term.
+/// @param term Terminator whose selected edge targets @p target.
+/// @param branchIndex Label and branch-argument bundle index.
+/// @param target Destination block.
+/// @return Temporary range facts holding on the selected edge.
 std::unordered_map<unsigned, IntRange> edgeRangesForTarget(const BasicBlock &pred,
                                                            const Instr &term,
                                                            size_t branchIndex,
@@ -528,6 +559,11 @@ std::unordered_map<unsigned, IntRange> edgeRangesForTarget(const BasicBlock &pre
     return facts;
 }
 
+/// @brief Merge range facts common to every incoming edge of the current block.
+/// @details Facts absent on any predecessor are discarded; matching bounds are
+///          conservatively joined with @ref mergeIncomingRange.
+/// @param ctx Verification context whose block is the merge target.
+/// @return Facts guaranteed for all discovered incoming edges.
 std::unordered_map<unsigned, IntRange> collectIncomingRanges(const VerifyCtx &ctx) {
     std::unordered_map<unsigned, IntRange> merged;
     bool sawPred = false;
@@ -567,6 +603,13 @@ std::unordered_map<unsigned, IntRange> collectIncomingRanges(const VerifyCtx &ct
     return merged;
 }
 
+/// @brief Compute a result range for a small set of arithmetic idioms.
+/// @details Handles checked/plain add, subtract, multiply, nonnegative constant
+///          masks, and positive constant logical shifts when operand facts are
+///          sufficient and endpoint arithmetic is representable.
+/// @param instr Instruction whose result is modeled.
+/// @param ranges Current temporary range facts.
+/// @return Proven result range, or no value when unsupported or unsafe.
 std::optional<IntRange> computeInstructionRange(
     const Instr &instr, const std::unordered_map<unsigned, IntRange> &ranges) {
     if (instr.operands.size() < 2)
@@ -612,6 +655,8 @@ std::optional<IntRange> computeInstructionRange(
 ///          the block's instructions up to (not including) the checked one.
 ///          This is the same prover CheckOpt uses to justify demotions, so
 ///          every demotion the optimizer performs re-verifies here.
+/// @param ctx Verification context identifying the function, block, and limit.
+/// @return Range map holding immediately before the current instruction.
 zanna::analysis::RangeMap globalRangesBeforeInstruction(const VerifyCtx &ctx) {
     const zanna::analysis::IntRangeInfo info = zanna::analysis::computeIntRanges(ctx.fn);
     zanna::analysis::RangeMap ranges;
@@ -630,6 +675,12 @@ zanna::analysis::RangeMap globalRangesBeforeInstruction(const VerifyCtx &ctx) {
     return ranges;
 }
 
+/// @brief Prove that plain add, subtract, or multiply is a safe checked-op demotion.
+/// @details Replays local incoming-edge facts first, then uses whole-function
+///          integer range analysis and the power-of-two modulo idiom recognized
+///          by CheckOpt.
+/// @param ctx Verification context for the otherwise rejected plain operation.
+/// @return `true` when a verifier-visible range proof establishes no overflow.
 bool isVerifiedCheckedArithmeticDemotion(const VerifyCtx &ctx) {
     if (!(ctx.instr.op == Opcode::Add || ctx.instr.op == Opcode::Sub ||
           ctx.instr.op == Opcode::Mul)) {
@@ -661,6 +712,11 @@ bool isVerifiedCheckedArithmeticDemotion(const VerifyCtx &ctx) {
     return zanna::analysis::matchPow2ModuloRange(ctx.block, ctx.instr, globalRanges).has_value();
 }
 
+/// @brief Find a local temporary definition strictly before an instruction.
+/// @param block Block scanned in instruction order.
+/// @param limit Instruction that terminates the search.
+/// @param id Temporary result identifier to find.
+/// @return Definition before @p limit, or null when absent or after the limit.
 const Instr *findLocalDefBefore(const BasicBlock &block, const Instr &limit, unsigned id) {
     for (const Instr &instr : block.instructions) {
         if (&instr == &limit)
@@ -671,6 +727,14 @@ const Instr *findLocalDefBefore(const BasicBlock &block, const Instr &limit, uns
     return nullptr;
 }
 
+/// @brief Recognize the sign-bias term used in signed power-of-two division.
+/// @details Matches `(ashr dividend, 63) & nonnegative_mask` through local
+///          definitions preceding @p limit.
+/// @param block Block containing the candidate idiom.
+/// @param limit Instruction after the candidate definitions.
+/// @param dividend Original signed dividend.
+/// @param biasValue Candidate bias temporary.
+/// @return `true` when the exact idiom is present.
 bool isSignBiasForDividend(const BasicBlock &block,
                            const Instr &limit,
                            const Value &dividend,
@@ -691,6 +755,9 @@ bool isSignBiasForDividend(const BasicBlock &block,
            sign->operands[1].kind == Value::Kind::ConstInt && sign->operands[1].i64 == 63;
 }
 
+/// @brief Recognize a plain add introduced for the signed division bias idiom.
+/// @param ctx Verification context for the otherwise rejected add.
+/// @return `true` when either operand is a valid sign bias for the other.
 bool isVerifiedSignBiasAddDemotion(const VerifyCtx &ctx) {
     if (ctx.instr.op != Opcode::Add || ctx.instr.operands.size() != 2)
         return false;
@@ -772,16 +839,13 @@ bool isVerifiedCheckedSubDemotion(const VerifyCtx &ctx) {
     return sawIncomingEdge;
 }
 
-/// @brief Decide whether a rejected plain div/rem has a verifier-visible proof.
-/// @details CheckOpt demotes checked div/rem only when the divisor is a nonzero
-///          constant, with the signed division MIN/-1 overflow case also proven
-///          impossible. Keep plain op acceptance limited to that syntactic proof
-///          so frontends still have to emit the checked opcodes.
 /// @brief Accept a plain div/rem whose divisor is range-proven safe.
 /// @details Mirrors CheckOpt's range-backed demotion: the divisor's value
 ///          range must exclude 0, and the signed forms additionally need the
 ///          divisor range to exclude -1 or the dividend range to exclude
 ///          INT64_MIN (the INT64_MIN / -1 overflow case).
+/// @param ctx Verification context for the candidate plain div/rem.
+/// @return `true` when range facts exclude every trapping case.
 bool isRangeProvenDivRemDemotion(const VerifyCtx &ctx) {
     if (ctx.instr.operands.size() != 2)
         return false;
@@ -808,6 +872,13 @@ bool isRangeProvenDivRemDemotion(const VerifyCtx &ctx) {
     return true;
 }
 
+/// @brief Prove that a plain division or remainder is a safe checked-op demotion.
+/// @details Accepts statically safe constant divisors, including the signed
+///          MIN/-1 special case only for a safe constant dividend. Nonconstant
+///          divisors require the range proof mirrored by
+///          @ref isRangeProvenDivRemDemotion. Records the result type on success.
+/// @param ctx Verification context for the otherwise rejected operation.
+/// @return `true` when division by zero and signed overflow are impossible.
 bool isVerifiedCheckedDivRemDemotion(const VerifyCtx &ctx) {
     switch (ctx.instr.op) {
         case Opcode::SDiv:
@@ -847,11 +918,12 @@ bool isVerifiedCheckedDivRemDemotion(const VerifyCtx &ctx) {
 }
 
 /// @brief Force verification failure for explicitly rejected opcodes.
-/// @details Emits the rejection message provided by the specification so
-///          tooling can surface meaningful diagnostics for disabled opcodes.
+/// @details First accepts a narrow set of optimizer-produced plain arithmetic
+///          operations with verifier-visible safety proofs. Otherwise emits the
+///          rejection message provided by the specification.
 /// @param ctx Verification context for the instruction.
 /// @param spec Specification entry containing the rejection message.
-/// @return Always returns a failure diagnostic.
+/// @return Success for a proven demotion; otherwise a failure diagnostic.
 Expected<void> applyReject(const VerifyCtx &ctx, const InstructionSpec &spec) {
     if (isVerifiedCheckedArithmeticDemotion(ctx)) {
         ctx.types.recordResult(ctx.instr, resolveResultType(ctx, spec));

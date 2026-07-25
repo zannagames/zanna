@@ -59,6 +59,8 @@ struct CallGraph {
 
     /// @brief Return true if @p fn is part of a recursive SCC (size > 1 or
     ///        has a self-edge).
+    /// @param fn Function name to query.
+    /// @return True when @p fn participates in direct or mutual recursion.
     bool isRecursive(const std::string &fn) const;
 };
 

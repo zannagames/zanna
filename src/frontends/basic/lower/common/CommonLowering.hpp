@@ -24,6 +24,10 @@
 #include <string_view>
 #include <vector>
 
+/// @file
+/// @brief Declares primitive IL instruction and control-flow emission shared by
+///        BASIC lowering components.
+
 namespace il::core {
 struct BasicBlock;
 struct Function;
@@ -186,6 +190,7 @@ class CommonLowering {
     [[nodiscard]] std::string makeBlockLabel(std::string_view base) const;
 
   private:
+    /// Borrowed lowerer supplying the active block, builder, location, and IDs.
     Lowerer *lowerer_;
 };
 

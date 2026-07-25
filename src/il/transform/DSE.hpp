@@ -20,6 +20,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares alias-aware intra- and cross-block dead-store elimination.
+
 #pragma once
 
 #include "il/core/Function.hpp"

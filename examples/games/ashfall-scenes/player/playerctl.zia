@@ -1,0 +1,288 @@
+// =============================================================================
+// player/playerctl.zia — the movement controller (the feel signature)
+// =============================================================================
+//
+// Built on Character3D (engine resolves step/slope/ground); the game owns the
+// velocity. Each tick we accelerate a game-side velocity toward a camera-relative
+// wish vector, apply friction/gravity, resolve jump with coyote-time + input
+// buffering, and hand the velocity to Character3D.Move (which integrates
+// velocity*dt and resolves collisions). Stances (walk/sprint/crouch/slide) set
+// the speed cap, camera eye height, and the noise radius the AI hears.
+//
+// Character3D.TrySetHeight keeps the feet planted while crouching and rejects a
+// stand request under low cover. Camera and collision stance therefore agree.
+// =============================================================================
+module playerctl;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+
+// Stances
+var STANCE_STAND: Integer = 0;
+var STANCE_CROUCH: Integer = 1;
+var STANCE_SLIDE: Integer = 2;
+
+class PlayerCtl {
+    hide G3D.Character3D char;
+    hide Float vx;
+    hide Float vy;
+    hide Float vz;
+    hide Boolean grounded;
+    hide Boolean wasGrounded;
+    hide Boolean justLanded;
+    hide Float coyote;
+    hide Float jumpBuffer;
+    hide Integer stance;
+    hide Float slideTimer;
+    hide Boolean sprinting;
+    hide Float fallSpeed;         // downward speed captured at landing (dip strength)
+    hide Float noiseRadius;
+    hide Float footstepAccum;
+    hide Float actualTravel;
+    hide Integer footstepCount;
+    hide Float px;
+    hide Float py;
+    hide Float pz;
+    hide Float halfHeight;
+    hide Boolean spawned;
+
+    expose func init() {
+        vx = 0.0; vy = 0.0; vz = 0.0;
+        grounded = false; wasGrounded = false; justLanded = false;
+        coyote = 0.0; jumpBuffer = 0.0;
+        stance = STANCE_STAND;
+        slideTimer = 0.0;
+        sprinting = false;
+        fallSpeed = 0.0;
+        noiseRadius = 0.0;
+        footstepAccum = 0.0;
+        actualTravel = 0.0;
+        footstepCount = 0;
+        px = 0.0; py = 0.0; pz = 0.0;
+        halfHeight = config.PLAYER_HEIGHT * 0.5;
+        spawned = false;
+    }
+
+    expose func setup(phys: G3D.PhysicsWorld3D) {
+        char = G3D.Character3D.New(config.PLAYER_RADIUS, config.PLAYER_HEIGHT, config.PLAYER_STEP);
+        char.World = phys;
+        char.SetSlopeLimit(config.PLAYER_SLOPE);
+    }
+
+    expose func spawn(x: Float, y: Float, z: Float) {
+        // Move clear of the previous scene before restoring standing height so
+        // a low ceiling at the old position cannot leak a crouched capsule into
+        // the new spawn.
+        char.SetPosition(x, y + 10.0, z);
+        char.TrySetHeight(config.PLAYER_HEIGHT);
+        halfHeight = config.PLAYER_HEIGHT * 0.5;
+        // y is the desired feet height; Character3D position is the capsule center.
+        px = x; py = y + halfHeight; pz = z;
+        char.SetPosition(px, py, pz);
+        vx = 0.0; vy = 0.0; vz = 0.0;
+        stance = STANCE_STAND;
+        grounded = false; wasGrounded = false; justLanded = false;
+        coyote = 0.0; jumpBuffer = 0.0;
+        slideTimer = 0.0; sprinting = false; fallSpeed = 0.0;
+        noiseRadius = 0.0; footstepAccum = 0.0; actualTravel = 0.0;
+        spawned = true;
+    }
+
+    expose func getX() -> Float { return px; }
+    expose func getY() -> Float { return py; }         // capsule center
+    expose func getZ() -> Float { return pz; }
+    expose func getFeetY() -> Float { return py - halfHeight; }
+    expose func isGrounded() -> Boolean { return grounded; }
+    expose func getJustLanded() -> Boolean { return justLanded; }
+    expose func getFallSpeed() -> Float { return fallSpeed; }
+    expose func getStance() -> Integer { return stance; }
+    expose func isSprinting() -> Boolean { return sprinting; }
+    expose func getSpeed() -> Float { return Math.Sqrt(vx * vx + vz * vz); }
+    expose func getVX() -> Float { return vx; }
+    expose func getVZ() -> Float { return vz; }
+    expose func getNoiseRadius() -> Float { return noiseRadius; }
+    expose func getFootstepCount() -> Integer { return footstepCount; }
+
+    // Absolute eye height above feet for the current stance (camera springs this).
+    expose func eyeTargetHeight() -> Float {
+        if stance == STANCE_STAND { return config.EYE_HEIGHT; }
+        return config.EYE_HEIGHT_CROUCH;
+    }
+
+    // The main fixed-tick step. `yawDeg` is the camera yaw; movement is relative
+    // to it. `moveX` = strafe (+right), `moveZ` = forward (+forward), each -1..1.
+    // Returns nothing; read state via accessors afterward.
+    expose func update(dt: Float, moveX: Float, moveZ: Float,
+                       wantJump: Boolean, wantCrouch: Boolean, wantSprint: Boolean,
+                       yawDeg: Float, bus: events.EventBus) {
+        if spawned == false { return; }
+
+        // Read the state resolved by the previous physics step. RunFixed runs
+        // this callback *before* StepSimulation, so Character3D.Position here
+        // reflects the last completed step; the manual probe loop uses the same
+        // order, keeping probe == game.
+        var oldX = px; var oldZ = pz;
+        var pRead = char.Position;
+        px = Math.Vec3.get_X(pRead);
+        py = Math.Vec3.get_Y(pRead);
+        pz = Math.Vec3.get_Z(pRead);
+        if spawned {
+            var travelX = px - oldX; var travelZ = pz - oldZ;
+            actualTravel = Math.Sqrt(travelX * travelX + travelZ * travelZ);
+        }
+        wasGrounded = grounded;
+        grounded = char.IsGrounded;
+        justLanded = grounded && wasGrounded == false;
+        if justLanded { fallSpeed = M.absf(vy); }
+        if grounded && vy < 0.0 { vy = 0.0; }
+
+        var yaw = M.toRad(yawDeg);
+        var fwdX = Math.Sin(yaw);
+        var fwdZ = 0.0 - Math.Cos(yaw);
+        var rightX = Math.Cos(yaw);
+        var rightZ = Math.Sin(yaw);
+
+        // Wish direction (normalized in XZ).
+        var wishX = fwdX * moveZ + rightX * moveX;
+        var wishZ = fwdZ * moveZ + rightZ * moveX;
+        var wishLen = Math.Sqrt(wishX * wishX + wishZ * wishZ);
+        var hasInput = wishLen > 0.001;
+        if hasInput {
+            wishX = wishX / wishLen;
+            wishZ = wishZ / wishLen;
+        }
+
+        // Stance resolution.
+        sprinting = wantSprint && grounded && moveZ > 0.1 && stance != STANCE_CROUCH;
+        updateStance(dt, wantCrouch, wantSprint);
+
+        var maxSpeed = speedForStance();
+        if sprinting && stance == STANCE_STAND { maxSpeed = config.SPEED_SPRINT; }
+
+        // Horizontal acceleration toward wish*maxSpeed.
+        var accel = config.MOVE_GROUND_ACCEL;
+        if grounded == false { accel = config.MOVE_AIR_ACCEL; }
+        var targetVX = wishX * maxSpeed;
+        var targetVZ = wishZ * maxSpeed;
+        if hasInput {
+            vx = vx + (targetVX - vx) * M.clampf(accel * dt, 0.0, 1.0);
+            vz = vz + (targetVZ - vz) * M.clampf(accel * dt, 0.0, 1.0);
+        }
+
+        // Ground friction (reduced while sliding).
+        if grounded && (hasInput == false || stance == STANCE_SLIDE) {
+            var fric = config.MOVE_FRICTION;
+            if stance == STANCE_SLIDE { fric = config.MOVE_FRICTION_SLIDE; }
+            var drop = M.clampf(fric * dt, 0.0, 1.0);
+            vx = vx - vx * drop;
+            vz = vz - vz * drop;
+        }
+
+        // Coyote + jump buffer.
+        if grounded { coyote = config.COYOTE_TIME; } else if coyote > 0.0 { coyote = coyote - dt; }
+        if wantJump { jumpBuffer = config.JUMP_BUFFER; } else if jumpBuffer > 0.0 { jumpBuffer = jumpBuffer - dt; }
+        if jumpBuffer > 0.0 && coyote > 0.0 {
+            vy = config.JUMP_SPEED;
+            jumpBuffer = 0.0;
+            coyote = 0.0;
+            grounded = false;
+        }
+
+        // Gravity.
+        vy = vy + config.GRAVITY * dt;
+        if vy < -60.0 { vy = -60.0; }
+
+        // Queue the movement for the upcoming physics step (velocity in;
+        // collision/step/slope resolution happens during StepSimulation).
+        var vel = Math.Vec3.New(vx, vy, vz);
+        char.Move(vel, dt);
+
+        // Noise + footsteps for AI hearing.
+        updateNoise(bus);
+    }
+
+    hide func updateStance(dt: Float, wantCrouch: Boolean, wantSprint: Boolean) {
+        if stance == STANCE_SLIDE {
+            slideTimer = slideTimer - dt;
+            if slideTimer <= 0.0 || getSpeed() < config.SPEED_CROUCH {
+                stance = STANCE_CROUCH;
+                if wantCrouch == false && setCapsuleHeight(config.PLAYER_HEIGHT) {
+                    stance = STANCE_STAND;
+                } else {
+                    setCapsuleHeight(config.PLAYER_HEIGHT_CROUCH);
+                }
+            }
+            return;
+        }
+        // Start a slide from a sprint into crouch.
+        if wantCrouch && wantSprint && grounded && getSpeed() > config.SPEED_WALK * 0.8 {
+            stance = STANCE_SLIDE;
+            setCapsuleHeight(config.PLAYER_HEIGHT_CROUCH);
+            slideTimer = config.SLIDE_TIME;
+            // Preserve/boost momentum along current heading.
+            var sp = getSpeed();
+            if sp > 0.001 {
+                var boost = config.SLIDE_BOOST;
+                vx = vx * boost;
+                vz = vz * boost;
+            }
+            return;
+        }
+        if wantCrouch {
+            stance = STANCE_CROUCH;
+            setCapsuleHeight(config.PLAYER_HEIGHT_CROUCH);
+        } else if setCapsuleHeight(config.PLAYER_HEIGHT) {
+            stance = STANCE_STAND;
+        } else {
+            // A low ceiling keeps the player crouched until standing is safe.
+            stance = STANCE_CROUCH;
+        }
+    }
+
+    hide func setCapsuleHeight(h: Float) -> Boolean {
+        if M.absf(halfHeight * 2.0 - h) < 0.001 { return true; }
+        if char.TrySetHeight(h) == false { return false; }
+        halfHeight = h * 0.5;
+        var p = char.Position;
+        px = Math.Vec3.get_X(p);
+        py = Math.Vec3.get_Y(p);
+        pz = Math.Vec3.get_Z(p);
+        return true;
+    }
+
+    hide func speedForStance() -> Float {
+        if stance == STANCE_CROUCH { return config.SPEED_CROUCH; }
+        if stance == STANCE_SLIDE { return config.SPEED_SPRINT * config.SLIDE_BOOST; }
+        return config.SPEED_WALK;
+    }
+
+    hide func updateNoise(bus: events.EventBus) {
+        // Noise radius by stance (what enemies can hear).
+        if stance == STANCE_CROUCH || stance == STANCE_SLIDE {
+            noiseRadius = config.NOISE_CROUCH;
+        } else if sprinting {
+            noiseRadius = config.NOISE_SPRINT;
+        } else if actualTravel > 0.01 {
+            noiseRadius = config.NOISE_WALK;
+        } else {
+            noiseRadius = 0.0;
+        }
+        // Footstep pulse: accumulate distance, emit a hearing event per stride.
+        if grounded && actualTravel > 0.001 {
+            footstepAccum = footstepAccum + actualTravel;
+            var stride = 2.4;
+            if sprinting { stride = 3.0; }
+            if footstepAccum >= stride {
+                footstepAccum = footstepAccum - stride;
+                footstepCount = footstepCount + 1;
+                var loud = M.clampi(M.roundi(noiseRadius), 0, 20);
+                bus.pushAt(config.EV_FOOTSTEP, 0, loud, px, getFeetY(), pz);
+            }
+        } else {
+            footstepAccum = 0.0;
+        }
+    }
+}

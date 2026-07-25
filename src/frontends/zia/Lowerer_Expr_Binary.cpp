@@ -4,18 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Expr_Binary.cpp
-// Purpose: Lower Zia binary, unary, assignment, and short-circuit expressions.
-// Key invariants:
-//   - Operand coercions match semantic types before typed IL operations are emitted.
-//   - Edge-local managed temporaries are released on every short-circuit path.
-// Ownership/Lifetime:
-//   - The lowerer owns transient expression state for the current function.
-//   - Stored managed values transfer or mint one reference for the destination.
-// Links: src/frontends/zia/Lowerer.hpp,
-//        src/frontends/zia/LowererBinaryOperatorLowerer.hpp
-//
+///
+/// @file Lowerer_Expr_Binary.cpp
+/// @brief Lowers Zia binary, unary, assignment, and short-circuit
+///        expressions.
+///
+/// @details Assignment lowering selects identifier, field, index, global, and
+///          property destinations while applying semantic coercions and
+///          managed-value transfer rules. Binary operator selection is
+///          delegated to BinaryOperatorLowerer. Short-circuit expressions
+///          release edge-local managed temporaries before branching so no SSA
+///          value escapes its defining control-flow path.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -33,6 +33,8 @@ namespace {
 
 /// @brief True if @p type is stored inline by value (struct, fixed array, or
 ///        tuple) rather than behind a heap pointer — affects copy/load lowering.
+/// @param type Semantic type to classify.
+/// @return True for struct, fixed-array, and tuple values.
 bool isInlineAggregateType(TypeRef type) {
     return type && (type->kind == TypeKindSem::Struct || type->kind == TypeKindSem::FixedArray ||
                     type->kind == TypeKindSem::Tuple);

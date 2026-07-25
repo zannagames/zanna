@@ -24,14 +24,24 @@
 namespace il::io::detail {
 
 /// @brief Parse a function header introducing parameters and return type.
+/// @param header Complete function declaration line.
+/// @param st Mutable parser state receiving the new active function.
+/// @return Success or a structured syntax/resource diagnostic.
 [[nodiscard]] il::support::Expected<void> parseFunctionHeader(const std::string &header,
                                                               ParserState &st);
 
 /// @brief Parse a basic block label and its optional parameter list.
+/// @param header Block header text ending before the colon.
+/// @param st Mutable state with an active function.
+/// @return Success or a structured label/parameter diagnostic.
 [[nodiscard]] il::support::Expected<void> parseBlockHeader(const std::string &header,
                                                            ParserState &st);
 
 /// @brief Parse an entire function body following its header line.
+/// @param is Input stream positioned after @p header.
+/// @param header Mutable header-line buffer used to begin parsing.
+/// @param st Parser state and destination module.
+/// @return Success after the closing brace, or a diagnostic with state rolled back.
 [[nodiscard]] il::support::Expected<void> parseFunction(std::istream &is,
                                                         std::string &header,
                                                         ParserState &st);

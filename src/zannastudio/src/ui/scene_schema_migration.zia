@@ -14,7 +14,7 @@
 //     and saves atomically, or is reported and left byte-identical.
 //   - Files whose modification time changed after the scan are refused.
 //   - Only representation-preserving conversions apply; everything else is a
-//     reported per-file refusal, including 3D scenes.
+//     reported per-file refusal; 2D and 3D scenes migrate uniformly.
 // Ownership/Lifetime: Callers own returned plan/result records.
 // Links: zannastudio/src/ui/scene_component_authoring_controller.zia,
 //        docs/adr/0178-scene-component-schema-v2-enum-asset-fields.md
@@ -26,6 +26,8 @@ module scene_schema_migration;
 bind "../services/safe_io";
 
 bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
 bind Obj = Zanna.Core.Object;
 bind Path = Zanna.IO.Path;
 bind Str = Zanna.String;
@@ -107,8 +109,9 @@ expose func ConversionSupported(oldKind: String,
 }
 
 /// @brief Scan one workspace root for scenes carrying the old field key.
-/// @details Read-only. 2D scenes are parsed and match-counted; `.vscn` files
-///          are listed as refusals because 3D migration stays manual.
+/// @details Read-only. 2D scenes parse through SceneDocument and 3D scenes
+///          through the canonical VSCN loader; both match-count exact kinds
+///          (ADR 0178 amendment).
 expose func Scan(root: String,
                  oldKey: String,
                  oldValueKind: String) -> SchemaMigrationResult {
@@ -143,11 +146,11 @@ expose func Scan(root: String,
                 }
                 var lower = Str.ToLower(name);
                 var fullPath = Path.Join(dir, name);
-                if Str.EndsWith(lower, ".vscn") {
-                    AddRefusal(
-                        result, fullPath,
-                        "3D scenes need manual migration in the editor");
-                } else if Str.EndsWith(lower, ".scene")
+                if Str.EndsWith(lower, ".scene3d")
+                   or Str.EndsWith(lower, ".vscn") {
+                    ScanScene3DFile(result, fullPath, oldKey, oldValueKind);
+                } else if Str.EndsWith(lower, ".scene2d")
+                          or Str.EndsWith(lower, ".scene")
                           or Str.EndsWith(lower, ".level") {
                     ScanSceneFile(result, fullPath, oldKey, oldValueKind);
                 }
@@ -201,7 +204,13 @@ expose func Apply(oldKey: String,
         record.reason = planned.reason;
         result.records.add(record);
         if planned.matches <= 0 or planned.reason != "" { continue; }
-        MigrateSceneFile(record, oldKey, oldKind, nextKey, newKind);
+        var lowerPath = Str.ToLower(planned.path);
+        if Str.EndsWith(lowerPath, ".scene3d")
+           or Str.EndsWith(lowerPath, ".vscn") {
+            MigrateScene3DFile(record, oldKey, oldKind, nextKey, newKind);
+        } else {
+            MigrateSceneFile(record, oldKey, oldKind, nextKey, newKind);
+        }
     }
     return result;
 }
@@ -264,6 +273,154 @@ func MigrateSceneFile(record: SchemaMigrationRecord,
         return;
     }
     record.applied = true;
+}
+
+/// @brief Count one 3D scene's exact-kind matches without mutating it.
+/// @details Loads through the canonical VSCN loader (ADR 0178 amendment).
+///          Grafted prefab instance content never serializes back, so it is
+///          excluded from counts and conversion for truthful reporting.
+func ScanScene3DFile(result: SchemaMigrationResult,
+                     path: String,
+                     oldKey: String,
+                     oldValueKind: String) {
+    var scene = SceneGraph.Load(path);
+    if scene == null {
+        AddRefusal(result, path, "the 3D scene could not be loaded");
+        return;
+    }
+    var matches = CountNodeMatches(scene, oldKey, oldValueKind);
+    if matches <= 0 { return; }
+    var record = new SchemaMigrationRecord();
+    record.path = path;
+    record.matches = matches;
+    record.modified = safe_io.Modified(path);
+    result.records.add(record);
+}
+
+/// @brief Migrate one 3D scene transactionally against its scanned identity.
+func MigrateScene3DFile(record: SchemaMigrationRecord,
+                        oldKey: String,
+                        oldKind: String,
+                        newKey: String,
+                        newKind: String) {
+    if safe_io.Modified(record.path) != record.modified {
+        record.reason = "the file changed after the scan";
+        return;
+    }
+    var scene = SceneGraph.Load(record.path);
+    if scene == null {
+        record.reason = "the 3D scene could not be reloaded";
+        return;
+    }
+    if CountNodeMatches(scene, oldKey, oldKind) != record.matches {
+        record.reason = "the scene content changed after the scan";
+        return;
+    }
+    var pending: List[SceneNode] = [scene.Root];
+    while pending.count() > 0 {
+        var node = pending.get(pending.count() - 1);
+        pending.removeAt(pending.count() - 1);
+        if node.IsInstanceContent { continue; }
+        if node.MetadataHas(oldKey)
+           and node.MetadataKind(oldKey) == oldKind {
+            if ConvertNodeValue(
+                   node, oldKey, oldKind, newKey, newKind) == false {
+                record.reason = "a value could not be converted";
+                return;
+            }
+        }
+        if node.PrefabPath == "" {
+            var child = 0;
+            while child < node.ChildCount {
+                pending.add(node.GetChild(child));
+                child = child + 1;
+            }
+        }
+    }
+    if scene.Save(record.path) == 0 {
+        record.reason = "the migrated scene could not be saved";
+        return;
+    }
+    record.applied = true;
+}
+
+/// @brief Convert one node's value with exact-representation semantics.
+func ConvertNodeValue(node: SceneNode,
+                      oldKey: String,
+                      oldKind: String,
+                      newKey: String,
+                      newKind: String) -> Boolean {
+    if oldKind == newKind {
+        if oldKey == newKey { return true; }
+        if oldKind == "string" {
+            node.MetadataSetString(
+                newKey, node.MetadataGetString(oldKey, ""));
+        } else if oldKind == "int" {
+            node.MetadataSetInt(
+                newKey, node.MetadataGetInt(oldKey, 0));
+        } else if oldKind == "float" {
+            node.MetadataSetFloat(
+                newKey, node.MetadataGetFloat(oldKey, 0.0));
+        } else if oldKind == "bool" {
+            node.MetadataSetBool(
+                newKey, node.MetadataGetBool(oldKey, false));
+        } else {
+            node.MetadataSetNull(newKey);
+        }
+    } else if newKind == "string" {
+        node.MetadataSetString(
+            newKey, RenderNodeValueText(node, oldKey, oldKind));
+    } else {
+        return false;
+    }
+    if oldKey != newKey { node.MetadataRemove(oldKey); }
+    if oldKey == newKey and oldKind != newKind
+       and node.MetadataKind(newKey) != newKind {
+        return false;
+    }
+    return true;
+}
+
+/// @brief Render one typed node value as display text for string conversion.
+func RenderNodeValueText(node: SceneNode,
+                         key: String,
+                         kind: String) -> String {
+    if kind == "string" { return node.MetadataGetString(key, ""); }
+    if kind == "int" {
+        return Fmt.Int(node.MetadataGetInt(key, 0));
+    }
+    if kind == "float" {
+        return Fmt.Num(node.MetadataGetFloat(key, 0.0));
+    }
+    if kind == "bool" {
+        return Fmt.Bool(node.MetadataGetBool(key, false));
+    }
+    return "";
+}
+
+/// @brief Count exact-kind node matches, excluding prefab instance content.
+func CountNodeMatches(scene: SceneGraph,
+                      key: String,
+                      valueKind: String) -> Integer {
+    var matches = 0;
+    var pending: List[SceneNode] = [scene.Root];
+    while pending.count() > 0 {
+        var node = pending.get(pending.count() - 1);
+        pending.removeAt(pending.count() - 1);
+        if node.IsInstanceContent { continue; }
+        if node.MetadataHas(key)
+           and node.MetadataKind(key) == valueKind {
+            matches = matches + 1;
+        }
+        if node.PrefabPath == "" {
+            var child = 0;
+            while child < node.ChildCount {
+                pending.add(node.GetChild(child));
+                child = child + 1;
+            }
+        }
+    }
+    return matches;
 }
 
 /// @brief Convert one object's value with exact-representation semantics.

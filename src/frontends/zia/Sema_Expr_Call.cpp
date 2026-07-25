@@ -8,6 +8,9 @@
 /// @file Sema_Expr_Call.cpp
 /// @brief Call expression analysis and collection method resolution for the
 ///        Zia semantic analyzer.
+/// @details Resolves direct, qualified, generic, runtime, constructor-style, collection, and
+///          optional method calls. It also binds named/default/variadic arguments, enforces safe
+///          runtime boundaries, and refines registry-erased collection result types.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -35,6 +38,9 @@ namespace il::frontends::zia {
 
 namespace {
 
+/// @brief Convert a source member spelling to the runtime catalog's leading-capital form.
+/// @param name Source-visible method name.
+/// @return Copy with its first byte uppercased when nonempty.
 std::string capitalizedRuntimeMember(std::string_view name) {
     std::string out(name);
     if (!out.empty())
@@ -42,6 +48,11 @@ std::string capitalizedRuntimeMember(std::string_view name) {
     return out;
 }
 
+/// @brief Determine whether a runtime method symbol exposes a leading receiver parameter.
+/// @param sym Backing extern function symbol.
+/// @param method Parsed runtime member metadata.
+/// @return One when the symbol has an extra leading receiver or metadata is unavailable; zero
+///         when symbol and surface arities already match.
 size_t runtimeMethodReceiverSkip(const Symbol *sym, const il::runtime::ParsedMethod *method) {
     if (!sym || !sym->type || sym->type->kind != TypeKindSem::Function || !method)
         return 1;
@@ -108,6 +119,9 @@ static bool extractDottedName(Expr *expr, std::string &out) {
 
 /// @brief Walk a `range.step(n).rev()`-style modifier chain back to its base
 ///        Range, tallying `.step` calls in @p stepCount.
+/// @param expr Candidate chain node.
+/// @param stepCount Accumulator incremented for every `.step` modifier.
+/// @param depth Current recursion depth used to enforce a defensive bound.
 /// @return true if @p expr is a (possibly modified) range expression.
 static bool inspectRangeModifierChain(const Expr *expr, unsigned &stepCount, unsigned depth = 0) {
     // The parser already bounds expression nesting, but guard the recursion
@@ -135,6 +149,9 @@ static bool inspectRangeModifierChain(const Expr *expr, unsigned &stepCount, uns
 
 /// @brief Public wrapper over @ref inspectRangeModifierChain; optionally
 ///        reports the number of `.step` modifiers via @p stepCountOut.
+/// @param expr Candidate range-modifier chain.
+/// @param stepCountOut Optional destination for the number of `.step` calls.
+/// @return True when the chain terminates at a Range and contains only supported modifiers.
 static bool isRangeModifierChain(const Expr *expr, unsigned *stepCountOut = nullptr) {
     unsigned stepCount = 0;
     bool ok = inspectRangeModifierChain(expr, stepCount);
@@ -145,6 +162,8 @@ static bool isRangeModifierChain(const Expr *expr, unsigned *stepCountOut = null
 
 /// @brief Flatten an identifier / dotted-field expression into its dotted
 ///        type-name string (e.g. `Zanna.GUI.Canvas`) in @p out.
+/// @param expr Candidate type-name expression.
+/// @param out Destination overwritten or extended with the dotted spelling.
 /// @return false if @p expr is not a pure name/field chain.
 static bool exprToTypeName(const Expr *expr, std::string &out) {
     if (!expr)
@@ -168,6 +187,8 @@ static TypePtr exprToTypeNode(const Expr *expr);
 
 /// @brief Collect generic type-argument nodes from @p expr into @p out,
 ///        flattening a tuple of args (`Foo[(A, B)]`) into separate entries.
+/// @param expr Expression encoding one type argument or a tuple of arguments.
+/// @param out Destination type-node list.
 static void collectTypeArgNodes(const Expr *expr, std::vector<TypePtr> &out) {
     if (!expr)
         return;
@@ -187,6 +208,8 @@ static void collectTypeArgNodes(const Expr *expr, std::vector<TypePtr> &out) {
 /// @brief Reinterpret an expression that is syntactically a type (a name, a
 ///        dotted name, or `Name[Args]`) as a TypeNode, for explicit
 ///        type-argument syntax at call sites. Returns nullptr if not a type.
+/// @param expr Candidate expression.
+/// @return Newly allocated named or generic type node, or nullptr when the syntax is not a type.
 static TypePtr exprToTypeNode(const Expr *expr) {
     if (!expr)
         return nullptr;
@@ -214,6 +237,10 @@ static TypePtr exprToTypeNode(const Expr *expr) {
 /// @brief Bind generic @p typeParamName to @p argType during inference;
 ///        an unknown arg is ignored. If already bound, succeeds only when the
 ///        new binding is consistent with the existing one.
+/// @param typeParamName Generic parameter being inferred.
+/// @param argType Concrete argument type.
+/// @param inferredTypes Mutable inference map.
+/// @return True when the binding is absent, new, or equal to its prior value.
 static bool bindInferredType(const std::string &typeParamName,
                              TypeRef argType,
                              std::map<std::string, TypeRef> &inferredTypes) {
@@ -232,6 +259,10 @@ static bool bindInferredType(const std::string &typeParamName,
 /// @brief Structurally match a generic parameter's declared type pattern
 ///        @p paramNode against the concrete @p argType, binding any type
 ///        parameters in @p typeParamNames into @p inferredTypes.
+/// @param paramNode Declared parameter type pattern.
+/// @param argType Concrete argument type being matched.
+/// @param typeParamNames Generic parameter names eligible for inference.
+/// @param inferredTypes Mutable inferred substitution map.
 /// @return false on a structural conflict that defeats inference.
 static bool inferTypeParamsFromPattern(const TypeNode *paramNode,
                                        TypeRef argType,
@@ -338,12 +369,16 @@ static bool inferTypeParamsFromPattern(const TypeNode *paramNode,
 
 /// @brief True if @p calleeName is a Terminal text-output runtime (Say/Print)
 ///        whose argument may be auto-stringified.
+/// @param calleeName Fully qualified runtime function name.
+/// @return True for the two terminal text-output entry points.
 bool isTerminalTextRuntime(std::string_view calleeName) {
     return calleeName == runtime::kTerminalSay || calleeName == runtime::kTerminalPrint;
 }
 
 /// @brief True if @p type can be implicitly converted to text for a Terminal
 ///        Say/Print call (string and the scalar kinds with a string form).
+/// @param type Candidate argument type.
+/// @return True when the lowerer can produce a stable textual representation.
 bool canAutoStringifyForTerminal(TypeRef type) {
     if (!type)
         return false;
@@ -374,6 +409,12 @@ bool canAutoStringifyForTerminal(TypeRef type) {
 // Call Argument Validation
 //=============================================================================
 
+/// @brief Validate arguments for a function value without declaration-specific binding metadata.
+/// @param expr Call expression whose arguments were already analyzed.
+/// @param funcType Callable semantic type.
+/// @param calleeName Display name used in diagnostics and declaration lookup.
+/// @details Rejects named arguments, validates arity including declaration defaults/variadics,
+///          and checks each fixed or variadic argument against its target type.
 void Sema::validateCallArgs(CallExpr *expr, TypeRef funcType, const std::string &calleeName) {
     if (!funcType || funcType->kind != TypeKindSem::Function)
         return;
@@ -469,6 +510,12 @@ void Sema::validateCallArgs(CallExpr *expr, TypeRef funcType, const std::string 
 // Call Expression Analysis
 //=============================================================================
 
+/// @brief Bind an extern call and enforce its safe runtime pointer contract.
+/// @param expr Call expression whose arguments have been analyzed.
+/// @param calleeName Fully qualified runtime function name.
+/// @param sym Extern function symbol.
+/// @param skipLeadingParams Hidden leading parameters not exposed at this call site.
+/// @return True for a valid binding or a non-extern symbol; false after a binding/safety error.
 bool Sema::bindExternCallOnCall(CallExpr *expr,
                                 const std::string &calleeName,
                                 Symbol *sym,
@@ -489,6 +536,12 @@ bool Sema::bindExternCallOnCall(CallExpr *expr,
     return true;
 }
 
+/// @brief Apply the Terminal Say/Print single-argument auto-stringification exception.
+/// @param expr Candidate call expression.
+/// @param calleeName Fully qualified runtime callee.
+/// @param sym Extern function symbol.
+/// @param outType Receives the normalized call result type on success.
+/// @return True when the call matches and a binding was recorded.
 bool Sema::tryBindTerminalTextCall(CallExpr *expr,
                                    const std::string &calleeName,
                                    Symbol *sym,
@@ -520,6 +573,9 @@ bool Sema::tryBindTerminalTextCall(CallExpr *expr,
     return true;
 }
 
+/// @brief Decide whether a dotted call target must bypass ordinary receiver analysis.
+/// @param expr Call expression with a potentially qualified callee.
+/// @return True when the root denotes Zanna, a bind alias, a file module, or a type/module symbol.
 bool Sema::shouldDeferDottedCalleeToQualifiedLookup(const CallExpr *expr) const {
     std::string dottedName;
     if (!extractDottedName(expr->callee.get(), dottedName))
@@ -541,6 +597,13 @@ bool Sema::shouldDeferDottedCalleeToQualifiedLookup(const CallExpr *expr) const 
            (rootSym->kind == Symbol::Kind::Module || rootSym->kind == Symbol::Kind::Type);
 }
 
+/// @brief Refine an erased runtime call result using registry and receiver element metadata.
+/// @param expr Call expression supplying receiver and argument types.
+/// @param calleeName Fully qualified runtime function name.
+/// @param fallback Type inferred from the extern symbol.
+/// @return Most specific normalized result type available.
+/// @details Specializes sequence element, map key/value, set item, and conversion results that
+///          are represented as opaque object pointers in the low-level ABI.
 TypeRef Sema::refineRuntimeCallReturnType(const CallExpr *expr,
                                           const std::string &calleeName,
                                           TypeRef fallback) const {
@@ -691,17 +754,14 @@ TypeRef Sema::refineRuntimeCallReturnType(const CallExpr *expr,
     return fallback;
 }
 
-/// @brief Analyze a function or method call expression.
-/// @param expr The call expression node.
-/// @return The return type of the called function/method.
-/// @details This is a comprehensive method that handles multiple call scenarios:
-///          - Generic function calls with explicit type arguments (e.g., identity[Integer](x))
-///          - Generic function calls with type inference (e.g., identity(42))
-///          - Imported symbol calls from bound namespaces
-///          - Qualified function calls (e.g., module.func())
-///          - Collection method calls (List, Map, Set, String methods)
-///          - Runtime class method calls
-///          - Regular function and method calls
+/// @brief Analyze a higher-order List combinator call.
+/// @param expr Call expression containing combinator arguments.
+/// @param m Normalized method name (`sum`, `reduce`, `map`, `filter`, `firstWhere`, `any`, or
+///        `all`).
+/// @param baseType Receiver list type.
+/// @return Specialized result when @p m is handled, or std::nullopt for other methods.
+/// @details Supplies expected function types to lambda analysis and validates reducer,
+///          transformer, or predicate shapes.
 std::optional<TypeRef> Sema::analyzeListCombinatorCall(CallExpr *expr,
                                                        const std::string &m,
                                                        TypeRef baseType) {
@@ -767,6 +827,13 @@ std::optional<TypeRef> Sema::analyzeListCombinatorCall(CallExpr *expr,
     return TypeRef(types::boolean()); // any / all
 }
 
+/// @brief Analyze a function or method call expression.
+/// @param expr The call expression node.
+/// @return The return type of the called function or method.
+/// @details Handles optional method chains, generic calls with explicit or inferred arguments,
+///          bound and qualified symbols, collection methods, runtime classes, constructors, and
+///          ordinary function/method overloads. Successful paths record lowered callees and
+///          argument bindings for code generation.
 TypeRef Sema::analyzeCall(CallExpr *expr) {
     auto analyzeArgTypes = [&]() {
         std::vector<TypeRef> argTypes;

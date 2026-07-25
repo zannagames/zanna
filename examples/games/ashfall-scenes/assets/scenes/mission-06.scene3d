@@ -1,0 +1,2840 @@
+{
+  "format": "vscn",
+  "version": 6,
+  "metadata": {
+    "af.ambB": {"kind": "float", "value": 0.16},
+    "af.ambG": {"kind": "float", "value": 0.14000000000000001},
+    "af.ambR": {"kind": "float", "value": 0.14000000000000001},
+    "af.levelId": {"kind": "int", "value": "6"},
+    "af.name": {"kind": "string", "value": "Storm Terraces"},
+    "af.startX": {"kind": "float", "value": 0},
+    "af.startY": {"kind": "float", "value": 0.20000000000000001},
+    "af.startYaw": {"kind": "float", "value": 0},
+    "af.startZ": {"kind": "float", "value": 0},
+    "af.terraOffX": {"kind": "float", "value": 0},
+    "af.terraOffY": {"kind": "float", "value": 0},
+    "af.terraOffZ": {"kind": "float", "value": 0},
+    "af.terrain": {"kind": "int", "value": "3"},
+    "af.wantWater": {"kind": "bool", "value": false},
+    "af.watD": {"kind": "float", "value": 4},
+    "af.watW": {"kind": "float", "value": 4},
+    "af.watX": {"kind": "float", "value": 0},
+    "af.watY": {"kind": "float", "value": 0},
+    "af.watZ": {"kind": "float", "value": 0},
+    "lenv.accB": {"kind": "float", "value": 0.86274509803921573},
+    "lenv.accG": {"kind": "float", "value": 0.66666666666666663},
+    "lenv.accR": {"kind": "float", "value": 0.5490196078431373},
+    "lenv.ambB": {"kind": "float", "value": 0.20000000000000001},
+    "lenv.ambG": {"kind": "float", "value": 0.17999999999999999},
+    "lenv.ambR": {"kind": "float", "value": 0.17999999999999999},
+    "lenv.atmo": {"kind": "int", "value": "1"},
+    "lenv.cloud": {"kind": "float", "value": 0.75},
+    "lenv.filB": {"kind": "float", "value": 0.5},
+    "lenv.filG": {"kind": "float", "value": 0.41999999999999998},
+    "lenv.filI": {"kind": "float", "value": 0.40000000000000002},
+    "lenv.filR": {"kind": "float", "value": 0.40000000000000002},
+    "lenv.filX": {"kind": "float", "value": 0.5},
+    "lenv.filY": {"kind": "float", "value": -0.5},
+    "lenv.filZ": {"kind": "float", "value": 0.29999999999999999},
+    "lenv.flare": {"kind": "bool", "value": false},
+    "lenv.fogFar": {"kind": "float", "value": 135},
+    "lenv.fogNear": {"kind": "float", "value": 28},
+    "lenv.grdB": {"kind": "float", "value": 0.13333333333333333},
+    "lenv.grdG": {"kind": "float", "value": 0.11764705882352941},
+    "lenv.grdR": {"kind": "float", "value": 0.11764705882352941},
+    "lenv.heightFog": {"kind": "bool", "value": true},
+    "lenv.horB": {"kind": "float", "value": 0.36862745098039218},
+    "lenv.horG": {"kind": "float", "value": 0.34509803921568627},
+    "lenv.horR": {"kind": "float", "value": 0.33725490196078434},
+    "lenv.stars": {"kind": "bool", "value": false},
+    "lenv.sunB": {"kind": "float", "value": 0.55000000000000004},
+    "lenv.sunG": {"kind": "float", "value": 0.5},
+    "lenv.sunI": {"kind": "float", "value": 0.84999999999999998},
+    "lenv.sunR": {"kind": "float", "value": 0.5},
+    "lenv.sunX": {"kind": "float", "value": -0.29999999999999999},
+    "lenv.sunY": {"kind": "float", "value": -0.69999999999999996},
+    "lenv.sunZ": {"kind": "float", "value": -0.40000000000000002},
+    "lenv.terrain": {"kind": "bool", "value": true},
+    "lenv.vanX": {"kind": "float", "value": 10},
+    "lenv.vanY": {"kind": "float", "value": 7},
+    "lenv.vanZ": {"kind": "float", "value": 14},
+    "lenv.zenB": {"kind": "float", "value": 0.20392156862745098},
+    "lenv.zenG": {"kind": "float", "value": 0.17254901960784313},
+    "lenv.zenR": {"kind": "float", "value": 0.15686274509803921},
+    "obj.0.count": {"kind": "int", "value": "60"},
+    "obj.0.kind": {"kind": "int", "value": "3"},
+    "obj.0.optional": {"kind": "bool", "value": false},
+    "obj.0.prereq": {"kind": "int", "value": "-1"},
+    "obj.0.prompt": {"kind": "string", "value": "SURVIVE FIVE OVERLAPPING ASSAULTS"},
+    "obj.0.radius": {"kind": "float", "value": 0},
+    "obj.0.text": {"kind": "string", "value": "Hold the terrace for 60s"},
+    "obj.0.x": {"kind": "float", "value": 0},
+    "obj.0.z": {"kind": "float", "value": 0},
+    "obj.1.count": {"kind": "int", "value": "0"},
+    "obj.1.kind": {"kind": "int", "value": "5"},
+    "obj.1.optional": {"kind": "bool", "value": false},
+    "obj.1.prereq": {"kind": "int", "value": "0"},
+    "obj.1.prompt": {"kind": "string", "value": "FINISH THE LAST WAVE"},
+    "obj.1.radius": {"kind": "float", "value": 0},
+    "obj.1.text": {"kind": "string", "value": "Clear the final wave"},
+    "obj.1.x": {"kind": "float", "value": 0},
+    "obj.1.z": {"kind": "float", "value": 0},
+    "obj.count": {"kind": "int", "value": "2"}
+  },
+  "textures": [
+  ],
+  "cubemaps": [
+  ],
+  "materials": [
+    {"diffuse": [0.38, 0.38, 0.41999999999999998, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35999999999999999, 0.34999999999999998, 0.38, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.71999999999999997, 0.47999999999999998, 0.17999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40000000000000002, 0.40000000000000002, 0.44, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.36800000000000005, 0.36800000000000005, 0.40479999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34000000000000002, 0.34000000000000002, 0.374, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.35999999999999999, 0.35999999999999999, 0.40000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.34000000000000002, 0.34000000000000002, 0.38, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.44, 0.46999999999999997, 0.52000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.66000000000000003, 0.81999999999999995, 1, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.40000000000000002, 0.40999999999999998, 0.46000000000000002, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.29999999999999999, 0.85999999999999999, 1, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.94999999999999996, 0.69999999999999996, 0.22, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.94999999999999996, 0.68000000000000005, 0.12, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.92000000000000004, 0.62, 0.17999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [1, 0.71999999999999997, 0.23999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [1, 0.78000000000000003, 0.29999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.94999999999999996, 0.68000000000000005, 0.22, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]},
+    {"diffuse": [0.45000000000000001, 0.71999999999999997, 1, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]}
+  ],
+  "cameras": [
+    {"isOrtho": false, "fov": 60, "aspect": 1.7777777777777777, "near": 0.10000000000000001, "far": 500, "orthoSize": 10, "eye": [0, 0, 0], "view": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]}
+  ],
+  "meshes": [
+    {"vertexFormat": "vgfx3d_vertex_le_v2", "vertexCount": 24, "indexCount": 36, "boneCount": 0, "skeletonIndex": -1, "resident": true, "verticesBase64": "AAAAvwAAAL8AAAA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAvwAAAD8AAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAA/AAAAPwAAAAAAAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAD8AAAA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAvwAAAL8AAAAAAAAAAAAAgL8AAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAC/AAAAvwAAAAAAAAAAAACAvwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAD8AAAC/AAAAAAAAAAAAAIC/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAPwAAAL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAC/AAAAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAL8AAAC/AACAPwAAAAAAAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAPwAAAL8AAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAA/AAAAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAL8AAAC/AACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC/AAAAvwAAAD8AAIC/AAAAAAAAAAAAAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAA/AAAAPwAAgL8AAAAAAAAAAAAAgD8AAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAD8AAAC/AACAvwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC/AAAAPwAAAD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAA/AAAAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAD8AAAC/AAAAAAAAgD8AAAAAAACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC/AAAAPwAAAL8AAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAC/AAAAvwAAAAAAAIC/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAL8AAAC/AAAAAAAAgL8AAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAvwAAAD8AAAAAAACAvwAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAC/AAAAPwAAAAAAAIC/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAA", "indicesBase64": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAUAAAAGAAAABAAAAAYAAAAHAAAACAAAAAkAAAAKAAAACAAAAAoAAAALAAAADAAAAA0AAAAOAAAADAAAAA4AAAAPAAAAEAAAABEAAAASAAAAEAAAABIAAAATAAAAFAAAABUAAAAWAAAAFAAAABYAAAAXAAAA"}
+  ],
+  "nodes": [
+    {
+      "name": "Box 0",
+      "position": [0, -0.25, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [56, 0.5, 56],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 0,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 1",
+      "position": [0, 3, -28],
+      "rotation": [0, 0, 0, 1],
+      "scale": [56, 6, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Box 2",
+      "position": [0, 3, 28],
+      "rotation": [0, 0, 0, 1],
+      "scale": [56, 6, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Box 3",
+      "position": [-28, 3, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.80000000000000004, 6, 56],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Box 4",
+      "position": [28, 3, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.80000000000000004, 6, 56],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Box 5",
+      "position": [0, 0.080000000000000002, -27.280000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [54, 0.080000000000000002, 0.14000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 2,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 6",
+      "position": [0, 0.080000000000000002, 27.280000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [54, 0.080000000000000002, 0.14000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 2,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 7",
+      "position": [-27.280000000000001, 0.080000000000000002, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.14000000000000001, 0.080000000000000002, 54],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 2,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 8",
+      "position": [27.280000000000001, 0.080000000000000002, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.14000000000000001, 0.080000000000000002, 54],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 2,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 9",
+      "position": [8, 0.80000000000000004, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.6000000000000001, 1.6000000000000001, 1.6000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 3,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 10",
+      "position": [8.3418854825488662, 1.75, 0.43082980029511592],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.90000000000000002, 0.44, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 4,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 11",
+      "position": [7.6581145174511347, 0.22, -0.43082980029511592],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.2999999999999998, 0.44, 2.1000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 5,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 12",
+      "position": [4.0000000082902725, 0.80000000000000004, 6.9282032254891179],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.6000000000000001, 1.6000000000000001, 1.6000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 3,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 13",
+      "position": [3.7978331984138141, 1.75, 7.4396996389510068],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.90000000000000002, 0.44, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 4,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 14",
+      "position": [4.2021668181667309, 0.22, 6.416706812027229],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.2999999999999998, 0.44, 2.1000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 5,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 15",
+      "position": [-3.9999999834194542, 0.80000000000000004, 6.9282032398482922],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.6000000000000001, 1.6000000000000001, 1.6000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 3,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 16",
+      "position": [-4.5440522762637823, 1.75, 7.0088698540751766],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.90000000000000002, 0.44, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 4,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 17",
+      "position": [-3.4559476905751256, 0.22, 6.8475366256214079],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.2999999999999998, 0.44, 2.1000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 5,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 18",
+      "position": [-8, 0.80000000000000004, 2.8718344238732894e-08],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.6000000000000001, 1.6000000000000001, 1.6000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 3,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 19",
+      "position": [-8.3418854840954548, 1.75, -0.43082977034947345],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.90000000000000002, 0.44, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 4,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 20",
+      "position": [-7.6581145159045443, 0.22, 0.43082982778616197],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.2999999999999998, 0.44, 2.1000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 5,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 21",
+      "position": [-4.0000000331610917, 0.80000000000000004, -6.9282032111299436],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.6000000000000001, 1.6000000000000001, 1.6000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 3,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 22",
+      "position": [-3.7978332251207996, 1.75, -7.4396996253175702],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.90000000000000002, 0.44, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 4,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 23",
+      "position": [-4.2021668412013842, 0.22, -6.416706796942317],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.2999999999999998, 0.44, 2.1000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 5,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 24",
+      "position": [3.9999999585486417, 0.80000000000000004, -6.9282032542074621],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.6000000000000001, 1.6000000000000001, 1.6000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 3,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 25",
+      "position": [4.5440522511033938, 1.75, -7.0088698703873815],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.90000000000000002, 0.44, 0.80000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 4,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 26",
+      "position": [3.4559476659938895, 0.22, -6.8475366380275426],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.2999999999999998, 0.44, 2.1000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 5,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 27",
+      "position": [0, 0.5, -27],
+      "rotation": [0, 0, 0, 1],
+      "scale": [56, 1, 2.3999999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 6,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 28",
+      "position": [0, 1.1000000000000001, -28.600000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [56, 2.2000000000000002, 1.2],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 7,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 29",
+      "position": [-27, 0.5, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.3999999999999999, 1, 56],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 6,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 30",
+      "position": [27, 0.5, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.3999999999999999, 1, 56],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 6,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 31",
+      "position": [0, 0.125, -24.5],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 0.25, 0.44],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 8,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 32",
+      "position": [0, 0.26200000000000001, -24.667999999999999],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 0.024, 0.070000000000000007],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 9,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 33",
+      "position": [0, 0.25, -24.899999999999999],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 0.5, 0.44],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 8,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 34",
+      "position": [0, 0.51200000000000001, -25.067999999999998],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 0.024, 0.070000000000000007],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 9,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 35",
+      "position": [0, 0.375, -25.300000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 0.75, 0.44],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 8,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 36",
+      "position": [0, 0.76200000000000001, -25.468],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 0.024, 0.070000000000000007],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 9,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 37",
+      "position": [0, 0.5, -25.699999999999999],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 1, 0.44],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 8,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 38",
+      "position": [0, 1.012, -25.867999999999999],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.2000000000000002, 0.024, 0.070000000000000007],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 9,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 39",
+      "position": [-8, 1.4199999999999999, -27],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.5, 0.83999999999999997, 0.64000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 10,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 40",
+      "position": [8, 1.4199999999999999, -27],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.5, 0.83999999999999997, 0.64000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 10,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "collider.halfX": {"kind": "float", "value": 0.5},
+        "collider.halfY": {"kind": "float", "value": 0.5},
+        "collider.halfZ": {"kind": "float", "value": 0.5},
+        "collider.kind": {"kind": "string", "value": "box"},
+        "collider.trigger": {"kind": "bool", "value": false},
+        "surf": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Box 41",
+      "position": [0, 0.044999999999999998, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [6.4000000000000004, 0.070000000000000007, 6.4000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 11,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 42",
+      "position": [0, 0.074999999999999997, -3.2000000000000002],
+      "rotation": [0, 0, 0, 1],
+      "scale": [6.4000000000000004, 0.070000000000000007, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 12,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 43",
+      "position": [0, 0.074999999999999997, 3.2000000000000002],
+      "rotation": [0, 0, 0, 1],
+      "scale": [6.4000000000000004, 0.070000000000000007, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 12,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 44",
+      "position": [-3.2000000000000002, 0.074999999999999997, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.070000000000000007, 6.4000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 12,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 45",
+      "position": [3.2000000000000002, 0.074999999999999997, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.070000000000000007, 6.4000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 12,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 46",
+      "position": [-12, 0.055, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [4.4000000000000004, 0.070000000000000007, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 13,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "6"}
+      }
+    }
+,    {
+      "name": "Box 47",
+      "position": [12, 0.055, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [4.4000000000000004, 0.070000000000000007, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 13,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "6"}
+      }
+    }
+,    {
+      "name": "Box 48",
+      "position": [0, 0.055, -12],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.070000000000000007, 4.4000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 13,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "6"}
+      }
+    }
+,    {
+      "name": "Box 49",
+      "position": [0, 0.055, 12],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.070000000000000007, 4.4000000000000004],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 13,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "6"}
+      }
+    }
+,    {
+      "name": "Box 50",
+      "position": [0, 0.035000000000000003, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2.7999999999999998, 0.070000000000000007, 2.7999999999999998],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 14,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 51",
+      "position": [0, 0.45000000000000001, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.90000000000000002, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 15,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 52",
+      "position": [0, 0.95999999999999996, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.35999999999999999, 0.10000000000000001, 0.35999999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 16,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 53",
+      "position": [-10, 0.035000000000000003, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.6000000000000001, 0.070000000000000007, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 14,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 54",
+      "position": [-10, 0.45000000000000001, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.90000000000000002, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 15,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 55",
+      "position": [-10, 0.95999999999999996, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.35999999999999999, 0.10000000000000001, 0.35999999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 16,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 56",
+      "position": [10, 0.035000000000000003, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [3.6000000000000001, 0.070000000000000007, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 14,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 57",
+      "position": [10, 0.45000000000000001, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.90000000000000002, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 15,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 58",
+      "position": [10, 0.95999999999999996, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.35999999999999999, 0.10000000000000001, 0.35999999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 16,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 59",
+      "position": [0, 0.035000000000000003, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.2, 0.070000000000000007, 3.6000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 14,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 60",
+      "position": [0, 0.45000000000000001, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.16, 0.90000000000000002, 0.16],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 15,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 61",
+      "position": [0, 0.95999999999999996, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.35999999999999999, 0.10000000000000001, 0.35999999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 16,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 62",
+      "position": [-10, 0.055, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.4399999999999999, 0.070000000000000007, 0.35999999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 63",
+      "position": [-9.5199999999999996, 0.059999999999999998, -0.32000000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.20000000000000001, 0.070000000000000007, 0.69999999999999996],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 64",
+      "position": [-9.5199999999999996, 0.059999999999999998, 0.32000000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.20000000000000001, 0.070000000000000007, 0.69999999999999996],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 65",
+      "position": [10, 0.055, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1.4399999999999999, 0.070000000000000007, 0.35999999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 66",
+      "position": [10.48, 0.059999999999999998, -0.32000000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.20000000000000001, 0.070000000000000007, 0.69999999999999996],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 67",
+      "position": [10.48, 0.059999999999999998, 0.32000000000000001],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.20000000000000001, 0.070000000000000007, 0.69999999999999996],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 68",
+      "position": [0, 0.055, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.35999999999999999, 0.070000000000000007, 1.4399999999999999],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 69",
+      "position": [-0.32000000000000001, 0.059999999999999998, -14.48],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.69999999999999996, 0.070000000000000007, 0.20000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 70",
+      "position": [0.32000000000000001, 0.059999999999999998, -14.48],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.69999999999999996, 0.070000000000000007, 0.20000000000000001],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 17,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 71",
+      "position": [-16, 0.050000000000000003, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.44, 0.10000000000000001, 0.44],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 18,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Box 72",
+      "position": [16, 0.050000000000000003, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [0.44, 0.10000000000000001, 0.44],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": true,
+      "hasMaterial": true,
+      "mesh": 0,
+      "material": 18,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "box"},
+        "dressing": {"kind": "bool", "value": true},
+        "surf": {"kind": "int", "value": "7"}
+      }
+    }
+,    {
+      "name": "Practical 0",
+      "position": [-14, 2.7999999999999998, 14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "light": {"type": 1, "direction": [0, 0, -1], "position": [0, 0, 0], "color": [0.5, 0.59999999999999998, 0.84999999999999998], "intensity": 1, "attenuation": 10, "innerCos": 0, "outerCos": 0, "castsShadows": false, "enabled": true, "basisU": [0, 0, 0], "basisV": [0, 0, 0], "width": 1, "height": 1, "radius": 1, "range": 0, "decayType": 2},
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "light"},
+        "light.b": {"kind": "float", "value": 0.84999999999999998},
+        "light.g": {"kind": "float", "value": 0.59999999999999998},
+        "light.kind": {"kind": "int", "value": "1"},
+        "light.r": {"kind": "float", "value": 0.5},
+        "light.range": {"kind": "float", "value": 10}
+      }
+    }
+,    {
+      "name": "Practical 1",
+      "position": [14, 2.7999999999999998, 14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "light": {"type": 1, "direction": [0, 0, -1], "position": [0, 0, 0], "color": [0.5, 0.59999999999999998, 0.84999999999999998], "intensity": 1, "attenuation": 10, "innerCos": 0, "outerCos": 0, "castsShadows": false, "enabled": true, "basisU": [0, 0, 0], "basisV": [0, 0, 0], "width": 1, "height": 1, "radius": 1, "range": 0, "decayType": 2},
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "light"},
+        "light.b": {"kind": "float", "value": 0.84999999999999998},
+        "light.g": {"kind": "float", "value": 0.59999999999999998},
+        "light.kind": {"kind": "int", "value": "1"},
+        "light.r": {"kind": "float", "value": 0.5},
+        "light.range": {"kind": "float", "value": 10}
+      }
+    }
+,    {
+      "name": "Practical 2",
+      "position": [-14, 2.7999999999999998, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "light": {"type": 1, "direction": [0, 0, -1], "position": [0, 0, 0], "color": [0.5, 0.59999999999999998, 0.84999999999999998], "intensity": 1, "attenuation": 10, "innerCos": 0, "outerCos": 0, "castsShadows": false, "enabled": true, "basisU": [0, 0, 0], "basisV": [0, 0, 0], "width": 1, "height": 1, "radius": 1, "range": 0, "decayType": 2},
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "light"},
+        "light.b": {"kind": "float", "value": 0.84999999999999998},
+        "light.g": {"kind": "float", "value": 0.59999999999999998},
+        "light.kind": {"kind": "int", "value": "1"},
+        "light.r": {"kind": "float", "value": 0.5},
+        "light.range": {"kind": "float", "value": 10}
+      }
+    }
+,    {
+      "name": "Practical 3",
+      "position": [14, 2.7999999999999998, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "light": {"type": 1, "direction": [0, 0, -1], "position": [0, 0, 0], "color": [0.5, 0.59999999999999998, 0.84999999999999998], "intensity": 1, "attenuation": 10, "innerCos": 0, "outerCos": 0, "castsShadows": false, "enabled": true, "basisU": [0, 0, 0], "basisV": [0, 0, 0], "width": 1, "height": 1, "radius": 1, "range": 0, "decayType": 2},
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "light"},
+        "light.b": {"kind": "float", "value": 0.84999999999999998},
+        "light.g": {"kind": "float", "value": 0.59999999999999998},
+        "light.kind": {"kind": "int", "value": "1"},
+        "light.r": {"kind": "float", "value": 0.5},
+        "light.range": {"kind": "float", "value": 10}
+      }
+    }
+,    {
+      "name": "Spawn 0",
+      "position": [24, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": 13},
+        "spawn.routeZ": {"kind": "float", "value": 0},
+        "spawn.wave": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Spawn 1",
+      "position": [7.41640789777406, 0, 22.825356380434339],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": 4.0172209446276161},
+        "spawn.routeZ": {"kind": "float", "value": 12.3637347060686},
+        "spawn.wave": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Spawn 2",
+      "position": [-19.416407824486214, 0, 14.106846110780063],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "1"},
+        "spawn.routeX": {"kind": "float", "value": -10.517220904930031},
+        "spawn.routeZ": {"kind": "float", "value": 7.6412083100058679},
+        "spawn.wave": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Spawn 3",
+      "position": [-19.416407925767526, 0, -14.106845971378293],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": -10.517220959790743},
+        "spawn.routeZ": {"kind": "float", "value": -7.6412082344965757},
+        "spawn.wave": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Spawn 4",
+      "position": [7.416407733897449, 0, -22.825356433681076],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": 4.017220855861118},
+        "spawn.routeZ": {"kind": "float", "value": -12.363734734910583},
+        "spawn.wave": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Spawn 5",
+      "position": [12.967255340835354, 0, 20.195303635389514],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": 7.0239299762858174},
+        "spawn.routeZ": {"kind": "float", "value": 10.939122802502654},
+        "spawn.wave": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Spawn 6",
+      "position": [-15.19977282360928, 0, 18.573284742087729],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "3"},
+        "spawn.routeX": {"kind": "float", "value": -8.2332102794550259},
+        "spawn.routeZ": {"kind": "float", "value": 10.060529235297519},
+        "spawn.wave": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Spawn 7",
+      "position": [-22.361231608617636, 0, -8.716382331320693],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "1"},
+        "spawn.routeX": {"kind": "float", "value": -12.112333788001219},
+        "spawn.routeZ": {"kind": "float", "value": -4.7213737627987085},
+        "spawn.wave": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Spawn 8",
+      "position": [1.3797715981003802, 0, -23.960305305589817],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": 0.74737628230437259},
+        "spawn.routeZ": {"kind": "float", "value": -12.978498707194484},
+        "spawn.wave": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Spawn 9",
+      "position": [23.213977356723969, 0, -6.0919007938004768],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": 12.574237734892149},
+        "spawn.routeZ": {"kind": "float", "value": -3.2997795966419252},
+        "spawn.wave": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Spawn 10",
+      "position": [-9.9875240771314182, 0, 21.823138243816359],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": -5.4099088751128512},
+        "spawn.routeZ": {"kind": "float", "value": 11.820866548733862},
+        "spawn.wave": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Spawn 11",
+      "position": [-23.841352508310017, 0, -2.7549792330432656],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "3"},
+        "spawn.routeX": {"kind": "float", "value": -12.914065942001258},
+        "spawn.routeZ": {"kind": "float", "value": -1.4922804178984357},
+        "spawn.wave": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Spawn 12",
+      "position": [-4.7472421758890668, 0, -23.525809055661824],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "1"},
+        "spawn.routeX": {"kind": "float", "value": -2.5714228452732448},
+        "spawn.routeZ": {"kind": "float", "value": -12.743146571816823},
+        "spawn.wave": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Spawn 13",
+      "position": [20.907395477817534, 0, -11.784770440451307],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "2"},
+        "spawn.routeX": {"kind": "float", "value": 11.324839217151165},
+        "spawn.routeZ": {"kind": "float", "value": -6.383417321911125},
+        "spawn.wave": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Spawn 14",
+      "position": [17.668723254520035, 0, 16.242420341660377],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": 9.5705584295316868},
+        "spawn.routeZ": {"kind": "float", "value": 8.7979776850660389},
+        "spawn.wave": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Spawn 15",
+      "position": [-23.759819918410692, 0, 3.3868801934368129],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "0"},
+        "spawn.routeX": {"kind": "float", "value": -12.869902455805791},
+        "spawn.routeZ": {"kind": "float", "value": 1.8345601047782738},
+        "spawn.wave": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Spawn 16",
+      "position": [-10.563302646900839, 0, -21.550328006551961],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "3"},
+        "spawn.routeX": {"kind": "float", "value": -5.7217889337379546},
+        "spawn.routeZ": {"kind": "float", "value": -11.673094336882311},
+        "spawn.wave": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Spawn 17",
+      "position": [17.23133982032294, 0, -16.705715429054603],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "1"},
+        "spawn.routeX": {"kind": "float", "value": 9.3336424026749256},
+        "spawn.routeZ": {"kind": "float", "value": -9.0489291907379101},
+        "spawn.wave": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Spawn 18",
+      "position": [21.212856374623481, 0, 11.225628019384748],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "2"},
+        "spawn.routeX": {"kind": "float", "value": 11.490297202921052},
+        "spawn.routeZ": {"kind": "float", "value": 6.0805485105000718},
+        "spawn.wave": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Spawn 19",
+      "position": [-4.1210735243975725, 0, 23.643535120757839],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "5"},
+        "spawn.routeX": {"kind": "float", "value": -2.2322481590486851},
+        "spawn.routeZ": {"kind": "float", "value": 12.806914857077164},
+        "spawn.wave": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Spawn 20",
+      "position": [-15.687446900726687, 0, -18.163259887390279],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "4"},
+        "spawn.routeX": {"kind": "float", "value": -8.4973670712269556},
+        "spawn.routeZ": {"kind": "float", "value": -9.8384324390030677},
+        "spawn.wave": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Spawn 21",
+      "position": [12.426598952902925, 0, -20.532404595266282],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "3"},
+        "spawn.routeX": {"kind": "float", "value": 6.7310744328224175},
+        "spawn.routeZ": {"kind": "float", "value": -11.121719155769236},
+        "spawn.wave": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Spawn 22",
+      "position": [23.367507452125029, 0, 5.4735359206715062],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "1"},
+        "spawn.routeX": {"kind": "float", "value": 12.657399869901058},
+        "spawn.routeZ": {"kind": "float", "value": 2.9648319570303991},
+        "spawn.wave": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Spawn 23",
+      "position": [2.0153149486999324, 0, 23.915235847834463],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "2"},
+        "spawn.routeX": {"kind": "float", "value": 1.0916289305457967},
+        "spawn.routeZ": {"kind": "float", "value": 12.954086084243666},
+        "spawn.wave": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Spawn 24",
+      "position": [-22.121974310288337, 0, 9.30689274757923],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "spawn"},
+        "spawn.archetype": {"kind": "int", "value": "5"},
+        "spawn.routeX": {"kind": "float", "value": -11.982736084739516},
+        "spawn.routeZ": {"kind": "float", "value": 5.0412335716054164},
+        "spawn.wave": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Pickup 0",
+      "position": [0, 1.28, -27],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "pickup"},
+        "pickup.amount": {"kind": "float", "value": 80},
+        "pickup.kind": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Pickup 1",
+      "position": [0, 0, -6],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "pickup"},
+        "pickup.amount": {"kind": "float", "value": 50},
+        "pickup.kind": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Prop 0",
+      "position": [-6, 0, 10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "14"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 3.1415926999999999}
+      }
+    }
+,    {
+      "name": "Prop 1",
+      "position": [6, 0, 10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "14"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 3.1415926999999999}
+      }
+    }
+,    {
+      "name": "Prop 2",
+      "position": [-6, 0, -10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "14"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 0}
+      }
+    }
+,    {
+      "name": "Prop 3",
+      "position": [6, 0, -10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "14"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 0}
+      }
+    }
+,    {
+      "name": "Prop 4",
+      "position": [-14, 0, 14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "21"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 0.80000000000000004}
+      }
+    }
+,    {
+      "name": "Prop 5",
+      "position": [14, 0, 14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "21"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": -0.80000000000000004}
+      }
+    }
+,    {
+      "name": "Prop 6",
+      "position": [-14, 0, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "21"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 2.3999999999999999}
+      }
+    }
+,    {
+      "name": "Prop 7",
+      "position": [14, 0, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "21"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": -2.3999999999999999}
+      }
+    }
+,    {
+      "name": "Prop 8",
+      "position": [2.2000000000000002, 0, 6.4000000000000004],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "0"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 0.29999999999999999}
+      }
+    }
+,    {
+      "name": "Prop 9",
+      "position": [-2.3999999999999999, 0, -6.5],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "prop"},
+        "prop.kind": {"kind": "int", "value": "1"},
+        "prop.scale": {"kind": "float", "value": 1},
+        "prop.yaw": {"kind": "float", "value": 0}
+      }
+    }
+,    {
+      "name": "Cover 0",
+      "position": [8, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": -1},
+        "cover.faceZ": {"kind": "float", "value": 0}
+      }
+    }
+,    {
+      "name": "Cover 1",
+      "position": [4.0000000082902725, 0, 6.9282032254891179],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": -0.50000000103628406},
+        "cover.faceZ": {"kind": "float", "value": -0.86602540318613974}
+      }
+    }
+,    {
+      "name": "Cover 2",
+      "position": [-3.9999999834194542, 0, 6.9282032398482922],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": 0.49999999792743177},
+        "cover.faceZ": {"kind": "float", "value": -0.86602540498103653}
+      }
+    }
+,    {
+      "name": "Cover 3",
+      "position": [-8, 0, 2.8718344238732894e-08],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": 1},
+        "cover.faceZ": {"kind": "float", "value": -3.5897930298416118e-09}
+      }
+    }
+,    {
+      "name": "Cover 4",
+      "position": [-4.0000000331610917, 0, -6.9282032111299436],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": 0.50000000414513646},
+        "cover.faceZ": {"kind": "float", "value": 0.86602540139124295}
+      }
+    }
+,    {
+      "name": "Cover 5",
+      "position": [3.9999999585486417, 0, -6.9282032542074621],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": -0.49999999481858021},
+        "cover.faceZ": {"kind": "float", "value": 0.86602540677593276}
+      }
+    }
+,    {
+      "name": "Cover 6",
+      "position": [-6, 0, 10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": 0},
+        "cover.faceZ": {"kind": "float", "value": -1}
+      }
+    }
+,    {
+      "name": "Cover 7",
+      "position": [6, 0, 10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": 0},
+        "cover.faceZ": {"kind": "float", "value": -1}
+      }
+    }
+,    {
+      "name": "Cover 8",
+      "position": [-6, 0, -10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": 0},
+        "cover.faceZ": {"kind": "float", "value": 1}
+      }
+    }
+,    {
+      "name": "Cover 9",
+      "position": [6, 0, -10],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "cover"},
+        "cover.faceX": {"kind": "float", "value": 0},
+        "cover.faceZ": {"kind": "float", "value": 1}
+      }
+    }
+,    {
+      "name": "Flank 0",
+      "position": [-16, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "flank"}
+      }
+    }
+,    {
+      "name": "Flank 1",
+      "position": [16, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "flank"}
+      }
+    }
+,    {
+      "name": "Route 0",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Route 1",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Route 2",
+      "position": [-10, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Route 3",
+      "position": [10, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Route 4",
+      "position": [0, 0, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Route 5",
+      "position": [-10, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Route 6",
+      "position": [10, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Route 7",
+      "position": [0, 0, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Route 8",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Route 9",
+      "position": [0, 0, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "routeMarker"},
+        "routeMarker.kind": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Landmark 0",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "landmark"},
+        "landmark.kind": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Landmark 1",
+      "position": [0, 0, -14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "landmark"},
+        "landmark.kind": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Beat 0",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "beat"},
+        "beat.kind": {"kind": "int", "value": "2"},
+        "beat.wave": {"kind": "int", "value": "0"}
+      }
+    }
+,    {
+      "name": "Beat 1",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "beat"},
+        "beat.kind": {"kind": "int", "value": "2"},
+        "beat.wave": {"kind": "int", "value": "1"}
+      }
+    }
+,    {
+      "name": "Beat 2",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "beat"},
+        "beat.kind": {"kind": "int", "value": "2"},
+        "beat.wave": {"kind": "int", "value": "2"}
+      }
+    }
+,    {
+      "name": "Beat 3",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "beat"},
+        "beat.kind": {"kind": "int", "value": "2"},
+        "beat.wave": {"kind": "int", "value": "3"}
+      }
+    }
+,    {
+      "name": "Beat 4",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "beat"},
+        "beat.kind": {"kind": "int", "value": "2"},
+        "beat.wave": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Intro Camera",
+      "position": [10, 7.2000000000000002, 14],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "camera": 0,
+      "metadata": {
+        "af.kind": {"kind": "string", "value": "camera"}
+      }
+    }
+  ]
+}

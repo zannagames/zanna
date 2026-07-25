@@ -20,6 +20,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the module-level coordinator for EH verification.
+/// @details `EhVerifier` builds an independent canonical model for each
+///          function containing EH-relevant instructions and runs the reusable
+///          stack, provenance, dominance, reachability, and resume-edge checks.
+
 #pragma once
 
 #include "il/verify/DiagSink.hpp"
@@ -32,13 +38,18 @@ struct Module;
 
 namespace il::verify {
 
-/// @brief Verifier pass that ensures eh.push/eh.pop usage remains balanced.
+/// @brief Stateless verifier pass for function-local EH invariants.
 class EhVerifier {
   public:
-    /// @brief Analyse all functions within @p module for balanced EH stacks.
+    /// @brief Analyse EH-bearing functions in @p module.
+    /// @details Skips functions without EH-relevant opcodes and returns
+    ///          immediately on the first failed check. The current
+    ///          implementation accepts @p sink for verifier-interface
+    ///          compatibility but returns diagnostics through `Expected`.
     /// @param module Module whose functions are analysed.
-    /// @param sink Diagnostic sink receiving auxiliary diagnostics.
-    /// @return Success or the first diagnostic describing an imbalance.
+    /// @param sink Reserved diagnostic sink; currently not written.
+    /// @return Success or the first stack, provenance, dominance, reachability,
+    ///         or resume-edge diagnostic.
     [[nodiscard]] il::support::Expected<void> run(const il::core::Module &module,
                                                   DiagSink &sink) const;
 };

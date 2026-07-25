@@ -26,15 +26,19 @@ namespace {
 // Printer helper -- manages indentation and line output.
 // ---------------------------------------------------------------------------
 
+/// @brief Stateful indentation helper for one AST dump stream.
 struct Printer {
     /// @brief Bind the helper to the stream that receives printed AST output.
     /// @param out Destination stream used by all subsequent line writes.
     explicit Printer(std::ostream &out) : os(out) {}
 
+    /// Destination stream borrowed for the helper lifetime.
     std::ostream &os;
+    /// Current indentation depth in two-space units.
     int indent = 0;
 
     /// @brief Write @p text on a new line, honoured by current indentation.
+    /// @param text Line contents without a trailing newline.
     void line(const std::string &text) {
         for (int i = 0; i < indent; ++i)
             os << "  ";
@@ -47,6 +51,7 @@ struct Printer {
     }
 
     /// @brief Decrease indentation by one level.
+    /// @pre A matching @ref push call has established a positive indentation level.
     void pop() {
         --indent;
     }
@@ -73,6 +78,8 @@ static bool printControlFlowExpr(const Expr &expr, Printer &p);
 // ---------------------------------------------------------------------------
 
 /// @brief Format a source location as "(line:col)".
+/// @param loc Source location to format; the file identifier is intentionally omitted.
+/// @return Parenthesized one-based line and column.
 static std::string locStr(const SourceLoc &loc) {
     std::ostringstream s;
     s << "(" << loc.line << ":" << loc.column << ")";
@@ -85,6 +92,8 @@ static std::string locStr(const SourceLoc &loc) {
 
 /// @brief Source spelling of a binary operator (e.g. Add → "+"); "?" if
 ///        unknown. Used to render BinaryExpr nodes in the AST dump.
+/// @param op Binary operator enumerator.
+/// @return Static source spelling.
 static const char *binaryOpName(BinaryOp op) {
     switch (op) {
         case BinaryOp::Add:
@@ -131,6 +140,8 @@ static const char *binaryOpName(BinaryOp op) {
 
 /// @brief Source spelling of a unary operator (e.g. Neg → "-"); "?" if
 ///        unknown. Used to render UnaryExpr nodes in the AST dump.
+/// @param op Unary operator enumerator.
+/// @return Static source spelling.
 static const char *unaryOpName(UnaryOp op) {
     switch (op) {
         case UnaryOp::Neg:
@@ -151,6 +162,8 @@ static const char *unaryOpName(UnaryOp op) {
 
 /// @brief Recursively print a type node (named/generic/optional/…) to the
 ///        AST dump via @p p, one indented line per structural part.
+/// @param type Type node to print.
+/// @param p Indentation/output helper.
 static void printType(const TypeNode &type, Printer &p) {
     switch (type.kind) {
         case TypeKind::Named: {
@@ -238,6 +251,8 @@ static void printType(const TypeNode &type, Printer &p) {
 // ---------------------------------------------------------------------------
 
 /// @brief Print a match-arm pattern (literal/binding/tuple/enum/…) to the dump.
+/// @param pat Pattern to print.
+/// @param p Indentation/output helper.
 static void printPattern(const MatchArm::Pattern &pat, Printer &p) {
     switch (pat.kind) {
         case MatchArm::Pattern::Kind::Wildcard:
@@ -303,6 +318,8 @@ static void printPattern(const MatchArm::Pattern &pat, Printer &p) {
 }
 
 /// @brief Print all arms of a `match` (pattern, optional guard, body) to the dump.
+/// @param arms Match arms in source order.
+/// @param p Indentation/output helper.
 static void printMatchArms(const std::vector<MatchArm> &arms, Printer &p) {
     p.line("Arms:");
     p.push();
@@ -330,6 +347,9 @@ static void printMatchArms(const std::vector<MatchArm> &arms, Printer &p) {
 // ---------------------------------------------------------------------------
 
 /// @brief Recursively print an expression subtree to the AST dump.
+/// @param expr Expression root.
+/// @param p Indentation/output helper.
+/// @details Dispatches through leaf, operator, construction, and control-flow category printers.
 static void printExpr(const Expr &expr, Printer &p) {
     if (printLeafExpr(expr, p))
         return;
@@ -341,6 +361,9 @@ static void printExpr(const Expr &expr, Printer &p) {
 }
 
 /// @brief Print literal and name expressions (leaves with no child exprs).
+/// @param expr Candidate expression.
+/// @param p Indentation/output helper.
+/// @return True when this category handled @p expr.
 static bool printLeafExpr(const Expr &expr, Printer &p) {
     switch (expr.kind) {
         // -- Literals -------------------------------------------------------
@@ -397,6 +420,10 @@ static bool printLeafExpr(const Expr &expr, Printer &p) {
 }
 
 /// @brief Print operator / access / cast expressions.
+/// @brief Print operator and member-access expression families.
+/// @param expr Candidate expression.
+/// @param p Indentation/output helper.
+/// @return True when this category handled @p expr.
 static bool printOperatorExpr(const Expr &expr, Printer &p) {
     switch (expr.kind) {
         // -- Operators ------------------------------------------------------
@@ -646,6 +673,10 @@ static bool printOperatorExpr(const Expr &expr, Printer &p) {
 }
 
 /// @brief Print object/collection construction expressions.
+/// @brief Print call, allocation, lambda, and aggregate-construction expressions.
+/// @param expr Candidate expression.
+/// @param p Indentation/output helper.
+/// @return True when this category handled @p expr.
 static bool printConstructionExpr(const Expr &expr, Printer &p) {
     switch (expr.kind) {
         // -- Construction ---------------------------------------------------
@@ -826,6 +857,10 @@ static bool printConstructionExpr(const Expr &expr, Printer &p) {
 }
 
 /// @brief Print control-flow expressions (if/match/block).
+/// @brief Print conditional, match, range, and other control-flow-oriented expressions.
+/// @param expr Candidate expression.
+/// @param p Indentation/output helper.
+/// @return True when this category handled @p expr.
 static bool printControlFlowExpr(const Expr &expr, Printer &p) {
     switch (expr.kind) {
         // -- Control flow expressions ---------------------------------------
@@ -908,6 +943,9 @@ static bool printControlFlowExpr(const Expr &expr, Printer &p) {
 // ---------------------------------------------------------------------------
 
 /// @brief Recursively print a statement subtree to the AST dump.
+/// @brief Recursively print a statement and its child statements/expressions.
+/// @param stmt Statement to print.
+/// @param p Indentation/output helper.
 static void printStmt(const Stmt &stmt, Printer &p) {
     switch (stmt.kind) {
         case StmtKind::Block: {
@@ -1177,6 +1215,8 @@ static void printStmt(const Stmt &stmt, Printer &p) {
 // ---------------------------------------------------------------------------
 
 /// @brief Print a function/method parameter list (name, type, default) to the dump.
+/// @param params Parameters in source order.
+/// @param p Indentation/output helper.
 static void printParams(const std::vector<Param> &params, Printer &p) {
     if (params.empty())
         return;
@@ -1205,6 +1245,9 @@ static void printParams(const std::vector<Param> &params, Printer &p) {
 
 /// @brief Print generic type parameters with their `: Constraint` bounds to
 ///        the dump.
+/// @param genericParams Generic parameter names.
+/// @param constraints Positional interface constraints; empty entries are omitted.
+/// @param p Indentation/output helper.
 static void printGenericParamsWithConstraints(const std::vector<std::string> &genericParams,
                                               const std::vector<std::string> &constraints,
                                               Printer &p) {
@@ -1223,6 +1266,8 @@ static void printGenericParamsWithConstraints(const std::vector<std::string> &ge
 }
 
 /// @brief Print a type's implemented-interface list to the dump.
+/// @param interfaces Interface names in declaration order.
+/// @param p Indentation/output helper.
 static void printInterfaces(const std::vector<std::string> &interfaces, Printer &p) {
     if (interfaces.empty())
         return;
@@ -1237,11 +1282,15 @@ static void printInterfaces(const std::vector<std::string> &interfaces, Printer 
 }
 
 /// @brief Print a declaration's public/private visibility to the dump.
+/// @param vis Visibility enumerator.
+/// @param p Indentation/output helper.
 static void printVisibility(Visibility vis, Printer &p) {
     p.line(vis == Visibility::Public ? "Visibility: public" : "Visibility: private");
 }
 
 /// @brief Print a function/method body block (if present) to the dump.
+/// @param body Optional owned statement body.
+/// @param p Indentation/output helper.
 static void printBody(const StmtPtr &body, Printer &p) {
     if (body) {
         p.line("Body:");
@@ -1252,6 +1301,8 @@ static void printBody(const StmtPtr &body, Printer &p) {
 }
 
 /// @brief Print a function/method declared return type (if present) to the dump.
+/// @param retType Optional declared result type.
+/// @param p Indentation/output helper.
 static void printReturnType(const TypePtr &retType, Printer &p) {
     if (retType) {
         p.line("ReturnType:");
@@ -1262,6 +1313,8 @@ static void printReturnType(const TypePtr &retType, Printer &p) {
 }
 
 /// @brief Print a type's member declarations (fields/methods) to the dump.
+/// @param members Owned member declarations in source order.
+/// @param p Indentation/output helper.
 static void printMembers(const std::vector<DeclPtr> &members, Printer &p) {
     if (members.empty())
         return;
@@ -1282,6 +1335,8 @@ static void printMembers(const std::vector<DeclPtr> &members, Printer &p) {
 
 /// @brief Recursively print a declaration (function/type/global/…) and its
 ///        children to the AST dump.
+/// @param decl Declaration to print.
+/// @param p Indentation/output helper.
 static void printDecl(const Decl &decl, Printer &p) {
     switch (decl.kind) {
         case DeclKind::Module: {
@@ -1500,6 +1555,9 @@ static void printDecl(const Decl &decl, Printer &p) {
 // Public interface
 // ---------------------------------------------------------------------------
 
+/// @brief Serialize a complete Zia module as an indentation-based AST tree.
+/// @param module Root module declaration.
+/// @return Deterministic textual dump ending in a newline.
 std::string ZiaAstPrinter::dump(const ModuleDecl &module) {
     std::ostringstream os;
     Printer p{os};

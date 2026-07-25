@@ -28,6 +28,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares primitive type and integer-range queries for instruction checks.
+/// @details These stateless helpers translate fixed opcode type categories,
+///          validate integer literal representability, and classify integer
+///          widths shared by arithmetic and cast verification.
+
 #pragma once
 
 #include "il/core/OpcodeInfo.hpp"

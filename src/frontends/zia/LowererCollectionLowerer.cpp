@@ -43,11 +43,15 @@ LowerResult CollectionLowerer::lowerBoxedElementLiteral(const std::vector<ExprPt
 }
 
 /// @brief Lower a list literal `[a, b, ...]` to a populated runtime list.
+/// @param expr List literal whose elements are evaluated and boxed.
+/// @return Pointer-valued result for the populated runtime list.
 LowerResult CollectionLowerer::lowerListLiteral(ListLiteralExpr *expr) {
     return lowerBoxedElementLiteral(expr->elements, kListNew, kListAdd);
 }
 
 /// @brief Lower a set literal `{a, b, ...}` to a populated runtime set.
+/// @param expr Set literal whose elements are evaluated and boxed.
+/// @return Pointer-valued result for the populated runtime set.
 LowerResult CollectionLowerer::lowerSetLiteral(SetLiteralExpr *expr) {
     return lowerBoxedElementLiteral(expr->elements, kSetNew, kSetPut);
 }
@@ -164,6 +168,8 @@ LowerResult CollectionLowerer::lowerIndex(IndexExpr *expr) {
 }
 
 /// @brief Compute the address of a tuple element at a constant byte offset.
+/// @param tuplePtr Base address of the tuple's inline storage.
+/// @param offset Constant byte offset of the requested element.
 /// @return @p tuplePtr unchanged for offset 0, otherwise a GEP to the element.
 CollectionLowerer::Value CollectionLowerer::emitTupleElementAddress(Value tuplePtr, size_t offset) {
     if (offset == 0)
@@ -172,6 +178,8 @@ CollectionLowerer::Value CollectionLowerer::emitTupleElementAddress(Value tupleP
 }
 
 /// @brief Compute an address from a base pointer plus a runtime (non-constant) byte offset.
+/// @param basePtr Base address of the inline storage.
+/// @param byteOffset Runtime byte offset from @p basePtr.
 /// @return A GEP pointer value.
 CollectionLowerer::Value CollectionLowerer::emitRuntimeOffsetAddress(Value basePtr,
                                                                      Value byteOffset) {

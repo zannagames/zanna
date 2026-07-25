@@ -14,6 +14,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements BASIC numeric-category inference used during IL lowering.
+/// @details The visitor combines literal suffixes, semantic and symbol-table
+///          types, operator promotion, builtin contracts, and procedure
+///          signatures. Expressions without a meaningful numeric category use
+///          Long as the conservative lowering fallback.
+
 #include "frontends/basic/Lowerer.hpp"
 #include "frontends/basic/SemanticAnalyzer.hpp"
 #include "frontends/basic/TypeSuffix.hpp"
@@ -32,12 +39,18 @@ using IlType = il::core::Type;
 ///          lowering to select the appropriate IL operations and coercions.
 class NumericTypeClassifier final : public ExprVisitor {
   public:
+    /// @brief Creates a classifier borrowing a lowerer for type lookups.
+    /// @param lowerer Lowerer supplying semantic, symbol, and signature data.
     explicit NumericTypeClassifier(Lowerer &lowerer) noexcept : lowerer_(lowerer) {}
 
+    /// @brief Returns the category assigned by the most recent visit.
+    /// @return Inferred numeric category, initially Long.
     NumericType result() const noexcept {
         return result_;
     }
 
+    /// @brief Classifies an integer literal from its suffix and magnitude.
+    /// @param i Integer literal to inspect.
     void visit(const IntExpr &i) override {
         switch (i.suffix) {
             case IntExpr::Suffix::Integer:
@@ -59,19 +72,28 @@ class NumericTypeClassifier final : public ExprVisitor {
         }
     }
 
+    /// @brief Classifies a floating literal from its BASIC suffix.
+    /// @param f Floating-point literal to inspect.
     void visit(const FloatExpr &f) override {
         result_ =
             (f.suffix == FloatExpr::Suffix::Single) ? NumericType::Single : NumericType::Double;
     }
 
+    /// @brief Assigns the nonnumeric string fallback category.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const StringExpr &) override {
         result_ = NumericType::Double;
     }
 
+    /// @brief Classifies a boolean literal using BASIC's Integer category.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const BoolExpr &) override {
         result_ = NumericType::Integer;
     }
 
+    /// @brief Classifies a variable using semantic type, symbol type, suffix,
+    ///        and name-based inference in descending precedence.
+    /// @param var Variable reference to resolve.
     void visit(const VarExpr &var) override {
         // BUG-019 fix: Check semantic analysis first for CONST float types
         AstType effectiveType = AstType::I64;
@@ -158,10 +180,14 @@ class NumericTypeClassifier final : public ExprVisitor {
         result_ = (astTy == AstType::F64) ? NumericType::Double : NumericType::Long;
     }
 
+    /// @brief Assigns the pointer-like array-expression fallback category.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const ArrayExpr &) override {
         result_ = NumericType::Long;
     }
 
+    /// @brief Propagates a unary expression's operand category.
+    /// @param un Unary expression whose child is classified recursively.
     void visit(const UnaryExpr &un) override {
         if (!un.expr) {
             result_ = NumericType::Long;
@@ -170,6 +196,8 @@ class NumericTypeClassifier final : public ExprVisitor {
         result_ = lowerer_.classifyNumericType(*un.expr);
     }
 
+    /// @brief Applies BASIC's operator-specific binary promotion rules.
+    /// @param bin Binary expression whose operands are classified recursively.
     void visit(const BinaryExpr &bin) override {
         if (!bin.lhs || !bin.rhs) {
             result_ = NumericType::Long;
@@ -207,6 +235,9 @@ class NumericTypeClassifier final : public ExprVisitor {
         }
     }
 
+    /// @brief Classifies a builtin call from its declared numeric semantics.
+    /// @param call Builtin call whose kind and, for STR$, first argument are
+    ///        inspected.
     void visit(const BuiltinCallExpr &call) override {
         switch (call.builtin) {
             case BuiltinCallExpr::Builtin::Cint:
@@ -251,14 +282,20 @@ class NumericTypeClassifier final : public ExprVisitor {
         }
     }
 
+    /// @brief Classifies LBOUND as a Long integer result.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const LBoundExpr &) override {
         result_ = NumericType::Long;
     }
 
+    /// @brief Classifies UBOUND as a Long integer result.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const UBoundExpr &) override {
         result_ = NumericType::Long;
     }
 
+    /// @brief Classifies a procedure call from its resolved return signature.
+    /// @param callExpr Call expression whose callee signature is queried.
     void visit(const CallExpr &callExpr) override {
         if (const auto *sig = lowerer_.findProcSignature(callExpr.callee)) {
             switch (sig->retType.kind) {
@@ -279,27 +316,39 @@ class NumericTypeClassifier final : public ExprVisitor {
         result_ = NumericType::Long;
     }
 
+    /// @brief Assigns the pointer-like object-allocation fallback category.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const NewExpr &) override {
         result_ = NumericType::Long;
     }
 
+    /// @brief Assigns the pointer-like ME-reference fallback category.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const MeExpr &) override {
         result_ = NumericType::Long;
     }
 
+    /// @brief Assigns the conservative category for member access.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const MemberAccessExpr &) override {
         result_ = NumericType::Long;
     }
 
+    /// @brief Assigns the conservative category for method calls.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const MethodCallExpr &) override {
         result_ = NumericType::Long;
     }
 
+    /// @brief Classifies an object identity test as a Long BASIC boolean.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const IsExpr &) override {
         // Boolean result
         result_ = NumericType::Long;
     }
 
+    /// @brief Propagates the value category through an AS expression.
+    /// @param as Type-assertion expression whose value is classified.
     void visit(const AsExpr &as) override {
         // Classify underlying value
         if (as.value)
@@ -308,13 +357,17 @@ class NumericTypeClassifier final : public ExprVisitor {
             result_ = NumericType::Long;
     }
 
+    /// @brief Assigns the Long fallback category to an ADDRESSOF pointer.
+    /// The visited node is borrowed and otherwise ignored.
     void visit(const AddressOfExpr &) override {
         // ADDRESSOF yields a pointer, not a numeric type. Default to Long.
         result_ = NumericType::Long;
     }
 
   private:
+    /// Borrowed lowering context used for recursive classification and lookups.
     Lowerer &lowerer_;
+    /// Category accumulated by the active visit.
     NumericType result_{NumericType::Long};
 };
 

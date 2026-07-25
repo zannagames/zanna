@@ -27,11 +27,15 @@
 #include <string_view>
 
 namespace {
+/// @brief Associates a textual trap-kind mnemonic with its stable numeric code.
 struct TrapKindSymbol {
+    /// Canonical token accepted and emitted by textual IL.
     const char *name;
+    /// Runtime trap-kind value represented by @ref name.
     long long value;
 };
 
+/// @brief Complete bidirectional trap-kind spelling table.
 constexpr std::array<TrapKindSymbol, 12> kTrapKindSymbols = {{
     {"DivideByZero", 0},
     {"Overflow", 1},
@@ -140,7 +144,9 @@ std::string stripDeclarationComment(const std::string &text) {
 /// trailing comma is removed so the returned token can be parsed directly.
 ///
 /// @param stream Backing stream positioned at the next token to extract.
+/// @param delimiter Optional output describing what terminated the token.
 /// @return Token read from @p stream with any trailing comma stripped.
+/// @note An unterminated quoted token or missing token sets @p stream's fail bit.
 std::string readToken(std::istringstream &stream, TokenDelimiter *delimiter) {
     if (delimiter)
         *delimiter = TokenDelimiter::End;
@@ -227,6 +233,10 @@ std::string readToken(std::istringstream &stream, TokenDelimiter *delimiter) {
     return token;
 }
 
+/// @brief Read the next token without reporting its terminating delimiter.
+/// @param stream Backing stream positioned at the next token to extract.
+/// @return Token read from @p stream, with delimiter handling identical to the
+///         two-argument overload.
 std::string readToken(std::istringstream &stream) {
     return readToken(stream, nullptr);
 }
@@ -236,6 +246,8 @@ std::string readToken(std::istringstream &stream) {
 /// The grammar remains intentionally permissive for existing generated names
 /// (`.`, `$`, and digits are allowed), but rejects whitespace and characters
 /// that would collide with IL delimiters or sigils.
+/// @param text Candidate identifier without an IL sigil.
+/// @return True when @p text can be emitted as an unquoted IL identifier.
 bool isValidILIdentifier(std::string_view text) {
     if (text.empty())
         return false;
@@ -325,6 +337,7 @@ bool parseIntegerLiteral(const std::string &token, long long &value) {
     unsigned long long acc = 0;
     bool sawDigit = false;
     bool previousWasUnderscore = false;
+    /// Convert one ASCII digit to its value in the selected integer base.
     auto digitValue = [base](unsigned char ch) {
         int digit = -1;
         if (ch >= '0' && ch <= '9')

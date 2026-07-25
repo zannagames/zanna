@@ -1,0 +1,395 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_bake_3d.zia
+// Purpose: Bake settings, probe-grid, and environment metadata conventions.
+// Key invariants:
+//   - Bake settings persist as scene-root `bake.*` typed metadata inside the
+//     runtime baker's documented clamps (ADR 0188).
+//   - Probe grids are the `probes.*` node convention with normalized bounds
+//     and positive spacing.
+//   - Environment is the root `env.*` convention games consume through
+//     Canvas3D.SetSkybox/IblEnabled/IblIntensity.
+//   - Shared-mesh detection reports every node whose mesh is shared, since
+//     the baker writes chart UVs into mesh vertices.
+//   - World-space light construction mirrors how Draw treats node lights.
+// Ownership/Lifetime: Value-only helpers; nodes own their metadata.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        docs/adr/0188-studio-bake-and-environment-workflow.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_bake_3d;
+
+bind "scene_light_3d";
+
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Vec3 = Zanna.Math.Vec3;
+bind Mat4 = Zanna.Math.Mat4;
+bind Math = Zanna.Math;
+
+// ============================================================================
+// MODULE: scene_bake_3d
+// PURPOSE: Keep bake/probe/environment value conventions outside the
+//          SceneEditor3D controller.
+//
+// WHERE-THIS-FITS: SceneEditor3D owns the bake orchestration, history, and
+//          UI; this module owns metadata vocabulary and staging math.
+//
+// TEACHING-NOTE: The baker copies each light's LOCAL position/direction, so
+//          feeding node lights requires world-space clones built through the
+//          node world matrix — exactly how rendering treats node lights.
+// ============================================================================
+
+final KEY_TEXELS: String = "bake.texelsPerUnit";
+final KEY_SAMPLES: String = "bake.samples";
+final KEY_BOUNCES: String = "bake.bounces";
+final KEY_SKY_R: String = "bake.skyR";
+final KEY_SKY_G: String = "bake.skyG";
+final KEY_SKY_B: String = "bake.skyB";
+
+final KEY_PROBES_MIN_X: String = "probes.minX";
+final KEY_PROBES_MIN_Y: String = "probes.minY";
+final KEY_PROBES_MIN_Z: String = "probes.minZ";
+final KEY_PROBES_MAX_X: String = "probes.maxX";
+final KEY_PROBES_MAX_Y: String = "probes.maxY";
+final KEY_PROBES_MAX_Z: String = "probes.maxZ";
+final KEY_PROBES_SPACING: String = "probes.spacing";
+
+final KEY_ENV_SKYBOX: String = "env.skybox";
+final KEY_ENV_IBL_ENABLED: String = "env.iblEnabled";
+final KEY_ENV_IBL_INTENSITY: String = "env.iblIntensity";
+
+final DEFAULT_TEXELS: Number = 8.0;
+final DEFAULT_SAMPLES: Integer = 64;
+final DEFAULT_BOUNCES: Integer = 2;
+final DEFAULT_SKY_R: Number = 0.35;
+final DEFAULT_SKY_G: Number = 0.45;
+final DEFAULT_SKY_B: Number = 0.6;
+final MIN_TEXELS: Number = 0.25;
+final MAX_TEXELS: Number = 64.0;
+final MAX_SAMPLES: Integer = 1024;
+final MAX_BOUNCES: Integer = 8;
+
+final DEFAULT_PROBE_SPACING: Number = 2.0;
+final MIN_PROBE_SPACING: Number = 0.1;
+final MAX_PROBE_SPACING: Number = 1000.0;
+final PROBE_BOUND_LIMIT: Number = 1000000.0;
+
+final DEFAULT_IBL_INTENSITY: Number = 1.0;
+final MAX_IBL_INTENSITY: Number = 16.0;
+
+/// @brief Complete persisted bake configuration for one scene.
+class BakeSettings3D {
+    expose Number texelsPerUnit;
+    expose Integer samples;
+    expose Integer bounces;
+    expose Number skyR;
+    expose Number skyG;
+    expose Number skyB;
+
+    expose func init() {
+        texelsPerUnit = DEFAULT_TEXELS;
+        samples = DEFAULT_SAMPLES;
+        bounces = DEFAULT_BOUNCES;
+        skyR = DEFAULT_SKY_R;
+        skyG = DEFAULT_SKY_G;
+        skyB = DEFAULT_SKY_B;
+    }
+}
+
+/// @brief Bounded clamp mirroring the runtime baker's own limits.
+hide func BoundNumber(value: Number,
+                      minimum: Number,
+                      maximum: Number,
+                      fallback: Number) -> Number {
+    if (value >= minimum) == false { return fallback; }
+    if value > maximum { return maximum; }
+    return value;
+}
+
+/// @brief Clamp and validate a bake settings draft in place.
+expose func NormalizeSettings(state: BakeSettings3D) -> BakeSettings3D {
+    if state == null { return new BakeSettings3D(); }
+    state.texelsPerUnit = BoundNumber(
+        state.texelsPerUnit, MIN_TEXELS, MAX_TEXELS, DEFAULT_TEXELS);
+    if state.samples < 1 { state.samples = 1; }
+    if state.samples > MAX_SAMPLES { state.samples = MAX_SAMPLES; }
+    if state.bounces < 0 { state.bounces = 0; }
+    if state.bounces > MAX_BOUNCES { state.bounces = MAX_BOUNCES; }
+    state.skyR = BoundNumber(state.skyR, 0.0, 64.0, DEFAULT_SKY_R);
+    state.skyG = BoundNumber(state.skyG, 0.0, 64.0, DEFAULT_SKY_G);
+    state.skyB = BoundNumber(state.skyB, 0.0, 64.0, DEFAULT_SKY_B);
+    return state;
+}
+
+/// @brief Read persisted bake settings from the scene root, with defaults.
+expose func SettingsFromRoot(root: SceneNode) -> BakeSettings3D {
+    var state = new BakeSettings3D();
+    if root == null { return state; }
+    state.texelsPerUnit =
+        root.MetadataGetFloat(KEY_TEXELS, DEFAULT_TEXELS);
+    state.samples = root.MetadataGetInt(KEY_SAMPLES, DEFAULT_SAMPLES);
+    state.bounces = root.MetadataGetInt(KEY_BOUNCES, DEFAULT_BOUNCES);
+    state.skyR = root.MetadataGetFloat(KEY_SKY_R, DEFAULT_SKY_R);
+    state.skyG = root.MetadataGetFloat(KEY_SKY_G, DEFAULT_SKY_G);
+    state.skyB = root.MetadataGetFloat(KEY_SKY_B, DEFAULT_SKY_B);
+    return NormalizeSettings(state);
+}
+
+/// @brief Persist bake settings onto the scene root (caller owns history).
+expose func WriteSettingsToRoot(root: SceneNode,
+                                state: BakeSettings3D) -> Boolean {
+    if root == null or state == null { return false; }
+    var next = NormalizeSettings(state);
+    return root.MetadataSetFloat(KEY_TEXELS, next.texelsPerUnit)
+        and root.MetadataSetInt(KEY_SAMPLES, next.samples)
+        and root.MetadataSetInt(KEY_BOUNCES, next.bounces)
+        and root.MetadataSetFloat(KEY_SKY_R, next.skyR)
+        and root.MetadataSetFloat(KEY_SKY_G, next.skyG)
+        and root.MetadataSetFloat(KEY_SKY_B, next.skyB);
+}
+
+/// @brief Complete probe-grid convention for one node.
+class ProbeGridState3D {
+    expose Boolean present;
+    expose Number minX;
+    expose Number minY;
+    expose Number minZ;
+    expose Number maxX;
+    expose Number maxY;
+    expose Number maxZ;
+    expose Number spacing;
+
+    expose func init() {
+        present = false;
+        minX = -8.0;
+        minY = 0.0;
+        minZ = -8.0;
+        maxX = 8.0;
+        maxY = 4.0;
+        maxZ = 8.0;
+        spacing = DEFAULT_PROBE_SPACING;
+    }
+}
+
+/// @brief Order one min/max pair and clamp into the coordinate budget.
+hide func OrderedBound(minimum: Number, maximum: Number,
+                       intoState: ProbeGridState3D,
+                       axis: Integer) {
+    var low = BoundNumber(
+        minimum, 0.0 - PROBE_BOUND_LIMIT, PROBE_BOUND_LIMIT, 0.0);
+    var high = BoundNumber(
+        maximum, 0.0 - PROBE_BOUND_LIMIT, PROBE_BOUND_LIMIT, 0.0);
+    if high < low {
+        var swap = low;
+        low = high;
+        high = swap;
+    }
+    if high - low < 0.01 { high = low + 0.01; }
+    if axis == 0 {
+        intoState.minX = low;
+        intoState.maxX = high;
+    } else if axis == 1 {
+        intoState.minY = low;
+        intoState.maxY = high;
+    } else {
+        intoState.minZ = low;
+        intoState.maxZ = high;
+    }
+}
+
+/// @brief Clamp and mutually order a probe-grid draft in place.
+expose func NormalizeProbeGrid(
+    state: ProbeGridState3D) -> ProbeGridState3D {
+    if state == null { return new ProbeGridState3D(); }
+    OrderedBound(state.minX, state.maxX, state, 0);
+    OrderedBound(state.minY, state.maxY, state, 1);
+    OrderedBound(state.minZ, state.maxZ, state, 2);
+    state.spacing = BoundNumber(
+        state.spacing, MIN_PROBE_SPACING, MAX_PROBE_SPACING,
+        DEFAULT_PROBE_SPACING);
+    return state;
+}
+
+/// @brief Read one node's probe-grid convention (present=false when absent).
+expose func ProbeGridFromNode(node: SceneNode) -> ProbeGridState3D {
+    var state = new ProbeGridState3D();
+    if node == null or node.MetadataHas(KEY_PROBES_SPACING) == false {
+        return state;
+    }
+    state.present = true;
+    state.minX = node.MetadataGetFloat(KEY_PROBES_MIN_X, -8.0);
+    state.minY = node.MetadataGetFloat(KEY_PROBES_MIN_Y, 0.0);
+    state.minZ = node.MetadataGetFloat(KEY_PROBES_MIN_Z, -8.0);
+    state.maxX = node.MetadataGetFloat(KEY_PROBES_MAX_X, 8.0);
+    state.maxY = node.MetadataGetFloat(KEY_PROBES_MAX_Y, 4.0);
+    state.maxZ = node.MetadataGetFloat(KEY_PROBES_MAX_Z, 8.0);
+    state.spacing = node.MetadataGetFloat(
+        KEY_PROBES_SPACING, DEFAULT_PROBE_SPACING);
+    return NormalizeProbeGrid(state);
+}
+
+/// @brief Write one probe-grid convention (caller owns history).
+expose func WriteProbeGridToNode(node: SceneNode,
+                                 state: ProbeGridState3D) -> Boolean {
+    if node == null or state == null { return false; }
+    var next = NormalizeProbeGrid(state);
+    return node.MetadataSetFloat(KEY_PROBES_MIN_X, next.minX)
+        and node.MetadataSetFloat(KEY_PROBES_MIN_Y, next.minY)
+        and node.MetadataSetFloat(KEY_PROBES_MIN_Z, next.minZ)
+        and node.MetadataSetFloat(KEY_PROBES_MAX_X, next.maxX)
+        and node.MetadataSetFloat(KEY_PROBES_MAX_Y, next.maxY)
+        and node.MetadataSetFloat(KEY_PROBES_MAX_Z, next.maxZ)
+        and node.MetadataSetFloat(KEY_PROBES_SPACING, next.spacing);
+}
+
+/// @brief Remove the probe-grid convention from one node.
+expose func RemoveProbeGridFromNode(node: SceneNode) -> Boolean {
+    if node == null
+       or node.MetadataHas(KEY_PROBES_SPACING) == false {
+        return false;
+    }
+    node.MetadataRemove(KEY_PROBES_MIN_X);
+    node.MetadataRemove(KEY_PROBES_MIN_Y);
+    node.MetadataRemove(KEY_PROBES_MIN_Z);
+    node.MetadataRemove(KEY_PROBES_MAX_X);
+    node.MetadataRemove(KEY_PROBES_MAX_Y);
+    node.MetadataRemove(KEY_PROBES_MAX_Z);
+    node.MetadataRemove(KEY_PROBES_SPACING);
+    return true;
+}
+
+/// @brief Complete root environment convention.
+class EnvironmentState3D {
+    expose String skyboxPath;
+    expose Boolean iblEnabled;
+    expose Number iblIntensity;
+
+    expose func init() {
+        skyboxPath = "";
+        iblEnabled = false;
+        iblIntensity = DEFAULT_IBL_INTENSITY;
+    }
+}
+
+/// @brief Clamp an environment draft in place.
+expose func NormalizeEnvironment(
+    state: EnvironmentState3D) -> EnvironmentState3D {
+    if state == null { return new EnvironmentState3D(); }
+    state.iblIntensity = BoundNumber(
+        state.iblIntensity, 0.0, MAX_IBL_INTENSITY,
+        DEFAULT_IBL_INTENSITY);
+    return state;
+}
+
+/// @brief Read the root environment convention.
+expose func EnvironmentFromRoot(root: SceneNode) -> EnvironmentState3D {
+    var state = new EnvironmentState3D();
+    if root == null { return state; }
+    state.skyboxPath = root.MetadataGetString(KEY_ENV_SKYBOX, "");
+    state.iblEnabled = root.MetadataGetBool(KEY_ENV_IBL_ENABLED, false);
+    state.iblIntensity = root.MetadataGetFloat(
+        KEY_ENV_IBL_INTENSITY, DEFAULT_IBL_INTENSITY);
+    return NormalizeEnvironment(state);
+}
+
+/// @brief Write the root environment convention (caller owns history).
+/// @details An empty skybox path removes every env key.
+expose func WriteEnvironmentToRoot(root: SceneNode,
+                                   state: EnvironmentState3D) -> Boolean {
+    if root == null or state == null { return false; }
+    var next = NormalizeEnvironment(state);
+    if next.skyboxPath == "" and next.iblEnabled == false {
+        if root.MetadataHas(KEY_ENV_SKYBOX) {
+            root.MetadataRemove(KEY_ENV_SKYBOX);
+        }
+        if root.MetadataHas(KEY_ENV_IBL_ENABLED) {
+            root.MetadataRemove(KEY_ENV_IBL_ENABLED);
+        }
+        if root.MetadataHas(KEY_ENV_IBL_INTENSITY) {
+            root.MetadataRemove(KEY_ENV_IBL_INTENSITY);
+        }
+        return true;
+    }
+    return root.MetadataSetString(KEY_ENV_SKYBOX, next.skyboxPath)
+        and root.MetadataSetBool(
+                KEY_ENV_IBL_ENABLED, next.iblEnabled)
+        and root.MetadataSetFloat(
+                KEY_ENV_IBL_INTENSITY, next.iblIntensity);
+}
+
+/// @brief Names of nodes whose meshes are shared by other baked nodes.
+/// @details The baker writes chart UVs into mesh vertices, so shared meshes
+///          clobber each other's charts; baking requires uniqueness.
+expose func SharedMeshNodeNames(nodes: List[SceneNode]) -> List[String] {
+    var names: List[String] = [];
+    var index = 0;
+    while index < nodes.count() {
+        var node = nodes.get(index);
+        if node != null and node.Mesh != null and node.GetStatic() {
+            var other = 0;
+            var shared = false;
+            while other < nodes.count() and shared == false {
+                if other != index {
+                    var candidate = nodes.get(other);
+                    if candidate != null
+                       and candidate.GetStatic()
+                       and candidate.Mesh == node.Mesh {
+                        shared = true;
+                    }
+                }
+                other = other + 1;
+            }
+            if shared { names.add(node.Name); }
+        }
+        index = index + 1;
+    }
+    return names;
+}
+
+/// @brief Build one world-space light clone for the baker.
+/// @details Mirrors how Draw treats node lights: light-local position runs
+///          through the node world matrix and direction through its rotation
+///          before normalization.
+expose func WorldSpaceLight(node: SceneNode,
+                            light: Light3D) -> Light3D {
+    if node == null or light == null { return null; }
+    var state = scene_light_3d.FromLight(light);
+    var world = node.WorldMatrix;
+    if scene_light_3d.HasPosition(state.kind) {
+        var transformed = Mat4.TransformPoint(
+            world,
+            Vec3.New(state.positionX, state.positionY, state.positionZ))
+            as Vec3;
+        if transformed != null {
+            state.positionX = transformed.X;
+            state.positionY = transformed.Y;
+            state.positionZ = transformed.Z;
+        }
+    }
+    if scene_light_3d.HasDirection(state.kind) {
+        var rotated = Mat4.TransformVector(
+            world,
+            Vec3.New(
+                state.directionX, state.directionY, state.directionZ))
+            as Vec3;
+        if rotated != null {
+            var length = Math.Sqrt(
+                rotated.X * rotated.X
+                + rotated.Y * rotated.Y
+                + rotated.Z * rotated.Z);
+            if length > 0.000001 {
+                state.directionX = rotated.X / length;
+                state.directionY = rotated.Y / length;
+                state.directionZ = rotated.Z / length;
+            }
+        }
+    }
+    return scene_light_3d.BuildLight(state);
+}

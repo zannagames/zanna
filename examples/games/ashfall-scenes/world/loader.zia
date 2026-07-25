@@ -1,0 +1,388 @@
+// =============================================================================
+// world/loader.zia — JSON level-manifest serialize / load
+// =============================================================================
+//
+// Serializes a LevelBuilder's spec to a JSON object and rebuilds it back. The
+// arrays (boxes / lights / spawns / pickups) are encoded as ";"-record,
+// ","-field delimited strings inside the JSON object — this uses only the stable
+// Map string API and keeps the schema compact and human-editable, so authored
+// levels and the coded levels in levels.zia share the same build path. A
+// round-trip (serialize → load into a fresh builder) is the manifest gate.
+// =============================================================================
+module loader;
+
+bind Zanna.Data.Json as Json;
+bind Zanna.Collections.Map as Map;
+bind Zanna.String as Str;
+bind Zanna.Core.Convert as Convert;
+bind "../config" as config;
+bind "../core/strings" as S;
+bind "./level_base" as level_base;
+
+// --- Serialize ---------------------------------------------------------------
+func serialize(lb: level_base.LevelBuilder) -> String {
+    var m = Map.New();
+    Map.SetStr(m, "name", lb.getName());
+    Map.SetStr(m, "amb", f(lb.ambRv()) + "," + f(lb.ambGv()) + "," + f(lb.ambBv()));
+    Map.SetStr(m, "start", f(lb.startXv()) + "," + f(lb.startYv()) + "," + f(lb.startZv()) + "," + f(lb.startYawv()));
+    Map.SetStr(m, "boxes", encodeBoxes(lb));
+    Map.SetStr(m, "lights", encodeLights(lb));
+    Map.SetStr(m, "spawns", encodeSpawns(lb));
+    Map.SetStr(m, "picks", encodePicks(lb));
+    Map.SetStr(m, "props", encodeProps(lb));
+    Map.SetStr(m, "covers", encodeCovers(lb));
+    Map.SetStr(m, "flanks", encodeFlanks(lb));
+    Map.SetStr(m, "routes", encodeRoutes(lb));
+    Map.SetStr(m, "landmarks", encodeLandmarks(lb));
+    Map.SetStr(m, "beats", encodeBeats(lb));
+    Map.SetStr(m, "gates", encodeGates(lb));
+    Map.SetStr(m, "terrain", S.intStr(lb.terrainKindOf()));
+    return Json.Format(m);
+}
+
+hide func f(v: Float) -> String { return S.fixed(v, 3); }
+
+hide func encodeBoxes(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.boxCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + f(lb.boxCXat(i)) + "," + f(lb.boxCYat(i)) + "," + f(lb.boxCZat(i)) + "," +
+              f(lb.boxHXat(i)) + "," + f(lb.boxHYat(i)) + "," + f(lb.boxHZat(i)) + "," +
+              f(lb.boxRat(i)) + "," + f(lb.boxGat(i)) + "," + f(lb.boxBat(i)) + "," +
+              S.intStr(lb.boxCollideAt(i)) + "," + S.intStr(lb.boxSurfAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodeLights(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.lightCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + S.intStr(lb.lightKindAt(i)) + "," + f(lb.lightXat(i)) + "," + f(lb.lightYat(i)) + "," +
+              f(lb.lightZat(i)) + "," + f(lb.lightRat(i)) + "," + f(lb.lightGat(i)) + "," +
+              f(lb.lightBat(i)) + "," + f(lb.lightRangeAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodeSpawns(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.spawnCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + S.intStr(lb.spawnArchAt(i)) + "," + f(lb.spawnXat(i)) + "," + f(lb.spawnZat(i)) + "," +
+              S.intStr(lb.spawnWaveAt(i)) + "," + f(lb.spawnRouteXat(i)) + "," + f(lb.spawnRouteZat(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodePicks(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.pickupCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + S.intStr(lb.pickupKindAt(i)) + "," + f(lb.pickupXat(i)) + "," + f(lb.pickupYat(i)) + "," +
+              f(lb.pickupZat(i)) + "," + f(lb.pickupAmtAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodeProps(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.propCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + S.intStr(lb.propKindAt(i)) + "," + f(lb.propXat(i)) + "," + f(lb.propYat(i)) + "," +
+              f(lb.propZat(i)) + "," + f(lb.propYawAt(i)) + "," + f(lb.propScaleAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+/// Encode authored AI cover hints for manifest round-trips.
+hide func encodeCovers(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.coverCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + f(lb.coverXat(i)) + "," + f(lb.coverZat(i)) + "," +
+              f(lb.coverFaceXat(i)) + "," + f(lb.coverFaceZat(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodeFlanks(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.flankCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + f(lb.flankXat(i)) + "," + f(lb.flankZat(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodeRoutes(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.routeMarkerCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + f(lb.routeMarkerXat(i)) + "," + f(lb.routeMarkerZat(i)) + "," +
+              S.intStr(lb.routeMarkerKindAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodeLandmarks(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.landmarkCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + f(lb.landmarkXat(i)) + "," + f(lb.landmarkZat(i)) + "," +
+              S.intStr(lb.landmarkKindAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func encodeBeats(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.encounterBeatCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + f(lb.encounterBeatXat(i)) + "," + f(lb.encounterBeatZat(i)) + "," +
+              S.intStr(lb.encounterBeatKindAt(i)) + "," + S.intStr(lb.encounterBeatWaveAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+/// Encode objective gates as compact CSV records.
+hide func encodeGates(lb: level_base.LevelBuilder) -> String {
+    var out = "";
+    var i = 0;
+    while i < lb.gateCount() {
+        if i > 0 { out = out + ";"; }
+        out = out + f(lb.gateXat(i)) + "," + f(lb.gateYat(i)) + "," + f(lb.gateZat(i)) + "," +
+              f(lb.gateHXat(i)) + "," + f(lb.gateHYat(i)) + "," + f(lb.gateHZat(i)) + "," +
+              S.intStr(lb.gateUnlockAt(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+// --- Load --------------------------------------------------------------------
+// Parse a manifest string and populate a fresh LevelBuilder. Returns false on
+// invalid JSON (the caller keeps its previous level).
+func load(text: String, lb: level_base.LevelBuilder) -> Boolean {
+    if Json.IsValid(text) == false { return false; }
+    var m = Json.ParseObject(text);
+    lb.reset();
+    lb.setName(Map.GetStr(m, "name"));
+    var amb = splitCsv(Map.GetStr(m, "amb"));
+    if amb.Count >= 3 { lb.setAmbient(num(amb, 0), num(amb, 1), num(amb, 2)); }
+    var st = splitCsv(Map.GetStr(m, "start"));
+    if st.Count >= 4 { lb.setStart(num(st, 0), num(st, 1), num(st, 2), num(st, 3)); }
+    decodeBoxes(Map.GetStr(m, "boxes"), lb);
+    decodeLights(Map.GetStr(m, "lights"), lb);
+    decodeSpawns(Map.GetStr(m, "spawns"), lb);
+    decodePicks(Map.GetStr(m, "picks"), lb);
+    decodeProps(Map.GetStr(m, "props"), lb);
+    decodeCovers(Map.GetStr(m, "covers"), lb);
+    decodeFlanks(Map.GetStr(m, "flanks"), lb);
+    decodeRoutes(Map.GetStr(m, "routes"), lb);
+    decodeLandmarks(Map.GetStr(m, "landmarks"), lb);
+    decodeBeats(Map.GetStr(m, "beats"), lb);
+    decodeGates(Map.GetStr(m, "gates"), lb);
+    var terr = Map.GetStr(m, "terrain");
+    if Str.get_Length(terr) > 0 { lb.setTerrain(Convert.ToInt64(terr)); }
+    return true;
+}
+
+// Split a ","-delimited string into a List of trimmed pieces.
+hide func splitCsv(s: String) -> List[String] {
+    var out: List[String] = [];
+    if Str.get_Length(s) == 0 { return out; }
+    var parts = Str.Split(s, ",");
+    var i = 0;
+    while i < parts.Count {
+        out.Add(parts.Get(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func splitRecords(s: String) -> List[String] {
+    var out: List[String] = [];
+    if Str.get_Length(s) == 0 { return out; }
+    var parts = Str.Split(s, ";");
+    var i = 0;
+    while i < parts.Count {
+        out.Add(parts.Get(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+hide func num(fields: List[String], i: Integer) -> Float {
+    if i < 0 || i >= fields.Count { return 0.0; }
+    return Convert.ToDouble(fields[i]);
+}
+hide func inum(fields: List[String], i: Integer) -> Integer {
+    if i < 0 || i >= fields.Count { return 0; }
+    return Convert.ToInt64(fields[i]);
+}
+
+hide func decodeBoxes(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 11 {
+            lb.addBoxMat(num(fld, 0), num(fld, 1), num(fld, 2), num(fld, 3), num(fld, 4), num(fld, 5),
+                         inum(fld, 10), num(fld, 6), num(fld, 7), num(fld, 8), inum(fld, 9) == 1);
+        } else if fld.Count >= 10 {
+            // Legacy 10-field manifests (pre-surface-class).
+            lb.addBox(num(fld, 0), num(fld, 1), num(fld, 2), num(fld, 3), num(fld, 4), num(fld, 5),
+                      num(fld, 6), num(fld, 7), num(fld, 8), inum(fld, 9) == 1);
+        }
+        i = i + 1;
+    }
+}
+
+hide func decodeProps(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 6 {
+            lb.addProp(inum(fld, 0), num(fld, 1), num(fld, 2), num(fld, 3), num(fld, 4), num(fld, 5));
+        }
+        i = i + 1;
+    }
+}
+
+/// Decode cover-hint records emitted by `encodeCovers`.
+hide func decodeCovers(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 4 {
+            lb.addCover(num(fld, 0), num(fld, 1), num(fld, 2), num(fld, 3));
+        }
+        i = i + 1;
+    }
+}
+
+hide func decodeFlanks(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 2 { lb.addFlank(num(fld, 0), num(fld, 1)); }
+        i = i + 1;
+    }
+}
+
+hide func decodeRoutes(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 3 { lb.addRouteMarker(num(fld, 0), num(fld, 1), inum(fld, 2)); }
+        i = i + 1;
+    }
+}
+
+hide func decodeLandmarks(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 3 { lb.addLandmark(num(fld, 0), num(fld, 1), inum(fld, 2)); }
+        i = i + 1;
+    }
+}
+
+hide func decodeBeats(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 4 {
+            lb.addEncounterBeat(num(fld, 0), num(fld, 1), inum(fld, 2), inum(fld, 3));
+        }
+        i = i + 1;
+    }
+}
+
+/// Decode objective gates emitted by `encodeGates`.
+hide func decodeGates(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 7 {
+            lb.addGate(num(fld, 0), num(fld, 1), num(fld, 2),
+                       num(fld, 3), num(fld, 4), num(fld, 5), inum(fld, 6));
+        }
+        i = i + 1;
+    }
+}
+
+hide func decodeLights(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 8 {
+            if inum(fld, 0) == 0 {
+                lb.addDirectional(num(fld, 1), num(fld, 2), num(fld, 3), num(fld, 4), num(fld, 5), num(fld, 6));
+            } else {
+                lb.addPoint(num(fld, 1), num(fld, 2), num(fld, 3), num(fld, 4), num(fld, 5), num(fld, 6), num(fld, 7));
+            }
+        }
+        i = i + 1;
+    }
+}
+
+hide func decodeSpawns(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 6 {
+            var rx = num(fld, 4);
+            var rz = num(fld, 5);
+            if rx > 90000.0 {
+                lb.addSpawn(inum(fld, 0), num(fld, 1), num(fld, 2), inum(fld, 3));
+            } else {
+                lb.addSpawnRoute(inum(fld, 0), num(fld, 1), num(fld, 2), inum(fld, 3), rx, rz);
+            }
+        } else if fld.Count >= 4 {
+            lb.addSpawn(inum(fld, 0), num(fld, 1), num(fld, 2), inum(fld, 3));
+        }
+        i = i + 1;
+    }
+}
+
+hide func decodePicks(s: String, lb: level_base.LevelBuilder) {
+    var recs = splitRecords(s);
+    var i = 0;
+    while i < recs.Count {
+        var fld = splitCsv(recs[i]);
+        if fld.Count >= 5 {
+            lb.addPickup(inum(fld, 0), num(fld, 1), num(fld, 2), num(fld, 3), num(fld, 4));
+        }
+        i = i + 1;
+    }
+}

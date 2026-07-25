@@ -16,6 +16,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements structured and stream-oriented control-flow verification.
+/// @details Internal `Expected` helpers own the checks, while public boolean
+///          wrappers preserve the older text-stream interface by translating
+///          structured diagnostics without retaining verifier state.
+
 #include "il/verify/ControlFlowChecker.hpp"
 #include "il/core/BasicBlock.hpp"
 #include "il/core/Extern.hpp"
@@ -60,8 +66,8 @@ namespace {
 /// @param bb Basic block whose parameter list is being validated.
 /// @param types Type inference context seeded with parameter types.
 /// @param paramIds Output container populated with the registered parameter IDs.
-/// @return Empty on success; otherwise diagnostics describing duplicate names or
-///         void parameters.
+/// @return Empty on success; otherwise a diagnostic describing a malformed or
+///         duplicate name, duplicate temporary ID, or void parameter.
 /// @details Ensures block parameters are unique and non-void so predecessors can
 ///          match arguments, per docs/il/il-guide.md#reference section "Basic Blocks".
 Expected<void> validateBlockParams_impl(const Function &fn,
@@ -103,7 +109,7 @@ Expected<void> validateBlockParams_impl(const Function &fn,
 /// @param funcs Known function declarations supplied to instruction checks.
 /// @param types Type inference context used to validate operand availability.
 /// @param verifyInstrFn Callback providing instruction-specific verification.
-/// @param warnings Accumulates non-fatal diagnostics emitted by the callback.
+/// @param sink Receives non-fatal diagnostics emitted by the callback.
 /// @return Propagates the first verification error produced by operand checking
 ///         or the callback; otherwise empty.
 /// @details Stops after the first terminator to honour the single-terminator
@@ -162,8 +168,12 @@ Expected<void> checkBlockTerminators_impl(const Function &fn, const BasicBlock &
     return {};
 }
 
+/// @brief Warning and error messages decoded from a legacy verifier stream.
 struct ParsedCapture {
+    /// @brief Warning messages with the textual severity prefix removed.
     std::vector<std::string> warnings;
+
+    /// @brief Error or unclassified messages with any error prefix removed.
     std::vector<std::string> errors;
 };
 
@@ -330,6 +340,10 @@ bool iterateBlockInstructions(VerifyInstrFn verifyInstrFn,
                               TypeInference &types,
                               std::ostream &err) {
     CollectingDiagSink warnings;
+    /// @brief Adapt a streaming boolean callback to the structured verifier API.
+    /// @details Captures callback output, forwards parsed warnings to the sink,
+    ///          and converts failure text into an `Expected` error anchored to
+    ///          the current instruction.
     VerifyInstrFnExpected shim =
         [&](const Function &fnRef,
             const BasicBlock &bbRef,

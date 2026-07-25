@@ -4,19 +4,19 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Expr_Call.cpp
-// Purpose: Lower direct, indirect, generic, built-in, and runtime call expressions.
-// Key invariants:
-//   - Arguments are bound and coerced in source evaluation order.
-//   - Owned call results are either transferred to a consumer or deferred for release.
-// Ownership/Lifetime:
-//   - User-function managed returns transfer one reference to the caller.
-//   - Runtime argument/result effects come from the central ownership catalog.
-// Links: src/frontends/zia/Lowerer_Expr_Method.cpp,
-//        src/frontends/zia/LowererCallArgumentLowerer.hpp,
-//        src/il/runtime/RuntimeOwnership.hpp
-//
+///
+/// @file Lowerer_Expr_Call.cpp
+/// @brief Lowers direct, indirect, generic, built-in, and runtime call
+///        expressions.
+///
+/// @details Arguments are evaluated in source order, reordered according to
+///          semantic bindings, and coerced to the selected callable's
+///          parameter representations. Runtime calls additionally follow the
+///          central ABI and ownership catalog. Managed results transfer one
+///          reference to their consumer or enter deferred cleanup, and special
+///          call families select type-specific runtime entry points where
+///          their surface types require them.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -28,7 +28,8 @@
 
 namespace il::frontends::zia {
 
-/// Closure struct layout: [funcPtr (8 bytes)] [envPtr (8 bytes)]
+/// @brief Byte offset of the environment pointer in `[funcPtr, envPtr]`
+///        closure storage.
 static constexpr int kClosureEnvOffset = 8;
 
 using namespace runtime;
@@ -46,12 +47,16 @@ template <typename T> T *exprAs(Expr *expr, ExprKind kind) {
 
 /// @brief True if @p callee is an HttpServer route registration runtime call
 ///        (Get/Post/Put/Delete) needing handler-binding lowering.
+/// @param callee Canonical runtime function name.
+/// @return True for the four HTTP route-registration entry points.
 bool isHttpServerRouteRuntime(std::string_view callee) {
     return callee == kNetworkHttpServerGet || callee == kNetworkHttpServerPost ||
            callee == kNetworkHttpServerPut || callee == kNetworkHttpServerDelete;
 }
 
 /// @brief True if @p callee is an HttpsServer route registration runtime call.
+/// @param callee Canonical runtime function name.
+/// @return True for the four HTTPS route-registration entry points.
 bool isHttpsServerRouteRuntime(std::string_view callee) {
     return callee == kNetworkHttpsServerGet || callee == kNetworkHttpsServerPost ||
            callee == kNetworkHttpsServerPut || callee == kNetworkHttpsServerDelete;
@@ -59,18 +64,25 @@ bool isHttpsServerRouteRuntime(std::string_view callee) {
 
 /// @brief Runtime BindHandler callee matching @p callee's server flavor
 ///        (HTTPS vs HTTP).
+/// @param callee HTTP or HTTPS route-registration runtime name.
+/// @return Canonical handler-binding runtime target for the same server
+///         flavor.
 const char *httpServerBindHandlerTarget(std::string_view callee) {
     return isHttpsServerRouteRuntime(callee) ? kNetworkHttpsServerBindHandler
                                              : kNetworkHttpServerBindHandler;
 }
 
 /// @brief True if @p callee is a Terminal text-output runtime (Say/Print).
+/// @param callee Canonical runtime function name.
+/// @return True for Terminal.Say and Terminal.Print.
 bool isTerminalTextRuntime(std::string_view callee) {
     return callee == kTerminalSay || callee == kTerminalPrint;
 }
 
 /// @brief Peel `Optional` wrappers off @p type to get the underlying surface
 ///        type used to pick a type-specialized runtime callee.
+/// @param type Semantic surface type.
+/// @return Innermost non-Optional type, or null when the chain has no type.
 TypeRef unwrapSurfaceType(TypeRef type) {
     while (type && type->kind == TypeKindSem::Optional && type->innerType())
         type = type->innerType();
@@ -81,6 +93,10 @@ TypeRef unwrapSurfaceType(TypeRef type) {
 ///        based on the expected result @p surfaceType (e.g. Seq.Get →
 ///        Seq.GetStr for a String result, Map.Get → Map.GetInt). Empty when
 ///        no specialization applies.
+/// @param callee Generic canonical runtime function name.
+/// @param surfaceType Semantic result type expected by the Zia expression.
+/// @return Specialized runtime name, or an empty string when the generic
+///         target is already appropriate.
 std::string specializedRuntimeReturnCallee(std::string_view callee, TypeRef surfaceType) {
     surfaceType = unwrapSurfaceType(surfaceType);
     if (!surfaceType)
@@ -118,6 +134,8 @@ std::string specializedRuntimeReturnCallee(std::string_view callee, TypeRef surf
 
 /// @brief True if @p type is a pointer type (the shape expected for an HTTP
 ///        handler's request/response parameters).
+/// @param type Semantic parameter type to classify.
+/// @return True only for the Zia `Ptr` semantic kind.
 bool isHttpHandlerPtrType(TypeRef type) {
     return type && type->kind == TypeKindSem::Ptr;
 }
@@ -125,6 +143,10 @@ bool isHttpHandlerPtrType(TypeRef type) {
 /// @brief Resolve the user function bound as an HTTP route handler for @p tag,
 ///        requiring the `void(ptr, ptr)` request/response signature; returns
 ///        nullptr if no uniquely matching declaration exists.
+/// @param sema Semantic registry containing function declarations and types.
+/// @param tag Handler function name supplied to route registration.
+/// @return Unique matching handler declaration, or null when absent or
+///         ambiguous.
 FunctionDecl *resolveHttpHandlerDecl(Sema &sema, const std::string &tag) {
     if (FunctionDecl *decl = sema.getFunctionDecl(tag)) {
         TypeRef fnType = sema.getFunctionType(decl);
@@ -153,6 +175,11 @@ FunctionDecl *resolveHttpHandlerDecl(Sema &sema, const std::string &tag) {
     return match;
 }
 
+/// @brief Resolve the lowered symbol name of an HTTP route handler.
+/// @param sema Semantic registry containing function declarations and names.
+/// @param tag Handler function name supplied to route registration.
+/// @return Lowered function name, `main` for source handler `start`, or an
+///         empty string when no unique valid handler exists.
 std::string httpHandlerTargetName(Sema &sema, const std::string &tag) {
     FunctionDecl *decl = resolveHttpHandlerDecl(sema, tag);
     if (!decl)
@@ -165,6 +192,8 @@ std::string httpHandlerTargetName(Sema &sema, const std::string &tag) {
 }
 
 /// @brief Pick the type-specialised `Zanna.Result.Ok*` callee for @p type.
+/// @param type Semantic success-payload type.
+/// @return Canonical Result.Ok runtime entry point.
 const char *resultOkCalleeFor(TypeRef type) {
     if (!type)
         return kResultOk;
@@ -182,6 +211,8 @@ const char *resultOkCalleeFor(TypeRef type) {
 }
 
 /// @brief Pick the type-specialised `Zanna.Result.Unwrap*` callee.
+/// @param type Semantic success-payload type.
+/// @return Canonical Result.Unwrap runtime entry point.
 const char *resultUnwrapCalleeFor(TypeRef type) {
     if (!type)
         return kResultUnwrap;
@@ -199,6 +230,8 @@ const char *resultUnwrapCalleeFor(TypeRef type) {
 }
 
 /// @brief Pick the type-specialised `Zanna.Result.UnwrapOr*` callee.
+/// @param type Semantic success-payload type.
+/// @return Canonical Result.UnwrapOr runtime entry point.
 const char *resultUnwrapOrCalleeFor(TypeRef type) {
     if (!type)
         return kResultUnwrapOr;
@@ -216,6 +249,8 @@ const char *resultUnwrapOrCalleeFor(TypeRef type) {
 }
 
 /// @brief True when @p typeName belongs to the generated runtime namespace.
+/// @param typeName Qualified semantic type name.
+/// @return True when @p typeName starts with the runtime namespace prefix.
 bool hasRuntimeNamespacePrefix(const std::string &typeName) {
     std::string_view prefix{kRuntimeNamespacePrefix};
     return typeName.size() >= prefix.size() &&
@@ -223,6 +258,9 @@ bool hasRuntimeNamespacePrefix(const std::string &typeName) {
 }
 
 /// @brief True when @p type can be a receiver for runtime member syntax.
+/// @param type Semantic receiver type.
+/// @return True for built-in collections/strings and registered or
+///         namespace-qualified runtime classes.
 bool isRuntimeReceiverSurfaceType(TypeRef type) {
     if (!type)
         return false;
@@ -234,6 +272,11 @@ bool isRuntimeReceiverSurfaceType(TypeRef type) {
 }
 
 /// @brief True when the resolved runtime ABI has one implicit receiver parameter.
+/// @param rtDesc Runtime descriptor for the selected callee.
+/// @param binding Semantic binding for explicit source arguments, or null.
+/// @param explicitArgCount Source argument count used without a binding.
+/// @return True when the ABI parameter count exceeds the exposed argument
+///         count by exactly one.
 bool runtimeCallExpectsImplicitReceiver(const il::runtime::RuntimeDescriptor *rtDesc,
                                         const Sema::CallArgBinding *binding,
                                         size_t explicitArgCount) {
@@ -254,15 +297,29 @@ bool runtimeCallExpectsImplicitReceiver(const il::runtime::RuntimeDescriptor *rt
 // Bound Argument Lowering Helpers
 //=============================================================================
 
+/// @brief Lower call arguments in source evaluation order.
+/// @param args Source arguments to evaluate.
+/// @return One LowerResult per argument, before parameter reordering.
 std::vector<LowerResult> Lowerer::lowerSourceArgs(const std::vector<CallArg> &args) {
     return CallArgumentLowerer(*this).lowerSourceArgs(args);
 }
 
+/// @brief Map a resolved call binding to source argument indices.
+/// @param args Source arguments supplied by the call site.
+/// @param binding Semantic argument binding, or null for positional order.
+/// @return Fixed-parameter source indices followed by variadic sources.
 std::vector<int> Lowerer::orderedArgSources(const std::vector<CallArg> &args,
                                             const Sema::CallArgBinding *binding) const {
     return CallArgumentLowerer::orderedArgSources(args, binding);
 }
 
+/// @brief Lower, reorder, default, coerce, and variadically pack call arguments.
+/// @param args Source arguments supplied by the call site.
+/// @param paramTypes Resolved parameter types in declaration order.
+/// @param params Parameter declarations for defaults and variadic metadata, or
+///        null when unavailable.
+/// @param binding Semantic argument binding, or null for positional coercion.
+/// @return Final argument values in parameter order.
 std::vector<Lowerer::Value> Lowerer::lowerResolvedArgs(const std::vector<CallArg> &args,
                                                        const std::vector<TypeRef> &paramTypes,
                                                        const std::vector<Param> *params,
@@ -270,12 +327,22 @@ std::vector<Lowerer::Value> Lowerer::lowerResolvedArgs(const std::vector<CallArg
     return CallArgumentLowerer(*this).lowerResolvedArgs(args, paramTypes, params, binding);
 }
 
+/// @brief Lower arguments for an ordinary resolved call expression.
+/// @param expr Call expression whose semantic binding is used.
+/// @param paramTypes Resolved parameter types in declaration order.
+/// @param params Parameter declarations, or null when unavailable.
+/// @return Final argument values in parameter order.
 std::vector<Lowerer::Value> Lowerer::lowerResolvedCallArgs(CallExpr *expr,
                                                            const std::vector<TypeRef> &paramTypes,
                                                            const std::vector<Param> *params) {
     return CallArgumentLowerer(*this).lowerResolvedCallArgs(expr, paramTypes, params);
 }
 
+/// @brief Lower arguments for a resolved constructor invocation.
+/// @param expr Allocation expression whose constructor binding is used.
+/// @param paramTypes Resolved constructor parameter types.
+/// @param params Constructor parameter declarations, or null when unavailable.
+/// @return Final constructor argument values in parameter order.
 std::vector<Lowerer::Value> Lowerer::lowerResolvedNewArgs(NewExpr *expr,
                                                           const std::vector<TypeRef> &paramTypes,
                                                           const std::vector<Param> *params) {
@@ -286,6 +353,11 @@ std::vector<Lowerer::Value> Lowerer::lowerResolvedNewArgs(NewExpr *expr,
 // Built-in Function Call Helper
 //=============================================================================
 
+/// @brief Try to lower a compiler-recognized free-function built-in.
+/// @param name Unqualified callee name.
+/// @param expr Call expression containing source arguments.
+/// @return Lowered `print`/`println`/`toString` result, or `std::nullopt` when
+///         @p name is not handled here.
 std::optional<LowerResult> Lowerer::lowerBuiltinCall(const std::string &name, CallExpr *expr) {
     if (name == "print" || name == "println") {
         if (!expr->args.empty()) {
@@ -350,6 +422,16 @@ std::optional<LowerResult> Lowerer::lowerBuiltinCall(const std::string &name, Ca
 // Main Call Expression Lowering
 //=============================================================================
 
+/// @brief Lower any Zia call expression.
+/// @param expr Semantically analyzed call expression.
+/// @return Call result paired with its surface IL representation.
+/// @details Dispatches range modifier chains, Result constructors, generic
+///          functions, resolved user methods, built-ins, closure invocation,
+///          direct user functions, and canonical runtime functions. It applies
+///          semantic argument bindings, receiver insertion, specialized
+///          runtime result entry points, HTTP handler binding, ownership
+///          effects, and managed return materialization as required by the
+///          selected target.
 LowerResult Lowerer::lowerCall(CallExpr *expr) {
     RangeModifierInfo rangeInfo;
     if (collectRangeModifierChain(expr, rangeInfo) && rangeInfo.range)
@@ -1096,6 +1178,16 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
     }
 }
 
+/// @brief Emit a runtime call and adapt its ABI return to the Zia surface type.
+/// @param calleeName Canonical generic runtime target.
+/// @param surfaceType Semantic type expected by the call expression.
+/// @param ilSurfaceType IL representation of @p surfaceType.
+/// @param callArgs ABI-ordered call arguments.
+/// @return Runtime result in the requested surface representation.
+/// @details Selects type-specialized collection accessors where available,
+///          narrows arguments required by `i16`/`i32` ABI parameters, and
+///          unboxes pointer-returning helpers when the surface value is
+///          primitive.
 LowerResult Lowerer::emitRuntimeCallResult(const std::string &calleeName,
                                            TypeRef surfaceType,
                                            Type ilSurfaceType,
@@ -1140,6 +1232,14 @@ LowerResult Lowerer::emitRuntimeCallResult(const std::string &calleeName,
     return {rawResult, ilSurfaceType};
 }
 
+/// @brief Lower an explicit unsafe release operation.
+/// @param argValue Managed handle whose caller-owned reference is consumed.
+/// @param argType Semantic type of @p argValue.
+/// @return Post-release reference count as `i64`.
+/// @details Cancels deferred cleanup for fresh owned arguments, uses the
+///          string-specific release helper for strings, preserves Zia class
+///          destructor dispatch, and otherwise calls the generic heap release
+///          runtime.
 LowerResult Lowerer::emitExplicitMemoryRelease(Value argValue, TypeRef argType) {
     // Unsafe.Release consumes the caller's reference.  If the argument is a
     // freshly produced owned value, transfer it to the explicit release so it
@@ -1167,6 +1267,12 @@ LowerResult Lowerer::emitExplicitMemoryRelease(Value argValue, TypeRef argType) 
 // Default Parameter Padding
 //=============================================================================
 
+/// @brief Append lowered trailing default arguments for a direct function call.
+/// @param calleeName Resolved or mangled function name.
+/// @param args Existing argument vector, modified in place.
+/// @param callExpr Original call used for pre-mangling declaration fallback.
+/// @details Stops at the first missing default and does nothing when the
+///          function declaration cannot be resolved.
 void Lowerer::padDefaultArgs(const std::string &calleeName,
                              std::vector<Value> &args,
                              CallExpr *callExpr) {
@@ -1199,6 +1305,14 @@ void Lowerer::padDefaultArgs(const std::string &calleeName,
 // Generic Function Call Lowering
 //=============================================================================
 
+/// @brief Lower a call to one concrete generic-function instantiation.
+/// @param mangledName Substitution-keyed callee name containing `$`.
+/// @param expr Generic call expression.
+/// @return Materialized call result and instantiated IL return type.
+/// @details Resolves the substituted function type when available, otherwise
+///          temporarily pushes the substitution context to recover the return
+///          type. Arguments follow the semantic binding, and the instantiation
+///          is queued for later body emission when not already defined.
 LowerResult Lowerer::lowerGenericFunctionCall(const std::string &mangledName, CallExpr *expr) {
     const size_t dollarPos = mangledName.find('$');
     if (dollarPos == std::string::npos) {

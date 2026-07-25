@@ -1,0 +1,154 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall/tools/scene_parity_probe.zia
+// Purpose: Prove every exported mission scene reproduces the code-built
+//          level byte-for-byte through the canonical manifest serializer.
+// Key invariants:
+//   - loader.serialize of the code-built and scene-read builders is
+//     byte-equal for levels 1..9 plus the hub.
+//   - Records outside the manifest compare explicitly: water pool
+//     parameters, objectives (every authored field), and the level_env
+//     vantage/row values stored on the scene root.
+//   - Any mismatch names the level and the first differing surface.
+// Ownership/Lifetime:
+//   - The probe owns one LevelBuilder/Objectives pair per comparison side.
+// Links: export_scenes.zia, scene_reader.zia,
+//        ../world/loader.zia, ../../ashfall-scenes/world/scene_levels.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_parity_probe;
+
+bind "../config" as config;
+bind "../world/level_base" as level_base;
+bind "../world/levels" as levels;
+bind "../world/level_env" as level_env;
+bind "../world/loader" as loader;
+bind "../world/objectives" as objectives;
+bind "./scene_reader" as scene_reader;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Terminal as Terminal;
+
+func main() {
+    var env = new level_env.LevelEnv();
+    env.setup();
+    var id = config.LV_L1;
+    while id <= config.LV_HUB {
+        if compareLevel(id, env) == false { return; }
+        id = id + 1;
+    }
+    Terminal.Say("RESULT: ok");
+}
+
+hide func scenePathFor(levelId: Integer) -> String {
+    if levelId == config.LV_HUB {
+        return "../../ashfall-scenes/assets/scenes/hub.scene3d";
+    }
+    return "../../ashfall-scenes/assets/scenes/mission-0"
+        + levelId + ".scene3d";
+}
+
+hide func near(a: Float, b: Float) -> Boolean {
+    var d = a - b;
+    if d < 0.0 { d = 0.0 - d; }
+    return d < 0.0000001;
+}
+
+hide func compareLevel(levelId: Integer, env: level_env.LevelEnv) -> Boolean {
+    var codeLb = new level_base.LevelBuilder();
+    var codeObj = new objectives.Objectives();
+    levels.build(levelId, codeLb, codeObj);
+
+    var sceneLb = new level_base.LevelBuilder();
+    var sceneObj = new objectives.Objectives();
+    var path = scenePathFor(levelId);
+    if scene_reader.loadInto(path, sceneLb, sceneObj) == false {
+        Terminal.Say("RESULT: fail level " + levelId
+            + " scene did not load: " + path);
+        return false;
+    }
+
+    var codeText = loader.serialize(codeLb);
+    var sceneText = loader.serialize(sceneLb);
+    if codeText != sceneText {
+        Terminal.Say("RESULT: fail level " + levelId
+            + " manifest serialization diverged");
+        return false;
+    }
+
+    // Water pool parameters live outside the manifest.
+    if codeLb.wantsWater() != sceneLb.wantsWater()
+       || near(codeLb.waterXv(), sceneLb.waterXv()) == false
+       || near(codeLb.waterYv(), sceneLb.waterYv()) == false
+       || near(codeLb.waterZv(), sceneLb.waterZv()) == false
+       || near(codeLb.waterHalfWv(), sceneLb.waterHalfWv()) == false
+       || near(codeLb.waterHalfDv(), sceneLb.waterHalfDv()) == false {
+        Terminal.Say("RESULT: fail level " + levelId
+            + " water pool diverged");
+        return false;
+    }
+
+    // Objectives compare field-for-field.
+    if codeObj.count() != sceneObj.count() {
+        Terminal.Say("RESULT: fail level " + levelId
+            + " objective count diverged");
+        return false;
+    }
+    var i = 0;
+    while i < codeObj.count() {
+        if codeObj.kindOf(i) != sceneObj.kindOf(i)
+           || near(codeObj.txAt(i), sceneObj.txAt(i)) == false
+           || near(codeObj.tzAt(i), sceneObj.tzAt(i)) == false
+           || near(codeObj.radiusOf(i), sceneObj.radiusOf(i)) == false
+           || codeObj.targetOf(i) != sceneObj.targetOf(i)
+           || codeObj.textOf(i) != sceneObj.textOf(i)
+           || codeObj.promptOf(i) != sceneObj.promptOf(i)
+           || codeObj.isOptional(i) != sceneObj.isOptional(i)
+           || codeObj.prereqOf(i) != sceneObj.prereqOf(i) {
+            Terminal.Say("RESULT: fail level " + levelId
+                + " objective " + i + " diverged");
+            return false;
+        }
+        i = i + 1;
+    }
+
+    // The persisted level_env row must match the live table exactly.
+    var scene = G3D.SceneGraph.Load(path);
+    if scene == null {
+        Terminal.Say("RESULT: fail level " + levelId + " env reload");
+        return false;
+    }
+    var root = scene.Root;
+    if near(root.MetadataGetFloat("lenv.zenR", -1.0),
+            env.zenithR(levelId)) == false
+       || near(root.MetadataGetFloat("lenv.horG", -1.0),
+               env.horizonG(levelId)) == false
+       || near(root.MetadataGetFloat("lenv.sunX", -99.0),
+               env.sunDirX(levelId)) == false
+       || near(root.MetadataGetFloat("lenv.sunI", -1.0),
+               env.sunIntensity(levelId)) == false
+       || near(root.MetadataGetFloat("lenv.filI", -1.0),
+               env.fillIntensity(levelId)) == false
+       || near(root.MetadataGetFloat("lenv.fogFar", -1.0),
+               env.fogFarOf(levelId)) == false
+       || root.MetadataGetInt("lenv.atmo", -1) != env.atmoKind(levelId)
+       || root.MetadataGetBool("lenv.terrain", false)
+          != env.hasTerrain(levelId)
+       || near(root.MetadataGetFloat("lenv.vanX", -99.0),
+               env.vantageX(levelId)) == false
+       || near(root.MetadataGetFloat("lenv.vanY", -99.0),
+               env.vantageY(levelId)) == false
+       || near(root.MetadataGetFloat("lenv.vanZ", -99.0),
+               env.vantageZ(levelId)) == false {
+        Terminal.Say("RESULT: fail level " + levelId
+            + " level_env row diverged");
+        return false;
+    }
+    return true;
+}

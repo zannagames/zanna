@@ -4,19 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Decl_Types.cpp
-// Purpose: Type layout registration for the Zia IL lowerer — class/struct
-//          type field offset computation, vtable construction, itable init,
-//          and on-demand generic type instantiation.
-// Key invariants:
-//   - registerClassLayout/registerStructLayout are idempotent (skip if cached)
-//   - Entity field offsets start at kClassFieldsOffset (after header)
-//   - Struct type field offsets start at 0
-// Ownership/Lifetime:
-//   - Lowerer owns classTypes_/structTypes_ maps; pointers are stable across calls
-// Links: src/frontends/zia/Lowerer.hpp, src/frontends/zia/Lowerer_Decl.cpp
-//
+///
+/// @file Lowerer_Decl_Types.cpp
+/// @brief Registers Zia aggregate layouts and emits interface-dispatch
+///        initialization.
+///
+/// @details The layout pre-pass records structs, classes, and interfaces before
+///          bodies are lowered, computes aligned inline field offsets, assigns
+///          runtime identifiers, and builds virtual/interface slot metadata.
+///          Generic struct and class layouts are instantiated and cached on
+///          demand. This file also emits value-type interface adapters and
+///          exports class-field layouts for debugger memory inspection.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -323,6 +322,10 @@ void Lowerer::emitVtable(const ClassTypeInfo & /*info*/) {
 
 namespace {
 /// @brief Compose the cache key identifying a struct→interface→method adapter.
+/// @param structName Qualified name of the implementing value type.
+/// @param ifaceName Qualified name of the target interface.
+/// @param methodName Interface method name represented by the adapter.
+/// @return Stable delimiter-separated cache key for the adapter tuple.
 std::string itableAdapterKey(const std::string &structName,
                              const std::string &ifaceName,
                              const std::string &methodName) {
@@ -884,6 +887,9 @@ const ClassTypeInfo *Lowerer::getOrCreateClassTypeInfo(const std::string &typeNa
 }
 
 /// @brief Classify one field layout into the debugger's read strategy.
+/// @param field Lowered class-field layout to export.
+/// @return Debugger-facing name, type, offset, display metadata, and storage
+///         classification for @p field.
 /// @details Storage follows the IL type the field's stores/loads use; managed
 ///          vs raw pointers are split by semantic kind so the debugger never
 ///          dereferences a non-runtime pointer. Anything wider than a machine
@@ -953,6 +959,11 @@ static DebugFieldExport exportField(const FieldLayout &field) {
     }
 }
 
+/// @brief Export all instantiated class layouts for debugger object inspection.
+/// @return Table keyed by runtime class identifier, with fields classified by
+///         exportField().
+/// @details Generic templates without an allocated runtime class identifier
+///          are omitted because they cannot have live runtime instances.
 DebugClassLayoutExport Lowerer::collectDebugClassLayouts() const {
     DebugClassLayoutExport table;
     for (const auto &[typeName, info] : classTypes_) {

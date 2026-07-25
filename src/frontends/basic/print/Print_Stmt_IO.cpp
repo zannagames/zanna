@@ -14,6 +14,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements canonical serialization of BASIC console and channel I/O
+///        statements.
+
 #include "frontends/basic/print/Print_Stmt_Common.hpp"
 
 namespace il::frontends::basic::print_stmt {

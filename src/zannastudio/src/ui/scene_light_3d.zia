@@ -417,3 +417,174 @@ hide func Near(left: Number, right: Number) -> Boolean {
     if difference < 0.0 { difference = 0.0 - difference; }
     return difference <= LIGHT_VALUE_EPSILON;
 }
+
+/// @brief Sparse multi-node light patch; absent fields preserve node values.
+/// @details The material inspector's mixed-value contract (ADR 0186 applying
+///          ADR 0167 semantics): a field participates only when the control
+///          was determinate at Apply time.
+class LightPatch3D {
+    expose Boolean applyKind;
+    expose Integer kind;
+    expose Boolean applyColor;
+    expose Number red;
+    expose Number green;
+    expose Number blue;
+    expose Boolean applyIntensity;
+    expose Number intensity;
+    expose Boolean applyEnabled;
+    expose Boolean enabled;
+    expose Boolean applyCastsShadows;
+    expose Boolean castsShadows;
+    expose Boolean applyPositionX;
+    expose Number positionX;
+    expose Boolean applyPositionY;
+    expose Number positionY;
+    expose Boolean applyPositionZ;
+    expose Number positionZ;
+    expose Boolean applyDirectionX;
+    expose Number directionX;
+    expose Boolean applyDirectionY;
+    expose Number directionY;
+    expose Boolean applyDirectionZ;
+    expose Number directionZ;
+    expose Boolean applyAttenuation;
+    expose Number attenuation;
+    expose Boolean applyDecayType;
+    expose Integer decayType;
+    expose Boolean applyRange;
+    expose Number range;
+    expose Boolean applyWidth;
+    expose Number width;
+    expose Boolean applyHeight;
+    expose Number height;
+    expose Boolean applyRadius;
+    expose Number radius;
+    expose Boolean applyInnerCone;
+    expose Number innerConeDegrees;
+    expose Boolean applyOuterCone;
+    expose Number outerConeDegrees;
+
+    expose func init() {
+        applyKind = false;
+        kind = LIGHT_POINT;
+        applyColor = false;
+        red = 1.0;
+        green = 1.0;
+        blue = 1.0;
+        applyIntensity = false;
+        intensity = 1.0;
+        applyEnabled = false;
+        enabled = true;
+        applyCastsShadows = false;
+        castsShadows = false;
+        applyPositionX = false;
+        positionX = 0.0;
+        applyPositionY = false;
+        positionY = 0.0;
+        applyPositionZ = false;
+        positionZ = 0.0;
+        applyDirectionX = false;
+        directionX = 0.0;
+        applyDirectionY = false;
+        directionY = -1.0;
+        applyDirectionZ = false;
+        directionZ = 0.0;
+        applyAttenuation = false;
+        attenuation = DEFAULT_ATTENUATION;
+        applyDecayType = false;
+        decayType = DECAY_QUADRATIC;
+        applyRange = false;
+        range = DEFAULT_RANGE;
+        applyWidth = false;
+        width = 1.0;
+        applyHeight = false;
+        height = 1.0;
+        applyRadius = false;
+        radius = 1.0;
+        applyInnerCone = false;
+        innerConeDegrees = DEFAULT_INNER_CONE;
+        applyOuterCone = false;
+        outerConeDegrees = DEFAULT_OUTER_CONE;
+    }
+
+    /// @brief Return whether this patch resolves at least one light field.
+    expose func HasFields() -> Boolean {
+        return applyKind
+            or applyColor
+            or applyIntensity
+            or applyEnabled
+            or applyCastsShadows
+            or applyPositionX
+            or applyPositionY
+            or applyPositionZ
+            or applyDirectionX
+            or applyDirectionY
+            or applyDirectionZ
+            or applyAttenuation
+            or applyDecayType
+            or applyRange
+            or applyWidth
+            or applyHeight
+            or applyRadius
+            or applyInnerCone
+            or applyOuterCone;
+    }
+}
+
+/// @brief Overwrite one snapshot's fields from a patch's applied values.
+/// @details Kind-inapplicable results are dropped later by Normalize inside
+///          BuildLight, which is exactly the mixed-kind rebuild rule: a
+///          concrete kind keeps compatible fields and defaults the rest.
+expose func ApplyPatchState(state: LightState3D,
+                            patch: LightPatch3D) -> LightState3D {
+    var next = state;
+    if next == null { next = new LightState3D(); }
+    if patch == null { return next; }
+    if patch.applyKind { next.kind = patch.kind; }
+    if patch.applyColor {
+        next.red = patch.red;
+        next.green = patch.green;
+        next.blue = patch.blue;
+    }
+    if patch.applyIntensity { next.intensity = patch.intensity; }
+    if patch.applyEnabled { next.enabled = patch.enabled; }
+    if patch.applyCastsShadows {
+        next.castsShadows = patch.castsShadows;
+    }
+    if patch.applyPositionX { next.positionX = patch.positionX; }
+    if patch.applyPositionY { next.positionY = patch.positionY; }
+    if patch.applyPositionZ { next.positionZ = patch.positionZ; }
+    if patch.applyDirectionX { next.directionX = patch.directionX; }
+    if patch.applyDirectionY { next.directionY = patch.directionY; }
+    if patch.applyDirectionZ { next.directionZ = patch.directionZ; }
+    if patch.applyAttenuation { next.attenuation = patch.attenuation; }
+    if patch.applyDecayType { next.decayType = patch.decayType; }
+    if patch.applyRange { next.range = patch.range; }
+    if patch.applyWidth { next.width = patch.width; }
+    if patch.applyHeight { next.height = patch.height; }
+    if patch.applyRadius { next.radius = patch.radius; }
+    if patch.applyInnerCone {
+        next.innerConeDegrees = patch.innerConeDegrees;
+    }
+    if patch.applyOuterCone {
+        next.outerConeDegrees = patch.outerConeDegrees;
+    }
+    return next;
+}
+
+/// @brief Build one independent replacement for a patched existing light.
+/// @return Null for null inputs; Apply never creates lights (Add does).
+expose func ApplyPatchUnique(light: Light3D,
+                             patch: LightPatch3D) -> Light3D {
+    if light == null or patch == null { return null; }
+    return BuildLight(ApplyPatchState(FromLight(light), patch));
+}
+
+/// @brief Return whether a light already satisfies every applied field.
+expose func MatchesPatch(light: Light3D,
+                         patch: LightPatch3D) -> Boolean {
+    if light == null or patch == null { return false; }
+    var rebuilt = ApplyPatchUnique(light, patch);
+    if rebuilt == null { return false; }
+    return Equivalent(light, rebuilt);
+}

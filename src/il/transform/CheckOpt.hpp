@@ -20,6 +20,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the IL check optimization function pass.
+
 #pragma once
 
 #include "il/transform/PassRegistry.hpp"
@@ -37,6 +40,7 @@ namespace il::transform {
 class CheckOpt : public FunctionPass {
   public:
     /// @brief Identifier used when registering the pass.
+    /// @return Stable pass registry name.
     std::string_view id() const override;
 
     /// @brief Run check optimization over @p function.
@@ -49,6 +53,9 @@ class CheckOpt : public FunctionPass {
     /// @brief Phase 0.5 of run(): demote overflow-checked ops to plain ops when
     ///        a guarding signed comparison (CBr) proves the operation cannot
     ///        overflow on the taken edge.
+    /// @param function Function inspected and rewritten.
+    /// @param blockMap Label-to-block lookup for guard successors.
+    /// @param predecessorCounts Incoming edge counts for uniqueness checks.
     /// @return True if any instruction was rewritten.
     bool runGuardOverflowElim(core::Function &function,
                               const std::unordered_map<std::string, core::BasicBlock *> &blockMap,

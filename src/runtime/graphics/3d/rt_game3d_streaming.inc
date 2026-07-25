@@ -3255,16 +3255,22 @@ static int64_t game3d_proxy_material_rgba(void *material) {
     return (r << 24) | (g << 16) | (b << 8) | 0xFF;
 }
 
-/// @brief Derive "<cell path minus .vscn>_proxy.vscn" for bake output.
+/// @brief Derive "<cell path minus its scene extension>_proxy.<same ext>".
+/// @details Cells may use the canonical `.scene3d` extension or the legacy
+///          `.vscn` alias (ADR 0182); the proxy keeps the cell's spelling.
 static rt_string game3d_proxy_default_path(rt_string cell_path) {
     const char *base = cell_path ? rt_string_cstr(cell_path) : NULL;
     if (!base)
         return NULL;
     size_t len = strlen(base);
     size_t stem = len;
-    if (len > 5 && strcmp(base + len - 5, ".vscn") == 0)
-        stem = len - 5;
     const char *suffix = "_proxy.vscn";
+    if (len > 8 && strcmp(base + len - 8, ".scene3d") == 0) {
+        stem = len - 8;
+        suffix = "_proxy.scene3d";
+    } else if (len > 5 && strcmp(base + len - 5, ".vscn") == 0) {
+        stem = len - 5;
+    }
     size_t suffix_len = strlen(suffix);
     if (stem > SIZE_MAX - suffix_len - 1u)
         return NULL;

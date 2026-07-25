@@ -218,7 +218,7 @@ func main() {
         var suffix = "" + num;
         if num < 10 { suffix = "0" + num; }
         if ExportRegion(
-               num, OUTPUT_ROOT + "/scenes/region-" + suffix + ".scene")
+               num, OUTPUT_ROOT + "/scenes/region-" + suffix + ".scene2d")
            == false {
             Terminal.Say("RESULT: fail");
             return;

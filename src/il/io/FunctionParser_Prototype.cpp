@@ -32,9 +32,11 @@ namespace il::io::detail {
 namespace {
 
 /// @brief Parse a single parameter from "type %name" or "%name: type" syntax.
+/// @brief Parse one function parameter and validate its public/internal type policy.
 /// @param rawParam Raw comma-delimited parameter text.
 /// @param lineNo Source line used for diagnostics.
 /// @param allowInternalTypes True when `error` and `resumetok` are valid in this prototype.
+/// @return Parsed named parameter or a structured syntax/type diagnostic.
 Expected<Param> parseParameterToken(const std::string &rawParam,
                                     unsigned lineNo,
                                     bool allowInternalTypes) {
@@ -88,6 +90,8 @@ Expected<Param> parseParameterToken(const std::string &rawParam,
 }
 
 /// @brief Parse the function symbol name from "@name(" syntax.
+/// @param cur Header cursor advanced to the opening parenthesis.
+/// @return Valid identifier without `@`, or a structured header diagnostic.
 Expected<std::string> parseSymbolName(Cursor &cur) {
     cur.skipWs();
     if (cur.atEnd())
@@ -117,6 +121,7 @@ Expected<std::string> parseSymbolName(Cursor &cur) {
 /// @brief Parse the function prototype: "(params) -> rettype".
 /// @param cur Cursor positioned after the function name.
 /// @param isImport When true, the prototype has no opening brace (import declaration).
+/// @return Return type, parameters, vararg state, and trailing calling-convention segment.
 Expected<PrototypeParseResult> parsePrototype(Cursor &cur, bool isImport = false) {
     cur.skipWs();
     if (cur.atEnd())
@@ -233,6 +238,9 @@ Expected<PrototypeParseResult> parsePrototype(Cursor &cur, bool isImport = false
 }
 
 /// @brief Parse an optional calling convention specifier.
+/// @param segment Text following the prototype and preceding attributes.
+/// @param lineNo Source line used for diagnostics.
+/// @return Default calling convention when absent/recognized, otherwise an error.
 Expected<il::core::CallingConv> parseCallingConv(std::string_view segment, unsigned lineNo) {
     segment = trimView(segment);
     if (segment.empty())
@@ -254,6 +262,9 @@ Expected<il::core::CallingConv> parseCallingConv(std::string_view segment, unsig
 }
 
 /// @brief Parse function attributes before the opening brace or declaration end.
+/// @param cur Header cursor positioned at the optional attribute list.
+/// @param requireBrace True for definitions that must end the header with `{`.
+/// @return Parsed attributes or a structured delimiter/name diagnostic.
 Expected<Attrs> parseAttributes(Cursor &cur, bool requireBrace) {
     cur.skipWs();
     if (cur.atEnd()) {
@@ -307,11 +318,16 @@ Expected<Attrs> parseAttributes(Cursor &cur, bool requireBrace) {
 }
 
 /// @brief Parse an optional source location directive.
+/// @param cur Header cursor positioned after attributes.
+/// @return Parsed location when supported, otherwise the default unknown location.
 Expected<il::support::SourceLoc> parseOptionalLoc(Cursor &cur) {
     cur.skipWs();
     return il::support::SourceLoc{};
 }
 
+/// @brief Test whether a function-header suffix is empty or comment-only.
+/// @param text Unconsumed header suffix.
+/// @return True for whitespace, `//` comments, or semicolon comments.
 bool isIgnorableTrailing(std::string_view text) {
     text = trimView(text);
     return text.empty() || text.rfind("//", 0) == 0 || text.front() == ';';
@@ -323,6 +339,11 @@ bool isIgnorableTrailing(std::string_view text) {
 // Public API
 // ============================================================================
 
+/// @brief Parse and transactionally append one function declaration header.
+/// @param header Complete `func` line.
+/// @param st Mutable parser state and destination module.
+/// @return Success with the new function active, or a structured diagnostic
+///         with all state/module mutations rolled back.
 Expected<void> parseFunctionHeader(const std::string &header, ParserState &st) {
     ParserSnapshot snapshot{st};
     Cursor cursor{header, SourcePos{st.lineNo, 0}};

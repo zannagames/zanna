@@ -1,0 +1,282 @@
+// =============================================================================
+// weapons/weapon_models.zia — first-person weapon visuals (GLB + composites)
+// =============================================================================
+//
+// Renders the held weapon in the view-model pass (BeginViewModel after the
+// world pass EndScene — independent FOV, depth cleared so it never clips world
+// geometry). Each weapon has a baked composite fallback (MeshKit; chassis +
+// emissive accent, forward = local -Z, origin at the grip) and an optional
+// Kenney GLB swap-in via the asset registry. The socket transform composes the
+// camera basis with the ViewModel motion stack (sway/bob/kick/ADS) plus the
+// reload curve (dip + muzzle-down tilt + slide back). Per-weapon flash hues and
+// tracer lifetimes live here so weapon_base and the HUD share one source.
+// =============================================================================
+module weapon_models;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../assets/meshkit" as meshkit;
+bind "../assets/textures" as textures;
+bind "../assets/registry" as registry;
+bind "../player/camera_rig" as camera_rig;
+bind "../player/viewmodel" as viewmodel;
+bind "./weapon_base" as weapon_base;
+
+// Per-weapon muzzle flash hue (also the tracer color).
+func flashR(w: Integer) -> Float {
+    if w == config.W_BOLT { return 1.0; }
+    if w == config.W_SCATTER { return 1.0; }
+    if w == config.W_CYCLER { return 0.4; }
+    if w == config.W_PULSE { return 0.6; }
+    if w == config.W_RAIL { return 0.95; }
+    if w == config.W_ARC { return 0.4; }
+    if w == config.W_RIVET { return 1.0; }
+    if w == config.W_SHARD { return 0.75; }
+    if w == config.W_EMP { return 0.4; }
+    return 0.3;
+}
+func flashG(w: Integer) -> Float {
+    if w == config.W_BOLT { return 0.72; }
+    if w == config.W_SCATTER { return 0.55; }
+    if w == config.W_CYCLER { return 0.85; }
+    if w == config.W_PULSE { return 0.8; }
+    if w == config.W_RAIL { return 0.95; }
+    if w == config.W_ARC { return 1.0; }
+    if w == config.W_RIVET { return 0.5; }
+    if w == config.W_SHARD { return 0.45; }
+    if w == config.W_EMP { return 0.6; }
+    return 0.95;
+}
+func flashB(w: Integer) -> Float {
+    if w == config.W_BOLT { return 0.35; }
+    if w == config.W_SCATTER { return 0.2; }
+    if w == config.W_CYCLER { return 1.0; }
+    if w == config.W_PULSE { return 1.0; }
+    if w == config.W_RAIL { return 1.0; }
+    if w == config.W_ARC { return 0.5; }
+    if w == config.W_RIVET { return 0.15; }
+    if w == config.W_SHARD { return 1.0; }
+    if w == config.W_EMP { return 1.0; }
+    return 0.95;
+}
+// Tracer linger: the Rail's beam hangs in the air; most darts are brief.
+func tracerTtl(w: Integer) -> Float {
+    if w == config.W_RAIL { return 0.35; }
+    if w == config.W_SCATTER { return 0.05; }
+    if w == config.W_LANCE { return 0.05; }
+    return 0.08;
+}
+
+class WeaponModels {
+    hide textures.TextureLib texLib;
+    hide registry.AssetRegistry reg;
+    hide meshkit.MeshKit mk;
+    // Composite cache per weapon.
+    hide List[Integer] mArch;
+    hide List[G3D.Mesh3D] mChassis;
+    hide List[G3D.Mesh3D] mAccent;
+    hide G3D.Material3D chassisMat;
+    hide List[G3D.Material3D] accentMats;   // per weapon (flash hue)
+    hide Boolean ready;
+
+    expose func init() {
+        mk = new meshkit.MeshKit();
+        mArch = []; mChassis = []; mAccent = [];
+        accentMats = [];
+        ready = false;
+    }
+
+    expose func setup(t: textures.TextureLib, r: registry.AssetRegistry) {
+        texLib = t; reg = r;
+        chassisMat = G3D.Material3D.PBR(0.36, 0.37, 0.4);
+        chassisMat.Roughness = 0.45;
+        chassisMat.Metallic = 0.7;
+        var w = 0;
+        while w < config.WEAPON_COUNT {
+            var am = G3D.Material3D.FromColor(flashR(w), flashG(w), flashB(w));
+            G3D.Material3D.SetEmissiveColor(am, flashR(w), flashG(w), flashB(w));
+            am.EmissiveIntensity = 1.8;
+            accentMats.Add(am);
+            w = w + 1;
+        }
+        ready = true;
+    }
+
+    // --- View-model pass ---------------------------------------------------------
+    // Call between the world pass End and the HUD overlay.
+    expose func drawViewModel(canvas: G3D.Canvas3D, cam: G3D.Camera3D,
+                              camRig: camera_rig.CameraRig, vm: viewmodel.ViewModel,
+                              weapons: weapon_base.WeaponController) {
+        if ready == false { return; }
+        var w = weapons.getCurrent();
+        G3D.Canvas3D.BeginViewModel(canvas, cam, camRig.getFov() * 0.75);
+        // Camera basis (local -Z = forward).
+        var eye = cam.Position;
+        var fwd = cam.Forward;
+        var ex = Math.Vec3.get_X(eye); var ey = Math.Vec3.get_Y(eye); var ez = Math.Vec3.get_Z(eye);
+        var fx = Math.Vec3.get_X(fwd); var fy = Math.Vec3.get_Y(fwd); var fz = Math.Vec3.get_Z(fwd);
+        var rx = fy * 0.0 - fz * 1.0;
+        var ry = fz * 0.0 - fx * 0.0;
+        var rz = fx * 1.0 - fy * 0.0;
+        var rl = Math.Sqrt(rx * rx + ry * ry + rz * rz);
+        if rl < 0.001 { rl = 1.0; }
+        rx = rx / rl; ry = ry / rl; rz = rz / rl;
+        var ux = ry * fz - rz * fy;
+        var uy = rz * fx - rx * fz;
+        var uz = rx * fy - ry * fx;
+        var basis = Math.Mat4.New(
+            rx, ux, 0.0 - fx, ex,
+            ry, uy, 0.0 - fy, ey,
+            rz, uz, 0.0 - fz, ez,
+            0.0, 0.0, 0.0, 1.0);
+        // Socket: motion stack + reload curve (dip, slide back, muzzle-down tilt).
+        var rf = weapons.reloadFrac();
+        var rcurve = Sin01(rf);
+        var sx = vm.getOffX();
+        var sy = vm.getOffY() - rcurve * 0.1;
+        var sz = vm.getOffZ() + rcurve * 0.07;
+        var tilt = 0.0 - rcurve * 0.31;
+        var local = Math.Mat4.Mul(Math.Mat4.Translate(sx, sy, sz), Math.Mat4.RotateX(tilt));
+        var xf = Math.Mat4.Mul(basis, local);
+        // GLB swap-in (static Kenney meshes), else the composite fallback.
+        var asset = reg.weaponAssetFor(w);
+        if asset != null {
+            var xfg = Math.Mat4.Mul(xf, Math.Mat4.Mul(Math.Mat4.RotateY(3.1415927),
+                                                      Math.Mat4.ScaleUniform(0.35)));
+            var mc = G3D.SceneAsset.get_MeshCount(asset);
+            var matc = G3D.SceneAsset.get_MaterialCount(asset);
+            var i = 0;
+            while i < mc {
+                var mesh = G3D.SceneAsset.GetMesh(asset, i);
+                var mat = chassisMat;
+                if matc > 0 {
+                    var mi = i;
+                    if mi >= matc { mi = matc - 1; }
+                    mat = G3D.SceneAsset.GetMaterial(asset, mi);
+                }
+                G3D.Canvas3D.DrawMesh(canvas, mesh, xfg, mat);
+                i = i + 1;
+            }
+        } else {
+            ensureMeshes(w);
+            var idx = meshIndex(w);
+            G3D.Canvas3D.DrawMesh(canvas, mChassis[idx], xf, chassisMat);
+            G3D.Canvas3D.DrawMesh(canvas, mAccent[idx], xf, accentMats[w]);
+        }
+        G3D.Canvas3D.End(canvas);
+    }
+
+    hide func Sin01(f: Float) -> Float {
+        if f <= 0.0 { return 0.0; }
+        if f >= 1.0 { return 0.0; }
+        return Math.Sin(f * 3.1415927);
+    }
+
+    // --- Composite bakers (forward = -Z, origin at grip) -------------------------
+    hide func meshIndex(w: Integer) -> Integer {
+        var i = 0;
+        while i < mArch.Count {
+            if mArch[i] == w { return i; }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    hide func ensureMeshes(w: Integer) {
+        var i = 0;
+        while i < mArch.Count {
+            if mArch[i] == w { return; }
+            i = i + 1;
+        }
+        mk.begin();
+        bakeChassis(w);
+        var c = mk.take();
+        mk.begin();
+        bakeAccent(w);
+        var a = mk.take();
+        mArch.Add(w);
+        mChassis.Add(c);
+        mAccent.Add(a);
+    }
+
+    hide func bakeChassis(w: Integer) {
+        if w == config.W_BOLT {
+            mk.box(0.0, 0.0, -0.1, 0.024, 0.032, 0.1);                    // receiver
+            mk.cylRot(0.0, 0.008, -0.2, 0.012, 0.16, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.boxRot(0.0, -0.055, 0.03, 0.014, 0.045, 0.028, 0.0, 0.25, 0.0);
+            mk.box(0.0, -0.005, 0.085, 0.02, 0.026, 0.05);                // stock
+        } else if w == config.W_SCATTER {
+            mk.box(0.0, 0.0, -0.08, 0.03, 0.04, 0.12);                    // fat receiver
+            mk.cylRot(-0.013, 0.012, -0.2, 0.013, 0.17, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.cylRot(0.013, 0.012, -0.2, 0.013, 0.17, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.box(0.0, -0.03, -0.24, 0.018, 0.014, 0.05);                // pump
+            mk.boxRot(0.0, -0.06, 0.045, 0.015, 0.045, 0.03, 0.0, 0.3, 0.0);
+        } else if w == config.W_CYCLER {
+            mk.box(0.0, 0.0, -0.07, 0.022, 0.03, 0.09);
+            mk.cylRot(0.0, 0.006, -0.16, 0.008, 0.24, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.box(-0.032, -0.01, -0.06, 0.01, 0.035, 0.03);              // side mag
+            mk.boxRot(0.0, -0.05, 0.03, 0.013, 0.04, 0.026, 0.0, 0.25, 0.0);
+        } else if w == config.W_PULSE {
+            mk.box(0.0, 0.0, -0.1, 0.024, 0.034, 0.12);
+            mk.cylRot(0.0, 0.01, -0.24, 0.011, 0.12, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.box(0.0, 0.05, -0.08, 0.008, 0.014, 0.05);                 // rail sight
+            mk.box(0.0, -0.005, 0.09, 0.02, 0.028, 0.055);                // stock
+            mk.boxRot(0.0, -0.055, 0.02, 0.014, 0.042, 0.027, 0.0, 0.25, 0.0);
+        } else if w == config.W_RAIL {
+            mk.box(0.0, 0.0, -0.06, 0.026, 0.036, 0.1);
+            mk.cylRot(0.0, 0.012, -0.34, 0.012, 0.22, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.cylRot(0.0, 0.052, -0.1, 0.014, 0.07, 8, 2, 0.0, -1.5707963, 0.0);  // scope
+            mk.boxRot(0.0, -0.06, 0.03, 0.015, 0.048, 0.03, 0.0, 0.25, 0.0);
+            mk.box(0.0, -0.005, 0.09, 0.02, 0.03, 0.05);
+        } else if w == config.W_ARC {
+            mk.cylRot(0.0, 0.0, -0.22, 0.045, 0.26, 10, 2, 0.0, -1.5707963, 0.0);  // tube
+            mk.cylRot(0.0, -0.02, 0.02, 0.05, 0.07, 10, 2, 0.0, -1.5707963, 0.0);  // drum
+            mk.boxRot(0.0, -0.075, 0.045, 0.015, 0.045, 0.03, 0.0, 0.3, 0.0);
+        } else if w == config.W_RIVET {
+            mk.box(0.0, 0.0, -0.1, 0.034, 0.045, 0.13);                   // industrial block
+            mk.cylRot(0.0, 0.0, -0.27, 0.022, 0.06, 8, 2, 0.0, -1.5707963, 0.0);   // wide muzzle
+            mk.cylRot(0.03, -0.03, 0.05, 0.008, 0.1, 6, 2, 0.0, -1.2, 0.0);        // hose
+            mk.boxRot(0.0, -0.065, 0.04, 0.016, 0.05, 0.03, 0.0, 0.3, 0.0);
+        } else if w == config.W_SHARD {
+            mk.boxRot(0.0, 0.0, -0.08, 0.02, 0.035, 0.1, 0.0, 0.0, 0.785);        // angular prism
+            mk.boxRot(0.0, 0.01, -0.22, 0.012, 0.02, 0.09, 0.0, 0.0, 0.785);      // crystal barrel
+            mk.boxRot(0.0, -0.05, 0.03, 0.013, 0.04, 0.026, 0.0, 0.25, 0.0);
+        } else if w == config.W_EMP {
+            mk.cylRot(0.0, 0.0, -0.06, 0.03, 0.05, 8, 2, 0.0, -1.5707963, 0.0);    // coil stack
+            mk.cylRot(0.0, 0.0, -0.13, 0.036, 0.03, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.cylRot(0.0, 0.0, -0.2, 0.05, 0.025, 10, 2, 0.0, -1.5707963, 0.0);   // dish muzzle
+            mk.boxRot(0.0, -0.055, 0.03, 0.014, 0.042, 0.027, 0.0, 0.25, 0.0);
+        } else {
+            // LANCE: sleek body + heat fins.
+            mk.box(0.0, 0.0, -0.12, 0.02, 0.028, 0.14);
+            mk.cylRot(0.0, 0.005, -0.3, 0.009, 0.1, 8, 2, 0.0, -1.5707963, 0.0);
+            mk.box(-0.028, 0.01, -0.1, 0.006, 0.02, 0.07);                // fins
+            mk.box(0.028, 0.01, -0.1, 0.006, 0.02, 0.07);
+            mk.boxRot(0.0, -0.05, 0.04, 0.013, 0.04, 0.026, 0.0, 0.25, 0.0);
+        }
+    }
+
+    hide func bakeAccent(w: Integer) {
+        if w == config.W_RAIL {
+            // Coil rings along the barrel.
+            mk.cylRot(0.0, 0.012, -0.18, 0.017, 0.014, 8, 0, 0.0, -1.5707963, 0.0);
+            mk.cylRot(0.0, 0.012, -0.26, 0.017, 0.014, 8, 0, 0.0, -1.5707963, 0.0);
+            mk.cylRot(0.0, 0.012, -0.34, 0.017, 0.014, 8, 0, 0.0, -1.5707963, 0.0);
+        } else if w == config.W_EMP {
+            mk.cylRot(0.0, 0.0, -0.205, 0.052, 0.012, 10, 0, 0.0, -1.5707963, 0.0);
+        } else if w == config.W_LANCE {
+            // Focus rings; these read as the heat channel.
+            mk.cylRot(0.0, 0.005, -0.22, 0.013, 0.012, 8, 0, 0.0, -1.5707963, 0.0);
+            mk.cylRot(0.0, 0.005, -0.27, 0.012, 0.012, 8, 0, 0.0, -1.5707963, 0.0);
+            mk.box(0.0, 0.012, -0.05, 0.004, 0.008, 0.06);
+        } else if w == config.W_ARC {
+            mk.cylRot(0.0, 0.0, -0.355, 0.03, 0.012, 10, 0, 0.0, -1.5707963, 0.0);
+        } else {
+            // Sight dot + muzzle ring shared shape.
+            mk.box(0.0, 0.046, -0.05, 0.005, 0.009, 0.016);
+            mk.cylRot(0.0, 0.008, -0.35, 0.015, 0.012, 8, 0, 0.0, -1.5707963, 0.0);
+        }
+    }
+}

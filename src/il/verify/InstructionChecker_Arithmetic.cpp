@@ -75,6 +75,7 @@ std::optional<Type> typeFromClass(TypeClass typeClass) {
 ///          mismatched type.
 /// @param ctx Verification context containing operands.
 /// @param kind Expected operand type kind.
+/// @return Success when every inferred operand kind matches; otherwise an error.
 Expected<void> expectAllOperandType(const VerifyCtx &ctx, Type::Kind kind) {
     for (const auto &op : ctx.instr.operands) {
         if (ctx.types.valueType(op).kind != kind)
@@ -86,6 +87,10 @@ Expected<void> expectAllOperandType(const VerifyCtx &ctx, Type::Kind kind) {
 /// @brief Verify a binary arithmetic instruction.
 /// @details Checks operand count, ensures both operands match @p operandKind,
 ///          and records the provided @p resultType on success.
+/// @param ctx Verification context containing the binary instruction.
+/// @param operandKind Required kind for both operands.
+/// @param resultType Type recorded for the result temporary.
+/// @return Success when count, result presence, and operand types are valid.
 Expected<void> checkBinary(const VerifyCtx &ctx, Type::Kind operandKind, Type resultType) {
     if (ctx.instr.operands.size() != 2)
         return fail(ctx, "invalid operand count");
@@ -101,8 +106,12 @@ Expected<void> checkBinary(const VerifyCtx &ctx, Type::Kind operandKind, Type re
 }
 
 /// @brief Verify a unary arithmetic instruction.
-/// @details Requires exactly one operand of @p operandKind and records the
-///          result type when validation passes.
+/// @details Relies on table-driven arity validation, rejects a missing or
+///          mistyped first operand, and records the result type on success.
+/// @param ctx Verification context containing the unary instruction.
+/// @param operandKind Required kind for the operand.
+/// @param resultType Type recorded for the result temporary.
+/// @return Success when the required operand is present and well typed.
 Expected<void> checkUnary(const VerifyCtx &ctx, Type::Kind operandKind, Type resultType) {
     if (ctx.instr.operands.empty())
         return fail(ctx, "invalid operand count");
@@ -118,6 +127,9 @@ Expected<void> checkUnary(const VerifyCtx &ctx, Type::Kind operandKind, Type res
 /// @details Ensures operand counts and types are consistent (either all i16,
 ///          all i32, or all i64), validates constants for range, and records the
 ///          resulting integer type when the optional result annotation is present.
+/// @param ctx Verification context containing the bounds check.
+/// @return Success when all three operands share a supported width and any
+///         explicit annotation agrees; otherwise an error.
 Expected<void> checkIdxChk(const VerifyCtx &ctx) {
     if (ctx.instr.operands.size() != 3)
         return fail(ctx, "invalid operand count");
@@ -126,6 +138,12 @@ Expected<void> checkIdxChk(const VerifyCtx &ctx) {
     if (detail::isSupportedIntegerWidth(ctx.instr.type.kind))
         expectedKind = ctx.instr.type.kind;
 
+    /// @brief Resolve one bounds-check operand to a supported integer kind.
+    /// @details Temporaries use inferred types; constants use the current
+    ///          expected width or the narrowest representable supported width.
+    /// @param value Operand to classify.
+    /// @return Resolved kind, or a diagnostic for unknown, unsupported, or
+    ///         out-of-range operands.
     const auto classifyOperand = [&](const Value &value) -> Expected<Type::Kind> {
         if (value.kind == Value::Kind::Temp) {
             const Type::Kind kind = ctx.types.valueType(value).kind;
@@ -179,13 +197,17 @@ Expected<void> checkIdxChk(const VerifyCtx &ctx) {
 /// @details IL shift counts are masked modulo 64, so every constant amount is
 ///          valid. Structural operand and result checks happen in the generated
 ///          verifier table.
+/// @param ctx Already structurally validated shift context.
+/// @return Success.
 Expected<void> checkShift(const VerifyCtx &ctx) {
     (void)ctx;
     return {};
 }
 
-/// @brief Fallback verification path that simply records the instruction type.
-/// @details Used when no specialised checks are required.
+/// @brief Fallback verification path for instructions with no specialized checks.
+/// @details Type recording and structural checks are owned by the surrounding
+///          table-driven dispatch.
+/// @return Success.
 Expected<void> checkDefault(const VerifyCtx &) {
     return {};
 }

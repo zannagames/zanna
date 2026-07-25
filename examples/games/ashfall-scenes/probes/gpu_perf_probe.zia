@@ -1,0 +1,350 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall/probes/gpu_perf_probe.zia
+// Purpose: Measure Ashfall's native frame performance across the campaign and
+//          during a sustained combat workload.
+// Key invariants:
+//   - Campaign mode exercises all nine levels on the real windowed renderer.
+//   - Sustained mode keeps combat population and workload stable so frame-time
+//     and managed-object growth expose progressive runtime regressions.
+// Ownership/Lifetime:
+//   - The probe owns one Game and Canvas3D for the process lifetime.
+//   - Runtime objects created by gameplay remain governed by Zia ownership.
+// Links: examples/games/ashfall/game.zia, docs/internals/testing.md
+//
+//===----------------------------------------------------------------------===//
+module gpu_perf_probe;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.System.Environment as Env;
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Time.Clock as Clock;
+bind Zanna.Runtime.GC as GC;
+bind Zanna.Math;
+bind "../config" as config;
+bind "../game" as game;
+
+var measuredFrames: Integer = 0;
+var measuredUs: Integer = 0;
+var worstFrameUs: Integer = 0;
+var worstFrameLevel: Integer = 0;
+var worstAverageMs: Float = 0.0;
+var worstAverageLevel: Integer = 0;
+var peakUploadBytes: Integer = 0;
+var presentationPaced: Boolean = false;
+var sustainedFailed: Boolean = false;
+
+func runSustainedCombat(g: game.Game, canvas: G3D.Canvas3D) {
+    var runSim = hasArg("--render-only") == false;
+    var runRender = hasArg("--sim-only") == false;
+    g.devSetGod(true);
+    g.devSpawnPlayer(0.0, 0.2, 0.0);
+    g.devGiveWeapon(config.W_CYCLER);
+    g.devSwitchWeapon(config.W_CYCLER);
+    // Keep the enemy population fixed while hitscan impacts still exercise
+    // damage, hit reactions, audio, physics queries, and effects every tick.
+    g.getEnemies().setHealthScale(1000000.0);
+
+    // Hold the workload itself constant: twelve enemies, continuous movement,
+    // full-rate hitscan fire, physics, FX, HUD, and a real Metal/D3D11/OpenGL
+    // present. Any interval trend is therefore accumulated runtime state, not
+    // an authored wave becoming more expensive than the preceding wave.
+    var spawned = 0;
+    while spawned < config.AI_ACTIVE_CAP {
+        var angle = (spawned + 0.0) * 6.283185307179586 / (config.AI_ACTIVE_CAP + 0.0);
+        var archetype = config.EN_HUSK;
+        if spawned % 3 == 1 { archetype = config.EN_RANGER; }
+        if spawned % 3 == 2 { archetype = config.EN_DRONE; }
+        if g.devSpawnEnemy(archetype, Cos(angle) * 18.0, Sin(angle) * 18.0) < 0 {
+            break;
+        }
+        spawned = spawned + 1;
+    }
+    if hasArg("--no-nav") { g.getEnemies().disableNavigation(); }
+
+    var warmup = 240;
+    if hasArg("--quick") { warmup = 60; }
+    var i = 0;
+    while i < warmup {
+        if runSim {
+            g.scriptMove(0.35, 1.0);
+            g.scriptAimAt(g.getArena().dummyPosX(0), 1.2, g.getArena().dummyPosZ(0));
+            g.scriptFire(true);
+            g.tickSim(config.FIXED_DT);
+            g.stepPhysics(config.FIXED_DT);
+        }
+        if runRender { g.devRenderFrame(); }
+        i = i + 1;
+    }
+
+    var intervalFrames = 300;
+    var frames = 3600;
+    if hasArg("--quick") { intervalFrames = 120; frames = 600; }
+    if hasArg("--long") { frames = 7200; }
+    if hasArg("--marathon") { frames = 36000; }
+    var intervalStart = Clock.NowMicros();
+    var intervalSimUs = 0;
+    var intervalGameUs = 0;
+    var intervalPhysicsUs = 0;
+    var intervalRenderUs = 0;
+    var intervalMaxGameUs = 0;
+    var intervalMaxPhysicsUs = 0;
+    var intervalMaxRenderUs = 0;
+    var firstAvgMs = 0.0;
+    var lastAvgMs = 0.0;
+    var worstIntervalMs = 0.0;
+    var startTracked = GC.TrackedCount();
+    var startPasses = GC.PassCount();
+    var startRebuilds = g.getPhys().QueryBroadphaseRebuildCount;
+    var startRetargets = g.getEnemies().navigationRetargetCount();
+    i = 0;
+    while i < frames {
+        var simStart = Clock.NowMicros();
+        if runSim {
+            var mz = 1.0;
+            if (i / 120) % 2 == 1 { mz = -1.0; }
+            g.scriptMove(0.35, mz);
+            g.scriptAimAt(g.getArena().dummyPosX(0), 1.2, g.getArena().dummyPosZ(0));
+            g.scriptFire(true);
+            if i % 300 == 0 { g.devGiveWeapon(config.W_CYCLER); }
+            var gameStart = Clock.NowMicros();
+            g.tickSim(config.FIXED_DT);
+            var gameUs = Clock.NowMicros() - gameStart;
+            intervalGameUs = intervalGameUs + gameUs;
+            if gameUs > intervalMaxGameUs { intervalMaxGameUs = gameUs; }
+            var physicsStart = Clock.NowMicros();
+            g.stepPhysics(config.FIXED_DT);
+            var physicsUs = Clock.NowMicros() - physicsStart;
+            intervalPhysicsUs = intervalPhysicsUs + physicsUs;
+            if physicsUs > intervalMaxPhysicsUs { intervalMaxPhysicsUs = physicsUs; }
+        }
+        intervalSimUs = intervalSimUs + Clock.NowMicros() - simStart;
+        var renderStart = Clock.NowMicros();
+        if runRender { g.devRenderFrame(); }
+        var renderUs = Clock.NowMicros() - renderStart;
+        intervalRenderUs = intervalRenderUs + renderUs;
+        if renderUs > intervalMaxRenderUs { intervalMaxRenderUs = renderUs; }
+        i = i + 1;
+
+        if i % intervalFrames == 0 {
+            var elapsedUs = Clock.NowMicros() - intervalStart;
+            var avgMs = (elapsedUs + 0.0) / (intervalFrames * 1000.0);
+            if firstAvgMs <= 0.0 { firstAvgMs = avgMs; }
+            lastAvgMs = avgMs;
+            if avgMs > worstIntervalMs { worstIntervalMs = avgMs; }
+            Terminal.Say("SUSTAINED_INTERVAL: frame=" + Fmt.Int(i) +
+                         " avg_ms=" + Fmt.NumFixed(avgMs, 3) +
+                         " sim_ms=" + Fmt.NumFixed((intervalSimUs + 0.0) /
+                                                    (intervalFrames * 1000.0), 3) +
+                         " game_ms=" + Fmt.NumFixed((intervalGameUs + 0.0) /
+                                                      (intervalFrames * 1000.0), 3) +
+                         " physics_ms=" + Fmt.NumFixed((intervalPhysicsUs + 0.0) /
+                                                         (intervalFrames * 1000.0), 3) +
+                         " render_ms=" + Fmt.NumFixed((intervalRenderUs + 0.0) /
+                                                       (intervalFrames * 1000.0), 3) +
+                         " max_game_ms=" + Fmt.NumFixed((intervalMaxGameUs + 0.0) / 1000.0, 3) +
+                         " max_physics_ms=" + Fmt.NumFixed((intervalMaxPhysicsUs + 0.0) / 1000.0, 3) +
+                         " max_render_ms=" + Fmt.NumFixed((intervalMaxRenderUs + 0.0) / 1000.0, 3) +
+                         " tracked=" + Fmt.Int(GC.TrackedCount()) +
+                         " gc_passes=" + Fmt.Int(GC.PassCount()) +
+                         " rebuilds=" + Fmt.Int(g.getPhys().QueryBroadphaseRebuildCount -
+                                                  startRebuilds) +
+                         " retargets=" + Fmt.Int(g.getEnemies().navigationRetargetCount() -
+                                                   startRetargets) +
+                         " enemies=" + Fmt.Int(g.getEnemies().aliveCount()) +
+                         " projectiles=" + Fmt.Int(g.getProjectiles().activeProjectiles()) +
+                         " assets=" + Fmt.Int(g.devAssetsLoaded()) +
+                         " draws=" + Fmt.Int(canvas.DrawsSubmitted));
+            intervalStart = Clock.NowMicros();
+            intervalSimUs = 0;
+            intervalGameUs = 0;
+            intervalPhysicsUs = 0;
+            intervalRenderUs = 0;
+            intervalMaxGameUs = 0;
+            intervalMaxPhysicsUs = 0;
+            intervalMaxRenderUs = 0;
+        }
+    }
+    g.scriptFire(false);
+
+    var trackedDelta = GC.TrackedCount() - startTracked;
+    var passDelta = GC.PassCount() - startPasses;
+    var rebuildDelta = g.getPhys().QueryBroadphaseRebuildCount - startRebuilds;
+    var retargetDelta = g.getEnemies().navigationRetargetCount() - startRetargets;
+
+    Terminal.Say("SUSTAINED: backend=" + canvas.Backend +
+                 " output=" + Fmt.Int(canvas.ActiveOutputWidth) + "x" +
+                               Fmt.Int(canvas.ActiveOutputHeight) +
+                 " frames=" + Fmt.Int(frames) +
+                 " sim=" + toString(runSim) +
+                 " render=" + toString(runRender) +
+                 " spawned=" + Fmt.Int(spawned) +
+                 " first_avg_ms=" + Fmt.NumFixed(firstAvgMs, 3) +
+                 " last_avg_ms=" + Fmt.NumFixed(lastAvgMs, 3) +
+                 " worst_interval_ms=" + Fmt.NumFixed(worstIntervalMs, 3) +
+                 " tracked_delta=" + Fmt.Int(trackedDelta) +
+                 " gc_pass_delta=" + Fmt.Int(passDelta) +
+                 " rebuilds=" + Fmt.Int(rebuildDelta) +
+                 " retargets=" + Fmt.Int(retargetDelta));
+
+    // Hardware-independent regression gates. Wall-clock values are reported,
+    // not hard-coded, but unbounded work/object growth must fail everywhere.
+    if spawned < config.AI_ACTIVE_CAP {
+        Terminal.Say("FAIL: sustained workload did not reach the active enemy cap");
+        sustainedFailed = true;
+    }
+    if trackedDelta > 32 {
+        Terminal.Say("FAIL: sustained workload accumulated " + Fmt.Int(trackedDelta) +
+                     " managed objects after warmup");
+        sustainedFailed = true;
+    }
+    if runSim && hasArg("--no-nav") == false && retargetDelta > frames * 2 {
+        Terminal.Say("FAIL: navigation rebuilt " + Fmt.Int(retargetDelta) +
+                     " paths in " + Fmt.Int(frames) + " ticks");
+        sustainedFailed = true;
+    }
+    if firstAvgMs > 0.0 && lastAvgMs - firstAvgMs > 2.0 &&
+       lastAvgMs > firstAvgMs * 2.5 {
+        Terminal.Say("FAIL: fixed sustained workload developed a frame-time ramp");
+        sustainedFailed = true;
+    }
+}
+
+func hasArg(wanted: String) -> Boolean {
+    var count = Env.GetArgumentCount();
+    var i = 0;
+    while i < count {
+        if Env.GetArgument(i) == wanted { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func step(g: game.Game) {
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+    g.devRenderFrame();
+}
+
+func benchmarkLevel(g: game.Game, canvas: G3D.Canvas3D, level: Integer) {
+    var loadStart = Clock.NowMicros();
+    g.loadCampaignLevel(level);
+    var loadUs = Clock.NowMicros() - loadStart;
+
+    // Drain first-use uploads and pipeline setup outside the steady-state
+    // sample while still reporting the level-load wall time separately.
+    var warmup = 30;
+    var i = 0;
+    while i < warmup {
+        step(g);
+        i = i + 1;
+    }
+
+    var frames = 90;
+    var totalGpuUs = 0;
+    var maxGpuUs = 0;
+    var maxFrameUs = 0;
+    var totalUploads = 0;
+    var maxUploads = 0;
+    var runStart = Clock.NowMicros();
+    i = 0;
+    while i < frames {
+        var frameStart = Clock.NowMicros();
+        step(g);
+        var frameUs = Clock.NowMicros() - frameStart;
+        var gpuUs = canvas.FrameGpuTimeUs;
+        var uploads = canvas.TextureUploadBytes;
+        if frameUs > maxFrameUs { maxFrameUs = frameUs; }
+        if gpuUs > maxGpuUs { maxGpuUs = gpuUs; }
+        if uploads > maxUploads { maxUploads = uploads; }
+        totalGpuUs = totalGpuUs + gpuUs;
+        totalUploads = totalUploads + uploads;
+        i = i + 1;
+    }
+    var elapsedUs = Clock.NowMicros() - runStart;
+    var avgMs = (elapsedUs + 0.0) / (frames * 1000.0);
+    var fps = (frames * 1000000.0) / elapsedUs;
+    var avgGpuMs = (totalGpuUs + 0.0) / (frames * 1000.0);
+
+    measuredFrames = measuredFrames + frames;
+    measuredUs = measuredUs + elapsedUs;
+    if maxFrameUs > worstFrameUs {
+        worstFrameUs = maxFrameUs;
+        worstFrameLevel = level;
+    }
+    if avgMs > worstAverageMs {
+        worstAverageMs = avgMs;
+        worstAverageLevel = level;
+    }
+    if maxUploads > peakUploadBytes { peakUploadBytes = maxUploads; }
+
+    Terminal.Say("PERF_LEVEL: level=" + Fmt.Int(level) +
+                 " load_ms=" + Fmt.NumFixed((loadUs + 0.0) / 1000.0, 3) +
+                 " frames=" + Fmt.Int(frames) +
+                 " avg_ms=" + Fmt.NumFixed(avgMs, 3) +
+                 " fps=" + Fmt.NumFixed(fps, 3) +
+                 " max_ms=" + Fmt.NumFixed((maxFrameUs + 0.0) / 1000.0, 3) +
+                 " avg_gpu_ms=" + Fmt.NumFixed(avgGpuMs, 3) +
+                 " max_gpu_ms=" + Fmt.NumFixed((maxGpuUs + 0.0) / 1000.0, 3) +
+                 " draws=" + Fmt.Int(canvas.DrawsSubmitted) +
+                 " culled=" + Fmt.Int(canvas.FrustumCulledDrawCount + canvas.CpuOccludedDrawCount) +
+                 " avg_upload_bytes=" + Fmt.NumFixed((totalUploads + 0.0) / frames, 1) +
+                 " max_upload_bytes=" + Fmt.Int(maxUploads));
+}
+
+func start() {
+    var g = new game.Game();
+    g.initCore(0xA55FA11);
+    g.setScripted(true);
+    var fullscreen = hasArg("--fullscreen");
+    g.setFullscreen(fullscreen);
+    g.getSave().setupTransient();
+    if hasArg("--sustained") { g.setLevel(config.LV_ARENA); }
+    else { g.setLevel(config.LV_L1); }
+    g.boot(false, fullscreen);
+
+    var canvas = g.getCanvas();
+    presentationPaced = hasArg("--paced");
+    if presentationPaced == false { G3D.Canvas3D.SetVSync(canvas, false); }
+
+    if hasArg("--sustained") {
+        runSustainedCombat(g, canvas);
+        g.getWorld().Destroy();
+        if sustainedFailed {
+            Terminal.Say("RESULT: failed");
+            return;
+        }
+        Terminal.Say("RESULT: ok");
+        Terminal.Say("PASS");
+        return;
+    }
+
+    var level = config.LV_L1;
+    while level <= config.LV_L9 {
+        benchmarkLevel(g, canvas, level);
+        level = level + 1;
+    }
+
+    Terminal.Say("PERF: backend=" + canvas.Backend +
+                 " paced=" + toString(presentationPaced) +
+                 " levels=9 frames=" + Fmt.Int(measuredFrames) +
+                 " elapsed_ms=" + Fmt.NumFixed((measuredUs + 0.0) / 1000.0, 3) +
+                 " avg_ms=" + Fmt.NumFixed((measuredUs + 0.0) / (measuredFrames * 1000.0), 3) +
+                 " fps=" + Fmt.NumFixed((measuredFrames * 1000000.0) / measuredUs, 3) +
+                 " worst_avg_ms=" + Fmt.NumFixed(worstAverageMs, 3) +
+                 " worst_avg_level=" + Fmt.Int(worstAverageLevel) +
+                 " worst_frame_ms=" + Fmt.NumFixed((worstFrameUs + 0.0) / 1000.0, 3) +
+                 " worst_frame_level=" + Fmt.Int(worstFrameLevel) +
+                 " peak_upload_bytes=" + Fmt.Int(peakUploadBytes) +
+                 " render_scale=" + Fmt.NumFixed(canvas.RenderScale, 3));
+
+    g.getWorld().Destroy();
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

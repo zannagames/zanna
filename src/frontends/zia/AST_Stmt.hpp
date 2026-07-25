@@ -4,8 +4,21 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/AST_Stmt.hpp
+// Purpose: Define executable Zia statement nodes and block/control-flow
+//          containers used inside function and method bodies.
+// Key invariants:
+//   * Stmt::kind matches the concrete statement node.
+//   * Block and branch nodes own their nested statements and expressions.
+//   * Source ranges retain both starting and, where available, ending locations.
+// Ownership: Statement nodes own syntactic children through unique_ptr aliases
+//            and vectors of those aliases.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file AST_Stmt.hpp
+/// @file
 /// @brief Statement nodes for the Zia AST.
 ///
 /// @details Defines all statement AST nodes produced by the Zia parser.
@@ -243,6 +256,11 @@ struct VarStmt : Stmt {
           initializer(std::move(init)), isFinal(final) {}
 
     /// @brief Construct a tuple destructuring declaration.
+    /// @param l Source location.
+    /// @param names Declared tuple element names.
+    /// @param types Optional type annotations in tuple element order.
+    /// @param init Tuple-valued initializer.
+    /// @param final True when the bindings are immutable.
     VarStmt(SourceLoc l,
             std::vector<std::string> names,
             std::vector<TypePtr> types,
@@ -257,6 +275,13 @@ struct VarStmt : Stmt {
     }
 
     /// @brief Construct a two-name tuple destructuring declaration.
+    /// @param l Source location.
+    /// @param first First declared name.
+    /// @param firstType Optional annotation for the first element.
+    /// @param second Second declared name.
+    /// @param secondTypeAnnotation Optional annotation for the second element.
+    /// @param init Tuple-valued initializer.
+    /// @param final True when both bindings are immutable.
     VarStmt(SourceLoc l,
             std::string first,
             TypePtr firstType,

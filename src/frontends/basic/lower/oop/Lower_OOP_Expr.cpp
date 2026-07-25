@@ -20,4 +20,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Preserves the historical OOP expression translation-unit boundary.
+/// @details Implementations are intentionally split across allocation, member
+///          access, method call, and shared helper files. This source owns no
+///          symbols and remains in build manifests to avoid source-list churn.
+
 // Intentionally empty - all implementations have been moved to focused files.

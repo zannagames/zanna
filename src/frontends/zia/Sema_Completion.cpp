@@ -42,6 +42,8 @@ namespace il::frontends::zia {
 namespace {
 
 /// @brief Extract the parameter names from a parameter list (for signature/tooling display).
+/// @param params Source parameters in declaration order.
+/// @return Parameter-name vector preserving declaration order.
 std::vector<std::string> paramNamesFor(const std::vector<Param> &params) {
     std::vector<std::string> names;
     names.reserve(params.size());
@@ -51,6 +53,8 @@ std::vector<std::string> paramNamesFor(const std::vector<Param> &params) {
 }
 
 /// @brief Order two source locations by (file, line, column).
+/// @param a Left location.
+/// @param b Right location.
 /// @return -1 if @p a precedes @p b, 1 if it follows, 0 if equal.
 int compareToolLoc(const SourceLoc &a, const SourceLoc &b) {
     if (a.file_id != b.file_id)
@@ -62,10 +66,18 @@ int compareToolLoc(const SourceLoc &a, const SourceLoc &b) {
     return 0;
 }
 
+/// @brief Produce a user-facing spelling for a semantic type.
+/// @param type Type to render.
+/// @return Display spelling, or `Unknown` for a null type.
 std::string displayType(const TypeRef &type) {
     return type ? type->toDisplayString() : "Unknown";
 }
 
+/// @brief Format a runtime callable as a Zia-style tooling signature.
+/// @param name Source-visible callable name.
+/// @param type Semantic function type.
+/// @param paramNames Registry parameter names, which may be incomplete.
+/// @return `name(param: Type) -> Result`, or @p name alone for a non-function type.
 std::string runtimeCallableSignature(const std::string &name,
                                      const TypeRef &type,
                                      const std::vector<std::string> &paramNames) {
@@ -88,6 +100,10 @@ std::string runtimeCallableSignature(const std::string &name,
     return out.str();
 }
 
+/// @brief Adapt extern-function parameter names to a runtime member's exposed arity.
+/// @param externSym Backing extern symbol, if available.
+/// @param memberArity Number of parameters visible on the member.
+/// @return Matching names, names with a hidden receiver removed, or an empty vector.
 std::vector<std::string> memberParamNamesFromExtern(const Symbol *externSym, size_t memberArity) {
     if (!externSym || externSym->paramNames.empty())
         return {};
@@ -98,6 +114,10 @@ std::vector<std::string> memberParamNamesFromExtern(const Symbol *externSym, siz
     return {};
 }
 
+/// @brief Look up curated prose for prominent runtime members.
+/// @param className Fully qualified runtime class.
+/// @param memberName Source-visible member name.
+/// @return Static authored text, or nullptr when only generated documentation is available.
 const char *authoredRuntimeMemberDocumentation(const std::string &className,
                                                const std::string &memberName) {
     struct Doc {
@@ -148,6 +168,13 @@ const char *authoredRuntimeMemberDocumentation(const std::string &className,
     return nullptr;
 }
 
+/// @brief Build hover documentation for a runtime method.
+/// @param className Fully qualified runtime class.
+/// @param methodName Source-visible method name.
+/// @param target Lowered runtime target, if one is registered.
+/// @param type Semantic callable type.
+/// @param paramNames Exposed parameter names.
+/// @return Authored text when available followed by generated signature and target details.
 std::string runtimeMethodDocumentation(const std::string &className,
                                        const std::string &methodName,
                                        const char *target,
@@ -163,6 +190,11 @@ std::string runtimeMethodDocumentation(const std::string &className,
     return out.str();
 }
 
+/// @brief Build hover documentation for a runtime property.
+/// @param className Fully qualified runtime class.
+/// @param prop Runtime property metadata.
+/// @param type Semantic property type.
+/// @return Authored text when available followed by mutability, type, and accessor details.
 std::string runtimePropertyDocumentation(const std::string &className,
                                          const il::runtime::RuntimeProperty &prop,
                                          const TypeRef &type) {
@@ -272,6 +304,9 @@ std::vector<Symbol> Sema::getVisibleSymbolsAtPosition(uint32_t fileId,
     return result;
 }
 
+/// @brief Reify every source overload of a function as a tooling symbol.
+/// @param name Semantic function-family name.
+/// @return Function symbols carrying declaration locations, callable types, and parameter names.
 std::vector<Symbol> Sema::getFunctionOverloadSymbols(const std::string &name) const {
     std::vector<Symbol> result;
     for (auto *decl : getFunctionOverloads(name)) {
@@ -476,6 +511,7 @@ std::vector<Symbol> Sema::getRuntimeMembers(const std::string &className) const 
 // ---------------------------------------------------------------------------
 
 /// @brief Return the names of all declared classes, structs, and interfaces.
+/// @return Semantic type names gathered from the nominal declaration registries.
 std::vector<std::string> Sema::getTypeNames() const {
     std::vector<std::string> names;
     names.reserve(classDecls_.size() + structDecls_.size() + interfaceDecls_.size());
@@ -532,6 +568,7 @@ std::vector<Symbol> Sema::getModuleExports(const std::string &moduleName) const 
 // ---------------------------------------------------------------------------
 
 /// @brief Return the file-module root names usable as a `Module.` completion prefix.
+/// @return Names whose exported symbol maps were built during bind analysis.
 std::vector<std::string> Sema::getBoundFileModuleNames() const {
     std::vector<std::string> names;
     names.reserve(moduleExports_.size());

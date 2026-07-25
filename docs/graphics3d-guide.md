@@ -1412,16 +1412,30 @@ receives an independent camera. `SceneGraph.Save` keeps the established VSCN
 v2/v3/v5 selection for scenes without gameplay metadata. A scene with node
 metadata writes VSCN v6, whose tagged values preserve
 null/Boolean/integer/float/string kinds and encode integers as decimal strings
-for exact `i64` round trips. Embedded meshes, materials, exact source texture
+for exact `i64` round trips. Root-node metadata serializes as a
+document-level `"metadata"` object in the same tagged format, carrying
+scene-scoped conventions (`bake.*`, `env.*`; ADR 0188) through every load
+path including `SceneAsset` instantiation. Embedded meshes, materials, exact source texture
 containers or canonical RGBA fallbacks, cubemaps, cameras, node-attached
 native lights, animation, and node hierarchy retain round-trip precision.
 Each node retains its attached light reference, and public `SceneNode.Light`
 replacement uses the same component slot serialized by VSCN. `SceneGraph.Load`
-accepts VSCN v1-v6 and validates JSON, tagged metadata, bounds, base64 payloads,
+accepts VSCN v1-v7 and validates JSON, tagged metadata, bounds, base64 payloads,
 mesh indices, asset references, and child nodes before returning a scene;
-invalid partial assets fail the complete load instead of being skipped. See
-[ADR 0159](adr/0159-typed-scenenode-metadata-and-vscn-v6.md) for the format
-contract, [ADR 0161](adr/0161-stable-scenenode-sibling-reordering.md) for
+invalid partial assets fail the complete load instead of being skipped.
+VSCN v7 adds prefab reference nodes: a node carrying `"prefab": "<portable
+path>"` serializes its own identity only (name, local TRS, visibility, typed
+metadata) and the loader grafts deep copies of the referenced scene's root
+children beneath it, marking them transient instance content
+(`SceneNode.IsInstanceContent`). Cycles, nesting beyond depth 8, per-load
+fan-out beyond 4096 instantiations, and missing or invalid sources resolve to
+empty placeholders that retain their reference and round-trip
+byte-identically. `SceneNode.SetPrefabReference`/`ClearPrefabReference`
+author and unpack references (absolute paths are rejected at authoring time),
+and scenes without prefab nodes keep serializing at v6 or lower. See
+[ADR 0159](adr/0159-typed-scenenode-metadata-and-vscn-v6.md) for the metadata
+format contract,
+[ADR 0187](adr/0187-vscn-v7-prefab-reference-nodes.md) for prefab references, [ADR 0161](adr/0161-stable-scenenode-sibling-reordering.md) for
 sibling-order semantics, and
 [ADR 0162](adr/0162-exact-preserve-world-scenenode-reparenting.md) for exact
 reparent conversion and rejection. See

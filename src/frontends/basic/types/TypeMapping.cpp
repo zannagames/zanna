@@ -5,6 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/types/TypeMapping.cpp
+// Purpose: Translate scalar IL signature types into the BASIC AST type system.
+// Key invariants:
+//   * Narrow IL integers map to BASIC's canonical 64-bit integer type.
+//   * Opaque pointers are represented as integer handles at this boundary.
+//   * Void and unsupported IL kinds have no scalar BASIC result.
+// Ownership: The mapping is stateless and borrows its input only for the call.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
 /// @file
 /// @brief Implements IL-to-BASIC type mapping for procedure signatures.
 /// @details Converts IL core scalar types to the BASIC frontend's scalar type

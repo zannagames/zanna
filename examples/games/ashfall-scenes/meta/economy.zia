@@ -1,0 +1,85 @@
+// =============================================================================
+// meta/economy.zia — salvage economy + workbench weapon upgrades
+// =============================================================================
+//
+// Salvage is earned from machine drops (the game routes collected salvage here)
+// and spent through the Armory (also represented by the hub workbench) on
+// per-weapon upgrade tiers (0..3). Each tier raises damage and tightens handling
+// (recoil/spread) via multipliers the weapon controller reads. Standalone (no
+// engine deps) so it unit-tests.
+// =============================================================================
+module economy;
+
+bind "../config" as config;
+
+var MAX_TIER: Integer = 3;
+
+class Economy {
+    hide List[Integer] tier;      // per-weapon upgrade tier
+    hide Integer salvage;         // available salvage
+
+    expose func init() {
+        tier = [];
+        salvage = 0;
+    }
+
+    expose func setup() {
+        tier = [];
+        var i = 0;
+        while i < config.WEAPON_COUNT {
+            tier.Add(0);
+            i = i + 1;
+        }
+    }
+
+    expose func addSalvage(n: Integer) { if n > 0 { salvage = salvage + n; } }
+    expose func setSalvage(n: Integer) { if n >= 0 { salvage = n; } }
+    expose func available() -> Integer { return salvage; }
+    expose func tierOf(w: Integer) -> Integer { return tier[w]; }
+    expose func setTier(w: Integer, value: Integer) {
+        if w < 0 || w >= tier.Count { return; }
+        var v = value;
+        if v < 0 { v = 0; }
+        if v > MAX_TIER { v = MAX_TIER; }
+        tier[w] = v;
+    }
+
+    // Cost of the NEXT tier for a weapon (rises with tier); -1 if maxed.
+    expose func nextCost(w: Integer) -> Integer {
+        if tier[w] >= MAX_TIER { return -1; }
+        return 100 + tier[w] * 150;
+    }
+
+    expose func canBuy(w: Integer) -> Boolean {
+        var c = nextCost(w);
+        return c > 0 && salvage >= c;
+    }
+
+    // Purchase the next tier; returns true on success.
+    expose func buyUpgrade(w: Integer) -> Boolean {
+        if canBuy(w) == false { return false; }
+        salvage = salvage - nextCost(w);
+        tier[w] = tier[w] + 1;
+        return true;
+    }
+
+    // Multipliers the weapon controller applies (1.0 at tier 0).
+    expose func damageMult(w: Integer) -> Float {
+        return 1.0 + (tier[w] + 0.0) * 0.15;    // +15% per tier
+    }
+    expose func handlingMult(w: Integer) -> Float {
+        return 1.0 - (tier[w] + 0.0) * 0.12;    // -12% recoil/spread per tier
+    }
+
+    // Compact per-weapon tier string for profile.json.
+    expose func serialize() -> String {
+        var s = "";
+        var i = 0;
+        while i < config.WEAPON_COUNT {
+            if i > 0 { s = s + ","; }
+            s = s + toString(tier[i]);
+            i = i + 1;
+        }
+        return s;
+    }
+}

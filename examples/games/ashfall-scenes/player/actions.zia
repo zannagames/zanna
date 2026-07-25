@@ -1,0 +1,96 @@
+// =============================================================================
+// player/actions.zia — rebindable action layer over Input3D
+// =============================================================================
+//
+// Gameplay never reads raw keys. It asks `actions.held(input, A_FIRE)` and this
+// module resolves the current binding. That means (a) the rebind UI just writes
+// this table, and (b) headless probes push raw keys through the canvas and the
+// game reads them as actions with no special casing. Mouse-button actions store
+// a button index; keyboard actions store a keycode.
+// =============================================================================
+module actions;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Input.Key as Key;
+bind "../config" as config;
+
+var MOUSE_NONE: Integer = -1;
+
+class ActionMap {
+    hide List[Integer] keyOf;      // keycode per action (valid when mouseOf < 0)
+    hide List[Integer] mouseOf;    // mouse-button index per action, or MOUSE_NONE
+
+    expose func init() {
+        keyOf = [];
+        mouseOf = [];
+        var i = 0;
+        while i < config.A_COUNT {
+            keyOf.Add(0);
+            mouseOf.Add(MOUSE_NONE);
+            i = i + 1;
+        }
+    }
+
+    // Install default bindings. Keycodes come from runtime accessors, so this
+    // must run after the runtime is up (i.e. not at static-init time).
+    expose func setupDefaults() {
+        bindKey(config.A_FORWARD, Key.get_W());
+        bindKey(config.A_BACK, Key.get_S());
+        bindKey(config.A_LEFT, Key.get_A());
+        bindKey(config.A_RIGHT, Key.get_D());
+        bindKey(config.A_JUMP, Key.get_Space());
+        bindKey(config.A_CROUCH, Key.get_LeftControl());
+        bindKey(config.A_SPRINT, Key.get_LeftShift());
+        bindMouse(config.A_FIRE, 0);
+        bindMouse(config.A_ADS, 1);
+        bindKey(config.A_RELOAD, Key.get_R());
+        bindKey(config.A_INTERACT, Key.get_E());
+        bindKey(config.A_GRENADE, Key.get_G());
+        bindKey(config.A_CYCLE_GRENADE, Key.get_Q());
+        bindKey(config.A_MELEE, Key.get_V());
+        bindKey(config.A_FLASHLIGHT, Key.get_F());
+        bindKey(config.A_PAUSE, Key.get_Escape());
+        bindKey(config.A_DIAG, Key.get_F3());
+        bindKey(config.A_NEXT_WEAPON, Key.get_RightBracket());
+        bindKey(config.A_PREV_WEAPON, Key.get_LeftBracket());
+        bindKey(config.A_DEV_LIGHTS, Key.get_L());
+        bindKey(config.A_WEAPON_1, Key.get_Digit1());
+        bindKey(config.A_WEAPON_2, Key.get_Digit2());
+        bindKey(config.A_WEAPON_3, Key.get_Digit3());
+        bindKey(config.A_WEAPON_4, Key.get_Digit4());
+        bindKey(config.A_WEAPON_5, Key.get_Digit5());
+        bindKey(config.A_WEAPON_6, Key.get_Digit6());
+        bindKey(config.A_WEAPON_7, Key.get_Digit7());
+        bindKey(config.A_WEAPON_8, Key.get_Digit8());
+        bindKey(config.A_WEAPON_9, Key.get_Digit9());
+        bindKey(config.A_WEAPON_10, Key.get_Digit0());
+    }
+
+    expose func bindKey(action: Integer, keycode: Integer) {
+        keyOf[action] = keycode;
+        mouseOf[action] = MOUSE_NONE;
+    }
+    expose func bindMouse(action: Integer, button: Integer) {
+        mouseOf[action] = button;
+    }
+    expose func keyFor(action: Integer) -> Integer { return keyOf[action]; }
+    expose func isMouse(action: Integer) -> Boolean { return mouseOf[action] >= 0; }
+
+    // Held this frame.
+    expose func held(input: Game3D.Input3D, action: Integer) -> Boolean {
+        if mouseOf[action] >= 0 { return input.MouseButton(mouseOf[action]); }
+        return input.IsDown(keyOf[action]);
+    }
+
+    // Pressed this frame (edge).
+    expose func pressed(input: Game3D.Input3D, action: Integer) -> Boolean {
+        if mouseOf[action] >= 0 { return input.MousePressed(mouseOf[action]); }
+        return input.Pressed(keyOf[action]);
+    }
+
+    // Released this frame (edge).
+    expose func released(input: Game3D.Input3D, action: Integer) -> Boolean {
+        if mouseOf[action] >= 0 { return false; }
+        return input.Released(keyOf[action]);
+    }
+}

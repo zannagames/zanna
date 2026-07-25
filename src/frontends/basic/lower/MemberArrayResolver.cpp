@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/lower/MemberArrayResolver.cpp
+// File: src/frontends/basic/lower/MemberArrayResolver.cpp
 // Purpose: Implements Lowerer::resolveMemberArrayField() — a single entry point
 //          for the member array field resolution pattern that was previously
 //          duplicated across four lowerer source files.
@@ -18,6 +18,9 @@
 // Links: docs/bugs/basic_bugs.md (BUG-056, BUG-058, BUG-089, BUG-108)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements class-field array resolution for BASIC lowering.
 
 #include "frontends/basic/lower/MemberArrayResolver.hpp"
 #include "frontends/basic/Lowerer.hpp"
@@ -51,7 +54,8 @@ namespace il::frontends::basic {
 ///          that the array holds object references (BUG-089).
 ///
 /// @param name Variable name to resolve.
-/// @return MemberArrayInfo with resolution results.
+/// @return Resolution flags and element metadata. A default result denotes a
+///         non-field or unresolved name.
 MemberArrayInfo Lowerer::resolveMemberArrayField(std::string_view name) const {
     MemberArrayInfo info;
 

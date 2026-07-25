@@ -5,18 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/LoopContext.hpp
+// File: src/frontends/common/LoopContext.hpp
 // Purpose: Loop context management for break/continue support in frontends.
 //
 // This provides a unified abstraction for tracking loop contexts during
 // lowering, enabling break and continue statements to find their targets.
 //
-// Key Invariants:
-//   - Loop contexts are pushed when entering a loop and popped when exiting
-//   - The stack maintains proper nesting of loops
-//   - Break targets the exit block, continue targets the update/test block
-// Ownership/Lifetime: Owns a stack of block indices; no IR pointers are stored.
-// Links: src/frontends/common/BlockManager.hpp
+// Key invariants:
+//   * Loop contexts are pushed and popped in lexical nesting order.
+//   * Break targets the stored exit block.
+//   * Continue prefers an update block and otherwise uses the direct continue
+//     block.
+// Ownership: Owns a stack of optional block indices; no IR pointers are stored.
+// References: src/frontends/common/BlockManager.hpp
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares nested loop-target tracking for frontend lowering.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -60,6 +66,7 @@ class LoopContextStack {
     }
 
     /// @brief Pop the current loop context.
+    /// @throws std::logic_error If the stack is empty.
     void pop() {
         if (stack_.empty())
             throw std::logic_error("cannot pop an empty loop context stack");
@@ -69,6 +76,7 @@ class LoopContextStack {
     /// @brief Get the current (innermost) loop context.
     /// @return Reference to the current context.
     /// @pre !empty()
+    /// @throws std::logic_error If the stack is empty.
     [[nodiscard]] LoopContext &current() {
         requireCurrent();
         return stack_.back();
@@ -77,23 +85,28 @@ class LoopContextStack {
     /// @brief Get the current (innermost) loop context (const).
     /// @return Const reference to the current context.
     /// @pre !empty()
+    /// @throws std::logic_error If the stack is empty.
     [[nodiscard]] const LoopContext &current() const {
         requireCurrent();
         return stack_.back();
     }
 
     /// @brief Check if there is an active loop context.
+    /// @return True when the stack contains no contexts.
     [[nodiscard]] bool empty() const noexcept {
         return stack_.empty();
     }
 
     /// @brief Get the number of nested loops.
+    /// @return Current loop nesting depth.
     [[nodiscard]] std::size_t depth() const noexcept {
         return stack_.size();
     }
 
     /// @brief Get the break target for the current loop.
+    /// @return Break target block index.
     /// @pre !empty()
+    /// @throws std::logic_error If no current context or break target exists.
     [[nodiscard]] std::size_t breakTarget() const {
         requireCurrent();
         const auto &target = stack_.back().breakBlockIdx;
@@ -104,7 +117,9 @@ class LoopContextStack {
 
     /// @brief Get the continue target for the current loop.
     /// @details Returns the update block if set, otherwise the continue block.
+    /// @return Effective continue target block index.
     /// @pre !empty()
+    /// @throws std::logic_error If no current context or continue target exists.
     [[nodiscard]] std::size_t continueTarget() const {
         requireCurrent();
         const auto &ctx = stack_.back();
@@ -121,11 +136,14 @@ class LoopContextStack {
     }
 
   private:
+    /// @brief Require an innermost loop context.
+    /// @throws std::logic_error If stack_ is empty.
     void requireCurrent() const {
         if (stack_.empty())
             throw std::logic_error("loop context operation requires an active loop");
     }
 
+    /// @brief Loop contexts ordered from outermost to innermost.
     std::vector<LoopContext> stack_;
 };
 

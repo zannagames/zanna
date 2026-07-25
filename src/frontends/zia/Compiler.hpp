@@ -4,8 +4,20 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/Compiler.hpp
+// Purpose: Declare the public Zia source-to-IL compilation interface.
+// Key invariants:
+//   * CompilerResult owns every artifact returned by a full compile.
+//   * SourceManager owns file identity/source snapshots used by diagnostics.
+//   * A successful result contains no error diagnostics.
+// Ownership: CompilerInput borrows source/path views for a call; CompilerResult
+//            owns diagnostics, module data, and optional debugger layout exports.
+// References: docs/languages/zia-reference.md, docs/tools/cli.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file Compiler.hpp
+/// @file
 /// @brief Zia compiler driver - orchestrates the complete compilation pipeline.
 ///
 /// @details This file provides the main entry point for compiling Zia source
@@ -48,11 +60,11 @@
 /// ## Import Resolution
 ///
 /// The compiler automatically resolves and merges imported modules:
-/// - Relative imports: `import ./utils;` or `import ../lib/helper;`
-/// - Simple imports: `import foo;` (looks in same directory)
+/// - Relative file binds: `bind "./utils";` or `bind "../lib/helper";`
+/// - Simple file binds: `bind "foo";` (looks in the same directory)
 /// - Circular imports are allowed (skipped without error)
 /// - Maximum import depth of 50 levels
-/// - Maximum of 100 imported files
+/// - Maximum of 256 imported files
 ///
 /// ## Error Handling
 ///

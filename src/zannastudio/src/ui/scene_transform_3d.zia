@@ -27,6 +27,7 @@
 
 module scene_transform_3d;
 
+bind Fmt = Zanna.Text.Fmt;
 bind Math = Zanna.Math;
 
 // ============================================================================
@@ -47,9 +48,20 @@ final TRANSFORM_SCALE: Integer = 2;
 final TRANSFORM_SPACE_LOCAL: Integer = 0;
 final TRANSFORM_SPACE_WORLD: Integer = 1;
 
-final MOVE_SNAP_INCREMENT: Number = 0.5;
-final ROTATE_SNAP_INCREMENT: Number = 15.0;
-final SCALE_SNAP_INCREMENT: Number = 0.1;
+final DEFAULT_MOVE_SNAP_INCREMENT: Number = 0.5;
+final DEFAULT_ROTATE_SNAP_INCREMENT: Number = 15.0;
+final DEFAULT_SCALE_SNAP_INCREMENT: Number = 0.1;
+final MIN_SNAP_INCREMENT: Number = 0.001;
+final MAX_MOVE_SNAP_INCREMENT: Number = 1000.0;
+final MAX_ROTATE_SNAP_INCREMENT: Number = 180.0;
+final MAX_SCALE_SNAP_INCREMENT: Number = 10.0;
+
+// Adjustable snap increments (ADR 0183 snap settings). Values are bounded by
+// the setter so a hostile workspace state cannot produce zero or runaway
+// quantization steps.
+var moveSnapIncrement: Number = 0.5;
+var rotateSnapIncrement: Number = 15.0;
+var scaleSnapIncrement: Number = 0.1;
 final ROTATE_DEGREES_PER_HANDLE: Number = 45.0;
 final SCALE_UNITS_PER_HANDLE: Number = 1.0;
 final MIN_ABSOLUTE_SCALE: Number = 0.001;
@@ -123,16 +135,40 @@ func ModeHistoryVerb(mode: Integer) -> String {
 
 /// @brief Return the mode-specific snap increment.
 func SnapIncrement(mode: Integer) -> Number {
-    if mode == TRANSFORM_ROTATE { return ROTATE_SNAP_INCREMENT; }
-    if mode == TRANSFORM_SCALE { return SCALE_SNAP_INCREMENT; }
-    return MOVE_SNAP_INCREMENT;
+    if mode == TRANSFORM_ROTATE { return rotateSnapIncrement; }
+    if mode == TRANSFORM_SCALE { return scaleSnapIncrement; }
+    return moveSnapIncrement;
+}
+
+/// @brief Clamp one drafted snap increment into its documented bounds.
+func BoundSnapIncrement(value: Number, maximum: Number) -> Number {
+    // The inverted comparison also routes NaN to the safe minimum.
+    if (value >= MIN_SNAP_INCREMENT) == false {
+        return MIN_SNAP_INCREMENT;
+    }
+    if value > maximum { return maximum; }
+    return value;
+}
+
+/// @brief Author the three mode snap increments with bounded validation.
+/// @details Values persist as per-scene workspace state in the editor; this
+///          module only owns the live quantization inputs.
+func SetSnapIncrements(move: Number,
+                       rotate: Number,
+                       scale: Number) {
+    moveSnapIncrement = BoundSnapIncrement(move, MAX_MOVE_SNAP_INCREMENT);
+    rotateSnapIncrement =
+        BoundSnapIncrement(rotate, MAX_ROTATE_SNAP_INCREMENT);
+    scaleSnapIncrement = BoundSnapIncrement(scale, MAX_SCALE_SNAP_INCREMENT);
 }
 
 /// @brief Describe the active snapping contract without hiding its precision.
 func SnapDescription(mode: Integer) -> String {
-    if mode == TRANSFORM_ROTATE { return "15°"; }
-    if mode == TRANSFORM_SCALE { return "0.1"; }
-    return "0.5 units";
+    if mode == TRANSFORM_ROTATE {
+        return Fmt.Num(rotateSnapIncrement) + " deg";
+    }
+    if mode == TRANSFORM_SCALE { return Fmt.Num(scaleSnapIncrement); }
+    return Fmt.Num(moveSnapIncrement) + " units";
 }
 
 /// @brief Convert screen-space mouse motion into an accumulated axis amount.

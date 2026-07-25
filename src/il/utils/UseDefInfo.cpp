@@ -25,10 +25,17 @@
 
 namespace zanna::il {
 
+/// @brief Initialize use information from a function's current instruction operands.
+/// @param F Function to retain and scan; it must outlive this object.
 UseDefInfo::UseDefInfo(::il::core::Function &F) {
     build(F);
 }
 
+/// @brief Rebuild the use-count and cached-site indexes from @p F.
+/// @details Records uses found in both ordinary operands and per-successor
+///          branch argument lists. Previous indexes and the retained function
+///          pointer are replaced before scanning.
+/// @param F Function whose current operand graph is indexed.
 void UseDefInfo::build(::il::core::Function &F) {
     function_ = &F;
     useCounts_.clear();
@@ -51,6 +58,8 @@ void UseDefInfo::build(::il::core::Function &F) {
     }
 }
 
+/// @brief Add a temporary operand to both use indexes.
+/// @param v Operand location to inspect and, for a temporary, cache.
 void UseDefInfo::recordUse(::il::core::Value &v) {
     if (v.kind == ::il::core::Value::Kind::Temp) {
         ++useCounts_[v.id];
@@ -58,6 +67,13 @@ void UseDefInfo::recordUse(::il::core::Value &v) {
     }
 }
 
+/// @brief Rewrite cached uses while all indexed operand addresses remain valid.
+/// @details Removes the source temporary's cache entry, assigns the replacement
+///          at each recorded site, and transfers those sites into the
+///          replacement temporary's entries when applicable.
+/// @param tempId Temporary whose cached sites are rewritten.
+/// @param replacement Value stored at each cached site.
+/// @return Number of cached sites rewritten.
 std::size_t UseDefInfo::replaceAllUsesStableStorage(
     unsigned tempId,
     const ::il::core::Value &replacement) {
@@ -78,6 +94,12 @@ std::size_t UseDefInfo::replaceAllUsesStableStorage(
     return sites.size();
 }
 
+/// @brief Replace a temporary by rescanning every operand in the retained function.
+/// @details Rewrites ordinary instruction operands and branch arguments, then
+///          rebuilds both indexes so subsequent queries reflect the new graph.
+/// @param tempId Temporary identifier to match.
+/// @param replacement Value substituted at every matching use.
+/// @return Number of matching operands and branch arguments rewritten.
 std::size_t UseDefInfo::replaceAllUses(unsigned tempId, const ::il::core::Value &replacement) {
     if (!function_) {
         return 0;
@@ -109,11 +131,17 @@ std::size_t UseDefInfo::replaceAllUses(unsigned tempId, const ::il::core::Value 
     return count;
 }
 
+/// @brief Test whether the latest index contains a nonzero use count.
+/// @param tempId Temporary identifier to query.
+/// @return `true` when at least one indexed use exists.
 bool UseDefInfo::hasUses(unsigned tempId) const {
     auto it = useCounts_.find(tempId);
     return it != useCounts_.end() && it->second != 0;
 }
 
+/// @brief Return the latest indexed number of uses for a temporary.
+/// @param tempId Temporary identifier to query.
+/// @return Indexed use count, or zero when @p tempId is absent.
 std::size_t UseDefInfo::useCount(unsigned tempId) const {
     auto it = useCounts_.find(tempId);
     return it != useCounts_.end() ? it->second : 0;

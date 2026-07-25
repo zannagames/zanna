@@ -1,0 +1,478 @@
+// =============================================================================
+// world/props.zia — composite prop factory + per-level prop set
+// =============================================================================
+//
+// Every prop is a composite of hand-emitted box/cylinder primitives baked into
+// 1-2 Mesh3D per kind (chassis + emissive/screen accent), built once per session
+// and cached — geometry is level-independent; materials resolve per level via
+// the texture library. Emitters write engine-convention CCW winding, correct
+// normals, and per-meter UV tiling directly (no RecalcNormals pass). Placement:
+// batchable kinds (trusses, columns, stalagmites…) accumulate Mat4 transforms
+// in InstanceBatch3D pairs drawn each frame; unique/hero kinds spawn retained
+// entities. Animated kinds (radar dish, helix column) keep their rotating part
+// as a separate accent entity whose local origin sits on the rotation axis.
+// =============================================================================
+module props;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../assets/textures" as textures;
+bind "../assets/meshkit" as meshkit;
+
+// Prop kinds (LevelBuilder.addProp / manifest field).
+var PROP_CRATE: Integer = 0;
+var PROP_BARREL: Integer = 1;
+var PROP_CONSOLE: Integer = 2;
+var PROP_PYLON: Integer = 3;       // glow pylon (emissive accent column)
+var PROP_COLUMN: Integer = 4;
+var PROP_IBEAM: Integer = 5;       // H-profile truss segment along X
+var PROP_CATWALK: Integer = 6;     // grated deck segment + rails, along X
+var PROP_PIPERUN: Integer = 7;     // twin pipes along X + valve
+var PROP_DOORFRAME: Integer = 8;
+var PROP_WRECKHULL: Integer = 9;   // L1 hero: 26 m arced hull shell
+var PROP_STALAGMITE: Integer = 10;
+var PROP_STALACTITE: Integer = 11; // origin at ceiling attach point
+var PROP_RADAR: Integer = 12;      // animated: dish assembly spins
+var PROP_RACK: Integer = 13;
+var PROP_BARRICADE: Integer = 14;
+var PROP_CRANE: Integer = 15;
+var PROP_HELIX: Integer = 16;      // L9 hero: rotating emissive slat column
+var PROP_EYESCREEN: Integer = 17;  // L4 hero: HELIX glyph wall
+var PROP_SPIRE: Integer = 18;      // L8 hero: 20 m antenna
+var PROP_WORKBENCH: Integer = 19;
+var PROP_CRUCIBLE: Integer = 20;   // L7 hero: molten basin
+var PROP_LAMPPOST: Integer = 21;
+var PROP_PLANTER: Integer = 22;
+var PROP_DEBRIS: Integer = 23;     // tilted hull plates (batchable)
+var PROP_COUNT: Integer = 24;
+
+// UV tiles per meter (matches the texture library's visual density).
+var UV_T: Float = 0.5;
+
+class PropSet {
+    hide Game3D.World3D world;
+    hide textures.TextureLib texLib;
+    hide G3D.Canvas3D canvas;
+    // Mesh cache (session-lifetime).
+    hide List[Integer] meshKind;
+    hide List[G3D.Mesh3D] meshChassis;
+    hide List[G3D.Mesh3D] meshAccent;
+    hide List[Integer] meshHasAccent;
+    // Shared emitter for the mesh currently being baked.
+    hide meshkit.MeshKit mk;
+    hide Boolean accentUsed;
+    // Owned per-level instances.
+    hide List[Game3D.Entity3D] ownedNodes;
+    hide List[G3D.InstanceBatch3D] batches;
+    hide List[Integer] batchKey;        // kind (chassis) / kind+1000 (accent)
+    // Animated accent entities.
+    hide List[Integer] animKind;
+    hide List[Game3D.Entity3D] animNode;
+    hide List[Float] animYaw;
+    hide Float animTime;
+
+    expose func init() {
+        meshKind = []; meshChassis = []; meshAccent = []; meshHasAccent = [];
+        ownedNodes = []; batches = []; batchKey = [];
+        animKind = []; animNode = []; animYaw = [];
+        animTime = 0.0;
+        mk = new meshkit.MeshKit();
+        accentUsed = false;
+    }
+
+    expose func setup(w: Game3D.World3D, t: textures.TextureLib, c: G3D.Canvas3D) {
+        world = w; texLib = t; canvas = c;
+    }
+
+    // --- Per-level lifecycle ---------------------------------------------------
+    expose func clear() {
+        var i = 0;
+        while i < ownedNodes.Count {
+            world.Despawn(ownedNodes[i]);
+            i = i + 1;
+        }
+        ownedNodes = [];
+        batches = []; batchKey = [];    // batch materials are level-bound; rebuilt
+        animKind = []; animNode = []; animYaw = [];
+    }
+
+    expose func place(kind: Integer, x: Float, y: Float, z: Float, yaw: Float, scale: Float) {
+        ensureMeshes(kind);
+        var mi = meshIndex(kind);
+        var chassisMat = texLib.mat(chassisSurf(kind), tintR(kind), tintG(kind), tintB(kind));
+        if isBatchable(kind) {
+            var m = Mat4.Mul(Mat4.Translate(x, y, z),
+                             Mat4.Mul(Mat4.RotateY(yaw), Mat4.ScaleUniform(scale)));
+            var ci = batchIndex(kind);
+            if ci < 0 {
+                var b = G3D.InstanceBatch3D.New(meshChassis[mi], chassisMat);
+                batches.Add(b);
+                batchKey.Add(kind);
+                if meshHasAccent[mi] == 1 {
+                    var ab = G3D.InstanceBatch3D.New(meshAccent[mi],
+                        texLib.mat(accentSurf(kind), tintR(kind), tintG(kind), tintB(kind)));
+                    batches.Add(ab);
+                    batchKey.Add(kind + 1000);
+                }
+                ci = batchIndex(kind);
+            }
+            G3D.InstanceBatch3D.Add(batches[ci], m);
+            var ai = batchIndex(kind + 1000);
+            if ai >= 0 { G3D.InstanceBatch3D.Add(batches[ai], m); }
+            return;
+        }
+        // Retained entities: chassis (+ accent).
+        var e = Game3D.Entity3D.New();
+        e.Mesh = meshChassis[mi];
+        e.Material = chassisMat;
+        e.SetPosition(x, y, z);
+        e.SetRotationEuler(0.0, yaw, 0.0);
+        if M.absf(scale - 1.0) > 0.0001 { e.SetScaleXYZ(scale, scale, scale); }
+        world.Spawn(e);
+        ownedNodes.Add(e);
+        if meshHasAccent[mi] == 1 {
+            var a = Game3D.Entity3D.New();
+            a.Mesh = meshAccent[mi];
+            a.Material = texLib.mat(accentSurf(kind), tintR(kind), tintG(kind), tintB(kind));
+            a.SetPosition(x, y, z);
+            a.SetRotationEuler(0.0, yaw, 0.0);
+            if M.absf(scale - 1.0) > 0.0001 { a.SetScaleXYZ(scale, scale, scale); }
+            world.Spawn(a);
+            ownedNodes.Add(a);
+            if isAnimated(kind) {
+                animKind.Add(kind);
+                animNode.Add(a);
+                animYaw.Add(yaw);
+            }
+        }
+    }
+
+    hide func batchIndex(key: Integer) -> Integer {
+        var i = 0;
+        while i < batchKey.Count {
+            if batchKey[i] == key { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    hide func isBatchable(kind: Integer) -> Boolean {
+        return kind == PROP_IBEAM || kind == PROP_COLUMN || kind == PROP_PYLON ||
+               kind == PROP_STALAGMITE || kind == PROP_STALACTITE || kind == PROP_DEBRIS ||
+               kind == PROP_CATWALK || kind == PROP_LAMPPOST;
+    }
+    hide func isAnimated(kind: Integer) -> Boolean {
+        return kind == PROP_RADAR || kind == PROP_HELIX;
+    }
+
+    // Per-tick: spin animated accents (radar dish, helix slats).
+    expose func update(dt: Float) {
+        animTime = animTime + dt;
+        var i = 0;
+        while i < animKind.Count {
+            var rate = 0.5;
+            if animKind[i] == PROP_HELIX { rate = 0.3; }
+            animNode[i].SetRotationEuler(0.0, animYaw[i] + animTime * rate, 0.0);
+            i = i + 1;
+        }
+    }
+
+    // Draw all instance batches (inside the 3D pass, alongside DrawScene).
+    expose func drawBatches() {
+        var i = 0;
+        while i < batches.Count {
+            G3D.Canvas3D.DrawInstanced(canvas, batches[i]);
+            i = i + 1;
+        }
+    }
+
+    // --- Kind tables -----------------------------------------------------------
+    hide func chassisSurf(kind: Integer) -> Integer {
+        if kind == PROP_WRECKHULL || kind == PROP_DEBRIS { return textures.SURF_HULL; }
+        if kind == PROP_STALAGMITE || kind == PROP_STALACTITE { return textures.SURF_ROCK; }
+        if kind == PROP_COLUMN || kind == PROP_PLANTER { return textures.SURF_CONCRETE; }
+        if kind == PROP_CATWALK { return textures.SURF_GRATE; }
+        if kind == PROP_BARRICADE { return textures.SURF_HAZARD; }
+        return textures.SURF_METAL;
+    }
+    hide func accentSurf(kind: Integer) -> Integer {
+        if kind == PROP_CONSOLE || kind == PROP_EYESCREEN || kind == PROP_WORKBENCH {
+            return textures.SURF_SCREEN;
+        }
+        if kind == PROP_RADAR { return textures.SURF_METAL; }
+        return textures.SURF_ACCENT;
+    }
+    hide func tintR(kind: Integer) -> Float {
+        if kind == PROP_BARREL { return 0.45; }
+        if kind == PROP_CRATE { return 0.42; }
+        if kind == PROP_WRECKHULL || kind == PROP_DEBRIS { return 0.44; }
+        if kind == PROP_STALAGMITE || kind == PROP_STALACTITE { return 0.36; }
+        if kind == PROP_BARRICADE { return 0.62; }
+        if kind == PROP_CRUCIBLE { return 0.40; }
+        return 0.50;
+    }
+    hide func tintG(kind: Integer) -> Float {
+        if kind == PROP_BARREL { return 0.38; }
+        if kind == PROP_CRATE { return 0.40; }
+        if kind == PROP_WRECKHULL || kind == PROP_DEBRIS { return 0.38; }
+        if kind == PROP_STALAGMITE || kind == PROP_STALACTITE { return 0.33; }
+        if kind == PROP_BARRICADE { return 0.56; }
+        if kind == PROP_CRUCIBLE { return 0.30; }
+        return 0.52;
+    }
+    hide func tintB(kind: Integer) -> Float {
+        if kind == PROP_BARREL { return 0.30; }
+        if kind == PROP_CRATE { return 0.36; }
+        if kind == PROP_WRECKHULL || kind == PROP_DEBRIS { return 0.34; }
+        if kind == PROP_STALAGMITE || kind == PROP_STALACTITE { return 0.32; }
+        if kind == PROP_BARRICADE { return 0.30; }
+        if kind == PROP_CRUCIBLE { return 0.24; }
+        return 0.56;
+    }
+
+    // --- Mesh cache --------------------------------------------------------------
+    hide func meshIndex(kind: Integer) -> Integer {
+        var i = 0;
+        while i < meshKind.Count {
+            if meshKind[i] == kind { return i; }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    hide func ensureMeshes(kind: Integer) {
+        var i = 0;
+        while i < meshKind.Count {
+            if meshKind[i] == kind { return; }
+            i = i + 1;
+        }
+        mk.begin();
+        bakeChassis(kind);
+        var chassis = mk.take();
+        mk.begin();
+        accentUsed = false;
+        bakeAccent(kind);
+        var accent = mk.take();
+        meshKind.Add(kind);
+        meshChassis.Add(chassis);
+        meshAccent.Add(accent);
+        if accentUsed { meshHasAccent.Add(1); } else { meshHasAccent.Add(0); }
+    }
+
+    // --- Primitive emitters (delegate to the shared MeshKit) -------------------
+    hide func box(cx0: Float, cy0: Float, cz0: Float, hx: Float, hy: Float, hz: Float) {
+        mk.box(cx0, cy0, cz0, hx, hy, hz);
+    }
+    hide func boxRot(cx0: Float, cy0: Float, cz0: Float, hx: Float, hy: Float, hz: Float,
+                     yaw: Float, pitch: Float, roll: Float) {
+        mk.boxRot(cx0, cy0, cz0, hx, hy, hz, yaw, pitch, roll);
+    }
+    hide func cyl(cx0: Float, cy0: Float, cz0: Float, r: Float, h: Float, segs: Integer,
+                  caps: Integer) {
+        mk.cyl(cx0, cy0, cz0, r, h, segs, caps);
+    }
+    hide func cylRot(cx0: Float, cy0: Float, cz0: Float, r: Float, h: Float, segs: Integer,
+                     caps: Integer, yaw: Float, pitch: Float, roll: Float) {
+        mk.cylRot(cx0, cy0, cz0, r, h, segs, caps, yaw, pitch, roll);
+    }
+
+    // --- Prop chassis bakers -------------------------------------------------
+    // Local origin: ground point (y=0) except STALACTITE (ceiling attach).
+    hide func bakeChassis(kind: Integer) {
+        if kind == PROP_CRATE {
+            box(0.0, 0.5, 0.0, 0.5, 0.5, 0.5);
+            box(0.0, 1.03, 0.0, 0.54, 0.04, 0.54);
+            box(0.0, 0.54, -0.52, 0.54, 0.045, 0.035);
+            box(0.0, 0.54, 0.52, 0.54, 0.045, 0.035);
+            box(-0.52, 0.54, 0.0, 0.035, 0.045, 0.54);
+            box(0.52, 0.54, 0.0, 0.035, 0.045, 0.54);
+            boxRot(0.0, 0.32, -0.53, 0.08, 0.18, 0.02, 0.0, 0.0, 0.785);
+        } else if kind == PROP_BARREL {
+            cyl(0.0, 0.0, 0.0, 0.34, 1.05, 10, 1);
+            cyl(0.0, 0.18, 0.0, 0.37, 0.06, 10, 0);
+            cyl(0.0, 0.78, 0.0, 0.37, 0.06, 10, 0);
+            cyl(0.0, 0.48, 0.0, 0.355, 0.04, 10, 0);
+            box(0.0, 1.08, 0.0, 0.16, 0.035, 0.16);
+        } else if kind == PROP_CONSOLE {
+            box(0.0, 0.45, 0.0, 0.5, 0.45, 0.3);
+            boxRot(0.0, 1.05, -0.10, 0.44, 0.32, 0.05, 0.0, -0.5, 0.0);
+            box(-0.46, 0.55, 0.0, 0.05, 0.55, 0.32);
+            box(0.46, 0.55, 0.0, 0.05, 0.55, 0.32);
+            box(-0.24, 0.92, -0.33, 0.08, 0.025, 0.04);
+            box(0.0, 0.92, -0.33, 0.08, 0.025, 0.04);
+            box(0.24, 0.92, -0.33, 0.08, 0.025, 0.04);
+        } else if kind == PROP_PYLON {
+            cyl(0.0, 0.0, 0.0, 0.07, 2.3, 8, 0);
+            box(0.0, 2.35, 0.0, 0.13, 0.05, 0.13);
+            box(0.0, 0.06, 0.0, 0.2, 0.06, 0.2);
+            box(0.0, 1.1, 0.0, 0.16, 0.025, 0.16);
+            box(0.0, 1.7, 0.0, 0.16, 0.025, 0.16);
+        } else if kind == PROP_COLUMN {
+            cyl(0.0, 0.0, 0.0, 0.35, 3.4, 10, 0);
+            box(0.0, 0.15, 0.0, 0.5, 0.15, 0.5);
+            box(0.0, 3.32, 0.0, 0.5, 0.12, 0.5);
+        } else if kind == PROP_IBEAM {
+            box(0.0, 0.3, 0.0, 1.2, 0.26, 0.03);
+            box(0.0, 0.03, 0.0, 1.2, 0.03, 0.15);
+            box(0.0, 0.57, 0.0, 1.2, 0.03, 0.15);
+        } else if kind == PROP_CATWALK {
+            box(0.0, 0.03, 0.0, 1.2, 0.03, 0.6);
+            box(-1.15, 0.5, -0.57, 0.04, 0.5, 0.04);
+            box(1.15, 0.5, -0.57, 0.04, 0.5, 0.04);
+            box(-1.15, 0.5, 0.57, 0.04, 0.5, 0.04);
+            box(1.15, 0.5, 0.57, 0.04, 0.5, 0.04);
+            box(0.0, 1.0, -0.57, 1.2, 0.03, 0.03);
+            box(0.0, 1.0, 0.57, 1.2, 0.03, 0.03);
+        } else if kind == PROP_PIPERUN {
+            cylRot(-1.5, 0.32, -0.18, 0.11, 3.0, 8, 2, 0.0, 0.0, -1.5707963);
+            cylRot(-1.5, 0.32, 0.18, 0.11, 3.0, 8, 2, 0.0, 0.0, -1.5707963);
+            box(0.0, 0.32, 0.0, 0.14, 0.2, 0.3);
+            box(-0.9, 0.15, -0.18, 0.05, 0.15, 0.05);
+            box(0.9, 0.15, 0.18, 0.05, 0.15, 0.05);
+        } else if kind == PROP_DOORFRAME {
+            box(-1.0, 1.4, 0.0, 0.14, 1.4, 0.22);
+            box(1.0, 1.4, 0.0, 0.14, 1.4, 0.22);
+            box(0.0, 2.92, 0.0, 1.14, 0.14, 0.22);
+            box(-1.0, 0.28, -0.18, 0.2, 0.08, 0.08);
+            box(1.0, 0.28, -0.18, 0.2, 0.08, 0.08);
+            box(0.0, 2.62, -0.20, 0.72, 0.035, 0.05);
+        } else if kind == PROP_WRECKHULL {
+            hullSeg(-1.2566371);
+            hullSeg(-0.6283185);
+            hullSeg(0.0);
+            hullSeg(0.6283185);
+            hullSeg(1.2566371);
+        } else if kind == PROP_STALAGMITE {
+            cyl(0.0, 0.0, 0.0, 0.5, 1.3, 7, 0);
+            cyl(0.0, 1.15, 0.0, 0.3, 1.0, 7, 0);
+            cyl(0.0, 2.0, 0.0, 0.15, 0.8, 6, 1);
+        } else if kind == PROP_STALACTITE {
+            cyl(0.0, -1.3, 0.0, 0.5, 1.3, 7, 0);
+            cyl(0.0, -2.15, 0.0, 0.3, 1.0, 7, 0);
+            cyl(0.0, -2.8, 0.0, 0.15, 0.8, 6, 0);
+        } else if kind == PROP_RADAR {
+            cyl(0.0, 0.0, 0.0, 0.32, 0.35, 10, 1);
+            cyl(0.0, 0.35, 0.0, 0.12, 0.55, 8, 0);
+        } else if kind == PROP_RACK {
+            box(-0.95, 0.9, 0.0, 0.06, 0.9, 0.45);
+            box(0.95, 0.9, 0.0, 0.06, 0.9, 0.45);
+            box(0.0, 0.3, 0.0, 0.95, 0.03, 0.45);
+            box(0.0, 0.95, 0.0, 0.95, 0.03, 0.45);
+            box(0.0, 1.6, 0.0, 0.95, 0.03, 0.45);
+            box(-0.4, 0.52, 0.05, 0.28, 0.19, 0.3);
+            box(0.45, 1.15, -0.05, 0.32, 0.17, 0.28);
+            box(-0.1, 0.78, -0.43, 0.74, 0.025, 0.035);
+            box(0.1, 1.35, -0.43, 0.74, 0.025, 0.035);
+        } else if kind == PROP_BARRICADE {
+            boxRot(0.0, 0.55, 0.0, 0.9, 0.5, 0.05, 0.0, -1.1, 0.0);
+            box(-0.6, 0.12, 0.28, 0.1, 0.12, 0.3);
+            box(0.6, 0.12, 0.28, 0.1, 0.12, 0.3);
+            boxRot(-0.35, 0.57, -0.08, 0.06, 0.48, 0.035, 0.0, -1.1, 0.0);
+            boxRot(0.35, 0.57, -0.08, 0.06, 0.48, 0.035, 0.0, -1.1, 0.0);
+        } else if kind == PROP_CRANE {
+            box(0.0, 2.2, 0.0, 0.18, 2.2, 0.18);
+            box(1.5, 4.34, 0.0, 1.7, 0.12, 0.12);
+            box(2.9, 3.62, 0.0, 0.025, 0.6, 0.025);
+            box(2.9, 2.95, 0.0, 0.09, 0.09, 0.09);
+        } else if kind == PROP_HELIX {
+            cyl(0.0, 0.0, 0.0, 0.5, 4.8, 12, 1);
+        } else if kind == PROP_EYESCREEN {
+            box(0.0, 2.2, 0.0, 3.2, 2.2, 0.15);
+        } else if kind == PROP_SPIRE {
+            cyl(0.0, 0.0, 0.0, 1.3, 6.0, 10, 0);
+            cyl(0.0, 6.0, 0.0, 0.9, 5.0, 9, 0);
+            cyl(0.0, 11.0, 0.0, 0.6, 4.0, 8, 0);
+            cyl(0.0, 15.0, 0.0, 0.35, 3.0, 8, 0);
+            cyl(0.0, 18.0, 0.0, 0.15, 2.6, 6, 1);
+        } else if kind == PROP_WORKBENCH {
+            box(0.0, 0.85, 0.0, 1.1, 0.05, 0.5);
+            box(-1.0, 0.4, 0.0, 0.06, 0.4, 0.45);
+            box(1.0, 0.4, 0.0, 0.06, 0.4, 0.45);
+            box(0.0, 1.7, -0.55, 1.1, 0.7, 0.06);
+        } else if kind == PROP_CRUCIBLE {
+            cyl(0.0, 0.0, 0.0, 2.2, 1.35, 14, 0);
+            cyl(0.0, 1.35, 0.0, 2.35, 0.14, 14, 1);
+        } else if kind == PROP_LAMPPOST {
+            cyl(0.0, 0.0, 0.0, 0.06, 2.6, 7, 0);
+            box(0.0, 2.66, 0.18, 0.1, 0.06, 0.3);
+            box(0.0, 0.08, 0.0, 0.22, 0.08, 0.22);
+            box(0.0, 1.55, 0.0, 0.12, 0.025, 0.12);
+        } else if kind == PROP_PLANTER {
+            box(0.0, 0.3, 0.0, 0.9, 0.3, 0.4);
+            box(0.0, 0.58, 0.0, 0.85, 0.04, 0.35);
+            boxRot(-0.3, 0.85, 0.0, 0.02, 0.25, 0.02, 0.0, 0.0, 0.3);
+            boxRot(0.25, 0.82, 0.1, 0.02, 0.22, 0.02, 0.0, 0.0, -0.4);
+        } else if kind == PROP_DEBRIS {
+            boxRot(0.0, 0.3, 0.0, 0.9, 0.06, 0.7, 0.5, 0.15, 0.4);
+            boxRot(0.5, 0.45, -0.35, 0.6, 0.05, 0.5, 1.9, -0.3, 0.7);
+        } else {
+            box(0.0, 0.5, 0.0, 0.5, 0.5, 0.5);
+        }
+    }
+
+    // One arced wreck-hull segment: 26 m arch across X, apex ~10 m.
+    hide func hullSeg(a: Float) {
+        var rr = 14.0;
+        var sx = Sin(a) * rr;
+        var sy = 10.0 - (1.0 - Cos(a)) * rr;
+        boxRot(sx, sy, 0.0, 2.9, 0.35, 4.5, 0.0, 0.0, 0.0 - a);
+    }
+
+    // --- Prop accent bakers (emissive/screen/rotating parts) -------------------
+    hide func bakeAccent(kind: Integer) {
+        if kind == PROP_CONSOLE {
+            accentUsed = true;
+            boxRot(0.0, 1.05, -0.155, 0.38, 0.27, 0.012, 0.0, -0.5, 0.0);
+        } else if kind == PROP_PYLON {
+            accentUsed = true;
+            box(0.0, 1.2, 0.0, 0.05, 0.95, 0.05);
+        } else if kind == PROP_DOORFRAME {
+            accentUsed = true;
+            box(0.0, 2.8, 0.0, 0.9, 0.03, 0.06);
+        } else if kind == PROP_WRECKHULL {
+            accentUsed = true;
+            box(-8.2, 6.35, 0.0, 0.12, 0.12, 0.12);
+            box(0.0, 10.5, 0.0, 0.12, 0.12, 0.12);
+            box(8.2, 6.35, 0.0, 0.12, 0.12, 0.12);
+        } else if kind == PROP_RADAR {
+            // Rotating assembly: arm + tilted dish, origin on the spin axis.
+            accentUsed = true;
+            box(0.18, 0.95, 0.0, 0.22, 0.045, 0.045);
+            cylRot(0.38, 1.0, 0.0, 0.62, 0.07, 12, 2, 0.0, 1.05, 0.0);
+        } else if kind == PROP_BARRICADE {
+            accentUsed = true;
+            boxRot(0.0, 1.02, -0.21, 0.85, 0.035, 0.02, 0.0, -1.1, 0.0);
+        } else if kind == PROP_HELIX {
+            // 10 emissive slats on a spiral around the core; rotates.
+            accentUsed = true;
+            var i = 0;
+            while i < 10 {
+                var a = (i + 0.0) * 0.6283185;
+                var y = 0.35 + (i + 0.0) * 0.44;
+                boxRot(Cos(a) * 1.05, y, Sin(a) * 1.05, 0.38, 0.07, 0.12,
+                       0.0 - a, 0.0, 0.0);
+                i = i + 1;
+            }
+        } else if kind == PROP_EYESCREEN {
+            accentUsed = true;
+            box(0.0, 2.2, 0.16, 3.0, 2.0, 0.03);
+        } else if kind == PROP_SPIRE {
+            accentUsed = true;
+            box(0.0, 20.7, 0.0, 0.13, 0.13, 0.13);
+            cyl(0.0, 5.95, 0.0, 0.96, 0.14, 10, 0);
+            cyl(0.0, 10.95, 0.0, 0.66, 0.13, 9, 0);
+        } else if kind == PROP_WORKBENCH {
+            accentUsed = true;
+            box(0.0, 1.75, -0.48, 0.5, 0.32, 0.02);
+        } else if kind == PROP_CRUCIBLE {
+            accentUsed = true;
+            cyl(0.0, 1.22, 0.0, 2.02, 0.08, 14, 1);
+        } else if kind == PROP_LAMPPOST {
+            accentUsed = true;
+            box(0.0, 2.6, 0.3, 0.08, 0.03, 0.12);
+        }
+    }
+}

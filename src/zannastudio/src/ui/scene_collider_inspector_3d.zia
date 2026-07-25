@@ -1,0 +1,239 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_collider_inspector_3d.zia
+// Purpose: Kind-aware collider convention controls for the 3D inspector.
+// Key invariants:
+//   - This presentation object never mutates a SceneNode or canonical VSCN.
+//   - Controls are enabled only for one unambiguous selected node.
+//   - Kind-specific dimension rows hide inapplicable fields.
+//   - Apply and Remove return intent to the transactional scene controller.
+// Ownership/Lifetime: SceneEditor3D owns one inspector; GUI owns its widgets.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_collider_3d.zia,
+//        docs/adr/0185-collider-authoring-and-gameplay-overlays.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_collider_inspector_3d;
+
+bind "scene_collider_3d";
+
+bind GUI = Zanna.GUI;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+
+// ============================================================================
+// MODULE: scene_collider_inspector_3d
+// PURPOSE: Keep responsive collider presentation outside the VSCN controller.
+//
+// WHERE-THIS-FITS: SceneEditor3D refreshes this object from the selected
+//          runtime node and consumes its buttons as transaction requests.
+//
+// TEACHING-NOTE: Widgets are a draft. BuildState returns values only; the
+//          controller writes metadata and owns the one-transaction commit.
+// ============================================================================
+
+/// @brief Presentation-only node-collider convention inspector.
+class SceneColliderInspector3D {
+    expose GUI.GroupBox group;
+    expose GUI.Label summary;
+    expose GUI.Dropdown kindDropdown;
+    expose GUI.HBox extentRow;
+    expose GUI.Spinner halfX;
+    expose GUI.Spinner halfY;
+    expose GUI.Spinner halfZ;
+    expose GUI.HBox shapeRow;
+    expose GUI.Spinner radius;
+    expose GUI.Spinner height;
+    expose GUI.Checkbox triggerCheck;
+    expose GUI.Button applyButton;
+    expose GUI.Button removeButton;
+
+    expose func init() {
+        group = null;
+        summary = null;
+        kindDropdown = null;
+        extentRow = null;
+        halfX = null;
+        halfY = null;
+        halfZ = null;
+        shapeRow = null;
+        radius = null;
+        height = null;
+        triggerCheck = null;
+        applyButton = null;
+        removeButton = null;
+    }
+
+    /// @brief Build the complete collider convention surface.
+    expose func Setup(parent: GUI.VBox) {
+        group = GUI.GroupBox.New(parent, "Collider convention");
+        summary = GUI.Label.New(
+            group,
+            "No collider convention. Games derive physics from these "
+            + "typed metadata keys at spawn.");
+        summary.SetWordWrap(true);
+
+        kindDropdown = GUI.Dropdown.New(group);
+        kindDropdown.SetAccessibleName("Node collider kind");
+        kindDropdown.AddItem("None");
+        kindDropdown.AddItem("Box");
+        kindDropdown.AddItem("Sphere");
+        kindDropdown.AddItem("Capsule");
+        kindDropdown.AddItem("Mesh bounds");
+        kindDropdown.SetSelected(scene_collider_3d.COLLIDER_NONE);
+
+        extentRow = GUI.HBox.New();
+        extentRow.SetSpacing(4.0);
+        group.AddChild(extentRow);
+        halfX = AddSpinner(
+            extentRow, "Half X",
+            scene_collider_3d.DEFAULT_HALF_EXTENT);
+        halfY = AddSpinner(
+            extentRow, "Y", scene_collider_3d.DEFAULT_HALF_EXTENT);
+        halfZ = AddSpinner(
+            extentRow, "Z", scene_collider_3d.DEFAULT_HALF_EXTENT);
+
+        shapeRow = GUI.HBox.New();
+        shapeRow.SetSpacing(4.0);
+        group.AddChild(shapeRow);
+        radius = AddSpinner(
+            shapeRow, "Radius", scene_collider_3d.DEFAULT_RADIUS);
+        height = AddSpinner(
+            shapeRow, "Height", scene_collider_3d.DEFAULT_HEIGHT);
+
+        triggerCheck = GUI.Checkbox.New(group, "Trigger (overlap sensor)");
+        triggerCheck.SetTooltip(
+            "Overlap-only sensor: games report contact without blocking");
+        triggerCheck.SetChecked(false);
+
+        var buttons = GUI.HBox.New();
+        buttons.SetSpacing(4.0);
+        group.AddChild(buttons);
+        applyButton = GUI.Button.New(buttons, "Apply Collider");
+        applyButton.SetTooltip(
+            "Write the collider convention keys in one undoable VSCN edit");
+        removeButton = GUI.Button.New(buttons, "Remove");
+        removeButton.SetTooltip(
+            "Remove every collider key while keeping the node");
+
+        UpdateKindControls();
+        UpdateControls(false, false, 0);
+    }
+
+    /// @brief Refresh controls from one selected node without mutating it.
+    expose func Refresh(node: SceneNode,
+                        selectionCount: Integer,
+                        editorEnabled: Boolean) {
+        var state = scene_collider_3d.FromNode(node);
+        kindDropdown.SetSelected(state.kind);
+        halfX.SetValue(state.halfX);
+        halfY.SetValue(state.halfY);
+        halfZ.SetValue(state.halfZ);
+        radius.SetValue(state.radius);
+        height.SetValue(state.height);
+        triggerCheck.SetChecked(state.trigger);
+
+        if selectionCount == 0 {
+            summary.SetText(
+                "Select one node to author its collider convention.");
+        } else if selectionCount > 1 {
+            summary.SetText(
+                selectionCount
+                + " nodes selected. Collider editing requires one "
+                + "unambiguous node; use a project collider component "
+                + "for batch Add Missing.");
+        } else if state.kind == scene_collider_3d.COLLIDER_NONE {
+            summary.SetText(
+                "No collider convention. Games derive physics from these "
+                + "typed metadata keys at spawn.");
+        } else {
+            summary.SetText(
+                scene_collider_3d.Describe(state)
+                + " • node-local dimensions; the world transform applies "
+                + "at consumption.");
+        }
+        UpdateKindControls();
+        UpdateControls(
+            editorEnabled,
+            state.kind != scene_collider_3d.COLLIDER_NONE,
+            selectionCount);
+    }
+
+    /// @brief Build one complete normalized draft from visible controls.
+    expose func BuildState() -> scene_collider_3d.ColliderState3D {
+        var state = new scene_collider_3d.ColliderState3D();
+        state.kind = kindDropdown.Selected;
+        state.halfX = halfX.Value;
+        state.halfY = halfY.Value;
+        state.halfZ = halfZ.Value;
+        state.radius = radius.Value;
+        state.height = height.Value;
+        state.trigger = triggerCheck.IsChecked();
+        return scene_collider_3d.Normalize(state);
+    }
+
+    /// @brief Show only dimension rows meaningful for the selected kind.
+    expose func UpdateKindControls() {
+        if kindDropdown == null { return; }
+        var kind = kindDropdown.Selected;
+        extentRow.SetVisible(
+            scene_collider_3d.HasHalfExtents(kind));
+        shapeRow.SetVisible(
+            scene_collider_3d.HasRadius(kind));
+        height.SetVisible(scene_collider_3d.HasHeight(kind));
+        triggerCheck.SetVisible(
+            kind != scene_collider_3d.COLLIDER_NONE);
+    }
+
+    /// @brief Keep actions truthful for selection and convention state.
+    expose func UpdateControls(editorEnabled: Boolean,
+                               hasCollider: Boolean,
+                               selectionCount: Integer) {
+        if kindDropdown == null { return; }
+        var hasSingle = editorEnabled and selectionCount == 1;
+        group.SetEnabled(editorEnabled);
+        kindDropdown.SetEnabled(hasSingle);
+        halfX.SetEnabled(hasSingle);
+        halfY.SetEnabled(hasSingle);
+        halfZ.SetEnabled(hasSingle);
+        radius.SetEnabled(hasSingle);
+        height.SetEnabled(hasSingle);
+        triggerCheck.SetEnabled(hasSingle);
+        applyButton.SetEnabled(hasSingle);
+        removeButton.SetEnabled(hasSingle and hasCollider);
+        if hasSingle == false {
+            applyButton.SetText("Apply Collider");
+            applyButton.SetTooltip(
+                "Select exactly one node before editing its collider");
+        } else if hasCollider {
+            applyButton.SetText("Apply Collider");
+            applyButton.SetTooltip(
+                "Rewrite the collider convention keys in one undoable edit");
+        } else {
+            applyButton.SetText("Create Collider");
+            applyButton.SetTooltip(
+                "Write the collider convention keys in one undoable edit");
+        }
+    }
+
+    hide func AddSpinner(parent: GUI.HBox,
+                         label: String,
+                         value: Number) -> GUI.Spinner {
+        GUI.Label.New(parent, label);
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(
+            scene_collider_3d.MIN_DIMENSION,
+            scene_collider_3d.MAX_DIMENSION);
+        spinner.SetStep(0.1);
+        spinner.SetDecimals(3);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName(label + " collider value");
+        return spinner;
+    }
+}

@@ -5,15 +5,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/NumberParsing.hpp
+// File: src/frontends/common/NumberParsing.hpp
 // Purpose: Common number parsing utilities for language frontends.
+// Key invariants:
+//   * Successful parses consume the complete input.
+//   * Decimal floating-point results must be finite.
+//   * The magnitude 2^63 is represented specially so a parser can accept
+//     `-9223372036854775808` without overflowing its positive token.
+// Ownership: Header-only stateless utilities; results own scalar values only.
+// References: src/frontends/common/ConstantFolding.hpp
 //
-// This header provides utilities for parsing numeric literals that are shared
-// across multiple language frontends (BASIC, Zia, etc.).
-// Key invariants: Successful parses consume the complete input and produce a
-//                 finite, representable value.
-// Ownership/Lifetime: Header-only, stateless value utilities.
-// Links: src/frontends/common/ConstantFolding.hpp
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares complete-input numeric literal parsers for frontends.
 //
 //===----------------------------------------------------------------------===//
 #pragma once

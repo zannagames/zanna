@@ -33,6 +33,7 @@ namespace il::io::detail {
 ///
 /// @param mod Module that will receive all IR entities materialized by the
 ///             parser.
+/// @param parserLimits Resource budgets copied into the shared parse state.
 ParserState::ParserState(il::core::Module &mod, const il::io::ParserLimits &parserLimits)
     : m(mod), limits(parserLimits) {
     // Limits apply to the resulting module, including declarations supplied by

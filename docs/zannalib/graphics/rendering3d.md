@@ -1234,7 +1234,7 @@ Ray queries normalize non-zero directions internally. Zero-length or non-finite 
 
 High-level reusable model container for `.vscn`, `.fbx`, `.gltf`, `.glb`, `.obj`, and `.stl` assets. OBJ imports preserve safe relative `mtllib`/`usemtl` material groups as separate template nodes; STL imports synthesize one default-material mesh node.
 
-For offline conversion, `zanna asset bake <input> <output.vscn>` reloads the
+For offline conversion, `zanna asset bake <input> <output.scene3d>` reloads the
 written VSCN and compares its enumerable resources with the source
 `SceneAsset`. Human mode warns with stable `*-count-reduced` codes when a
 round-trip drops resources. `--json` emits the machine-readable

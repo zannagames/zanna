@@ -11,7 +11,7 @@
 ///
 /// @details This file implements:
 /// - resolveNamedType: maps type names to semantic types (built-ins, registry,
-///   imports, cross-module references)
+///   binds, cross-module references)
 /// - resolveTypeNode: resolves AST TypeNode trees to semantic TypeRefs
 /// - defineExternFunction: registers runtime/extern functions in scope
 /// - collectCaptures: collects captured variables from lambda bodies
@@ -502,8 +502,10 @@ TypeRef Sema::resolveTypeNode(const TypeNode *node) {
 /// @param paramTypes Parameter types.
 /// @param paramNames Parameter names (inherited from a prior extern decl when empty).
 /// @param pointerSafety Optional pointer-safety classification recorded for the function.
+/// @param documentation Tooling documentation, inherited from a prior extern when empty.
 /// @details The symbol is marked extern with no AST declaration; its function type is built
-///          from the parameter and return types.
+///          from the parameter and return types. A conflicting AST-backed extern signature is
+///          diagnosed instead of silently replacing the declaration.
 void Sema::defineExternFunction(const std::string &name,
                                 TypeRef returnType,
                                 const std::vector<TypeRef> &paramTypes,
@@ -561,6 +563,8 @@ void Sema::collectCaptures(const Expr *expr,
 }
 
 /// @brief Record @p name as a capture if it names an outer variable/parameter.
+/// @param ctx Mutable capture traversal state.
+/// @param name Referenced identifier spelling.
 /// @details Ignores names bound in any active local scope, and only captures symbols that are
 ///          variables or parameters; each name is captured at most once.
 void Sema::recordCapture(CaptureContext &ctx, const std::string &name) {
@@ -577,6 +581,8 @@ void Sema::recordCapture(CaptureContext &ctx, const std::string &name) {
 }
 
 /// @brief Add a match pattern's binding names to the current capture-tracking scope.
+/// @param ctx Mutable capture traversal state.
+/// @param pattern Pattern whose binding nodes are collected.
 /// @details Binding patterns introduce a local name (ignoring `Some`/`None` constructors);
 ///          tuple/constructor/or patterns recurse into their subpatterns. This prevents
 ///          pattern-bound names from being mistaken for captures.
@@ -600,6 +606,8 @@ void Sema::collectPatternBindings(CaptureContext &ctx, const MatchArm::Pattern &
 }
 
 /// @brief Walk a statement to collect captured variables, tracking nested scopes.
+/// @param ctx Mutable capture traversal state.
+/// @param stmt Statement to traverse; null is ignored.
 /// @details Pushes a fresh local scope for each block/loop/branch/handler so names declared
 ///          inside (loop variables, `var`s, catch bindings, pattern bindings) are treated as
 ///          locals rather than captures, and recurses into sub-statements/expressions.
@@ -737,6 +745,8 @@ void Sema::collectStmtCaptures(CaptureContext &ctx, const Stmt *stmt) {
 }
 
 /// @brief Walk an expression to collect captured variables.
+/// @param ctx Mutable capture traversal state.
+/// @param e Expression to traverse; null is ignored.
 /// @details Identifier references are recorded via recordCapture(); compound expressions
 ///          recurse into their sub-expressions, and block/match expressions push local scopes.
 ///          Nested lambdas are not descended into — they collect their own captures separately.

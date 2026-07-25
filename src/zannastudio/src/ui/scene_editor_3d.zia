@@ -107,9 +107,15 @@ module scene_editor_3d;
 bind "../core/document";
 bind "../core/project_manager";
 bind "../services/file_utils";
+bind "../services/material_library_3d";
 bind "../services/safe_io";
 bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
 bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
 bind "scene_component_authoring_controller";
 bind "scene_component_palette";
 bind "scene_component_schema";
@@ -133,6 +139,10 @@ bind Light3D = Zanna.Graphics3D.Light3D;
 bind Canvas3D = Zanna.Graphics3D.Canvas3D;
 bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
 bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
 bind Pixels = Zanna.Graphics.Pixels;
 bind Color = Zanna.Graphics.Color;
 bind Vec3 = Zanna.Math.Vec3;
@@ -141,6 +151,7 @@ bind Mat4 = Zanna.Math.Mat4;
 bind Math = Zanna.Math;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
 bind TempFile = Zanna.IO.TempFile;
 bind Path = Zanna.IO.Path;
 bind Str = Zanna.String;
@@ -173,11 +184,22 @@ final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
 final VIEWPORT_CLEAR_BLUE: Number = 0.13333333333333333;
 final VIEWPORT_CAMERA_NEAR: Number = 0.1;
 final VIEWPORT_CAMERA_MIN_DISTANCE: Number = 100.0;
+final VIEWPORT_FOV_DEGREES: Number = 60.0;
+final VIEWPORT_FOV_HALF_TAN: Number = 0.5773502691896257;
+final FLY_LOOK_DEGREES_PER_PIXEL: Number = 0.25;
+final FLY_BASE_SPEED_PER_SECOND: Number = 0.6;
+final FLY_FAST_MULTIPLIER: Number = 4.0;
+final FLY_MIN_SPEED_MULTIPLIER: Number = 0.1;
+final FLY_MAX_SPEED_MULTIPLIER: Number = 10.0;
 final VIEWPORT_DOUBLE_CLICK_MS: Integer = 400;
 final VIEWPORT_DOUBLE_CLICK_RADIUS_SQUARED: Integer = 64;
 
 final VIEWPORT_MODE_SHADED: Integer = 0;
 final VIEWPORT_MODE_WIREFRAME: Integer = 1;
+
+final INSET_WIDTH: Integer = 256;
+final INSET_HEIGHT: Integer = 144;
+final INSET_REFRESH_FRAMES: Integer = 8;
 
 final GIZMO_AXIS_NONE: Integer = -1;
 final GIZMO_AXIS_X: Integer = 0;
@@ -515,10 +537,12 @@ expose func UsesCompactLayout(width: Number) -> Boolean {
 class ProjectedPoint {
     expose Integer x;
     expose Integer y;
+    expose Boolean visible;
 
     expose func init() {
         x = 0;
         y = 0;
+        visible = true;
     }
 }
 
@@ -536,6 +560,61 @@ class SceneEditor3D {
     expose GUI.Button addSphereButton;
     expose GUI.Button addPlaneButton;
     expose GUI.Button addLightButton;
+    expose GUI.Button addCameraButton;
+    expose GUI.Button importInstanceButton;
+    expose GUI.GroupBox instanceGroup;
+    expose GUI.Label instanceSummary;
+    expose GUI.Button openPrefabSourceButton;
+    expose GUI.Button reloadInstancesButton;
+    expose GUI.Button unpackInstanceButton;
+    expose GUI.Button relinkInstanceButton;
+    hide Boolean importBrowserInstanceMode;
+    hide String pendingOpenPrefabPath;
+    expose GUI.GroupBox materialLibraryGroup;
+    expose GUI.Label materialLibraryStatus;
+    expose GUI.ListBox materialLibraryList;
+    expose GUI.TextInput materialLibraryNameInput;
+    expose GUI.Button materialLibrarySaveButton;
+    expose GUI.Button materialLibraryApplyButton;
+    expose GUI.Button materialLibraryReloadButton;
+    hide material_library_3d.MaterialLibrary3D materialLibrary;
+    hide String materialLibraryRoot;
+    hide Boolean materialLibraryOverwriteArmed;
+    hide Integer materialLibraryPollMs;
+    expose GUI.Checkbox staticCheck;
+    hide Integer staticRevision;
+    expose GUI.GroupBox bakeGroup;
+    expose GUI.Label bakeStatus;
+    expose GUI.Spinner bakeTexelsSpinner;
+    expose GUI.Spinner bakeSamplesSpinner;
+    expose GUI.Spinner bakeBouncesSpinner;
+    expose GUI.ColorPicker bakeSkyPicker;
+    expose GUI.Button bakeButton;
+    expose GUI.Button makeUniqueButton;
+    expose GUI.Button bakeProbesButton;
+    expose GUI.GroupBox probeGroup;
+    expose GUI.Label probeStatus;
+    expose GUI.Spinner probeMinXSpinner;
+    expose GUI.Spinner probeMinYSpinner;
+    expose GUI.Spinner probeMinZSpinner;
+    expose GUI.Spinner probeMaxXSpinner;
+    expose GUI.Spinner probeMaxYSpinner;
+    expose GUI.Spinner probeMaxZSpinner;
+    expose GUI.Spinner probeSpacingSpinner;
+    expose GUI.Button probeApplyButton;
+    expose GUI.Button probeRemoveButton;
+    expose GUI.GroupBox envGroup;
+    expose GUI.TextInput envSkyboxInput;
+    expose GUI.Button envBrowseButton;
+    expose GUI.Checkbox envIblCheck;
+    expose GUI.Spinner envIblIntensitySpinner;
+    expose GUI.Button envApplyButton;
+    hide LightBaker3D activeBaker;
+    hide LightBaker3D lastCompletedBaker;
+    hide Boolean bakeActive;
+    hide Boolean envBrowseMode;
+    hide String envSkyboxCubemapPath;
+    hide CubeMap3D envSkyboxCubemap;
     expose GUI.Button duplicateNodeButton;
     expose GUI.Button deleteNodeButton;
     expose GUI.Button orbitLeftButton;
@@ -583,6 +662,9 @@ class SceneEditor3D {
     expose GUI.Button applyTransformButton;
     expose scene_asset_browser.SceneAssetBrowser importAssetBrowser;
     expose scene_light_inspector_3d.SceneLightInspector3D lightInspector;
+    expose scene_camera_inspector_3d.SceneCameraInspector3D cameraInspector;
+    expose scene_collider_inspector_3d.SceneColliderInspector3D colliderInspector;
+    expose scene_asset_browser.SceneAssetBrowser componentAssetBrowser;
     expose scene_material_inspector_3d.SceneMaterialInspector3D materialInspector;
     expose scene_metadata_inspector_3d.SceneMetadataInspector3D metadataInspector;
     expose scene_component_palette.SceneComponentPalette componentPalette;
@@ -623,6 +705,47 @@ class SceneEditor3D {
     expose Integer gizmoMode;
     expose Integer gizmoTransformSpace;
     expose Boolean gizmoSnapEnabled;
+    expose Boolean viewPerspective;
+    expose Boolean showGrid;
+    expose Boolean showMarkers;
+    expose Boolean showLightOverlays;
+    expose Boolean showCameraOverlays;
+    expose Boolean showColliderOverlays;
+    expose Boolean showRouteOverlays;
+    expose Boolean showStats;
+    expose Number snapMoveIncrement;
+    expose Number snapRotateIncrement;
+    expose Number snapScaleIncrement;
+    expose GUI.Button projectionButton;
+    expose GUI.Button viewOptionsButton;
+    expose GUI.Flex viewOptionsRow;
+    expose GUI.Checkbox gridCheck;
+    expose GUI.Checkbox markersCheck;
+    expose GUI.Checkbox lightsCheck;
+    expose GUI.Checkbox camerasCheck;
+    expose GUI.Checkbox collidersCheck;
+    expose GUI.Checkbox routesCheck;
+    expose GUI.Checkbox statsCheck;
+    expose GUI.Spinner snapMoveSpinner;
+    expose GUI.Spinner snapRotateSpinner;
+    expose GUI.Spinner snapScaleSpinner;
+    hide Boolean viewOptionsVisible;
+    hide SceneNode lookThroughNode;
+    hide Boolean insetEnabled;
+    hide RenderTarget3D insetRenderTarget;
+    hide Canvas3D insetRenderCanvas;
+    hide Camera3D insetRenderCamera;
+    hide Pixels insetPixels;
+    hide Integer insetFrameCounter;
+    hide Integer insetLastRenderFrame;
+    hide Integer insetSourceRevision;
+    hide SceneNode insetSourceNode;
+    hide Boolean flyActive;
+    hide Integer flyLastMs;
+    hide Number flySpeedMultiplier;
+    hide Number flyYawRemainder;
+    hide Number flyPitchRemainder;
+    hide Boolean projectionCameraReady;
     expose Number viewTargetX;
     expose Number viewTargetY;
     expose Number viewTargetZ;
@@ -687,6 +810,61 @@ class SceneEditor3D {
         addSphereButton = null;
         addPlaneButton = null;
         addLightButton = null;
+        addCameraButton = null;
+        importInstanceButton = null;
+        instanceGroup = null;
+        instanceSummary = null;
+        openPrefabSourceButton = null;
+        reloadInstancesButton = null;
+        unpackInstanceButton = null;
+        relinkInstanceButton = null;
+        importBrowserInstanceMode = false;
+        pendingOpenPrefabPath = "";
+        materialLibraryGroup = null;
+        materialLibraryStatus = null;
+        materialLibraryList = null;
+        materialLibraryNameInput = null;
+        materialLibrarySaveButton = null;
+        materialLibraryApplyButton = null;
+        materialLibraryReloadButton = null;
+        materialLibrary = null;
+        materialLibraryRoot = "";
+        materialLibraryOverwriteArmed = false;
+        materialLibraryPollMs = 0;
+        staticCheck = null;
+        staticRevision = 0;
+        bakeGroup = null;
+        bakeStatus = null;
+        bakeTexelsSpinner = null;
+        bakeSamplesSpinner = null;
+        bakeBouncesSpinner = null;
+        bakeSkyPicker = null;
+        bakeButton = null;
+        makeUniqueButton = null;
+        bakeProbesButton = null;
+        probeGroup = null;
+        probeStatus = null;
+        probeMinXSpinner = null;
+        probeMinYSpinner = null;
+        probeMinZSpinner = null;
+        probeMaxXSpinner = null;
+        probeMaxYSpinner = null;
+        probeMaxZSpinner = null;
+        probeSpacingSpinner = null;
+        probeApplyButton = null;
+        probeRemoveButton = null;
+        envGroup = null;
+        envSkyboxInput = null;
+        envBrowseButton = null;
+        envIblCheck = null;
+        envIblIntensitySpinner = null;
+        envApplyButton = null;
+        activeBaker = null;
+        lastCompletedBaker = null;
+        bakeActive = false;
+        envBrowseMode = false;
+        envSkyboxCubemapPath = "";
+        envSkyboxCubemap = null;
         duplicateNodeButton = null;
         deleteNodeButton = null;
         orbitLeftButton = null;
@@ -735,6 +913,12 @@ class SceneEditor3D {
         importAssetBrowser = new scene_asset_browser.SceneAssetBrowser();
         lightInspector =
             new scene_light_inspector_3d.SceneLightInspector3D();
+        cameraInspector =
+            new scene_camera_inspector_3d.SceneCameraInspector3D();
+        colliderInspector =
+            new scene_collider_inspector_3d.SceneColliderInspector3D();
+        componentAssetBrowser =
+            new scene_asset_browser.SceneAssetBrowser();
         materialInspector = new
             scene_material_inspector_3d.SceneMaterialInspector3D();
         metadataInspector = new
@@ -779,6 +963,47 @@ class SceneEditor3D {
         gizmoTransformSpace =
             scene_transform_3d.TRANSFORM_SPACE_LOCAL;
         gizmoSnapEnabled = false;
+        viewPerspective = true;
+        showGrid = true;
+        showMarkers = true;
+        showLightOverlays = true;
+        showCameraOverlays = true;
+        showColliderOverlays = true;
+        showRouteOverlays = true;
+        showStats = false;
+        snapMoveIncrement = 0.5;
+        snapRotateIncrement = 15.0;
+        snapScaleIncrement = 0.1;
+        projectionButton = null;
+        viewOptionsButton = null;
+        viewOptionsRow = null;
+        gridCheck = null;
+        markersCheck = null;
+        lightsCheck = null;
+        camerasCheck = null;
+        collidersCheck = null;
+        routesCheck = null;
+        statsCheck = null;
+        snapMoveSpinner = null;
+        snapRotateSpinner = null;
+        snapScaleSpinner = null;
+        viewOptionsVisible = false;
+        flyActive = false;
+        flyLastMs = -1;
+        flySpeedMultiplier = 1.0;
+        flyYawRemainder = 0.0;
+        flyPitchRemainder = 0.0;
+        lookThroughNode = null;
+        insetEnabled = true;
+        insetRenderTarget = null;
+        insetRenderCanvas = null;
+        insetRenderCamera = null;
+        insetPixels = null;
+        insetFrameCounter = 0;
+        insetLastRenderFrame = -1000;
+        insetSourceRevision = -1;
+        insetSourceNode = null;
+        projectionCameraReady = false;
         viewTargetX = 0.0;
         viewTargetY = 0.0;
         viewTargetZ = 0.0;
@@ -853,7 +1078,11 @@ class SceneEditor3D {
         newSceneButton.SetTooltip("Replace this document with an empty 3D scene");
         importAssetButton = GUI.Button.New(toolbar, "Import Asset...");
         importAssetButton.SetTooltip(
-            "Import VSCN, glTF, GLB, FBX, OBJ, or STL into this scene document");
+            "Import Scene3D/VSCN, glTF, GLB, FBX, OBJ, or STL into this scene document");
+        importInstanceButton = GUI.Button.New(toolbar, "Import Instance...");
+        importInstanceButton.SetTooltip(
+            "Place a scene by reference (VSCN v7 prefab): the file stores "
+            + "only the reference plus this node's overrides");
         addEmptyButton = GUI.Button.New(toolbar, "+ Empty");
         addChildButton = GUI.Button.New(toolbar, "+ Child");
         addBoxButton = GUI.Button.New(toolbar, "+ Box");
@@ -862,6 +1091,9 @@ class SceneEditor3D {
         addLightButton = GUI.Button.New(toolbar, "+ Light");
         addLightButton.SetTooltip(
             "Create a top-level Point light node in one undoable edit");
+        addCameraButton = GUI.Button.New(toolbar, "+ Camera");
+        addCameraButton.SetTooltip(
+            "Create a top-level camera node in one undoable edit");
         duplicateNodeButton = GUI.Button.New(toolbar, "Duplicate");
         duplicateNodeButton.SetTooltip(
             "Duplicate selected hierarchy roots with their complete subtrees");
@@ -916,6 +1148,12 @@ class SceneEditor3D {
         zoomOutButton.SetTooltip("Zoom out");
         zoomInButton = GUI.Button.New(viewToolbar, "+");
         zoomInButton.SetTooltip("Zoom in");
+        projectionButton = GUI.Button.New(viewToolbar, "Persp");
+        projectionButton.SetTooltip(
+            "Toggle between perspective and orthographic projection");
+        viewOptionsButton = GUI.Button.New(viewToolbar, "View...");
+        viewOptionsButton.SetTooltip(
+            "Show grid/marker/light/stats toggles and snap increments");
         frameButton = GUI.Button.New(viewToolbar, "Frame all");
         frameButton.SetTooltip("Frame every scene node in the viewport");
         frameSelectedButton = GUI.Button.New(viewToolbar, "Frame selected");
@@ -924,6 +1162,48 @@ class SceneEditor3D {
         viewStatusLabel = GUI.Label.New(viewToolbar, "");
         viewStatusLabel.SetFlex(1.0);
         viewStatusLabel.SetPreferredSize(220.0, 0.0);
+
+        viewOptionsRow = GUI.Flex.New();
+        viewOptionsRow.SetDirection(GUI.FlexDirection.Row);
+        viewOptionsRow.SetWrap(GUI.FlexWrap.Wrap);
+        viewOptionsRow.SetAlign(GUI.Align.Center);
+        viewOptionsRow.SetGap(4.0);
+        viewOptionsRow.SetPadding(4.0);
+        root.AddChild(viewOptionsRow);
+        gridCheck = GUI.Checkbox.New(viewOptionsRow, "Grid");
+        gridCheck.SetTooltip("Show the ground grid overlay");
+        gridCheck.SetChecked(true);
+        markersCheck = GUI.Checkbox.New(viewOptionsRow, "Markers");
+        markersCheck.SetTooltip(
+            "Show node origin markers and hierarchy links");
+        markersCheck.SetChecked(true);
+        lightsCheck = GUI.Checkbox.New(viewOptionsRow, "Lights");
+        lightsCheck.SetTooltip("Show light glyph overlays");
+        lightsCheck.SetChecked(true);
+        camerasCheck = GUI.Checkbox.New(viewOptionsRow, "Cameras");
+        camerasCheck.SetTooltip(
+            "Show camera markers, frusta, and the preview inset");
+        camerasCheck.SetChecked(true);
+        collidersCheck = GUI.Checkbox.New(viewOptionsRow, "Colliders");
+        collidersCheck.SetTooltip("Show collider convention wireframes");
+        collidersCheck.SetChecked(true);
+        routesCheck = GUI.Checkbox.New(viewOptionsRow, "Routes");
+        routesCheck.SetTooltip("Show route waypoint polylines");
+        routesCheck.SetChecked(true);
+        statsCheck = GUI.Checkbox.New(viewOptionsRow, "Stats");
+        statsCheck.SetTooltip(
+            "Append visible/culled node counts to the view status");
+        statsCheck.SetChecked(false);
+        GUI.Label.New(viewOptionsRow, "Snap move");
+        snapMoveSpinner = AddSnapSpinner(
+            0.001, 1000.0, 0.1, 0.5, "Move snap increment");
+        GUI.Label.New(viewOptionsRow, "rotate");
+        snapRotateSpinner = AddSnapSpinner(
+            0.001, 180.0, 1.0, 15.0, "Rotate snap increment");
+        GUI.Label.New(viewOptionsRow, "scale");
+        snapScaleSpinner = AddSnapSpinner(
+            0.001, 10.0, 0.05, 0.1, "Scale snap increment");
+        viewOptionsRow.SetVisible(false);
 
         bodySplit = GUI.SplitPane.New(root, 1);
         bodySplit.SetFlex(1.0);
@@ -1025,12 +1305,16 @@ class SceneEditor3D {
         importAssetBrowser.Setup(
             importGroup,
             "Import Project 3D Asset...",
-            ".vscn,.gltf,.glb,.fbx,.obj,.stl",
+            ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl",
             "Import Asset");
         GUI.Label.New(inspector, "Name");
         nameInput = GUI.TextInput.New(inspector);
         nameInput.SetPlaceholder("Node name");
         visibleCheck = GUI.Checkbox.New(inspector, "Visible");
+        staticCheck = GUI.Checkbox.New(inspector, "Static (baked)");
+        staticCheck.SetTooltip(
+            "Static nodes participate in lightmap and probe bakes");
+        staticCheck.SetChecked(false);
 
         GUI.Label.New(inspector, "Position");
         var positionRow = GUI.HBox.New();
@@ -1064,8 +1348,202 @@ class SceneEditor3D {
             inspector,
             "Project components",
             "3D node component template");
+        var componentAssetHost =
+            GUI.GroupBox.New(inspector, "Component asset field");
+        componentAssetBrowser.Setup(
+            componentAssetHost,
+            "Browse Asset Field...",
+            file_utils.AssetKindExtensions("any"),
+            "Use In Field Draft");
         lightInspector.Setup(inspector);
+        cameraInspector.Setup(inspector);
+        colliderInspector.Setup(inspector);
+        instanceGroup = GUI.GroupBox.New(inspector, "Prefab instance");
+        instanceSummary = GUI.Label.New(
+            instanceGroup,
+            "Select a prefab instance node to manage its reference.");
+        instanceSummary.SetWordWrap(true);
+        var instanceRow = GUI.HBox.New();
+        instanceRow.SetSpacing(4.0);
+        instanceGroup.AddChild(instanceRow);
+        openPrefabSourceButton =
+            GUI.Button.New(instanceRow, "Open Source");
+        openPrefabSourceButton.SetTooltip(
+            "Open the referenced scene as its own document");
+        reloadInstancesButton = GUI.Button.New(instanceRow, "Reload");
+        reloadInstancesButton.SetTooltip(
+            "Re-graft every instance from its referenced file; "
+            + "overrides are preserved");
+        unpackInstanceButton = GUI.Button.New(instanceRow, "Unpack");
+        unpackInstanceButton.SetTooltip(
+            "Convert this instance into a plain editable copy in one "
+            + "undoable edit, removing the reference");
+        relinkInstanceButton = GUI.Button.New(instanceRow, "Re-link...");
+        relinkInstanceButton.SetTooltip(
+            "Choose a different referenced scene for this instance");
+
+        bakeGroup = GUI.GroupBox.New(inspector, "Lightmap bake");
+        bakeStatus = GUI.Label.New(
+            bakeGroup,
+            "Deterministic CPU bake over the live scene (ADR 0188).");
+        bakeStatus.SetWordWrap(true);
+        var bakeSettingsRow = GUI.HBox.New();
+        bakeSettingsRow.SetSpacing(4.0);
+        bakeGroup.AddChild(bakeSettingsRow);
+        GUI.Label.New(bakeSettingsRow, "Texels/u");
+        bakeTexelsSpinner = GUI.Spinner.New(bakeSettingsRow);
+        bakeTexelsSpinner.SetRange(
+            scene_bake_3d.MIN_TEXELS, scene_bake_3d.MAX_TEXELS);
+        bakeTexelsSpinner.SetStep(0.5);
+        bakeTexelsSpinner.SetDecimals(2);
+        bakeTexelsSpinner.SetValue(scene_bake_3d.DEFAULT_TEXELS);
+        bakeTexelsSpinner.SetPreferredSize(72.0, 0.0);
+        bakeTexelsSpinner.SetAccessibleName("Bake texels per unit");
+        GUI.Label.New(bakeSettingsRow, "Samples");
+        bakeSamplesSpinner = GUI.Spinner.New(bakeSettingsRow);
+        bakeSamplesSpinner.SetRange(1.0, 1024.0);
+        bakeSamplesSpinner.SetStep(16.0);
+        bakeSamplesSpinner.SetDecimals(0);
+        bakeSamplesSpinner.SetValue(64.0);
+        bakeSamplesSpinner.SetPreferredSize(72.0, 0.0);
+        bakeSamplesSpinner.SetAccessibleName("Bake samples per texel");
+        GUI.Label.New(bakeSettingsRow, "Bounces");
+        bakeBouncesSpinner = GUI.Spinner.New(bakeSettingsRow);
+        bakeBouncesSpinner.SetRange(0.0, 8.0);
+        bakeBouncesSpinner.SetStep(1.0);
+        bakeBouncesSpinner.SetDecimals(0);
+        bakeBouncesSpinner.SetValue(2.0);
+        bakeBouncesSpinner.SetPreferredSize(60.0, 0.0);
+        bakeBouncesSpinner.SetAccessibleName("Bake light bounces");
+        var bakeSkyRow = GUI.HBox.New();
+        bakeSkyRow.SetSpacing(4.0);
+        bakeGroup.AddChild(bakeSkyRow);
+        GUI.Label.New(bakeSkyRow, "Sky");
+        bakeSkyPicker = GUI.ColorPicker.New(bakeSkyRow);
+        bakeSkyPicker.SetFlex(1.0);
+        bakeSkyPicker.SetAlphaEnabled(false);
+        bakeSkyPicker.SetAccessibleName("Bake sky color");
+        var bakeActionRow = GUI.HBox.New();
+        bakeActionRow.SetSpacing(4.0);
+        bakeGroup.AddChild(bakeActionRow);
+        bakeButton = GUI.Button.New(bakeActionRow, "Bake");
+        bakeButton.SetTooltip(
+            "Run the chunked CPU bake and commit charts, atlas "
+            + "materials, and settings as one undoable edit");
+        makeUniqueButton =
+            GUI.Button.New(bakeActionRow, "Make Meshes Unique");
+        makeUniqueButton.SetTooltip(
+            "Deep-copy meshes shared by multiple nodes so charts "
+            + "cannot clobber each other; one undoable edit");
+        bakeProbesButton = GUI.Button.New(bakeActionRow, "Bake Probes");
+        bakeProbesButton.SetTooltip(
+            "Bake the selected probe grid against the last lightmap "
+            + "bake and save the .vlpg sidecar beside the scene");
+
+        probeGroup = GUI.GroupBox.New(inspector, "Light probe grid");
+        probeStatus = GUI.Label.New(
+            probeGroup,
+            "Author probes.* bounds on the selected node; games load "
+            + "the .vlpg sidecar.");
+        probeStatus.SetWordWrap(true);
+        var probeMinRow = GUI.HBox.New();
+        probeMinRow.SetSpacing(4.0);
+        probeGroup.AddChild(probeMinRow);
+        GUI.Label.New(probeMinRow, "Min");
+        probeMinXSpinner = AddProbeSpinner(probeMinRow, "min X", -8.0);
+        probeMinYSpinner = AddProbeSpinner(probeMinRow, "min Y", 0.0);
+        probeMinZSpinner = AddProbeSpinner(probeMinRow, "min Z", -8.0);
+        var probeMaxRow = GUI.HBox.New();
+        probeMaxRow.SetSpacing(4.0);
+        probeGroup.AddChild(probeMaxRow);
+        GUI.Label.New(probeMaxRow, "Max");
+        probeMaxXSpinner = AddProbeSpinner(probeMaxRow, "max X", 8.0);
+        probeMaxYSpinner = AddProbeSpinner(probeMaxRow, "max Y", 4.0);
+        probeMaxZSpinner = AddProbeSpinner(probeMaxRow, "max Z", 8.0);
+        var probeActionRow = GUI.HBox.New();
+        probeActionRow.SetSpacing(4.0);
+        probeGroup.AddChild(probeActionRow);
+        GUI.Label.New(probeActionRow, "Spacing");
+        probeSpacingSpinner =
+            AddProbeSpinner(probeActionRow, "spacing", 2.0);
+        probeApplyButton = GUI.Button.New(probeActionRow, "Apply Grid");
+        probeApplyButton.SetTooltip(
+            "Write the probes.* convention in one undoable edit");
+        probeRemoveButton = GUI.Button.New(probeActionRow, "Remove");
+        probeRemoveButton.SetTooltip(
+            "Remove every probes.* key while keeping the node");
+
+        envGroup = GUI.GroupBox.New(inspector, "Environment");
+        var envSkyRow = GUI.HBox.New();
+        envSkyRow.SetSpacing(4.0);
+        envGroup.AddChild(envSkyRow);
+        GUI.Label.New(envSkyRow, "Skybox");
+        envSkyboxInput = GUI.TextInput.New(envSkyRow);
+        envSkyboxInput.SetFlex(1.0);
+        envSkyboxInput.SetPlaceholder("panorama asset (relative)");
+        envSkyboxInput.SetAccessibleName("Environment skybox asset");
+        envBrowseButton = GUI.Button.New(envSkyRow, "Browse...");
+        envBrowseButton.SetTooltip(
+            "Choose a skybox panorama from the workspace index");
+        var envIblRow = GUI.HBox.New();
+        envIblRow.SetSpacing(4.0);
+        envGroup.AddChild(envIblRow);
+        envIblCheck = GUI.Checkbox.New(envIblRow, "Image-based lighting");
+        envIblCheck.SetChecked(false);
+        GUI.Label.New(envIblRow, "Intensity");
+        envIblIntensitySpinner = GUI.Spinner.New(envIblRow);
+        envIblIntensitySpinner.SetRange(
+            0.0, scene_bake_3d.MAX_IBL_INTENSITY);
+        envIblIntensitySpinner.SetStep(0.1);
+        envIblIntensitySpinner.SetDecimals(2);
+        envIblIntensitySpinner.SetValue(1.0);
+        envIblIntensitySpinner.SetPreferredSize(72.0, 0.0);
+        envIblIntensitySpinner.SetAccessibleName(
+            "Image-based lighting intensity");
+        envApplyButton = GUI.Button.New(envGroup, "Apply Environment");
+        envApplyButton.SetTooltip(
+            "Write the env.* convention to the scene root in one "
+            + "undoable edit; the viewport applies it live");
+
         materialInspector.Setup(inspector);
+
+        materialLibraryGroup =
+            GUI.GroupBox.New(inspector, "Material library");
+        materialLibraryStatus = GUI.Label.New(
+            materialLibraryGroup,
+            "Open a workspace folder to use materials.scene3d.");
+        materialLibraryStatus.SetWordWrap(true);
+        materialLibraryList = GUI.ListBox.New(materialLibraryGroup);
+        materialLibraryList.SetPreferredSize(0.0, 110.0);
+        materialLibraryList.SetAccessibleName("Project library materials");
+        var materialLibraryNameRow = GUI.HBox.New();
+        materialLibraryNameRow.SetSpacing(4.0);
+        materialLibraryGroup.AddChild(materialLibraryNameRow);
+        materialLibraryNameInput =
+            GUI.TextInput.New(materialLibraryNameRow);
+        materialLibraryNameInput.SetFlex(1.0);
+        materialLibraryNameInput.SetPlaceholder("Library material name");
+        materialLibraryNameInput.SetAccessibleName(
+            "Library material name");
+        var materialLibraryActions = GUI.Flex.New();
+        materialLibraryActions.SetDirection(GUI.FlexDirection.Row);
+        materialLibraryActions.SetWrap(GUI.FlexWrap.Wrap);
+        materialLibraryActions.SetGap(4.0);
+        materialLibraryGroup.AddChild(materialLibraryActions);
+        materialLibrarySaveButton =
+            GUI.Button.New(materialLibraryActions, "Save to Library");
+        materialLibrarySaveButton.SetTooltip(
+            "Store an independent copy of the selected node's material "
+            + "under this name; atomic, conflict-guarded write");
+        materialLibraryApplyButton =
+            GUI.Button.New(materialLibraryActions, "Apply from Library");
+        materialLibraryApplyButton.SetTooltip(
+            "Clone the chosen library material onto every selected "
+            + "node as one undoable edit; scenes stay self-contained");
+        materialLibraryReloadButton =
+            GUI.Button.New(materialLibraryActions, "Reload");
+        materialLibraryReloadButton.SetTooltip(
+            "Re-read materials.scene3d from disk");
 
         selectionInfo = GUI.Label.New(inspector, "No node selected");
         selectionInfo.SetWordWrap(true);
@@ -1128,6 +1606,7 @@ class SceneEditor3D {
         if activeDoc == null or activeDoc.kind != file_utils.DOC_KIND_SCENE_3D {
             return false;
         }
+        insetFrameCounter = insetFrameCounter + 1;
         if activeDoc != currentDoc or activeDoc.content != currentSerialized {
             Activate(activeDoc);
         }
@@ -1156,13 +1635,56 @@ class SceneEditor3D {
             changed = CommitScene("Created empty 3D scene") or changed;
         }
         if importAssetButton.WasClicked() {
+            importBrowserInstanceMode = false;
+            importAssetBrowser.SetExtensions(
+                ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl");
             changed = ImportAsset() or changed;
+        }
+        if importInstanceButton.WasClicked() {
+            importBrowserInstanceMode = true;
+            importAssetBrowser.SetExtensions(".scene3d,.vscn");
+            importAssetBrowser.Open();
         }
         var projectImportPath = importAssetBrowser.Pump(
             projectManager, currentDoc != null);
         if projectImportPath != "" {
-            changed = ImportAssetPath(projectImportPath) or changed;
+            if envBrowseMode {
+                envBrowseMode = false;
+                var documentPath = "";
+                if currentDoc != null {
+                    documentPath = currentDoc.filePath;
+                }
+                envSkyboxInput.SetText(
+                    scene_asset_browser.PortableReferencePath(
+                        projectImportPath, documentPath));
+                importAssetBrowser.Close();
+            } else if importBrowserInstanceMode {
+                changed = ImportInstancePath(projectImportPath) or changed;
+            } else {
+                changed = ImportAssetPath(projectImportPath) or changed;
+            }
         }
+        if openPrefabSourceButton.WasClicked() {
+            RequestOpenPrefabSource();
+        }
+        if reloadInstancesButton.WasClicked() {
+            ReloadPrefabInstances();
+        }
+        if unpackInstanceButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = UnpackSelectedInstance() or changed;
+        }
+        if relinkInstanceButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            importBrowserInstanceMode = true;
+            importAssetBrowser.SetExtensions(".scene3d,.vscn");
+            importAssetBrowser.Open();
+            detailLabel.SetText(
+                "Choose the new referenced scene for "
+                + NodeDisplayName(SelectedNode()) + ".");
+        }
+        PumpBakeControls();
+        changed = PumpBakeSteps() or changed;
         var projectMapPath = materialInspector.assetBrowser.Pump(
             projectManager,
             scene != null and SelectedNode() != null
@@ -1196,6 +1718,13 @@ class SceneEditor3D {
             snapTransformRevision = nextSnapRevision;
             SetGizmoSnapEnabled(snapTransformCheck.IsChecked());
         }
+        if projectionButton.WasClicked() {
+            SetViewProjection(!viewPerspective);
+        }
+        if viewOptionsButton.WasClicked() {
+            SetViewOptionsVisible(!viewOptionsVisible);
+        }
+        PumpViewOptionControls();
         if scene == null {
             if renderDirty { RenderViewport(); }
             ApplyPendingWorkspaceScroll();
@@ -1224,6 +1753,10 @@ class SceneEditor3D {
             changed = AddLightNode(
                 "Point Light " + scene.NodeCount, -1) >= 0 or changed;
         }
+        if addCameraButton.WasClicked() {
+            changed = AddCameraNode(
+                "Camera " + scene.NodeCount, -1) >= 0 or changed;
+        }
         if duplicateNodeButton.WasClicked() {
             changed = DuplicateSelectedNodes() > 0 or changed;
         }
@@ -1237,10 +1770,12 @@ class SceneEditor3D {
                 selectedIndex = Parse.IntOr(
                     GUI.TreeView.Node.GetData(primaryRow), -1);
             }
-            selectedIndices = scene_selection.FromData(
-                hierarchyTree.GetSelectedData(),
-                flatNodes.count(),
-                selectedIndex);
+            selectedIndices = ResolveInstanceOwnerSelection(
+                scene_selection.FromData(
+                    hierarchyTree.GetSelectedData(),
+                    flatNodes.count(),
+                    selectedIndex));
+            selectedIndex = ResolveInstanceOwnerIndex(selectedIndex);
             if selectedIndex < 0 and selectedIndices.count() > 0 {
                 selectedIndex = selectedIndices.get(0);
             }
@@ -1309,15 +1844,53 @@ class SceneEditor3D {
         if lightInspector.typeDropdown.WasChanged() {
             lightInspector.UpdateTypeControls();
         }
+        lightInspector.PumpDraftIntent();
         if lightInspector.applyButton.WasClicked()
-           and selectedIndices.count() == 1 {
+           and selectedIndices.count() > 0 {
             changed = ApplySelectedLightFromControls() or changed;
         }
         if lightInspector.removeButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = RemoveSelectedLights() or changed;
+        }
+        if cameraInspector.projectionDropdown.WasChanged() {
+            cameraInspector.UpdateProjectionControls();
+        }
+        if cameraInspector.applyButton.WasClicked()
            and selectedIndices.count() == 1 {
-            changed = RemoveNodeLight(selectedIndex) or changed;
+            changed = ApplySelectedCameraFromControls() or changed;
+        }
+        if cameraInspector.removeButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = RemoveNodeCamera(selectedIndex) or changed;
+        }
+        if cameraInspector.lookThroughButton.WasClicked() {
+            ToggleLookThrough();
+        }
+        if cameraInspector.previewCheck.WasChanged() {
+            insetEnabled = cameraInspector.previewCheck.IsChecked();
+            renderDirty = true;
+        }
+        if colliderInspector.kindDropdown.WasChanged() {
+            colliderInspector.UpdateKindControls();
+        }
+        if colliderInspector.applyButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = ApplySelectedColliderFromControls() or changed;
+        }
+        if colliderInspector.removeButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = RemoveNodeColliderConvention(selectedIndex) or changed;
+        }
+        var componentAssetPath = componentAssetBrowser.Pump(
+            projectManager,
+            scene != null and selectedIndices.count() == 1
+            and SelectedAssetComponentField() != null);
+        if componentAssetPath != "" {
+            ApplyComponentAssetPath(componentAssetPath);
         }
         materialInspector.PumpDraftIntent();
+        PumpMaterialLibraryControls();
         if materialInspector.applyButton.WasClicked()
            and selectedIndices.count() > 0 {
             changed = ApplySelectedMaterialFromControls() or changed;
@@ -1347,6 +1920,15 @@ class SceneEditor3D {
                and visibleCheck.IsIndeterminate() == false {
                 changed = ApplySelectedVisibility(
                     visibleCheck.IsChecked()) or changed;
+            }
+        }
+        var nextStaticRevision = staticCheck.GetRevision();
+        if nextStaticRevision != staticRevision {
+            staticRevision = nextStaticRevision;
+            if selectedIndices.count() > 0
+               and staticCheck.IsIndeterminate() == false {
+                changed = ApplySelectedStatic(
+                    staticCheck.IsChecked()) or changed;
             }
         }
 
@@ -1469,6 +2051,10 @@ class SceneEditor3D {
         RestoreWorkspaceState(doc);
         gizmoHoverAxis = GIZMO_AXIS_NONE;
         ResetGizmoDrag(true);
+        lookThroughNode = null;
+        insetPixels = null;
+        insetSourceRevision = -1;
+        insetSourceNode = null;
         loadError = "";
         scene = LoadGraphFromContent(doc.content);
         if scene == null {
@@ -1507,6 +2093,23 @@ class SceneEditor3D {
             viewTargetY, -1000000.0, 1000000.0);
         state.viewTargetZ = ClampNumber3D(
             viewTargetZ, -1000000.0, 1000000.0);
+        state.viewPerspective = viewPerspective;
+        state.showGrid = showGrid;
+        state.showMarkers = showMarkers;
+        state.showLightOverlays = showLightOverlays;
+        state.showCameraOverlays = showCameraOverlays;
+        state.showColliderOverlays = showColliderOverlays;
+        state.showRouteOverlays = showRouteOverlays;
+        state.showStats = showStats;
+        state.snapMoveIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapMoveIncrement,
+            scene_transform_3d.MAX_MOVE_SNAP_INCREMENT);
+        state.snapRotateIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapRotateIncrement,
+            scene_transform_3d.MAX_ROTATE_SNAP_INCREMENT);
+        state.snapScaleIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapScaleIncrement,
+            scene_transform_3d.MAX_SCALE_SNAP_INCREMENT);
         if bodySplit != null {
             state.splitPosition = ClampNumber3D(
                 bodySplit.GetPosition(), 0.20, 0.85);
@@ -1542,6 +2145,22 @@ class SceneEditor3D {
             viewTargetX = 0.0;
             viewTargetY = 0.0;
             viewTargetZ = 0.0;
+            viewPerspective = true;
+            showGrid = true;
+            showMarkers = true;
+            showLightOverlays = true;
+            showCameraOverlays = true;
+            showColliderOverlays = true;
+            showRouteOverlays = true;
+            showStats = false;
+            snapMoveIncrement =
+                scene_transform_3d.DEFAULT_MOVE_SNAP_INCREMENT;
+            snapRotateIncrement =
+                scene_transform_3d.DEFAULT_ROTATE_SNAP_INCREMENT;
+            snapScaleIncrement =
+                scene_transform_3d.DEFAULT_SCALE_SNAP_INCREMENT;
+            flyActive = false;
+            flyLastMs = -1;
             if bodySplit != null { bodySplit.SetPosition(0.65); }
             pendingInspectorScrollY = 0.0;
             inspectorRequestedVisible = true;
@@ -1549,6 +2168,7 @@ class SceneEditor3D {
             restoreInspectorScrollPending = true;
             SyncGizmoModeControls();
             UpdateViewportModeControls();
+            SyncViewOptionControls();
             return;
         }
 
@@ -1578,6 +2198,19 @@ class SceneEditor3D {
             state.viewTargetY, -1000000.0, 1000000.0);
         viewTargetZ = ClampNumber3D(
             state.viewTargetZ, -1000000.0, 1000000.0);
+        viewPerspective = state.viewPerspective;
+        showGrid = state.showGrid;
+        showMarkers = state.showMarkers;
+        showLightOverlays = state.showLightOverlays;
+        showCameraOverlays = state.showCameraOverlays;
+        showColliderOverlays = state.showColliderOverlays;
+        showRouteOverlays = state.showRouteOverlays;
+        showStats = state.showStats;
+        snapMoveIncrement = state.snapMoveIncrement;
+        snapRotateIncrement = state.snapRotateIncrement;
+        snapScaleIncrement = state.snapScaleIncrement;
+        flyActive = false;
+        flyLastMs = -1;
         if bodySplit != null {
             bodySplit.SetPosition(ClampNumber3D(
                 state.splitPosition, 0.20, 0.85));
@@ -1589,6 +2222,7 @@ class SceneEditor3D {
         restoreInspectorScrollPending = true;
         SyncGizmoModeControls();
         UpdateViewportModeControls();
+        SyncViewOptionControls();
     }
 
     /// @brief Toggle the inspector without making either compact pane unusable.
@@ -1629,10 +2263,12 @@ class SceneEditor3D {
     hide func ApplyResponsiveChrome() {
         if compactLayout {
             // Flex measurement cannot infer wrapped cross-axis height before
-            // its parent assigns a width. Reserve the three creation rows and
-            // four denser view rows required at defensive compact widths.
-            toolbar.SetPreferredSize(0.0, 96.0);
-            viewToolbar.SetPreferredSize(0.0, 132.0);
+            // its parent assigns a width. Reserve the four creation rows and
+            // five denser view rows required at defensive compact widths.
+            toolbar.SetPreferredSize(0.0, 128.0);
+            // Five wrapped view rows once the projection and view-options
+            // toggles join the row set at defensive compact widths.
+            viewToolbar.SetPreferredSize(0.0, 165.0);
             newSceneButton.SetText("New");
             importAssetButton.SetText("Import...");
             addEmptyButton.SetText("+ Node");
@@ -1645,6 +2281,7 @@ class SceneEditor3D {
             orbitDownButton.SetText("↓");
             frameButton.SetText("All");
             frameSelectedButton.SetText("Selected");
+            viewOptionsButton.SetText("View");
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else {
@@ -1662,9 +2299,12 @@ class SceneEditor3D {
             orbitDownButton.SetText("Pitch -");
             frameButton.SetText("Frame all");
             frameSelectedButton.SetText("Frame selected");
+            viewOptionsButton.SetText("View...");
             toolbarStatus.SetVisible(true);
             viewStatusLabel.SetVisible(true);
         }
+        UpdateProjectionControls();
+        UpdateViewOptionsChrome();
         UpdateGizmoModeControls();
         UpdateInspectorButton();
     }
@@ -1894,6 +2534,11 @@ class SceneEditor3D {
     expose func AddEmptyNode(name: String,
                              parentIndex: Integer) -> Integer {
         if scene == null { return -1; }
+        if parentIndex >= 0 and parentIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(parentIndex)) == false {
+            return -1;
+        }
         var parent: SceneNode = null;
         if parentIndex >= 0 and parentIndex < flatNodes.count() {
             parent = flatNodes.get(parentIndex);
@@ -1918,6 +2563,11 @@ class SceneEditor3D {
     expose func AddLightNode(name: String,
                              parentIndex: Integer) -> Integer {
         if scene == null { return -1; }
+        if parentIndex >= 0 and parentIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(parentIndex)) == false {
+            return -1;
+        }
         var state = new scene_light_3d.LightState3D();
         var light = scene_light_3d.BuildLight(state);
         if light == null {
@@ -2060,6 +2710,8 @@ class SceneEditor3D {
             nodeIndex, flatNodes.count());
         metadataOwnerIndex = nodeIndex;
         detailLabel.SetText("");
+        // Metadata keys feed component badges; rebuild rows in place.
+        RefreshHierarchy(node);
         RefreshMetadataFields(node);
         metadataInspector.SelectByKey(node, nextKey);
         selectedNodeMetadata = metadataInspector.selectedProperty;
@@ -2091,6 +2743,7 @@ class SceneEditor3D {
         selectedNodeMetadata = -1;
         metadataOwnerIndex = nodeIndex;
         detailLabel.SetText("");
+        RefreshHierarchy(node);
         RefreshMetadataFields(node);
         CaptureWorkspaceState();
         return true;
@@ -2181,7 +2834,9 @@ class SceneEditor3D {
         }
         selectedNodeMetadata = -1;
         metadataOwnerIndex = selectedIndex;
-        RefreshSelectedFields();
+        // Component membership feeds hierarchy badges and viewport tints;
+        // rebuild rows while preserving the batch selection.
+        RefreshHierarchy(null);
         SetEditorControlsEnabled(true);
         detailLabel.SetText(
             "Added " + missing + " missing field(s) from "
@@ -2209,9 +2864,19 @@ class SceneEditor3D {
             return false;
         }
         selectedNodeMetadata = metadataInspector.selectedProperty;
-        detailLabel.SetText(
-            "Editing " + field.label
-            + " in the raw typed-metadata controls.");
+        if field.kind == "asset" {
+            componentAssetBrowser.SetExtensions(
+                file_utils.AssetKindListExtensions(field.assetKinds));
+            componentAssetBrowser.Open();
+            detailLabel.SetText(
+                "Editing " + field.label
+                + ". Browse the filtered project assets or type a "
+                + "reference in the raw typed-metadata controls.");
+        } else {
+            detailLabel.SetText(
+                "Editing " + field.label
+                + " in the raw typed-metadata controls.");
+        }
         CaptureWorkspaceState();
         return true;
     }
@@ -3160,13 +3825,212 @@ class SceneEditor3D {
         return true;
     }
 
-    /// @brief Apply the current light inspector draft to its one selected node.
+    /// @brief Apply the light inspector to the selection (ADR 0186).
+    /// @details Zero light-bearing nodes: create from the full draft on
+    ///          every selected node. Otherwise: patch determined fields on
+    ///          light-bearing nodes only. One transaction either way.
     expose func ApplySelectedLightFromControls() -> Boolean {
-        if lightInspector == null or selectedIndices.count() != 1 {
+        if lightInspector == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var lightCount = 0;
+        var index = 0;
+        while index < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(index)).Light != null {
+                lightCount = lightCount + 1;
+            }
+            index = index + 1;
+        }
+        if lightCount == 0 {
+            return CreateLightsOnSelection(lightInspector.BuildState());
+        }
+        return ApplySelectedLightPatch(lightInspector.BuildPatch());
+    }
+
+    /// @brief Create one light per selected lightless node, one transaction.
+    expose func CreateLightsOnSelection(
+        state: scene_light_3d.LightState3D) -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var staged: List[Light3D] = [];
+        var createdCount = 0;
+        var index = 0;
+        while index < selectedIndices.count() {
+            var node = flatNodes.get(selectedIndices.get(index));
+            if node.Light != null {
+                staged.add(null);
+            } else {
+                var light = scene_light_3d.BuildLight(state);
+                if light == null {
+                    toolbarStatus.SetText("Light batch failed");
+                    detailLabel.SetText(
+                        "Studio could not allocate every light. "
+                        + "No selected nodes were changed.");
+                    GUI.Toast.Error("3D light batch failed");
+                    return false;
+                }
+                staged.add(light);
+                createdCount = createdCount + 1;
+            }
+            index = index + 1;
+        }
+        if createdCount == 0 { return false; }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        index = 0;
+        while index < selectedIndices.count() {
+            var stagedLight = staged.get(index);
+            if stagedLight != null {
+                flatNodes.get(
+                    selectedIndices.get(index)).Light = stagedLight;
+            }
+            index = index + 1;
+        }
+        if CommitScene(
+               "Added " + scene_light_3d.TypeName(state.kind)
+               + " lights to " + createdCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The light additions could not be committed.");
             return false;
         }
-        return ApplyNodeLight(
-            selectedIndex, lightInspector.BuildState());
+        RefreshHierarchy(null);
+        detailLabel.SetText(
+            "Created " + createdCount
+            + " independent light component(s) in one undoable edit.");
+        return true;
+    }
+
+    /// @brief Patch determined fields onto every selected light, staged
+    ///        clone-safe with the material sharing-group rule (ADR 0186).
+    expose func ApplySelectedLightPatch(
+        patch: scene_light_3d.LightPatch3D) -> Boolean {
+        if scene == null or patch == null or patch.HasFields() == false {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+
+        var currentLights: List[Light3D] = [];
+        var nextLights: List[Light3D] = [];
+        var changedCount = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node =
+                flatNodes.get(selectedIndices.get(selectionIndex));
+            var current = node.Light;
+            currentLights.add(current);
+            if current == null
+               or scene_light_3d.MatchesPatch(current, patch) {
+                nextLights.add(current);
+            } else {
+                var next: Light3D = null;
+                var prior = 0;
+                while prior < currentLights.count() - 1
+                      and next == null {
+                    if currentLights.get(prior) == current
+                       and nextLights.get(prior) != current {
+                        next = nextLights.get(prior);
+                    }
+                    prior = prior + 1;
+                }
+                if next == null {
+                    next = scene_light_3d.ApplyPatchUnique(
+                        current, patch);
+                }
+                if next == null {
+                    toolbarStatus.SetText("Light batch failed");
+                    detailLabel.SetText(
+                        "Studio could not construct every replacement "
+                        + "light. No selected nodes were changed.");
+                    GUI.Toast.Error("3D light batch failed");
+                    return false;
+                }
+                nextLights.add(next);
+                changedCount = changedCount + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if changedCount == 0 {
+            detailLabel.SetText(
+                "Every selected light already matches the determined "
+                + "fields.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex)).Light =
+                nextLights.get(selectionIndex);
+            selectionIndex = selectionIndex + 1;
+        }
+        if CommitScene(
+               "Updated light fields on " + changedCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The light batch could not be committed.");
+            return false;
+        }
+        RefreshLightFields(SelectedNode());
+        UpdateLightControls(true);
+        detailLabel.SetText(
+            "Light fields updated on " + changedCount
+            + " selected node(s); unresolved mixed fields were preserved.");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Remove lights from every selected node in one transaction.
+    expose func RemoveSelectedLights() -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var lightCount = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(selectionIndex)).Light != null {
+                lightCount = lightCount + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if lightCount == 0 {
+            detailLabel.SetText(
+                "No selected node has a light component.");
+            return false;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex)).Light = null;
+            selectionIndex = selectionIndex + 1;
+        }
+        if CommitScene(
+               "Removed lights from " + lightCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The light removal could not be committed.");
+            return false;
+        }
+        RefreshHierarchy(null);
+        detailLabel.SetText(
+            "Removed " + lightCount
+            + " light component(s); the scene nodes were preserved.");
+        return true;
     }
 
     /// @brief Remove one node light as a canonical history transaction.
@@ -3191,6 +4055,1160 @@ class SceneEditor3D {
         detailLabel.SetText(
             "Removed the light component; the scene node was preserved.");
         return true;
+    }
+
+    /// @brief Create one named top-level camera node transactionally.
+    expose func AddCameraNode(name: String,
+                              parentIndex: Integer) -> Integer {
+        if scene == null { return -1; }
+        if parentIndex >= 0 and parentIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(parentIndex)) == false {
+            return -1;
+        }
+        var state = new scene_camera_3d.CameraState3D();
+        var camera = scene_camera_3d.BuildCamera(state);
+        if camera == null {
+            toolbarStatus.SetText("Camera creation failed");
+            detailLabel.SetText(
+                "Studio could not allocate the camera component.");
+            GUI.Toast.Error("3D camera creation failed");
+            return -1;
+        }
+        var parent: SceneNode = null;
+        if parentIndex >= 0 and parentIndex < flatNodes.count() {
+            parent = flatNodes.get(parentIndex);
+        }
+        var node = SceneNode.New();
+        if node == null {
+            toolbarStatus.SetText("Camera creation failed");
+            detailLabel.SetText("Studio could not allocate a scene node.");
+            GUI.Toast.Error("3D camera creation failed");
+            return -1;
+        }
+        var nodeName = Str.Trim(name);
+        if nodeName == "" { nodeName = "Camera " + scene.NodeCount; }
+        node.Name = nodeName;
+        node.Camera = camera;
+        if parent != null {
+            parent.AddChild(node);
+        } else {
+            scene.Add(node);
+        }
+        if CommitScene("Added " + nodeName) == false { return -1; }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Created a perspective camera. Use the Camera component "
+            + "inspector to change projection and clip planes.");
+        return selectedIndex;
+    }
+
+    /// @brief Apply one independent camera component transaction.
+    /// @details A replacement camera is constructed before assignment, so a
+    ///          shared imported camera instance is never mutated in place.
+    expose func ApplyNodeCamera(
+        nodeIndex: Integer,
+        state: scene_camera_3d.CameraState3D) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node.Camera != null
+           and scene_camera_3d.Matches(node.Camera, state) {
+            detailLabel.SetText("The node camera is already up to date.");
+            return false;
+        }
+        var next = scene_camera_3d.BuildCamera(state);
+        if next == null {
+            toolbarStatus.SetText("Camera edit failed");
+            detailLabel.SetText(
+                "Studio could not construct an independent camera value.");
+            GUI.Toast.Error("3D camera edit failed");
+            return false;
+        }
+        node.Camera = next;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        var projectionName =
+            scene_camera_3d.ProjectionName(next.IsOrtho);
+        if CommitScene(
+               "Updated " + projectionName + " camera on "
+               + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            projectionName
+            + " camera updated as one independent, undoable component.");
+        return true;
+    }
+
+    /// @brief Apply the camera inspector draft to its one selected node.
+    expose func ApplySelectedCameraFromControls() -> Boolean {
+        if cameraInspector == null or selectedIndices.count() != 1 {
+            return false;
+        }
+        return ApplyNodeCamera(
+            selectedIndex, cameraInspector.BuildState());
+    }
+
+    /// @brief Remove one node camera as a canonical history transaction.
+    expose func RemoveNodeCamera(nodeIndex: Integer) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node.Camera == null {
+            detailLabel.SetText("The selected node has no camera component.");
+            return false;
+        }
+        if lookThroughNode == node { lookThroughNode = null; }
+        node.Camera = null;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene(
+               "Removed camera from " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Removed the camera component; the scene node was preserved.");
+        return true;
+    }
+
+    /// @brief Toggle authored-camera look-through; workspace-only.
+    expose func ToggleLookThrough() -> Boolean {
+        if lookThroughNode != null {
+            lookThroughNode = null;
+            renderDirty = true;
+            RefreshCameraFields(SelectedNode());
+            return true;
+        }
+        var node = SelectedNode();
+        if node == null or node.Camera == null { return false; }
+        flyActive = false;
+        lookThroughNode = node;
+        renderDirty = true;
+        RefreshCameraFields(node);
+        return true;
+    }
+
+    /// @brief Report whether an authored camera drives the viewport.
+    expose func IsLookingThroughCamera() -> Boolean {
+        return ActiveLookThroughNode() != null;
+    }
+
+    /// @brief Apply the collider inspector draft as one VSCN transaction.
+    expose func ApplySelectedColliderFromControls() -> Boolean {
+        if colliderInspector == null or selectedIndices.count() != 1 {
+            return false;
+        }
+        return ApplyNodeCollider(
+            selectedIndex, colliderInspector.BuildState());
+    }
+
+    /// @brief Write one collider convention as one canonical transaction.
+    /// @details Writes kind-applicable keys, removes stale dimension keys,
+    ///          refuses exact no-ops, and reloads the canonical document on
+    ///          any partial write failure so nodes never keep half an edit.
+    expose func ApplyNodeCollider(
+        nodeIndex: Integer,
+        state: scene_collider_3d.ColliderState3D) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var next = scene_collider_3d.Normalize(state);
+        if next.kind == scene_collider_3d.COLLIDER_NONE {
+            return RemoveNodeColliderConvention(nodeIndex);
+        }
+        if scene_collider_3d.Matches(node, next) {
+            detailLabel.SetText(
+                "The node collider convention is already up to date.");
+            return false;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        if scene_collider_3d.WriteToNode(node, next) == false {
+            RestoreNodeComponentEdit(
+                previousSelection,
+                previousPrimary,
+                "The collider edit was rejected. No nodes were changed.");
+            return false;
+        }
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        var kindName = scene_collider_3d.KindName(next.kind);
+        if CommitScene(
+               "Updated " + kindName + " collider on "
+               + NodeDisplayName(node)) == false {
+            RestoreNodeComponentEdit(
+                previousSelection,
+                previousPrimary,
+                "The collider edit could not be committed.");
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            kindName + " collider convention written as one undoable "
+            + "typed-metadata edit.");
+        return true;
+    }
+
+    /// @brief Remove the complete collider convention transactionally.
+    expose func RemoveNodeColliderConvention(
+        nodeIndex: Integer) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if scene_collider_3d.RemoveFromNode(node) == false {
+            detailLabel.SetText(
+                "The selected node has no collider convention.");
+            return false;
+        }
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene(
+               "Removed collider from " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Removed every collider key; the scene node was preserved.");
+        return true;
+    }
+
+    /// @brief Return the selected asset-kind schema field, or null.
+    hide func SelectedAssetComponentField()
+        -> scene_component_schema.SceneComponentField {
+        if componentPalette == null { return null; }
+        var field = componentPalette.SelectedField();
+        if field == null or field.kind != "asset" { return null; }
+        return field;
+    }
+
+    /// @brief Stage one browsed asset path into the metadata draft.
+    /// @details Fixes the ADR 0178 deferral: asset-kind schema fields browse
+    ///          the bounded workspace index (filtered by the field's asset
+    ///          kinds) and stage a portable reference; the canonical write
+    ///          still flows through the normal metadata transaction.
+    hide func ApplyComponentAssetPath(assetPath: String) {
+        var field = SelectedAssetComponentField();
+        var node = SelectedNode();
+        if field == null or node == null { return; }
+        var documentPath = "";
+        if currentDoc != null { documentPath = currentDoc.filePath; }
+        var portable = scene_asset_browser.PortableReferencePath(
+            assetPath, documentPath);
+        if portable == "" { return; }
+        if metadataInspector.SetDraft(
+               node, field.key, "string", portable) == false {
+            return;
+        }
+        selectedNodeMetadata = metadataInspector.selectedProperty;
+        detailLabel.SetText(
+            "Staged " + portable + " into " + field.label
+            + ". Save the metadata draft to commit one undoable edit.");
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Place one scene by reference as a VSCN v7 prefab instance.
+    /// @details The referencing document must be saved so the reference can
+    ///          stay portable; grafting happens through the canonical loader
+    ///          on the post-commit reload (one implementation everywhere).
+    expose func ImportInstancePath(path: String) -> Boolean {
+        importBrowserInstanceMode = false;
+        if path == "" or currentDoc == null or scene == null {
+            return false;
+        }
+        if currentDoc.filePath == "" {
+            detailLabel.SetText(
+                "Save this scene before placing instances so the "
+                + "reference can stay relative and portable.");
+            toolbarStatus.SetText("Instance import needs a saved scene");
+            return false;
+        }
+        var lowered = Str.ToLower(path);
+        if Str.EndsWith(lowered, ".scene3d") == false
+           and Str.EndsWith(lowered, ".vscn") == false {
+            detailLabel.SetText(
+                "Instances reference .scene3d/.vscn scenes; other formats "
+                + "import as copies.");
+            return false;
+        }
+        var portable = scene_asset_browser.PortableReferencePath(
+            path, currentDoc.filePath);
+        if portable == "" { return false; }
+        var relinkTarget = SelectedNode();
+        if relinkTarget != null and relinkTarget.PrefabPath != "" {
+            if relinkTarget.PrefabPath == portable {
+                detailLabel.SetText(
+                    "The instance already references " + portable + ".");
+                return false;
+            }
+            if relinkTarget.SetPrefabReference(portable) == false {
+                detailLabel.SetText(
+                    "The reference must be relative; move the referenced "
+                    + "scene inside the workspace.");
+                return false;
+            }
+            if CommitScene(
+                   "Re-linked instance to " + portable) == false {
+                return false;
+            }
+            LoadDocumentModel(currentDoc, true);
+            detailLabel.SetText(
+                "Re-linked the instance to " + portable + ".");
+            return true;
+        }
+        var node = SceneNode.New();
+        if node == null { return false; }
+        var stem = Path.Name(path);
+        node.Name = stem + " Instance";
+        if node.SetPrefabReference(portable) == false {
+            detailLabel.SetText(
+                "The reference must be relative; move the referenced "
+                + "scene inside the workspace.");
+            return false;
+        }
+        scene.Add(node);
+        if CommitScene("Instanced " + portable) == false {
+            return false;
+        }
+        LoadDocumentModel(currentDoc, true);
+        detailLabel.SetText(
+            "Placed " + portable + " by reference. The file stores only "
+            + "the reference plus this node's overrides.");
+        return true;
+    }
+
+    /// @brief Queue the referenced scene for the shell's open command.
+    hide func RequestOpenPrefabSource() {
+        var node = SelectedNode();
+        if node == null or node.PrefabPath == ""
+           or currentDoc == null or currentDoc.filePath == "" {
+            detailLabel.SetText(
+                "Select a prefab instance in a saved scene to open its "
+                + "source.");
+            return;
+        }
+        pendingOpenPrefabPath = Path.Normalize(Path.Join(
+            Path.Directory(currentDoc.filePath), node.PrefabPath));
+        detailLabel.SetText(
+            "Opening " + node.PrefabPath + " as its own document.");
+    }
+
+    /// @brief Consume the queued prefab-source path for the command layer.
+    expose func TakeOpenPrefabSourcePath() -> String {
+        var path = pendingOpenPrefabPath;
+        pendingOpenPrefabPath = "";
+        return path;
+    }
+
+    /// @brief Re-graft every instance from its referenced files.
+    expose func ReloadPrefabInstances() {
+        if currentDoc == null { return; }
+        LoadDocumentModel(currentDoc, true);
+        toolbarStatus.SetText("Instances reloaded");
+        detailLabel.SetText(
+            "Re-grafted every prefab instance from its referenced file; "
+            + "overrides were preserved.");
+    }
+
+    /// @brief Convert the selected instance into a plain editable copy.
+    expose func UnpackSelectedInstance() -> Boolean {
+        var node = SelectedNode();
+        if node == null or node.PrefabPath == "" {
+            detailLabel.SetText(
+                "Select a prefab instance node to unpack.");
+            return false;
+        }
+        if node.ClearPrefabReference() == false { return false; }
+        if CommitScene(
+               "Unpacked instance " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Unpacked the instance into plain editable nodes; the "
+            + "reference was removed.");
+        return true;
+    }
+
+    /// @brief Resolve instance content to its owning prefab node.
+    /// @details Instance content is locked (ADR 0187): selection always
+    ///          lands on the owning instance so every edit path sees the
+    ///          override surface, never grafted internals.
+    hide func ResolveInstanceOwnerIndex(nodeIndex: Integer) -> Integer {
+        if nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return nodeIndex;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node == null or node.IsInstanceContent == false {
+            return nodeIndex;
+        }
+        var owner = node.Parent;
+        var ancestorSteps = 0;
+        while owner != null and ancestorSteps < 128 {
+            if owner.PrefabPath != "" {
+                var ownerIndex = FindFlatIndex(owner);
+                if ownerIndex >= 0 { return ownerIndex; }
+                return nodeIndex;
+            }
+            owner = owner.Parent;
+            ancestorSteps = ancestorSteps + 1;
+        }
+        return nodeIndex;
+    }
+
+    /// @brief Remap one selection so it never contains instance content.
+    hide func ResolveInstanceOwnerSelection(
+        indices: List[Integer]) -> List[Integer] {
+        var resolved: List[Integer] = [];
+        var remapped = false;
+        var index = 0;
+        while index < indices.count() {
+            var ownerIndex =
+                ResolveInstanceOwnerIndex(indices.get(index));
+            if ownerIndex != indices.get(index) { remapped = true; }
+            if scene_selection.Contains(resolved, ownerIndex) == false {
+                resolved.add(ownerIndex);
+            }
+            index = index + 1;
+        }
+        if remapped {
+            detailLabel.SetText(
+                "Instance content is locked; selected the owning "
+                + "prefab instance instead.");
+        }
+        return resolved;
+    }
+
+    /// @brief Return whether a parent target may receive new children.
+    /// @details Children of prefab nodes never serialize, and grafted
+    ///          content is locked, so both reject with a truthful message.
+    hide func ParentAcceptsAuthoredChildren(parent: SceneNode) -> Boolean {
+        if parent == null { return true; }
+        if parent.PrefabPath != "" {
+            detailLabel.SetText(
+                "Prefab instances own their grafted content; new children "
+                + "would not serialize. Unpack the instance first.");
+            return false;
+        }
+        if parent.IsInstanceContent {
+            detailLabel.SetText(
+                "Instance content is locked. Unpack the owning instance "
+                + "to edit its nodes.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Small bounded probe-bounds spinner builder.
+    hide func AddProbeSpinner(parent: GUI.HBox,
+                              label: String,
+                              value: Number) -> GUI.Spinner {
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(-1000000.0, 1000000.0);
+        spinner.SetStep(0.5);
+        spinner.SetDecimals(2);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName(label + " probe value");
+        return spinner;
+    }
+
+    /// @brief Pump every bake, probe, and environment intent (ADR 0188).
+    hide func PumpBakeControls() {
+        if bakeButton == null { return; }
+        if bakeButton.WasClicked() {
+            if bakeActive { CancelBake(); }
+            else { StartBake(); }
+        }
+        if makeUniqueButton.WasClicked() {
+            MakeMeshesUniqueForBaking();
+        }
+        if probeApplyButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            ApplySelectedProbeGrid();
+        }
+        if probeRemoveButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            RemoveSelectedProbeGrid();
+        }
+        if bakeProbesButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            BakeSelectedProbeGrid();
+        }
+        if envBrowseButton.WasClicked() {
+            envBrowseMode = true;
+            importBrowserInstanceMode = false;
+            importAssetBrowser.SetExtensions(".hdr,.png,.jpg,.jpeg");
+            importAssetBrowser.Open();
+        }
+        if envApplyButton.WasClicked() {
+            ApplyEnvironmentFromControls();
+        }
+    }
+
+    /// @brief Read the bake settings draft from the retained controls.
+    hide func BakeSettingsFromControls() -> scene_bake_3d.BakeSettings3D {
+        var state = new scene_bake_3d.BakeSettings3D();
+        state.texelsPerUnit = bakeTexelsSpinner.Value;
+        state.samples = Convert.NumToInt(bakeSamplesSpinner.Value);
+        state.bounces = Convert.NumToInt(bakeBouncesSpinner.Value);
+        state.skyR =
+            scene_light_3d.UnitFromByte(bakeSkyPicker.GetRed());
+        state.skyG =
+            scene_light_3d.UnitFromByte(bakeSkyPicker.GetGreen());
+        state.skyB =
+            scene_light_3d.UnitFromByte(bakeSkyPicker.GetBlue());
+        return scene_bake_3d.NormalizeSettings(state);
+    }
+
+    /// @brief Begin one chunked lightmap bake over the live scene.
+    /// @details The shared-mesh preflight refuses first: the baker writes
+    ///          chart UVs into mesh vertices, so shared meshes would
+    ///          clobber each other (ADR 0188).
+    expose func StartBake() -> Boolean {
+        if scene == null or bakeActive { return false; }
+        var staticMeshCount = 0;
+        var staticScan = 0;
+        while staticScan < flatNodes.count() {
+            var staticNode = flatNodes.get(staticScan);
+            if staticNode.GetStatic() and staticNode.Mesh != null {
+                staticMeshCount = staticMeshCount + 1;
+            }
+            staticScan = staticScan + 1;
+        }
+        if staticMeshCount == 0 {
+            bakeStatus.SetText(
+                "Bake refused: no static mesh nodes. Mark bake "
+                + "participants with the Static checkbox first.");
+            return false;
+        }
+        var sharedNames =
+            scene_bake_3d.SharedMeshNodeNames(AllLiveNodes());
+        if sharedNames.count() > 0 {
+            var listing = "";
+            var index = 0;
+            while index < sharedNames.count() and index < 8 {
+                if listing != "" { listing = listing + ", "; }
+                listing = listing + sharedNames.get(index);
+                index = index + 1;
+            }
+            if sharedNames.count() > 8 {
+                listing = listing + ", …";
+            }
+            bakeStatus.SetText(
+                "Bake refused: " + sharedNames.count()
+                + " node(s) share meshes (" + listing
+                + "). Run Make Meshes Unique first.");
+            detailLabel.SetText(
+                "Baking writes chart UVs into mesh vertices, so shared "
+                + "meshes would overwrite each other's charts.");
+            return false;
+        }
+        var settings = BakeSettingsFromControls();
+        var baker = LightBaker3D.New(scene);
+        if baker == null {
+            bakeStatus.SetText("The light baker could not be created.");
+            return false;
+        }
+        baker.TexelsPerUnit = settings.texelsPerUnit;
+        baker.Samples = settings.samples;
+        baker.Bounces = settings.bounces;
+        baker.SetSkyColor(settings.skyR, settings.skyG, settings.skyB);
+        var lightCount = 0;
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            if node.Light != null {
+                var worldLight = scene_bake_3d.WorldSpaceLight(
+                    node, node.Light);
+                if worldLight != null {
+                    baker.AddLight(worldLight);
+                    lightCount = lightCount + 1;
+                }
+            }
+            index = index + 1;
+        }
+        activeBaker = baker;
+        bakeActive = true;
+        bakeButton.SetText("Cancel Bake");
+        bakeStatus.SetText(
+            "Baking with " + lightCount + " authored light(s)…");
+        return true;
+    }
+
+    /// @brief Run bounded bake chunks inside the editor pump.
+    /// @return True when a completed bake committed document content.
+    hide func PumpBakeSteps() -> Boolean {
+        if bakeActive == false or activeBaker == null { return false; }
+        var startMs = Zanna.Time.Clock.NowMs();
+        var complete = false;
+        while complete == false
+              and Zanna.Time.Clock.NowMs() - startMs < 8 {
+            complete = activeBaker.BakeStep();
+        }
+        if complete { return FinishBake(); }
+        var percent = Convert.NumToInt(activeBaker.Progress * 100.0);
+        bakeStatus.SetText("Baking… " + percent + "%");
+        return false;
+    }
+
+    /// @brief Apply and commit one completed bake as one transaction.
+    hide func FinishBake() -> Boolean {
+        var baker = activeBaker;
+        bakeActive = false;
+        activeBaker = null;
+        bakeButton.SetText("Bake");
+        if baker == null or scene == null { return false; }
+        baker.Apply();
+        if scene_bake_3d.WriteSettingsToRoot(
+               scene.Root, BakeSettingsFromControls()) == false {
+            RollBackFailedCommit(
+                "The bake settings could not be persisted.");
+            return false;
+        }
+        if CommitScene("Baked lightmaps") == false {
+            RollBackFailedCommit(
+                "The completed bake could not be committed.");
+            return false;
+        }
+        lastCompletedBaker = baker;
+        bakeStatus.SetText(
+            "Bake applied: charts, atlas materials, and settings "
+            + "committed as one undoable edit.");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Cancel an active bake and restore the exact prior document.
+    expose func CancelBake() {
+        if bakeActive == false { return; }
+        bakeActive = false;
+        activeBaker = null;
+        bakeButton.SetText("Bake");
+        if currentDoc != null { LoadDocumentModel(currentDoc, true); }
+        bakeStatus.SetText(
+            "Bake canceled; the document was restored exactly.");
+    }
+
+    /// @brief Report whether a chunked bake currently owns the scene.
+    expose func IsBakeActive() -> Boolean {
+        return bakeActive;
+    }
+
+    /// @brief Return every represented live node for preflight scans.
+    hide func AllLiveNodes() -> List[SceneNode] {
+        var nodes: List[SceneNode] = [];
+        var index = 0;
+        while index < flatNodes.count() {
+            nodes.add(flatNodes.get(index));
+            index = index + 1;
+        }
+        return nodes;
+    }
+
+    /// @brief Deep-copy shared meshes per node in one undoable edit.
+    expose func MakeMeshesUniqueForBaking() -> Boolean {
+        if scene == null or bakeActive { return false; }
+        var seen: List[Mesh3D2] = [];
+        var copies = 0;
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            var mesh = node.Mesh;
+            if mesh != null {
+                var priorUse = false;
+                var scan = 0;
+                while scan < seen.count() and priorUse == false {
+                    if seen.get(scan) == mesh { priorUse = true; }
+                    scan = scan + 1;
+                }
+                if priorUse {
+                    var copy = mesh.Clone() as Mesh3D2;
+                    if copy == null {
+                        RestoreNodeComponentEdit(
+                            selectedIndices, selectedIndex,
+                            "A mesh copy failed. No nodes were changed.");
+                        return false;
+                    }
+                    node.Mesh = copy;
+                    copies = copies + 1;
+                } else {
+                    seen.add(mesh);
+                }
+            }
+            index = index + 1;
+        }
+        if copies == 0 {
+            bakeStatus.SetText(
+                "Every baked node already owns a unique mesh.");
+            return false;
+        }
+        if CommitScene(
+               "Made " + copies + " shared mesh(es) unique for baking")
+           == false {
+            return false;
+        }
+        bakeStatus.SetText(
+            copies + " shared mesh(es) deep-copied; baking can proceed.");
+        return true;
+    }
+
+    /// @brief Write the probes.* convention onto the selected node.
+    expose func ApplySelectedProbeGrid() -> Boolean {
+        var node = SelectedNode();
+        if node == null or scene == null { return false; }
+        var state = new scene_bake_3d.ProbeGridState3D();
+        state.minX = probeMinXSpinner.Value;
+        state.minY = probeMinYSpinner.Value;
+        state.minZ = probeMinZSpinner.Value;
+        state.maxX = probeMaxXSpinner.Value;
+        state.maxY = probeMaxYSpinner.Value;
+        state.maxZ = probeMaxZSpinner.Value;
+        state.spacing = probeSpacingSpinner.Value;
+        if scene_bake_3d.WriteProbeGridToNode(node, state) == false {
+            return false;
+        }
+        if CommitScene(
+               "Authored probe grid on " + NodeDisplayName(node))
+           == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        probeStatus.SetText(
+            "Probe grid written as one undoable typed-metadata edit.");
+        return true;
+    }
+
+    /// @brief Remove the probes.* convention from the selected node.
+    expose func RemoveSelectedProbeGrid() -> Boolean {
+        var node = SelectedNode();
+        if node == null or scene == null { return false; }
+        if scene_bake_3d.RemoveProbeGridFromNode(node) == false {
+            probeStatus.SetText(
+                "The selected node has no probe grid.");
+            return false;
+        }
+        if CommitScene(
+               "Removed probe grid from " + NodeDisplayName(node))
+           == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        probeStatus.SetText("Probe grid removed.");
+        return true;
+    }
+
+    /// @brief Bake the selected probe grid and save its .vlpg sidecar.
+    /// @details The sidecar never dirties the scene document (ADR 0188).
+    expose func BakeSelectedProbeGrid() -> Boolean {
+        var node = SelectedNode();
+        var state = scene_bake_3d.ProbeGridFromNode(node);
+        if state.present == false {
+            probeStatus.SetText(
+                "Apply a probe grid to the selected node first.");
+            return false;
+        }
+        if lastCompletedBaker == null {
+            probeStatus.SetText(
+                "Run a lightmap bake first; probes sample its result.");
+            return false;
+        }
+        if currentDoc == null or currentDoc.filePath == "" {
+            probeStatus.SetText(
+                "Save the scene first so the .vlpg sidecar has a home.");
+            return false;
+        }
+        var grid = LightProbeGrid3D.New(
+            Vec3.New(state.minX, state.minY, state.minZ),
+            Vec3.New(state.maxX, state.maxY, state.maxZ),
+            state.spacing);
+        if grid == null { return false; }
+        grid.Bake(lastCompletedBaker);
+        var sidecarPath = SceneSidecarPath(".vlpg");
+        if grid.Save(sidecarPath) == false {
+            probeStatus.SetText(
+                "The probe sidecar could not be written: " + sidecarPath);
+            return false;
+        }
+        probeStatus.SetText(
+            "Baked " + grid.ProbeCount + " probes to "
+            + Path.Name(sidecarPath)
+            + "; the scene document is untouched.");
+        return true;
+    }
+
+    /// @brief Sibling sidecar path derived from the document path.
+    hide func SceneSidecarPath(extension: String) -> String {
+        var base = currentDoc.filePath;
+        var dot = Str.LastIndexOf(base, ".");
+        if dot > 0 { base = Str.MidLen(base, 1, dot - 1); }
+        return base + extension;
+    }
+
+    /// @brief Write the env.* convention to the root as one transaction.
+    expose func ApplyEnvironmentFromControls() -> Boolean {
+        if scene == null { return false; }
+        var state = new scene_bake_3d.EnvironmentState3D();
+        state.skyboxPath = Str.Trim(envSkyboxInput.get_Text());
+        state.iblEnabled = envIblCheck.IsChecked();
+        state.iblIntensity = envIblIntensitySpinner.Value;
+        if scene_bake_3d.WriteEnvironmentToRoot(
+               scene.Root, state) == false {
+            return false;
+        }
+        if CommitScene("Updated scene environment") == false {
+            return false;
+        }
+        renderDirty = true;
+        detailLabel.SetText(
+            "Environment written to the scene root; games consume it "
+            + "through Canvas3D.SetSkybox/IblEnabled/IblIntensity.");
+        return true;
+    }
+
+    /// @brief Apply the authored environment to one render canvas.
+    /// @details Workspace-only presentation: the cubemap cache keys on the
+    ///          resolved path and never touches canonical content.
+    hide func ApplyEnvironmentToCanvas(canvas: Canvas3D) {
+        if canvas == null or scene == null { return; }
+        var state = scene_bake_3d.EnvironmentFromRoot(scene.Root);
+        canvas.IblEnabled = state.iblEnabled;
+        canvas.IblIntensity = state.iblIntensity;
+        if state.skyboxPath == "" {
+            canvas.ClearSkybox();
+            return;
+        }
+        var resolved = state.skyboxPath;
+        if currentDoc != null and currentDoc.filePath != ""
+           and Path.IsAbsolute(resolved) == false {
+            resolved = Path.Join(
+                Path.Directory(currentDoc.filePath), resolved);
+        }
+        if resolved != envSkyboxCubemapPath {
+            envSkyboxCubemapPath = resolved;
+            envSkyboxCubemap = null;
+            // A missing panorama is presentation-only: the reference stays
+            // authored and the viewport simply skips the skybox.
+            if File.Exists(resolved) {
+                envSkyboxCubemap =
+                    CubeMap3D.LoadHdrPanorama(resolved, 128.0)
+                    as CubeMap3D;
+            }
+        }
+        if envSkyboxCubemap != null {
+            canvas.SetSkybox(envSkyboxCubemap);
+        } else {
+            canvas.ClearSkybox();
+        }
+    }
+
+    /// @brief Pump the material library group (ADR 0189).
+    hide func PumpMaterialLibraryControls() {
+        if materialLibraryGroup == null { return; }
+        var rootPath = ComponentSchemaRoot();
+        if rootPath != materialLibraryRoot {
+            materialLibraryRoot = rootPath;
+            ReloadMaterialLibrary();
+        }
+        // Bounded external polling: reload when the on-disk bytes drift.
+        materialLibraryPollMs = materialLibraryPollMs + 1;
+        if materialLibrary != null and materialLibrary.found
+           and materialLibraryPollMs >= 120 {
+            materialLibraryPollMs = 0;
+            var current = safe_io.ReadAllTextBounded(
+                materialLibrary.sourcePath,
+                material_library_3d.MAX_MATERIAL_LIBRARY_BYTES);
+            if current.ok and current.text != materialLibrary.diskText {
+                ReloadMaterialLibrary();
+                materialLibraryStatus.SetText(
+                    "materials.scene3d changed on disk; the list was "
+                    + "reloaded.");
+            }
+        }
+        if materialLibraryReloadButton.WasClicked() {
+            ReloadMaterialLibrary();
+        }
+        if materialLibraryNameInput.WasChanged() {
+            materialLibraryOverwriteArmed = false;
+            UpdateMaterialLibraryControls();
+        }
+        if materialLibrarySaveButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            SaveSelectedMaterialToLibrary();
+        }
+        if materialLibraryApplyButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            ApplyLibraryMaterialToSelection();
+        }
+        if materialLibraryList.WasSelectionChanged() {
+            materialLibraryOverwriteArmed = false;
+            UpdateMaterialLibraryControls();
+        }
+    }
+
+    /// @brief Reload materials.scene3d for the owning workspace root.
+    expose func ReloadMaterialLibrary() {
+        materialLibraryOverwriteArmed = false;
+        var libraryPath =
+            material_library_3d.PathForRoot(materialLibraryRoot);
+        if libraryPath == "" {
+            materialLibrary = null;
+            materialLibraryList.Clear();
+            materialLibraryStatus.SetText(
+                "Open a workspace folder to use materials.scene3d.");
+            UpdateMaterialLibraryControls();
+            return;
+        }
+        materialLibrary = material_library_3d.LoadPath(libraryPath);
+        materialLibraryList.Clear();
+        if materialLibrary.valid == false {
+            materialLibraryStatus.SetText(
+                "materials.scene3d is invalid: " + materialLibrary.error);
+        } else if materialLibrary.found == false {
+            materialLibraryStatus.SetText(
+                "No materials.scene3d yet; Save to Library creates it.");
+        } else {
+            var index = 0;
+            while index < materialLibrary.entries.count() {
+                var entry = materialLibrary.entries.get(index);
+                var maps = scene_material_3d.RetainedMapCount(
+                    entry.material);
+                var summary = entry.name;
+                if maps == 1 { summary = summary + "  •  1 map"; }
+                else if maps > 1 {
+                    summary = summary + "  •  " + maps + " maps";
+                }
+                materialLibraryList.AddItem(summary);
+                index = index + 1;
+            }
+            materialLibraryStatus.SetText(
+                materialLibrary.entries.count()
+                + " library material(s) in materials.scene3d.");
+        }
+        UpdateMaterialLibraryControls();
+    }
+
+    /// @brief Keep library actions truthful for selection and validity.
+    hide func UpdateMaterialLibraryControls() {
+        if materialLibraryGroup == null { return; }
+        var usable = materialLibrary != null
+            and materialLibrary.valid;
+        var hasSingle = scene != null
+            and selectedIndices.count() == 1
+            and SelectedNode() != null
+            and SelectedNode().Material != null;
+        materialLibraryGroup.SetEnabled(scene != null);
+        materialLibrarySaveButton.SetEnabled(
+            usable and hasSingle
+            and material_library_3d.NameIsValid(
+                    materialLibraryNameInput.get_Text()));
+        materialLibraryApplyButton.SetEnabled(
+            usable and materialLibrary.found
+            and scene != null and selectedIndices.count() > 0
+            and materialLibraryList.SelectedIndex >= 0);
+        if materialLibraryOverwriteArmed {
+            materialLibrarySaveButton.SetText("Confirm Overwrite");
+        } else {
+            materialLibrarySaveButton.SetText("Save to Library");
+        }
+    }
+
+    /// @brief Stage and persist the selected node's material by name.
+    /// @details Overwriting an existing name requires a second explicit
+    ///          click; writes are atomic and conflict-guarded and never
+    ///          touch scene content or history.
+    expose func SaveSelectedMaterialToLibrary() -> Boolean {
+        var node = SelectedNode();
+        if materialLibrary == null or materialLibrary.valid == false
+           or node == null or node.Material == null {
+            return false;
+        }
+        var name = Str.Trim(materialLibraryNameInput.get_Text());
+        if material_library_3d.NameIsValid(name) == false {
+            materialLibraryStatus.SetText(
+                "Library names need 1-64 characters.");
+            return false;
+        }
+        var existing = materialLibrary.EntryNamed(name);
+        if existing != null and materialLibraryOverwriteArmed == false {
+            materialLibraryOverwriteArmed = true;
+            UpdateMaterialLibraryControls();
+            materialLibraryStatus.SetText(
+                "\"" + name + "\" already exists. Click Confirm "
+                + "Overwrite to replace it.");
+            return false;
+        }
+        materialLibraryOverwriteArmed = false;
+        var staged =
+            Material3D.Clone(node.Material) as Material3D;
+        if staged == null {
+            materialLibraryStatus.SetText(
+                "The material could not be cloned for the library.");
+            return false;
+        }
+        var nextEntries:
+            List[material_library_3d.MaterialLibraryEntry3D] = [];
+        var index = 0;
+        while index < materialLibrary.entries.count() {
+            var entry = materialLibrary.entries.get(index);
+            if Str.ToLower(entry.name) != Str.ToLower(name) {
+                nextEntries.add(entry);
+            }
+            index = index + 1;
+        }
+        var nextEntry =
+            new material_library_3d.MaterialLibraryEntry3D();
+        nextEntry.name = name;
+        nextEntry.material = staged;
+        nextEntries.add(nextEntry);
+        if material_library_3d.SaveEntries(
+               materialLibrary, nextEntries) == false {
+            materialLibraryStatus.SetText(materialLibrary.error);
+            return false;
+        }
+        ReloadMaterialLibrary();
+        materialLibraryStatus.SetText(
+            "Saved \"" + name + "\" to materials.scene3d.");
+        return true;
+    }
+
+    /// @brief Clone the chosen library material onto the selection.
+    /// @details Per-node independent clones through one canonical history
+    ///          entry; unselected users of shared materials are untouched
+    ///          and the scene never references the library file.
+    expose func ApplyLibraryMaterialToSelection() -> Boolean {
+        if materialLibrary == null or materialLibrary.valid == false
+           or scene == null {
+            return false;
+        }
+        var listIndex = materialLibraryList.SelectedIndex;
+        if listIndex < 0
+           or listIndex >= materialLibrary.entries.count() {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var source = materialLibrary.entries.get(listIndex).material;
+        var staged: List[Material3D] = [];
+        var index = 0;
+        while index < selectedIndices.count() {
+            var clone = Material3D.Clone(source) as Material3D;
+            if clone == null {
+                materialLibraryStatus.SetText(
+                    "Studio could not clone the library material. "
+                    + "No selected nodes were changed.");
+                return false;
+            }
+            staged.add(clone);
+            index = index + 1;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        index = 0;
+        while index < selectedIndices.count() {
+            flatNodes.get(selectedIndices.get(index)).Material =
+                staged.get(index);
+            index = index + 1;
+        }
+        if CommitScene(
+               "Applied library material \""
+               + materialLibrary.entries.get(listIndex).name
+               + "\" to " + selectedIndices.count()
+               + " node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The library material could not be committed.");
+            return false;
+        }
+        RefreshMaterialFields(SelectedNode());
+        renderDirty = true;
+        materialLibraryStatus.SetText(
+            "Applied \""
+            + materialLibrary.entries.get(listIndex).name
+            + "\" as independent per-node copies.");
+        return true;
+    }
+
+    /// @brief Validate the look-through node still exists with a camera.
+    hide func ActiveLookThroughNode() -> SceneNode {
+        if lookThroughNode == null { return null; }
+        if FindFlatIndex(lookThroughNode) < 0
+           or lookThroughNode.Camera == null {
+            lookThroughNode = null;
+            return null;
+        }
+        return lookThroughNode;
+    }
+
+    /// @brief Normalize one vector or fall back to a stable default axis.
+    hide func NormalizedVectorOr(vector: Vec3,
+                                 fallbackX: Number,
+                                 fallbackY: Number,
+                                 fallbackZ: Number) -> Vec3 {
+        if vector == null {
+            return Vec3.New(fallbackX, fallbackY, fallbackZ);
+        }
+        var length = Math.Sqrt(
+            vector.X * vector.X
+            + vector.Y * vector.Y
+            + vector.Z * vector.Z);
+        if length <= 0.000001 {
+            return Vec3.New(fallbackX, fallbackY, fallbackZ);
+        }
+        return Vec3.New(
+            vector.X / length, vector.Y / length, vector.Z / length);
+    }
+
+    /// @brief Configure one retained camera from an authored camera node.
+    /// @details Pose derives from the node world transform (camera looks
+    ///          along its node's -Z, up +Y) and projection from the authored
+    ///          fields; the authored Camera3D object is never mutated.
+    hide func ApplyAuthoredCameraPose(target: Camera3D,
+                                      node: SceneNode) {
+        if target == null or node == null or node.Camera == null { return; }
+        var state = scene_camera_3d.FromCamera(node.Camera);
+        target.IsOrtho = state.isOrtho;
+        if state.isOrtho {
+            target.OrthoSize = state.orthoSize;
+        } else {
+            target.Fov = state.fovDegrees;
+        }
+        target.NearPlane = state.nearPlane;
+        target.FarPlane = state.farPlane;
+        var world = node.WorldMatrix;
+        var eye = node.WorldPosition;
+        var forward = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 0.0, -1.0)) as Vec3,
+            0.0, 0.0, -1.0);
+        var up = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 1.0, 0.0)) as Vec3,
+            0.0, 1.0, 0.0);
+        var alignment = forward.X * up.X
+            + forward.Y * up.Y
+            + forward.Z * up.Z;
+        if alignment > 0.999 or alignment < -0.999 {
+            up = Vec3.New(0.0, 0.0, 1.0);
+        }
+        target.LookAt(
+            Vec3.New(eye.X, eye.Y, eye.Z),
+            Vec3.New(
+                eye.X + forward.X,
+                eye.Y + forward.Y,
+                eye.Z + forward.Z),
+            up);
     }
 
     /// @brief Apply one copy-on-edit PBR material component transaction.
@@ -3526,6 +5544,22 @@ class SceneEditor3D {
             "Imported " + importedCount + " node(s) from " + Path.Name(path));
     }
 
+    /// @brief Build one bounded snap-increment spinner in the options row.
+    hide func AddSnapSpinner(minimum: Number,
+                             maximum: Number,
+                             step: Number,
+                             value: Number,
+                             accessibleName: String) -> GUI.Spinner {
+        var spinner = GUI.Spinner.New(viewOptionsRow);
+        spinner.SetRange(minimum, maximum);
+        spinner.SetStep(step);
+        spinner.SetDecimals(3);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName(accessibleName);
+        return spinner;
+    }
+
     hide func AddTransformSpinner(parent: GUI.HBox,
                                   label: String,
                                   value: Number) -> GUI.Spinner {
@@ -3552,7 +5586,16 @@ class SceneEditor3D {
     }
 
     hide func LoadGraphFromContent(content: String) -> SceneGraph {
-        var tempPath = TempFile.PathWithExt("zannastudio_scene3d_load_", ".vscn");
+        var tempPath = TempFile.PathWithExt("zannastudio_scene3d_load_", ".scene3d");
+        if currentDoc != null and currentDoc.filePath != ""
+           and tempPath != "" {
+            // Stage beside the document so relative prefab references
+            // resolve against the real scene directory (ADR 0187). The
+            // dot-prefixed name keeps the transient file out of pickers.
+            tempPath = Path.Join(
+                Path.Directory(currentDoc.filePath),
+                "." + Path.Name(tempPath));
+        }
         if tempPath == "" or safe_io.WriteAllText(tempPath, content) == false {
             loadError = "Studio could not stage the scene for validation.";
             if tempPath != "" { safe_io.DeleteFile(tempPath); }
@@ -3586,7 +5629,13 @@ class SceneEditor3D {
 
     hide func CommitScene(message: String) -> Boolean {
         if scene == null or currentDoc == null { return false; }
-        var tempPath = TempFile.PathWithExt("zannastudio_scene3d_save_", ".vscn");
+        if bakeActive {
+            detailLabel.SetText(
+                "A lightmap bake is running; cancel it before editing "
+                + "the scene.");
+            return false;
+        }
+        var tempPath = TempFile.PathWithExt("zannastudio_scene3d_save_", ".scene3d");
         if tempPath == "" or scene.Save(tempPath) == 0 {
             if tempPath != "" { safe_io.DeleteFile(tempPath); }
             RollBackFailedCommit("The 3D scene could not be serialized.");
@@ -3629,6 +5678,10 @@ class SceneEditor3D {
 
     hide func AddPrimitive(kind: Integer, asChild: Boolean) -> Boolean {
         if scene == null { return false; }
+        if asChild
+           and ParentAcceptsAuthoredChildren(SelectedNode()) == false {
+            return false;
+        }
         var node = SceneNode.New();
         var name = "Empty " + scene.NodeCount;
         if kind == PRIMITIVE_BOX {
@@ -3756,6 +5809,11 @@ class SceneEditor3D {
     ///          The complete operation serializes once and selection is remapped
     ///          by live node identity after preorder changes.
     expose func ReparentSelectedNodes(targetIndex: Integer) -> Boolean {
+        if targetIndex >= 0 and targetIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(targetIndex)) == false {
+            return false;
+        }
         if scene == null or (targetIndex < -1)
            or targetIndex >= flatNodes.count() {
             return false;
@@ -3891,6 +5949,10 @@ class SceneEditor3D {
             SelectIndex(sourceIndex);
         }
         if position == 1 {
+            if ParentAcceptsAuthoredChildren(
+                   flatNodes.get(targetIndex)) == false {
+                return false;
+            }
             return ReparentSelectedNodes(targetIndex);
         }
         return MoveSelectedBeside(
@@ -4449,6 +6511,49 @@ class SceneEditor3D {
     ///          changes every selected node, verifies the live graph, and
     ///          creates one canonical VSCN history entry. No-op and failed
     ///          commits retain content, selection, and history.
+    /// @brief Set the bake-participation flag across the selection.
+    expose func ApplySelectedStatic(nextStatic: Boolean) -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var needsChange = false;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(selectionIndex)).GetStatic()
+               != nextStatic {
+                needsChange = true;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if needsChange == false {
+            detailLabel.SetText(
+                "Every selected node already has that static state.");
+            return false;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex))
+                .SetStatic(nextStatic);
+            selectionIndex = selectionIndex + 1;
+        }
+        var stateName = "static";
+        if nextStatic == false { stateName = "dynamic"; }
+        if CommitScene(
+               "Marked " + selectedIndices.count() + " node(s) "
+               + stateName) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected nodes' static flag could not be committed.");
+            return false;
+        }
+        return true;
+    }
+
     hide func ApplySelectedVisibility(nextVisible: Boolean) -> Boolean {
         if scene == null { return false; }
         selectedIndices = scene_selection.Normalize(
@@ -4709,6 +6814,8 @@ class SceneEditor3D {
         UpdateSiblingControlAvailability();
         metadataInspector.SetEnabled(hasSingle);
         UpdateLightControls(enabled);
+        UpdateCameraControls(enabled);
+        UpdateColliderControls(enabled);
         UpdateMaterialControls(enabled);
     }
 
@@ -4729,19 +6836,95 @@ class SceneEditor3D {
     /// @brief Refresh complete node-light controls without changing history.
     hide func RefreshLightFields(node: SceneNode) {
         if lightInspector == null { return; }
-        lightInspector.Refresh(
+        var primary = SelectedNode();
+        if primary == null and node != null { primary = node; }
+        lightInspector.RefreshSelection(
+            SelectedMaterialNodes(), primary, scene != null);
+    }
+
+    /// @brief Keep light actions truthful for the selection (ADR 0186).
+    hide func UpdateLightControls(editorEnabled: Boolean) {
+        if lightInspector == null { return; }
+        var nodes = SelectedMaterialNodes();
+        var lightCount = 0;
+        var index = 0;
+        while index < nodes.count() {
+            if nodes.get(index).Light != null {
+                lightCount = lightCount + 1;
+            }
+            index = index + 1;
+        }
+        lightInspector.UpdateSelectionControls(
+            editorEnabled, nodes, lightCount);
+    }
+
+    /// @brief Refresh complete node-camera controls without changing history.
+    hide func RefreshCameraFields(node: SceneNode) {
+        if cameraInspector == null { return; }
+        cameraInspector.Refresh(
+            node,
+            selectedIndices.count(),
+            scene != null,
+            lookThroughNode != null);
+    }
+
+    /// @brief Keep camera actions truthful for single-node authoring.
+    hide func UpdateCameraControls(editorEnabled: Boolean) {
+        if cameraInspector == null { return; }
+        var node = SelectedNode();
+        var hasCamera = node != null and node.Camera != null;
+        cameraInspector.UpdateControls(
+            editorEnabled, hasCamera, selectedIndices.count(),
+            lookThroughNode != null);
+    }
+
+    /// @brief Refresh collider convention controls without changing history.
+    hide func RefreshColliderFields(node: SceneNode) {
+        if colliderInspector == null { return; }
+        colliderInspector.Refresh(
             node,
             selectedIndices.count(),
             scene != null);
     }
 
-    /// @brief Keep light actions truthful for single-node authoring.
-    hide func UpdateLightControls(editorEnabled: Boolean) {
-        if lightInspector == null { return; }
+    /// @brief Keep the prefab-instance group truthful for the selection.
+    hide func RefreshInstanceControls(node: SceneNode) {
+        if instanceGroup == null { return; }
+        var single = selectedIndices.count() == 1 and node != null;
+        var isInstance = single and node.PrefabPath != "";
+        instanceGroup.SetEnabled(scene != null);
+        openPrefabSourceButton.SetEnabled(isInstance);
+        unpackInstanceButton.SetEnabled(isInstance);
+        relinkInstanceButton.SetEnabled(isInstance);
+        reloadInstancesButton.SetEnabled(scene != null);
+        if isInstance {
+            var content = "empty placeholder — the referenced scene "
+                + "did not resolve";
+            if node.ChildCount > 0 {
+                content = node.ChildCount + " grafted root node(s)";
+            }
+            instanceSummary.SetText(
+                "References " + node.PrefabPath + " • " + content
+                + " • overrides: transform, name, visibility, metadata.");
+        } else if single and node.IsInstanceContent {
+            instanceSummary.SetText(
+                "Instance content is locked; selection resolves to the "
+                + "owning prefab instance.");
+        } else {
+            instanceSummary.SetText(
+                "Select a prefab instance node to manage its reference.");
+        }
+    }
+
+    /// @brief Keep collider actions truthful for single-node authoring.
+    hide func UpdateColliderControls(editorEnabled: Boolean) {
+        if colliderInspector == null { return; }
         var node = SelectedNode();
-        var hasLight = node != null and node.Light != null;
-        lightInspector.UpdateControls(
-            editorEnabled, hasLight, selectedIndices.count());
+        var state = scene_collider_3d.FromNode(node);
+        colliderInspector.UpdateControls(
+            editorEnabled,
+            state.kind != scene_collider_3d.COLLIDER_NONE,
+            selectedIndices.count());
     }
 
     /// @brief Summarize selected-node coverage for the active component.
@@ -4906,9 +7089,10 @@ class SceneEditor3D {
     /// @brief Select validated hierarchy rows with one explicit primary node.
     expose func SelectSceneNodes(indices: List[Integer],
                                  primary: Integer) -> Boolean {
+        var resolved = ResolveInstanceOwnerSelection(indices);
         selectedIndices = scene_selection.Normalize(
-            indices, flatNodes.count(), primary);
-        selectedIndex = primary;
+            resolved, flatNodes.count(), primary);
+        selectedIndex = ResolveInstanceOwnerIndex(primary);
         if selectedIndex < 0 or selectedIndex >= flatNodes.count() {
             selectedIndex = -1;
             if selectedIndices.count() > 0 {
@@ -5526,6 +7710,9 @@ class SceneEditor3D {
             selectionInfo.SetText("No node selected");
             RefreshMetadataFields(null);
             RefreshLightFields(null);
+            RefreshCameraFields(null);
+            RefreshColliderFields(null);
+            RefreshInstanceControls(null);
             RefreshMaterialFields(null);
             return;
         }
@@ -5572,6 +7759,9 @@ class SceneEditor3D {
                 + "scale for the group");
             RefreshMetadataFields(node);
             RefreshLightFields(node);
+            RefreshCameraFields(node);
+            RefreshColliderFields(node);
+            RefreshInstanceControls(node);
             RefreshMaterialFields(null);
             return;
         }
@@ -5580,6 +7770,8 @@ class SceneEditor3D {
         visibleCheck.SetChecked(node.Visible);
         visibleCheck.SetTooltip("Set this node's visibility");
         visibleRevision = visibleCheck.GetRevision();
+        staticCheck.SetChecked(node.GetStatic());
+        staticRevision = staticCheck.GetRevision();
         var position = node.Position;
         positionX.SetValue(position.X);
         positionY.SetValue(position.Y);
@@ -5602,12 +7794,18 @@ class SceneEditor3D {
             lightState =
                 scene_light_3d.TypeName(node.Light.Type) + " light";
         }
+        var cameraState = "no camera";
+        if node.Camera != null { cameraState = "camera"; }
         selectionInfo.SetText(
             kind + " node  |  children " + node.ChildCount
             + "  |  " + lightState
+            + "  |  " + cameraState
             + "  |  " + materialState + "  |  local transform");
         RefreshMetadataFields(node);
         RefreshLightFields(node);
+        RefreshCameraFields(node);
+        RefreshColliderFields(node);
+        RefreshInstanceControls(node);
         RefreshMaterialFields(node);
     }
 
@@ -5774,6 +7972,19 @@ class SceneEditor3D {
         if node.Light != null {
             componentMarker = componentMarker + " [light]";
         }
+        if node.Camera != null {
+            componentMarker = componentMarker + " [camera]";
+        }
+        if node.PrefabPath != "" {
+            componentMarker = componentMarker + " [prefab]";
+        } else if node.IsInstanceContent {
+            componentMarker = componentMarker + " [instance]";
+        }
+        var gameplayBadge = NodeComponentBadge(node);
+        if gameplayBadge != "" {
+            componentMarker = componentMarker
+                + " [" + gameplayBadge + "]";
+        }
         var name = node.Name;
         if name == "" { name = "(unnamed)"; }
         var treeNode = hierarchyTree.AddNode(
@@ -5786,8 +7997,10 @@ class SceneEditor3D {
         GUI.TreeView.Node.SetData(treeNode, "" + flatNodes.count());
         GUI.TreeView.Node.SetStableId(treeNode, path);
         var icon = "◇";
-        if node.Mesh != null { icon = "◆"; }
+        if node.PrefabPath != "" { icon = "⬒"; }
+        else if node.Mesh != null { icon = "◆"; }
         else if node.Light != null { icon = "✦"; }
+        else if node.Camera != null { icon = "▣"; }
         GUI.TreeView.Node.SetIcon(treeNode, icon);
         flatNodes.add(node);
         flatDepths.add(depth);
@@ -5928,7 +8141,25 @@ class SceneEditor3D {
         }
     }
 
+    /// @brief Project one world point through the shared viewport camera.
+    /// @details The retained render camera is the single projection authority
+    ///          (ADR 0183): overlays and picking read the exact camera that
+    ///          rendered the shaded frame, in both projections. The hand math
+    ///          below serves surfaces with no configured camera (fallback
+    ///          wireframe rendering) and mirrors the camera formulas exactly,
+    ///          including the perspective divide about the derived eye.
     hide func Project(x: Number, y: Number, z: Number) -> ProjectedPoint {
+        var projected = new ProjectedPoint();
+        if projectionCameraReady and viewportRenderCamera != null {
+            var screen = viewportRenderCamera.WorldToScreen(
+                Vec3.New(x, y, z),
+                renderedViewportWidth,
+                renderedViewportHeight) as Vec3;
+            projected.x = Convert.NumToInt(Math.Round(screen.X));
+            projected.y = Convert.NumToInt(Math.Round(screen.Y));
+            projected.visible = screen.Z > 0.5;
+            return projected;
+        }
         var yaw = viewYawDegrees * DEG_TO_RAD;
         var pitch = viewPitchDegrees * DEG_TO_RAD;
         var cosYaw = Math.Cos(yaw);
@@ -5941,7 +8172,24 @@ class SceneEditor3D {
         var rotatedX = relativeX * cosYaw - relativeZ * sinYaw;
         var rotatedZ = relativeX * sinYaw + relativeZ * cosYaw;
         var rotatedY = relativeY * cosPitch - rotatedZ * sinPitch;
-        var projected = new ProjectedPoint();
+        if viewPerspective {
+            var towardEye =
+                rotatedZ * cosPitch + relativeY * sinPitch;
+            var depth = PerspectiveEyeDistance() - towardEye;
+            if depth < 0.000001 {
+                projected.visible = false;
+                depth = 0.000001;
+            }
+            var focal = renderedViewportHeight
+                / (2.0 * VIEWPORT_FOV_HALF_TAN);
+            projected.x = Convert.NumToInt(
+                renderedViewportWidth / 2.0
+                    + rotatedX * focal / depth);
+            projected.y = Convert.NumToInt(
+                renderedViewportHeight / 2.0
+                    - rotatedY * focal / depth);
+            return projected;
+        }
         projected.x = Convert.NumToInt(
             renderedViewportWidth / 2.0 + rotatedX * viewScale);
         projected.y = Convert.NumToInt(
@@ -5973,14 +8221,22 @@ class SceneEditor3D {
         if (stationaryX and stationaryY) or viewScale <= 0 {
             return false;
         }
+        ShiftViewTargetInScreenBasis(
+            (0.0 - deltaX) / viewScale,
+            deltaY / viewScale);
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Translate the view target along the exact screen right/up basis.
+    hide func ShiftViewTargetInScreenBasis(rightAmount: Number,
+                                           upAmount: Number) {
         var yaw = viewYawDegrees * DEG_TO_RAD;
         var pitch = viewPitchDegrees * DEG_TO_RAD;
         var cosYaw = Math.Cos(yaw);
         var sinYaw = Math.Sin(yaw);
         var cosPitch = Math.Cos(pitch);
         var sinPitch = Math.Sin(pitch);
-        var rightAmount = (0.0 - deltaX) / viewScale;
-        var upAmount = deltaY / viewScale;
         viewTargetX = ClampNumber3D(
             viewTargetX
                 + cosYaw * rightAmount
@@ -5995,8 +8251,347 @@ class SceneEditor3D {
                 - cosYaw * sinPitch * upAmount,
             -1000000.0, 1000000.0);
         renderDirty = true;
+    }
+
+    /// @brief Zoom one wheel step keeping the point under the pointer fixed.
+    /// @details Scale change plus a target-plane shift toward the cursor is
+    ///          the dolly-to-cursor contract for both projections (ADR 0183):
+    ///          in perspective the derived eye distance shortens toward the
+    ///          cursor ray; in ortho it is exact zoom-about-point.
+    hide func DollyViewportAtPointer(direction: Integer) {
+        var previousScale = viewScale;
+        viewScale = ClampInt3D(viewScale + direction * 4, 4, 120);
+        if viewScale == previousScale { return; }
+        renderDirty = true;
+        var mouseX = PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX();
+        var mouseY = PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY();
+        var offsetX = mouseX - renderedViewportWidth / 2.0;
+        var offsetY = mouseY - renderedViewportHeight / 2.0;
+        var factor = 1.0 / previousScale - 1.0 / viewScale;
+        ShiftViewTargetInScreenBasis(
+            offsetX * factor, (0.0 - offsetY) * factor);
         CaptureWorkspaceState();
+    }
+
+    /// @brief Unit vector from the view target toward the camera eye.
+    hide func ViewportEyeUnit() -> Vec3 {
+        var yaw = viewYawDegrees * DEG_TO_RAD;
+        var pitch = viewPitchDegrees * DEG_TO_RAD;
+        return Vec3.New(
+            Math.Sin(yaw) * Math.Cos(pitch),
+            Math.Sin(pitch),
+            Math.Cos(yaw) * Math.Cos(pitch));
+    }
+
+    /// @brief Eye distance the active projection places behind the target.
+    hide func CurrentEyeDistance() -> Number {
+        if viewPerspective { return PerspectiveEyeDistance(); }
+        return ViewportCameraRange().X;
+    }
+
+    /// @brief Begin captured right-mouse fly-look with WASD movement.
+    hide func BeginFlyNavigation() {
+        flyActive = true;
+        flyLastMs = Zanna.Time.Clock.NowMs();
+        flyYawRemainder = 0.0;
+        flyPitchRemainder = 0.0;
+        FocusActiveGizmoButton();
+        renderDirty = true;
+    }
+
+    /// @brief One frame of fly navigation; owns viewport input while active.
+    /// @details Workspace-only camera motion: mouse-look about the fixed eye,
+    ///          WASD in the camera basis, Q/E world down/up, Shift fast, and
+    ///          the wheel retunes the bounded speed multiplier (ADR 0183).
+    hide func PumpFlyFrame() {
+        if Input.Keyboard.WasPressed(Input.Key.Escape)
+           or Input.Mouse.IsDown(Input.Mouse.ButtonRight) == false {
+            flyActive = false;
+            flyLastMs = -1;
+            renderDirty = true;
+            CaptureWorkspaceState();
+            return;
+        }
+        var now = Zanna.Time.Clock.NowMs();
+        var deltaMs = now - flyLastMs;
+        flyLastMs = now;
+        if deltaMs < 0 { deltaMs = 0; }
+        if deltaMs > 100 { deltaMs = 100; }
+        var deltaSeconds = deltaMs / 1000.0;
+
+        var wheel = Input.Mouse.WheelYFloat();
+        if wheel > 0.0 {
+            flySpeedMultiplier = ClampNumber3D(
+                flySpeedMultiplier * 1.25,
+                FLY_MIN_SPEED_MULTIPLIER,
+                FLY_MAX_SPEED_MULTIPLIER);
+        } else if wheel < 0.0 {
+            flySpeedMultiplier = ClampNumber3D(
+                flySpeedMultiplier / 1.25,
+                FLY_MIN_SPEED_MULTIPLIER,
+                FLY_MAX_SPEED_MULTIPLIER);
+        }
+
+        var changed = FlyLookByPixels(
+            PhysicalPointerToUi(Input.Mouse.DeltaX()),
+            PhysicalPointerToUi(Input.Mouse.DeltaY()));
+
+        var moving = false;
+        var forwardInput = 0.0;
+        if Input.Keyboard.IsDown(Input.Key.W) {
+            forwardInput = 1.0;
+            moving = true;
+        }
+        if Input.Keyboard.IsDown(Input.Key.S) {
+            forwardInput = forwardInput - 1.0;
+            moving = true;
+        }
+        var rightInput = 0.0;
+        if Input.Keyboard.IsDown(Input.Key.D) {
+            rightInput = 1.0;
+            moving = true;
+        }
+        if Input.Keyboard.IsDown(Input.Key.A) {
+            rightInput = rightInput - 1.0;
+            moving = true;
+        }
+        var upInput = 0.0;
+        if Input.Keyboard.IsDown(Input.Key.E) {
+            upInput = 1.0;
+            moving = true;
+        }
+        if Input.Keyboard.IsDown(Input.Key.Q) {
+            upInput = upInput - 1.0;
+            moving = true;
+        }
+        if moving {
+            var speed = FLY_BASE_SPEED_PER_SECOND
+                * CurrentEyeDistance() * flySpeedMultiplier;
+            if ViewportShiftDown() { speed = speed * FLY_FAST_MULTIPLIER; }
+            var step = speed * deltaSeconds;
+            var eyeUnit = ViewportEyeUnit();
+            var yaw = viewYawDegrees * DEG_TO_RAD;
+            var rightX = Math.Cos(yaw);
+            var rightZ = 0.0 - Math.Sin(yaw);
+            viewTargetX = ClampNumber3D(
+                viewTargetX
+                    - eyeUnit.X * forwardInput * step
+                    + rightX * rightInput * step,
+                -1000000.0, 1000000.0);
+            viewTargetY = ClampNumber3D(
+                viewTargetY
+                    - eyeUnit.Y * forwardInput * step
+                    + upInput * step,
+                -1000000.0, 1000000.0);
+            viewTargetZ = ClampNumber3D(
+                viewTargetZ
+                    - eyeUnit.Z * forwardInput * step
+                    + rightZ * rightInput * step,
+                -1000000.0, 1000000.0);
+            changed = true;
+        }
+        if changed {
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+    }
+
+    /// @brief Rotate the look direction about the fixed eye (not the target).
+    /// @details Integer yaw/pitch state keeps every existing viewport contract;
+    ///          fractional remainders accumulate sub-degree motion so slow
+    ///          mouse movement still turns smoothly.
+    hide func FlyLookByPixels(deltaX: Number,
+                              deltaY: Number) -> Boolean {
+        var eyeDistance = CurrentEyeDistance();
+        var eyeUnit = ViewportEyeUnit();
+        var eyeX = viewTargetX + eyeUnit.X * eyeDistance;
+        var eyeY = viewTargetY + eyeUnit.Y * eyeDistance;
+        var eyeZ = viewTargetZ + eyeUnit.Z * eyeDistance;
+        flyYawRemainder = flyYawRemainder
+            - deltaX * FLY_LOOK_DEGREES_PER_PIXEL;
+        flyPitchRemainder = flyPitchRemainder
+            + deltaY * FLY_LOOK_DEGREES_PER_PIXEL;
+        var yawStep = Convert.NumToInt(flyYawRemainder);
+        var pitchStep = Convert.NumToInt(flyPitchRemainder);
+        if yawStep == 0 and pitchStep == 0 { return false; }
+        flyYawRemainder = flyYawRemainder - yawStep;
+        flyPitchRemainder = flyPitchRemainder - pitchStep;
+        var nextYaw = NormalizeYawDegrees(viewYawDegrees + yawStep);
+        var nextPitch = ClampInt3D(
+            viewPitchDegrees + pitchStep, -80, 80);
+        if nextYaw == viewYawDegrees
+           and nextPitch == viewPitchDegrees {
+            return false;
+        }
+        viewYawDegrees = nextYaw;
+        viewPitchDegrees = nextPitch;
+        viewTargetX = ClampNumber3D(
+            eyeX - ViewportEyeUnit().X * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetY = ClampNumber3D(
+            eyeY - ViewportEyeUnit().Y * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetZ = ClampNumber3D(
+            eyeZ - ViewportEyeUnit().Z * eyeDistance,
+            -1000000.0, 1000000.0);
         return true;
+    }
+
+    /// @brief Report whether right-mouse fly navigation owns the viewport.
+    expose func IsFlyNavigationActive() -> Boolean {
+        return flyActive;
+    }
+
+    /// @brief Report whether the viewport fell back to marker-only drawing.
+    expose func IsViewportRenderFallback() -> Boolean {
+        return viewportRenderFallback;
+    }
+
+    /// @brief Switch the shared viewport camera projection; workspace-only.
+    expose func SetViewProjection(perspective: Boolean) {
+        if viewPerspective == perspective { return; }
+        viewPerspective = perspective;
+        UpdateProjectionControls();
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Show or hide the overlay/snap options row.
+    expose func SetViewOptionsVisible(visible: Boolean) {
+        viewOptionsVisible = visible;
+        if viewOptionsRow != null {
+            viewOptionsRow.SetVisible(viewOptionsVisible);
+        }
+        UpdateViewOptionsChrome();
+    }
+
+    /// @brief Reserve wrapped rows for the options row at compact widths.
+    /// @details Flex cannot infer wrapped cross-axis height before its parent
+    ///          assigns a width, mirroring the toolbar reservations above.
+    hide func UpdateViewOptionsChrome() {
+        if viewOptionsRow == null { return; }
+        if viewOptionsVisible and compactLayout {
+            viewOptionsRow.SetPreferredSize(0.0, 96.0);
+        } else {
+            viewOptionsRow.SetPreferredSize(0.0, 0.0);
+        }
+    }
+
+    /// @brief Project one world point for display probes.
+    /// @details Probes assert through the shared camera instead of
+    ///          duplicating projection math (ADR 0183).
+    expose func ProjectWorldPoint(x: Number,
+                                  y: Number,
+                                  z: Number) -> ProjectedPoint {
+        return Project(x, y, z);
+    }
+
+    /// @brief Keep the projection toggle label naming the active mode.
+    hide func UpdateProjectionControls() {
+        if projectionButton == null { return; }
+        if viewPerspective {
+            projectionButton.SetText("Persp");
+            projectionButton.SetTooltip(
+                "Perspective projection (click for orthographic)");
+        } else {
+            projectionButton.SetText("Ortho");
+            projectionButton.SetTooltip(
+                "Orthographic projection (click for perspective)");
+        }
+    }
+
+    /// @brief Apply overlay and snap chrome edits; all workspace-only state.
+    hide func PumpViewOptionControls() {
+        if gridCheck == null { return; }
+        if gridCheck.WasChanged() {
+            showGrid = gridCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if markersCheck.WasChanged() {
+            showMarkers = markersCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if lightsCheck.WasChanged() {
+            showLightOverlays = lightsCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if camerasCheck.WasChanged() {
+            showCameraOverlays = camerasCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if collidersCheck.WasChanged() {
+            showColliderOverlays = collidersCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if routesCheck.WasChanged() {
+            showRouteOverlays = routesCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if statsCheck.WasChanged() {
+            showStats = statsCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        var snapChanged = false;
+        if snapMoveSpinner.WasChanged() {
+            snapMoveIncrement = snapMoveSpinner.Value;
+            snapChanged = true;
+        }
+        if snapRotateSpinner.WasChanged() {
+            snapRotateIncrement = snapRotateSpinner.Value;
+            snapChanged = true;
+        }
+        if snapScaleSpinner.WasChanged() {
+            snapScaleIncrement = snapScaleSpinner.Value;
+            snapChanged = true;
+        }
+        if snapChanged {
+            ApplySnapIncrements();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+    }
+
+    /// @brief Push this document's bounded snap increments into the gizmos.
+    /// @details The transform module holds one live set of increments, so the
+    ///          active document reasserts its own on restore and edit.
+    hide func ApplySnapIncrements() {
+        snapMoveIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapMoveIncrement,
+            scene_transform_3d.MAX_MOVE_SNAP_INCREMENT);
+        snapRotateIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapRotateIncrement,
+            scene_transform_3d.MAX_ROTATE_SNAP_INCREMENT);
+        snapScaleIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapScaleIncrement,
+            scene_transform_3d.MAX_SCALE_SNAP_INCREMENT);
+        scene_transform_3d.SetSnapIncrements(
+            snapMoveIncrement, snapRotateIncrement, snapScaleIncrement);
+    }
+
+    /// @brief Reflect restored workspace chrome into the retained controls.
+    hide func SyncViewOptionControls() {
+        UpdateProjectionControls();
+        if gridCheck == null { return; }
+        gridCheck.SetChecked(showGrid);
+        markersCheck.SetChecked(showMarkers);
+        lightsCheck.SetChecked(showLightOverlays);
+        camerasCheck.SetChecked(showCameraOverlays);
+        collidersCheck.SetChecked(showColliderOverlays);
+        routesCheck.SetChecked(showRouteOverlays);
+        statsCheck.SetChecked(showStats);
+        snapMoveSpinner.SetValue(snapMoveIncrement);
+        snapRotateSpinner.SetValue(snapRotateIncrement);
+        snapScaleSpinner.SetValue(snapScaleIncrement);
+        ApplySnapIncrements();
     }
 
     /// @brief Find the nearest bounded origin marker at one viewport point.
@@ -6050,9 +8645,10 @@ class SceneEditor3D {
     expose func ApplyViewportSelection(nodeIndex: Integer,
                                        additive: Boolean,
                                        toggle: Boolean) -> Boolean {
+        var resolvedIndex = ResolveInstanceOwnerIndex(nodeIndex);
         var current = scene_selection.Normalize(
             selectedIndices, flatNodes.count(), selectedIndex);
-        if nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+        if resolvedIndex < 0 or resolvedIndex >= flatNodes.count() {
             if additive or toggle or current.count() == 0 {
                 return false;
             }
@@ -6061,22 +8657,22 @@ class SceneEditor3D {
         }
 
         var next: List[Integer] = [];
-        var nextPrimary = nodeIndex;
+        var nextPrimary = resolvedIndex;
         if toggle {
-            var removing = scene_selection.Contains(current, nodeIndex);
+            var removing = scene_selection.Contains(current, resolvedIndex);
             var index = 0;
             while index < current.count() {
                 var candidate = current.get(index);
-                if removing == false or candidate != nodeIndex {
+                if removing == false or candidate != resolvedIndex {
                     next.add(candidate);
                 }
                 index = index + 1;
             }
-            if removing == false { next.add(nodeIndex); }
+            if removing == false { next.add(resolvedIndex); }
             if removing {
                 if next.count() == 0 {
                     nextPrimary = -1;
-                } else if selectedIndex != nodeIndex
+                } else if selectedIndex != resolvedIndex
                           and scene_selection.Contains(
                               next, selectedIndex) {
                     nextPrimary = selectedIndex;
@@ -6086,11 +8682,11 @@ class SceneEditor3D {
             }
         } else if additive {
             next = current;
-            if scene_selection.Contains(next, nodeIndex) == false {
-                next.add(nodeIndex);
+            if scene_selection.Contains(next, resolvedIndex) == false {
+                next.add(resolvedIndex);
             }
         } else {
-            next.add(nodeIndex);
+            next.add(resolvedIndex);
         }
 
         var changed = nextPrimary != selectedIndex
@@ -6112,20 +8708,20 @@ class SceneEditor3D {
     /// @brief Recognize only two nearby clicks on the same viewport node.
     /// @details The global mouse double-click flag has no widget or position
     ///          identity, so it cannot safely distinguish toolbar clicks.
-    hide func RegisterViewportClick(nodeIndex: Integer,
+    hide func RegisterViewportClick(resolvedIndex: Integer,
                                     mouseX: Integer,
                                     mouseY: Integer) -> Boolean {
         var now = Zanna.Time.Clock.NowMs();
         var elapsed = now - lastViewportClickMs;
         var dx = mouseX - lastViewportClickX;
         var dy = mouseY - lastViewportClickY;
-        var isDouble = nodeIndex >= 0
-            and nodeIndex == lastViewportClickNode
+        var isDouble = resolvedIndex >= 0
+            and resolvedIndex == lastViewportClickNode
             and elapsed >= 0
             and elapsed <= VIEWPORT_DOUBLE_CLICK_MS
             and dx * dx + dy * dy
                 <= VIEWPORT_DOUBLE_CLICK_RADIUS_SQUARED;
-        lastViewportClickNode = nodeIndex;
+        lastViewportClickNode = resolvedIndex;
         lastViewportClickX = mouseX;
         lastViewportClickY = mouseY;
         lastViewportClickMs = now;
@@ -6146,6 +8742,10 @@ class SceneEditor3D {
             ApplyGizmoMouseDelta();
             return false;
         }
+        if flyActive {
+            PumpFlyFrame();
+            return false;
+        }
         PumpGizmoShortcuts();
         if viewportImage == null or viewportImage.IsHovered() == false {
             if gizmoHoverAxis != GIZMO_AXIS_NONE {
@@ -6154,20 +8754,28 @@ class SceneEditor3D {
             }
             return false;
         }
+        var navigationOwned = ActiveLookThroughNode() == null;
         var wheel = Input.Mouse.WheelYFloat();
-        if wheel > 0.0 {
-            viewScale = ClampInt3D(viewScale + 4, 4, 120);
-            renderDirty = true;
-        } else if wheel < 0.0 {
-            viewScale = ClampInt3D(viewScale - 4, 4, 120);
-            renderDirty = true;
+        if navigationOwned {
+            if wheel > 0.0 {
+                DollyViewportAtPointer(1);
+            } else if wheel < 0.0 {
+                DollyViewportAtPointer(-1);
+            }
         }
         if Input.Mouse.WasPressed(Input.Mouse.ButtonMiddle)
            or Input.Mouse.WasPressed(Input.Mouse.ButtonRight) {
             FocusActiveGizmoButton();
         }
-        if Input.Mouse.IsDown(Input.Mouse.ButtonMiddle)
-           or Input.Mouse.IsDown(Input.Mouse.ButtonRight) {
+        if navigationOwned
+           and Input.Mouse.WasPressed(Input.Mouse.ButtonRight)
+           and ViewportShiftDown() == false {
+            BeginFlyNavigation();
+            return false;
+        }
+        if navigationOwned
+           and (Input.Mouse.IsDown(Input.Mouse.ButtonMiddle)
+                or Input.Mouse.IsDown(Input.Mouse.ButtonRight)) {
             var deltaX = Convert.NumToInt(
                 PhysicalPointerToUi(Input.Mouse.DeltaX()));
             var deltaY = Convert.NumToInt(
@@ -6227,6 +8835,11 @@ class SceneEditor3D {
         if GizmoControlsOwnFocus() == false {
             return;
         }
+        if Input.Keyboard.WasPressed(Input.Key.F) {
+            if selectedIndices.count() > 0 { FrameSelected(); }
+            else { FrameAll(); }
+            renderDirty = true;
+        }
         if Input.Keyboard.WasPressed(Input.Key.W) {
             SetGizmoMode(GIZMO_MODE_MOVE);
         } else if Input.Keyboard.WasPressed(Input.Key.E) {
@@ -6278,6 +8891,7 @@ class SceneEditor3D {
         if node == null { return GIZMO_AXIS_NONE; }
         var world = node.WorldPosition;
         var origin = Project(world.X, world.Y, world.Z);
+        if origin.visible == false { return GIZMO_AXIS_NONE; }
         var xEnd = GizmoAxisEndpoint(node, GIZMO_AXIS_X);
         var yEnd = GizmoAxisEndpoint(node, GIZMO_AXIS_Y);
         var zEnd = GizmoAxisEndpoint(node, GIZMO_AXIS_Z);
@@ -6454,6 +9068,12 @@ class SceneEditor3D {
 
     /// @brief Start one captured transactional transform gesture.
     hide func BeginGizmoDrag(axis: Integer) {
+        if bakeActive {
+            detailLabel.SetText(
+                "A lightmap bake is running; cancel it before "
+                + "transforming nodes.");
+            return;
+        }
         var node = SelectedNode();
         if node == null
            or (IsGizmoAxis(axis) == false
@@ -7232,18 +9852,24 @@ class SceneEditor3D {
         var cosYaw = Math.Cos(yaw);
         var sinPitch = Math.Sin(pitch);
         var cosPitch = Math.Cos(pitch);
+        var halfWidthWorld =
+            renderedViewportWidth / (2.0 * viewScale);
         var i = 0;
         while i < flatNodes.count() {
             var world = flatNodes.get(i).WorldPosition;
-            var point = Project(world.X, world.Y, world.Z);
-            if point.x >= 0 - renderedViewportWidth
-               and point.x <= renderedViewportWidth * 2
-               and point.y >= 0 - renderedViewportHeight
-               and point.y <= renderedViewportHeight * 2 {
-                var dx = world.X - viewTargetX;
-                var dy = world.Y - viewTargetY;
-                var dz = world.Z - viewTargetZ;
-                var rotatedZ = dx * sinYaw + dz * cosYaw;
+            var dx = world.X - viewTargetX;
+            var dy = world.Y - viewTargetY;
+            var dz = world.Z - viewTargetZ;
+            var rotatedX = dx * cosYaw - dz * sinYaw;
+            var rotatedZ = dx * sinYaw + dz * cosYaw;
+            var rotatedY = dy * cosPitch - rotatedZ * sinPitch;
+            // Pure rotated-space bound: a generous three-viewport margin,
+            // independent of the retained camera so the depth range can be
+            // computed before the camera is configured each frame.
+            if rotatedX >= 0.0 - halfWidthWorld * 3.0
+               and rotatedX <= halfWidthWorld * 3.0
+               and rotatedY >= 0.0 - halfHeight * 3.0
+               and rotatedY <= halfHeight * 3.0 {
                 var towardEye =
                     rotatedZ * cosPitch + dy * sinPitch;
                 if towardEye > maxTowardEye {
@@ -7293,36 +9919,88 @@ class SceneEditor3D {
             VIEWPORT_CAMERA_NEAR,
             VIEWPORT_CAMERA_MIN_DISTANCE * 4.0);
         if camera == null { return false; }
+        camera.Fov = VIEWPORT_FOV_DEGREES;
         canvas.SetDefaultLighting();
 
         viewportRenderTarget = target;
         viewportRenderCanvas = canvas;
         viewportRenderCamera = camera;
+        // The fresh camera has never been configured for the current view
+        // state; Project must fall back to hand math until it is.
+        projectionCameraReady = false;
         return true;
     }
 
-    /// @brief Keep the retained orthographic camera exact for draw and pick.
+    /// @brief Eye distance that keeps viewScale exact at the view target.
+    /// @details Pixels-per-unit on the target plane equals viewScale in both
+    ///          projections, so zoom, pan, and Frame Selected keep identical
+    ///          apparent-size semantics when switching modes (ADR 0183).
+    hide func PerspectiveEyeDistance() -> Number {
+        var distance = renderedViewportHeight
+            / (2.0 * viewScale * VIEWPORT_FOV_HALF_TAN);
+        if distance < 0.5 { distance = 0.5; }
+        if distance > 1000000.0 { distance = 1000000.0; }
+        return distance;
+    }
+
+    /// @brief Keep the retained camera exact for draw, overlays, and picking.
+    /// @details One mode-switchable Camera3D is the single projection source
+    ///          (ADR 0183): the shaded render, every overlay, and every pick
+    ///          ray read the same configured state in both modes.
     hide func ConfigureViewportCamera() -> Boolean {
         if scene == null or EnsureViewportRenderer() == false {
+            projectionCameraReady = false;
             return false;
         }
+        var lookNode = ActiveLookThroughNode();
+        if lookNode != null {
+            ApplyAuthoredCameraPose(viewportRenderCamera, lookNode);
+            projectionCameraReady = true;
+            return true;
+        }
         var cameraRange = ViewportCameraRange();
-        viewportRenderCamera.OrthoSize = cameraRange.Z;
-        viewportRenderCamera.NearPlane = VIEWPORT_CAMERA_NEAR;
-        viewportRenderCamera.FarPlane = cameraRange.Y;
-        viewportRenderCamera.Orbit(
-            Vec3.New(viewTargetX, viewTargetY, viewTargetZ),
-            cameraRange.X,
-            viewYawDegrees,
-            viewPitchDegrees);
+        if viewPerspective {
+            var eyeDistance = PerspectiveEyeDistance();
+            viewportRenderCamera.IsOrtho = false;
+            viewportRenderCamera.Fov = VIEWPORT_FOV_DEGREES;
+            var nearPlane = eyeDistance / 500.0;
+            if nearPlane < VIEWPORT_CAMERA_NEAR {
+                nearPlane = VIEWPORT_CAMERA_NEAR;
+            }
+            viewportRenderCamera.NearPlane = nearPlane;
+            var farPlane =
+                eyeDistance + (cameraRange.Y - cameraRange.X);
+            if farPlane < eyeDistance * 2.0 {
+                farPlane = eyeDistance * 2.0;
+            }
+            viewportRenderCamera.FarPlane = farPlane;
+            viewportRenderCamera.Orbit(
+                Vec3.New(viewTargetX, viewTargetY, viewTargetZ),
+                eyeDistance,
+                viewYawDegrees,
+                viewPitchDegrees);
+        } else {
+            viewportRenderCamera.IsOrtho = true;
+            viewportRenderCamera.OrthoSize = cameraRange.Z;
+            viewportRenderCamera.NearPlane = VIEWPORT_CAMERA_NEAR;
+            viewportRenderCamera.FarPlane = cameraRange.Y;
+            viewportRenderCamera.Orbit(
+                Vec3.New(viewTargetX, viewTargetY, viewTargetZ),
+                cameraRange.X,
+                viewYawDegrees,
+                viewPitchDegrees);
+        }
+        projectionCameraReady = true;
         return true;
     }
+
 
     /// @brief Rasterize authored meshes and materials into the embedded image.
     hide func RenderAuthoredViewport() -> Boolean {
         if ConfigureViewportCamera() == false { return false; }
         viewportRenderCanvas.Wireframe =
             viewportMode == VIEWPORT_MODE_WIREFRAME;
+        ApplyEnvironmentToCanvas(viewportRenderCanvas);
         viewportRenderCanvas.Clear(
             VIEWPORT_CLEAR_RED,
             VIEWPORT_CLEAR_GREEN,
@@ -7358,21 +10036,40 @@ class SceneEditor3D {
         var axisZ = Color.RGB(70, 110, 180);
         var gridCenterX = Convert.NumToInt(viewTargetX);
         var gridCenterZ = Convert.NumToInt(viewTargetZ);
-        var line = -10;
-        while line <= 10 {
-            var worldX = gridCenterX + line;
-            var worldZ = gridCenterZ + line;
-            var a = Project(worldX, 0.0, gridCenterZ - 10);
-            var b = Project(worldX, 0.0, gridCenterZ + 10);
-            var c = Project(gridCenterX - 10, 0.0, worldZ);
-            var d = Project(gridCenterX + 10, 0.0, worldZ);
-            var colorA = gridColor;
-            var colorB = gridColor;
-            if worldX == 0 { colorA = axisZ; }
-            if worldZ == 0 { colorB = axisX; }
-            viewportPixels.DrawLine(a.x, a.y, b.x, b.y, colorA);
-            viewportPixels.DrawLine(c.x, c.y, d.x, d.y, colorB);
-            line = line + 1;
+        if showGrid {
+            var line = -10;
+            while line <= 10 {
+                var worldX = gridCenterX + line;
+                var worldZ = gridCenterZ + line;
+                var a = Project(worldX, 0.0, gridCenterZ - 10);
+                var b = Project(worldX, 0.0, gridCenterZ + 10);
+                var c = Project(gridCenterX - 10, 0.0, worldZ);
+                var d = Project(gridCenterX + 10, 0.0, worldZ);
+                var colorA = gridColor;
+                var colorB = gridColor;
+                if viewPerspective {
+                    var fade = line;
+                    if fade < 0 { fade = 0 - fade; }
+                    if fade > 7 {
+                        colorA = Color.RGB(33, 39, 48);
+                        colorB = Color.RGB(33, 39, 48);
+                    } else if fade > 3 {
+                        colorA = Color.RGB(40, 47, 58);
+                        colorB = Color.RGB(40, 47, 58);
+                    }
+                }
+                if worldX == 0 { colorA = axisZ; }
+                if worldZ == 0 { colorB = axisX; }
+                // Behind-eye projections mirror in perspective; draw only
+                // segments whose endpoints are both in front of the camera.
+                if a.visible and b.visible {
+                    viewportPixels.DrawLine(a.x, a.y, b.x, b.y, colorA);
+                }
+                if c.visible and d.visible {
+                    viewportPixels.DrawLine(c.x, c.y, d.x, d.y, colorB);
+                }
+                line = line + 1;
+            }
         }
 
         if scene == null {
@@ -7396,18 +10093,26 @@ class SceneEditor3D {
                     pickPoint = Project(
                         lightWorld.X, lightWorld.Y, lightWorld.Z);
                 }
-                projectedX.add(pickPoint.x);
-                projectedY.add(pickPoint.y);
+                if pickPoint.visible {
+                    projectedX.add(pickPoint.x);
+                    projectedY.add(pickPoint.y);
+                } else {
+                    // Behind-eye projections mirror; keep them unpickable.
+                    projectedX.add(-100000);
+                    projectedY.add(-100000);
+                }
 
                 var parent = node.Parent;
                 var parentIndex = FindFlatIndex(parent);
-                if parentIndex >= 0 {
+                if showMarkers and parentIndex >= 0 {
                     var parentWorld = parent.WorldPosition;
                     var parentPoint = Project(
                         parentWorld.X, parentWorld.Y, parentWorld.Z);
-                    viewportPixels.DrawLine(
-                        parentPoint.x, parentPoint.y, point.x, point.y,
-                        Color.RGB(86, 96, 112));
+                    if point.visible and parentPoint.visible {
+                        viewportPixels.DrawLine(
+                            parentPoint.x, parentPoint.y, point.x, point.y,
+                            Color.RGB(86, 96, 112));
+                    }
                 }
 
                 var markerColor = Color.RGB(150, 165, 188);
@@ -7415,6 +10120,11 @@ class SceneEditor3D {
                     markerColor = Color.RGB(91, 180, 235);
                 } else if node.Light != null {
                     markerColor = Color.RGB(255, 190, 74);
+                } else if node.Camera != null {
+                    markerColor = Color.RGB(126, 214, 204);
+                } else {
+                    var componentTint = NodeComponentTint(node);
+                    if componentTint != 0 { markerColor = componentTint; }
                 }
                 if node.Visible == false {
                     markerColor = Color.RGB(92, 98, 108);
@@ -7422,7 +10132,7 @@ class SceneEditor3D {
                 if scene_selection.Contains(selectedIndices, i) {
                     markerColor = Color.RGB(104, 220, 255);
                 }
-                if i == selectedIndex {
+                if i == selectedIndex and point.visible {
                     markerColor = Color.RGB(255, 195, 78);
                     var xEnd = GizmoAxisEndpoint(node, GIZMO_AXIS_X);
                     var yEnd = GizmoAxisEndpoint(node, GIZMO_AXIS_Y);
@@ -7499,20 +10209,31 @@ class SceneEditor3D {
                         DrawGizmoHandle(zEnd, selectedZColor);
                     }
                 }
-                if node.Mesh != null {
-                    viewportPixels.DrawFrame(
-                        point.x - 6, point.y - 6, 13, 13, markerColor);
-                } else {
-                    viewportPixels.DrawDisc(point.x, point.y, 4, markerColor);
+                if showMarkers and point.visible {
+                    if node.Mesh != null {
+                        viewportPixels.DrawFrame(
+                            point.x - 6, point.y - 6, 13, 13, markerColor);
+                    } else {
+                        viewportPixels.DrawDisc(
+                            point.x, point.y, 4, markerColor);
+                    }
                 }
-                if node.Light != null {
+                if node.Light != null and showLightOverlays {
                     DrawLightOverlay(
                         node, node.Light, i == selectedIndex);
                 }
+                if node.Camera != null and showCameraOverlays {
+                    DrawCameraOverlay(node, i == selectedIndex);
+                }
+                if showColliderOverlays {
+                    DrawColliderOverlay(node, i == selectedIndex);
+                }
                 i = i + 1;
             }
+            DrawRouteOverlays();
         }
 
+        DrawCameraPreviewInset();
         viewportImage.SetPixels(
             viewportPixels, renderedViewportWidth, renderedViewportHeight);
         viewportImage.SetSize(renderedViewportWidth, renderedViewportHeight);
@@ -7541,13 +10262,30 @@ class SceneEditor3D {
         if viewportRenderFallback {
             renderStatus = renderStatus + " fallback";
         }
+        var projectionLabel = "persp";
+        if viewPerspective == false { projectionLabel = "ortho"; }
+        var statsStatus = "";
+        if showStats and scene != null {
+            statsStatus = "  |  visible " + scene.VisibleNodeCount
+                + " culled " + scene.CulledCount;
+        }
+        var flyStatus = "";
+        if flyActive {
+            flyStatus = "  |  fly WASD/QE (wheel speed)";
+        }
+        var lookStatus = "";
+        if ActiveLookThroughNode() != null {
+            lookStatus = "  |  look-through "
+                + NodeDisplayName(lookThroughNode);
+        }
         viewStatusLabel.SetText(
             count + " nodes  |  view " + viewYawDegrees
             + "/" + viewPitchDegrees + "  |  " + viewScale + " px/u"
+            + "  |  " + projectionLabel
             + "  |  " + lightCount + " light(s)"
             + "  |  " + renderStatus
             + "  |  " + scene_transform_3d.ModeLabel(gizmoMode)
-            + snapStatus
+            + snapStatus + statsStatus + flyStatus + lookStatus
             + clipped + interaction);
         viewportImage.SetAccessibleDescription(
             count + " scene nodes and " + lightCount
@@ -7612,6 +10350,7 @@ class SceneEditor3D {
         if node == null or light == null or viewportPixels == null { return; }
         var world = LightWorldPosition(node, light);
         var center = Project(world.X, world.Y, world.Z);
+        if center.visible == false { return; }
         var nodeWorld = node.WorldPosition;
         var nodePoint = Project(
             nodeWorld.X, nodeWorld.Y, nodeWorld.Z);
@@ -7620,7 +10359,8 @@ class SceneEditor3D {
         if light.IsEnabled == false {
             color = Color.RGB(106, 108, 114);
         }
-        if center.x != nodePoint.x or center.y != nodePoint.y {
+        if nodePoint.visible
+           and (center.x != nodePoint.x or center.y != nodePoint.y) {
             viewportPixels.DrawLine(
                 nodePoint.x, nodePoint.y,
                 center.x, center.y,
@@ -7644,11 +10384,13 @@ class SceneEditor3D {
                 world.X + direction.X * 1.5,
                 world.Y + direction.Y * 1.5,
                 world.Z + direction.Z * 1.5);
-            viewportPixels.DrawLine(
-                center.x, center.y,
-                endpoint.x, endpoint.y, color);
-            viewportPixels.DrawDisc(
-                endpoint.x, endpoint.y, 2, color);
+            if endpoint.visible {
+                viewportPixels.DrawLine(
+                    center.x, center.y,
+                    endpoint.x, endpoint.y, color);
+                viewportPixels.DrawDisc(
+                    endpoint.x, endpoint.y, 2, color);
+            }
         }
         if selected and scene_light_3d.HasRange(light.Type) {
             var rangePixels = Convert.NumToInt(light.Range * viewScale);
@@ -7661,6 +10403,506 @@ class SceneEditor3D {
                 rangePixels * 2 + 1,
                 Color.RGB(156, 128, 62));
         }
+    }
+
+    /// @brief Draw a camera glyph plus its authored frustum wireframe.
+    /// @details Pose comes from the node world transform and projection from
+    ///          the authored fields, both projected through the shared
+    ///          viewport camera (ADR 0184). Behind-eye segments are skipped.
+    hide func DrawCameraOverlay(node: SceneNode,
+                                selected: Boolean) {
+        var camera = node.Camera;
+        if camera == null or viewportPixels == null { return; }
+        var center = Project(
+            node.WorldPosition.X,
+            node.WorldPosition.Y,
+            node.WorldPosition.Z);
+        var color = Color.RGB(126, 214, 204);
+        if selected { color = Color.RGB(168, 255, 240); }
+        if center.visible {
+            viewportPixels.DrawFrame(
+                center.x - 5, center.y - 4, 11, 9, color);
+            viewportPixels.DrawDisc(center.x + 7, center.y, 2, color);
+        }
+
+        var state = scene_camera_3d.FromCamera(camera);
+        var world = node.WorldMatrix;
+        var eye = node.WorldPosition;
+        var forward = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 0.0, -1.0)) as Vec3,
+            0.0, 0.0, -1.0);
+        var up = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 1.0, 0.0)) as Vec3,
+            0.0, 1.0, 0.0);
+        var right = NormalizedVectorOr(
+            Vec3.Cross(forward, up) as Vec3, 1.0, 0.0, 0.0);
+        up = NormalizedVectorOr(
+            Vec3.Cross(right, forward) as Vec3, 0.0, 1.0, 0.0);
+
+        var nearHalfHeight = state.orthoSize;
+        var farHalfHeight = state.orthoSize;
+        if state.isOrtho == false {
+            var halfTangent = Math.Tan(
+                state.fovDegrees * 0.5 * DEG_TO_RAD);
+            nearHalfHeight = halfTangent * state.nearPlane;
+            farHalfHeight = halfTangent * state.farPlane;
+        }
+        var nearHalfWidth =
+            nearHalfHeight * scene_camera_3d.DEFAULT_ASPECT;
+        var farHalfWidth =
+            farHalfHeight * scene_camera_3d.DEFAULT_ASPECT;
+        DrawFrustumRect(
+            eye, forward, right, up,
+            state.nearPlane, nearHalfWidth, nearHalfHeight, color);
+        DrawFrustumRect(
+            eye, forward, right, up,
+            state.farPlane, farHalfWidth, farHalfHeight, color);
+        var corner = 0;
+        while corner < 4 {
+            var signRight = 1.0;
+            if corner == 1 or corner == 2 { signRight = -1.0; }
+            var signUp = 1.0;
+            if corner >= 2 { signUp = -1.0; }
+            var nearPoint = FrustumCorner(
+                eye, forward, right, up,
+                state.nearPlane,
+                nearHalfWidth * signRight,
+                nearHalfHeight * signUp);
+            var farPoint = FrustumCorner(
+                eye, forward, right, up,
+                state.farPlane,
+                farHalfWidth * signRight,
+                farHalfHeight * signUp);
+            if nearPoint.visible and farPoint.visible {
+                viewportPixels.DrawLine(
+                    nearPoint.x, nearPoint.y,
+                    farPoint.x, farPoint.y, color);
+            }
+            corner = corner + 1;
+        }
+    }
+
+    /// @brief Project one frustum-plane corner through the shared camera.
+    hide func FrustumCorner(eye: Vec3,
+                            forward: Vec3,
+                            right: Vec3,
+                            up: Vec3,
+                            distance: Number,
+                            offsetRight: Number,
+                            offsetUp: Number) -> ProjectedPoint {
+        return Project(
+            eye.X + forward.X * distance
+                + right.X * offsetRight + up.X * offsetUp,
+            eye.Y + forward.Y * distance
+                + right.Y * offsetRight + up.Y * offsetUp,
+            eye.Z + forward.Z * distance
+                + right.Z * offsetRight + up.Z * offsetUp);
+    }
+
+    /// @brief Draw one projected frustum rectangle with visibility guards.
+    hide func DrawFrustumRect(eye: Vec3,
+                              forward: Vec3,
+                              right: Vec3,
+                              up: Vec3,
+                              distance: Number,
+                              halfWidth: Number,
+                              halfHeight: Number,
+                              color: Integer) {
+        var topRight = FrustumCorner(
+            eye, forward, right, up, distance, halfWidth, halfHeight);
+        var topLeft = FrustumCorner(
+            eye, forward, right, up, distance,
+            0.0 - halfWidth, halfHeight);
+        var bottomLeft = FrustumCorner(
+            eye, forward, right, up, distance,
+            0.0 - halfWidth, 0.0 - halfHeight);
+        var bottomRight = FrustumCorner(
+            eye, forward, right, up, distance,
+            halfWidth, 0.0 - halfHeight);
+        if topRight.visible and topLeft.visible {
+            viewportPixels.DrawLine(
+                topRight.x, topRight.y, topLeft.x, topLeft.y, color);
+        }
+        if topLeft.visible and bottomLeft.visible {
+            viewportPixels.DrawLine(
+                topLeft.x, topLeft.y, bottomLeft.x, bottomLeft.y, color);
+        }
+        if bottomLeft.visible and bottomRight.visible {
+            viewportPixels.DrawLine(
+                bottomLeft.x, bottomLeft.y,
+                bottomRight.x, bottomRight.y, color);
+        }
+        if bottomRight.visible and topRight.visible {
+            viewportPixels.DrawLine(
+                bottomRight.x, bottomRight.y,
+                topRight.x, topRight.y, color);
+        }
+    }
+
+    /// @brief Retain the bounded picture-in-picture renderer lazily.
+    hide func EnsureInsetRenderer() -> Boolean {
+        if insetRenderTarget != null
+           and insetRenderCanvas != null
+           and insetRenderCamera != null {
+            return true;
+        }
+        var target = RenderTarget3D.New(INSET_WIDTH, INSET_HEIGHT);
+        if target == null { return false; }
+        var canvas = Canvas3D.NewOffscreen(target);
+        if canvas == null { return false; }
+        canvas.SetDefaultLighting();
+        var camera = Camera3D.New(
+            scene_camera_3d.DEFAULT_FOV_DEGREES,
+            INSET_WIDTH / (INSET_HEIGHT / 1.0),
+            scene_camera_3d.DEFAULT_NEAR_PLANE,
+            scene_camera_3d.DEFAULT_FAR_PLANE);
+        if camera == null { return false; }
+        insetRenderTarget = target;
+        insetRenderCanvas = canvas;
+        insetRenderCamera = camera;
+        return true;
+    }
+
+    /// @brief Render and composite the selected camera's bounded preview.
+    /// @details Presentation only (ADR 0184): the inset re-renders during
+    ///          damaged frames when its source changed or the bounded frame
+    ///          spacing elapsed, and never touches canonical content.
+    hide func DrawCameraPreviewInset() {
+        if insetEnabled == false or showCameraOverlays == false {
+            return;
+        }
+        if scene == null or viewportRenderFallback { return; }
+        var node = SelectedNode();
+        if node == null or node.Camera == null { return; }
+        var sourceChanged = insetSourceRevision != revision
+            or insetSourceNode != node;
+        var spacingElapsed = insetFrameCounter - insetLastRenderFrame
+            >= INSET_REFRESH_FRAMES;
+        if (sourceChanged or spacingElapsed or insetPixels == null)
+           and EnsureInsetRenderer() {
+            ApplyAuthoredCameraPose(insetRenderCamera, node);
+            insetRenderCanvas.Wireframe = false;
+            ApplyEnvironmentToCanvas(insetRenderCanvas);
+            insetRenderCanvas.Clear(
+                VIEWPORT_CLEAR_RED,
+                VIEWPORT_CLEAR_GREEN,
+                VIEWPORT_CLEAR_BLUE);
+            scene.Draw(insetRenderCanvas, insetRenderCamera);
+            var rendered = insetRenderTarget.AsPixels();
+            if rendered != null {
+                insetPixels = rendered;
+                insetLastRenderFrame = insetFrameCounter;
+                insetSourceRevision = revision;
+                insetSourceNode = node;
+            }
+        }
+        if insetPixels == null { return; }
+        var margin = 8;
+        var x = renderedViewportWidth - INSET_WIDTH - margin;
+        var y = renderedViewportHeight - INSET_HEIGHT - margin;
+        if x < 8 or y < 8 { return; }
+        viewportPixels.Copy(
+            x, y, insetPixels, 0, 0, INSET_WIDTH, INSET_HEIGHT);
+        viewportPixels.DrawFrame(
+            x - 1, y - 1, INSET_WIDTH + 2, INSET_HEIGHT + 2,
+            Color.RGB(126, 214, 204));
+    }
+
+    /// @brief Project one node-local point through the world transform.
+    hide func ProjectLocalPoint(world: Mat4,
+                                localX: Number,
+                                localY: Number,
+                                localZ: Number) -> ProjectedPoint {
+        var transformed = Mat4.TransformPoint(
+            world, Vec3.New(localX, localY, localZ)) as Vec3;
+        if transformed == null { return new ProjectedPoint(); }
+        return Project(transformed.X, transformed.Y, transformed.Z);
+    }
+
+    /// @brief Draw one overlay segment, dashed for trigger colliders.
+    /// @details Dashing interpolates the projected endpoints, drawing the
+    ///          outer 40% spans; both endpoints must be in front of the eye.
+    hide func DrawColliderSegment(from: ProjectedPoint,
+                                  to: ProjectedPoint,
+                                  color: Integer,
+                                  dashed: Boolean) {
+        if from.visible == false or to.visible == false { return; }
+        if dashed == false {
+            viewportPixels.DrawLine(from.x, from.y, to.x, to.y, color);
+            return;
+        }
+        var firstX = from.x + Convert.NumToInt((to.x - from.x) * 0.4);
+        var firstY = from.y + Convert.NumToInt((to.y - from.y) * 0.4);
+        var secondX = from.x + Convert.NumToInt((to.x - from.x) * 0.6);
+        var secondY = from.y + Convert.NumToInt((to.y - from.y) * 0.6);
+        viewportPixels.DrawLine(from.x, from.y, firstX, firstY, color);
+        viewportPixels.DrawLine(secondX, secondY, to.x, to.y, color);
+    }
+
+    /// @brief Draw one transformed local-space wire box.
+    hide func DrawColliderBox(world: Mat4,
+                              minX: Number,
+                              minY: Number,
+                              minZ: Number,
+                              maxX: Number,
+                              maxY: Number,
+                              maxZ: Number,
+                              color: Integer,
+                              dashed: Boolean) {
+        var c000 = ProjectLocalPoint(world, minX, minY, minZ);
+        var c100 = ProjectLocalPoint(world, maxX, minY, minZ);
+        var c010 = ProjectLocalPoint(world, minX, maxY, minZ);
+        var c110 = ProjectLocalPoint(world, maxX, maxY, minZ);
+        var c001 = ProjectLocalPoint(world, minX, minY, maxZ);
+        var c101 = ProjectLocalPoint(world, maxX, minY, maxZ);
+        var c011 = ProjectLocalPoint(world, minX, maxY, maxZ);
+        var c111 = ProjectLocalPoint(world, maxX, maxY, maxZ);
+        DrawColliderSegment(c000, c100, color, dashed);
+        DrawColliderSegment(c010, c110, color, dashed);
+        DrawColliderSegment(c001, c101, color, dashed);
+        DrawColliderSegment(c011, c111, color, dashed);
+        DrawColliderSegment(c000, c010, color, dashed);
+        DrawColliderSegment(c100, c110, color, dashed);
+        DrawColliderSegment(c001, c011, color, dashed);
+        DrawColliderSegment(c101, c111, color, dashed);
+        DrawColliderSegment(c000, c001, color, dashed);
+        DrawColliderSegment(c100, c101, color, dashed);
+        DrawColliderSegment(c010, c011, color, dashed);
+        DrawColliderSegment(c110, c111, color, dashed);
+    }
+
+    /// @brief Draw one transformed local-plane wire circle.
+    /// @param plane 0 = XY, 1 = XZ, 2 = YZ.
+    hide func DrawColliderCircle(world: Mat4,
+                                 centerY: Number,
+                                 radius: Number,
+                                 plane: Integer,
+                                 color: Integer,
+                                 dashed: Boolean) {
+        var segments = 16;
+        var previous = new ProjectedPoint();
+        var segment = 0;
+        while segment <= segments {
+            var angle = segment * 2.0 * 3.141592653589793 / segments;
+            var alongA = Math.Cos(angle) * radius;
+            var alongB = Math.Sin(angle) * radius;
+            var localX = alongA;
+            var localY = centerY + alongB;
+            var localZ = 0.0;
+            if plane == 1 {
+                localY = centerY;
+                localZ = alongB;
+            } else if plane == 2 {
+                localX = 0.0;
+                localY = centerY + alongA;
+                localZ = alongB;
+            }
+            var point = ProjectLocalPoint(
+                world, localX, localY, localZ);
+            if segment > 0
+               and (dashed == false or segment - (segment / 2) * 2 == 1) {
+                DrawColliderSegment(previous, point, color, false);
+            }
+            previous = point;
+            segment = segment + 1;
+        }
+    }
+
+    /// @brief Draw the authored collider convention wireframe (ADR 0185).
+    hide func DrawColliderOverlay(node: SceneNode,
+                                  selected: Boolean) {
+        var state = scene_collider_3d.FromNode(node);
+        if state.kind == scene_collider_3d.COLLIDER_NONE { return; }
+        var world = node.WorldMatrix;
+        if world == null { return; }
+        var color = Color.RGB(140, 210, 120);
+        if selected { color = Color.RGB(190, 255, 160); }
+        var dashed = state.trigger;
+        if state.kind == scene_collider_3d.COLLIDER_BOX {
+            DrawColliderBox(
+                world,
+                0.0 - state.halfX, 0.0 - state.halfY, 0.0 - state.halfZ,
+                state.halfX, state.halfY, state.halfZ,
+                color, dashed);
+        } else if state.kind == scene_collider_3d.COLLIDER_SPHERE {
+            DrawColliderCircle(world, 0.0, state.radius, 0, color, dashed);
+            DrawColliderCircle(world, 0.0, state.radius, 1, color, dashed);
+            DrawColliderCircle(world, 0.0, state.radius, 2, color, dashed);
+        } else if state.kind == scene_collider_3d.COLLIDER_CAPSULE {
+            var halfHeight = state.height * 0.5;
+            DrawColliderCircle(
+                world, halfHeight, state.radius, 1, color, dashed);
+            DrawColliderCircle(
+                world, 0.0 - halfHeight, state.radius, 1, color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, state.radius, 0.0 - halfHeight, 0.0),
+                ProjectLocalPoint(world, state.radius, halfHeight, 0.0),
+                color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, 0.0 - state.radius, 0.0 - halfHeight, 0.0),
+                ProjectLocalPoint(
+                    world, 0.0 - state.radius, halfHeight, 0.0),
+                color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, 0.0, 0.0 - halfHeight, state.radius),
+                ProjectLocalPoint(world, 0.0, halfHeight, state.radius),
+                color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, 0.0, 0.0 - halfHeight, 0.0 - state.radius),
+                ProjectLocalPoint(
+                    world, 0.0, halfHeight, 0.0 - state.radius),
+                color, dashed);
+        } else {
+            var boundsMin = node.BoundsMin;
+            var boundsMax = node.BoundsMax;
+            if boundsMin == null or boundsMax == null { return; }
+            DrawColliderBox(
+                world,
+                boundsMin.X, boundsMin.Y, boundsMin.Z,
+                boundsMax.X, boundsMax.Y, boundsMax.Z,
+                color, dashed);
+        }
+    }
+
+    /// @brief Draw ordered route polylines through direct children.
+    /// @details A route is a node carrying the project `route` component
+    ///          (ADR 0185 lifting the 2D convention of ADR 0179). At most
+    ///          256 waypoints per route are drawn; the hierarchy stays the
+    ///          editable source of truth.
+    hide func DrawRouteOverlays() {
+        if showRouteOverlays == false { return; }
+        var routeComponent = RouteComponentDefinition();
+        if routeComponent == null { return; }
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            if NodeCarriesComponent(node, routeComponent) {
+                var highlighted =
+                    scene_selection.Contains(selectedIndices, index);
+                var child = 0;
+                while child < node.ChildCount
+                      and highlighted == false {
+                    var childIndex =
+                        FindFlatIndex(node.GetChild(child));
+                    if childIndex >= 0
+                       and scene_selection.Contains(
+                              selectedIndices, childIndex) {
+                        highlighted = true;
+                    }
+                    child = child + 1;
+                }
+                var color = Color.RGB(196, 150, 255);
+                if highlighted { color = Color.RGB(230, 196, 255); }
+                var previousPoint = Project(
+                    node.WorldPosition.X,
+                    node.WorldPosition.Y,
+                    node.WorldPosition.Z);
+                var waypoint = 0;
+                while waypoint < node.ChildCount and waypoint < 256 {
+                    var waypointNode = node.GetChild(waypoint);
+                    if waypointNode != null {
+                        var world = waypointNode.WorldPosition;
+                        var point = Project(world.X, world.Y, world.Z);
+                        DrawColliderSegment(
+                            previousPoint, point, color, false);
+                        previousPoint = point;
+                    }
+                    waypoint = waypoint + 1;
+                }
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return the project route component for 3D nodes, or null.
+    hide func RouteComponentDefinition()
+        -> scene_component_schema.SceneComponentDefinition {
+        if componentSchema == null or componentSchema.valid == false {
+            return null;
+        }
+        return componentSchema.Find(
+            "route", scene_component_schema.TARGET_3D_NODE);
+    }
+
+    /// @brief Return whether one node has every field of one component.
+    hide func NodeCarriesComponent(
+        node: SceneNode,
+        component: scene_component_schema.SceneComponentDefinition)
+        -> Boolean {
+        if node == null or component == null
+           or component.fields.count() == 0 {
+            return false;
+        }
+        var fieldIndex = 0;
+        while fieldIndex < component.fields.count() {
+            if node.MetadataHas(
+                   component.fields.get(fieldIndex).key) == false {
+                return false;
+            }
+            fieldIndex = fieldIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Deterministic viewport tint for recognized gameplay markers.
+    /// @return Packed color, or zero when no 3D component matches.
+    hide func NodeComponentTint(node: SceneNode) -> Integer {
+        if componentSchema == null or componentSchema.valid == false
+           or node == null {
+            return 0;
+        }
+        var seen = 0;
+        var index = 0;
+        while index < componentSchema.components.count() {
+            var component = componentSchema.components.get(index);
+            if component != null
+               and component.SupportsTarget(
+                   scene_component_schema.TARGET_3D_NODE) {
+                if NodeCarriesComponent(node, component) {
+                    return ComponentTintColor(seen);
+                }
+                seen = seen + 1;
+            }
+            index = index + 1;
+        }
+        return 0;
+    }
+
+    /// @brief First recognized gameplay component name for one node.
+    hide func NodeComponentBadge(node: SceneNode) -> String {
+        if componentSchema == null or componentSchema.valid == false
+           or node == null {
+            return "";
+        }
+        var index = 0;
+        while index < componentSchema.components.count() {
+            var component = componentSchema.components.get(index);
+            if component != null
+               and component.SupportsTarget(
+                   scene_component_schema.TARGET_3D_NODE)
+               and NodeCarriesComponent(node, component) {
+                return component.name;
+            }
+            index = index + 1;
+        }
+        return "";
+    }
+
+    /// @brief Fixed six-color palette keyed by schema component order.
+    hide func ComponentTintColor(position: Integer) -> Integer {
+        var slot = position - (position / 6) * 6;
+        if slot == 0 { return Color.RGB(255, 138, 128); }
+        if slot == 1 { return Color.RGB(255, 213, 128); }
+        if slot == 2 { return Color.RGB(174, 255, 128); }
+        if slot == 3 { return Color.RGB(128, 222, 255); }
+        if slot == 4 { return Color.RGB(196, 150, 255); }
+        return Color.RGB(255, 158, 222);
     }
 
     /// @brief Interpolate one corner of a projected plane handle.

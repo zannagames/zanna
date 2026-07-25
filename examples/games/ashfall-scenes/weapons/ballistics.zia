@@ -1,0 +1,399 @@
+// =============================================================================
+// weapons/ballistics.zia — the damage pipeline + hitscan tracing + blasts
+// =============================================================================
+//
+// The single entry point for damage. Hitscan weapons trace a physics ray (with
+// per-pellet spread), penetration weapons use RaycastAll, and blasts use
+// OverlapSphere + a per-victim occlusion ray. Every resolved hit runs through
+// `applyDamage`, which applies the locational multiplier and posts an EV_DAMAGE
+// the target systems drain — so ballistics never depends on the concrete enemy /
+// dummy / destructible code. One pipeline, three feeders (hitscan, projectile
+// impact, blast).
+// =============================================================================
+module ballistics;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+bind "../core/rng" as rng;
+bind "./targets" as targets;
+
+class Ballistics {
+    hide G3D.PhysicsWorld3D phys;
+    hide events.EventBus bus;
+    hide targets.TargetRegistry reg;
+    hide rng.RngStream spreadRng;
+    hide Integer shotsFired;
+    hide Integer hitsLanded;
+    // Visual read-back for the most recent traced ray (first pellet of a shot):
+    // endpoint (hit point or max-range point) + surface normal when it hit.
+    hide Float endX; hide Float endY; hide Float endZ;
+    hide Float hitNX; hide Float hitNY; hide Float hitNZ;
+    hide Boolean hitSolid;
+    hide Boolean captureVisual;
+    // World endpoints for the most recent Shard ricochet segments.
+    hide List[Float] ricoX; hide List[Float] ricoY; hide List[Float] ricoZ;
+
+    expose func init() {
+        shotsFired = 0;
+        hitsLanded = 0;
+        endX = 0.0; endY = 0.0; endZ = 0.0;
+        hitNX = 0.0; hitNY = 1.0; hitNZ = 0.0;
+        hitSolid = false;
+        captureVisual = true;
+        ricoX = []; ricoY = []; ricoZ = [];
+    }
+
+    expose func lastEndX() -> Float { return endX; }
+    expose func lastEndY() -> Float { return endY; }
+    expose func lastEndZ() -> Float { return endZ; }
+    expose func lastNormalX() -> Float { return hitNX; }
+    expose func lastNormalY() -> Float { return hitNY; }
+    expose func lastNormalZ() -> Float { return hitNZ; }
+    expose func lastHitSolid() -> Boolean { return hitSolid; }
+    expose func ricochetPointCount() -> Integer { return ricoX.Count; }
+    expose func ricochetXat(i: Integer) -> Float { return ricoX[i]; }
+    expose func ricochetYat(i: Integer) -> Float { return ricoY[i]; }
+    expose func ricochetZat(i: Integer) -> Float { return ricoZ[i]; }
+
+    expose func setup(p: G3D.PhysicsWorld3D, b: events.EventBus,
+                      r: targets.TargetRegistry, sr: rng.RngStream) {
+        phys = p; bus = b; reg = r; spreadRng = sr;
+    }
+
+    expose func getShotsFired() -> Integer { return shotsFired; }
+    expose func getHitsLanded() -> Integer { return hitsLanded; }
+    expose func resetStats() { shotsFired = 0; hitsLanded = 0; }
+    // Projectile weapons share the same accuracy ledger as hitscan weapons.
+    // A projectile counts once when launched and at most once when it damages
+    // one or more targets (an explosive multi-kill is still one accurate shot).
+    expose func recordProjectileShot() { shotsFired = shotsFired + 1; }
+    expose func recordProjectileHit() { hitsLanded = hitsLanded + 1; }
+    expose func restoreStats(shots: Integer, hits: Integer) {
+        shotsFired = M.clampi(shots, 0, 1000000000);
+        hitsLanded = M.clampi(hits, 0, shotsFired);
+    }
+
+    /// Deterministically perturb a projectile through the same spread stream
+    /// and cone model used by hitscan weapons.
+    expose func spreadVector(dx: Float, dy: Float, dz: Float,
+                             spreadDeg: Float) -> Math.Vec3 {
+        return perturb(dx, dy, dz, M.toRad(spreadDeg));
+    }
+
+    // --- Core damage pipeline entry ------------------------------------------
+    // Applies the locational multiplier and posts the events target systems drain.
+    // `sourceBearing` is the world-space bearing from the victim toward the
+    // damage source.  It lets directional defenses distinguish a frontal hit
+    // from a flank without coupling this generic pipeline to enemy state.
+    expose func applyDamage(targetKind: Integer, index: Integer, region: Integer,
+                            baseAmount: Float, dmgKind: Integer, sourceBearing: Float) {
+        var mult = 1.0;
+        if region == config.REGION_HEAD { mult = config.HEADSHOT_MULT; }
+        else if region == config.REGION_WEAKPOINT { mult = config.WEAKPOINT_MULT; }
+        else if region == config.REGION_ARMOR { mult = config.ARMOR_MULT; }
+        var eff = baseAmount * mult;
+        bus.push(config.EV_DAMAGE, targetKind, index, region, eff, dmgKind + 0.0, sourceBearing);
+        bus.pushKind(config.EV_HITMARKER, region, 0);
+    }
+
+    // --- Hitscan -------------------------------------------------------------
+    // Fires `pellets` rays from origin along dir, each perturbed inside a
+    // `spreadDeg` cone. `penetration` > 1 uses RaycastAll. Returns hits landed.
+    expose func fireHitscan(ox: Float, oy: Float, oz: Float,
+                            dx: Float, dy: Float, dz: Float,
+                            pellets: Integer, spreadDeg: Float, damage: Float,
+                            penetration: Integer, maxDist: Float, dmgKind: Integer) -> Integer {
+        var landed = 0;
+        var origin = Math.Vec3.New(ox, oy, oz);
+        var spreadRad = M.toRad(spreadDeg);
+        hitSolid = false;
+        ricoX = []; ricoY = []; ricoZ = [];
+        var p = 0;
+        while p < pellets {
+            captureVisual = p == 0;
+            shotsFired = shotsFired + 1;
+            var pd = perturb(dx, dy, dz, spreadRad);
+            if penetration > 1 {
+                landed = landed + traceAll(origin, pd, damage, penetration, maxDist, dmgKind);
+            } else {
+                if traceOne(origin, pd, damage, maxDist, dmgKind) { landed = landed + 1; }
+            }
+            p = p + 1;
+        }
+        captureVisual = true;
+        hitsLanded = hitsLanded + landed;
+        return landed;
+    }
+
+    // Trace a shard that reflects from world geometry. Targets consume a bounce
+    // and the shard continues forward; hard surfaces reflect around the hit
+    // normal. Damage loses 20% per segment so bank shots reward geometry without
+    // becoming an unlimited room-clearing ray.
+    expose func fireRicochet(ox: Float, oy: Float, oz: Float,
+                             dx: Float, dy: Float, dz: Float,
+                             spreadDeg: Float, damage: Float, bounces: Integer,
+                             maxDist: Float, dmgKind: Integer) -> Integer {
+        shotsFired = shotsFired + 1;
+        hitSolid = false;
+        captureVisual = true;
+        ricoX = []; ricoY = []; ricoZ = [];
+        var dir = perturb(dx, dy, dz, M.toRad(spreadDeg));
+        var cx = ox; var cy = oy; var cz = oz;
+        var remaining = maxDist;
+        var segment = 0;
+        var landed = 0;
+        var lastTargetKind = -1;
+        var lastTargetIndex = -1;
+        while segment <= bounces && remaining > 0.05 {
+            var origin = Math.Vec3.New(cx, cy, cz);
+            var hit = firstRicochetHit(origin, dir, remaining, lastTargetKind, lastTargetIndex);
+            if hit == null {
+                recordMiss(origin, dir, remaining);
+                addRicochetPoint(endX, endY, endZ);
+                remaining = 0.0;
+            } else {
+                recordHit(hit);
+                var pt = G3D.PhysicsHit3D.get_Point(hit);
+                var hx = Math.Vec3.get_X(pt); var hy = Math.Vec3.get_Y(pt); var hz = Math.Vec3.get_Z(pt);
+                var travelled = M.dist3(cx, cy, cz, hx, hy, hz);
+                remaining = remaining - travelled;
+                addRicochetPoint(hx, hy, hz);
+                var body = G3D.PhysicsHit3D.get_Body(hit);
+                var slot = reg.resolve(body);
+                var falloff = 1.0 - (segment + 0.0) * 0.2;
+                if falloff < 0.35 { falloff = 0.35; }
+                if slot >= 0 {
+                    var incoming = sourceBearingOf(dir);
+                    applyDamage(reg.kindAt(slot), reg.indexAt(slot), reg.regionAt(slot),
+                                damage * falloff, dmgKind, incoming);
+                    landed = landed + 1;
+                    lastTargetKind = reg.kindAt(slot);
+                    lastTargetIndex = reg.indexAt(slot);
+                    // Continue just beyond a target along the same heading.
+                    cx = hx + Math.Vec3.get_X(dir) * 0.08;
+                    cy = hy + Math.Vec3.get_Y(dir) * 0.08;
+                    cz = hz + Math.Vec3.get_Z(dir) * 0.08;
+                } else {
+                    lastTargetKind = -1;
+                    lastTargetIndex = -1;
+                    bus.pushAt(config.EV_IMPACT, 0, dmgKind, hx, hy, hz);
+                    var nm = G3D.PhysicsHit3D.get_Normal(hit);
+                    var nx = Math.Vec3.get_X(nm); var ny = Math.Vec3.get_Y(nm); var nz = Math.Vec3.get_Z(nm);
+                    var dot = Math.Vec3.get_X(dir) * nx + Math.Vec3.get_Y(dir) * ny + Math.Vec3.get_Z(dir) * nz;
+                    var rdx = Math.Vec3.get_X(dir) - 2.0 * dot * nx;
+                    var rdy = Math.Vec3.get_Y(dir) - 2.0 * dot * ny;
+                    var rdz = Math.Vec3.get_Z(dir) - 2.0 * dot * nz;
+                    var rlen = Math.Sqrt(rdx * rdx + rdy * rdy + rdz * rdz);
+                    if rlen > 0.001 { dir = Math.Vec3.New(rdx / rlen, rdy / rlen, rdz / rlen); }
+                    cx = hx + nx * 0.05; cy = hy + ny * 0.05; cz = hz + nz * 0.05;
+                }
+                segment = segment + 1;
+            }
+        }
+        hitsLanded = hitsLanded + landed;
+        return landed;
+    }
+
+    // A ricochet segment starts just outside its previous hit. RaycastAll lets
+    // us skip the other overlapping region colliders belonging to that same
+    // target without jumping far enough to miss a nearby wall or second enemy.
+    hide func firstRicochetHit(origin: Math.Vec3, dir: Math.Vec3, maxDist: Float,
+                               lastKind: Integer, lastIndex: Integer) -> G3D.PhysicsHit3D {
+        var list = phys.RaycastAll(origin, dir, maxDist, config.MASK_SHOOTABLE);
+        if list == null { return null; }
+        var i = 0;
+        while i < G3D.PhysicsHitList3D.get_Count(list) {
+            var hit = G3D.PhysicsHitList3D.Get(list, i);
+            var slot = reg.resolve(G3D.PhysicsHit3D.get_Body(hit));
+            if slot < 0 || reg.kindAt(slot) != lastKind || reg.indexAt(slot) != lastIndex {
+                return hit;
+            }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    hide func addRicochetPoint(x: Float, y: Float, z: Float) {
+        ricoX.Add(x); ricoY.Add(y); ricoZ.Add(z);
+    }
+
+    hide func traceOne(origin: Math.Vec3, dir: Math.Vec3, damage: Float,
+                       maxDist: Float, dmgKind: Integer) -> Boolean {
+        var hit = phys.Raycast(origin, dir, maxDist, config.MASK_SHOOTABLE);
+        if hit == null {
+            recordMiss(origin, dir, maxDist);
+            return false;
+        }
+        recordHit(hit);
+        return resolveHit(hit, damage, dmgKind, dir);
+    }
+
+    // --- Visual read-back capture ---------------------------------------------
+    hide func recordHit(hit: G3D.PhysicsHit3D) {
+        if captureVisual == false { return; }
+        var pt = G3D.PhysicsHit3D.get_Point(hit);
+        endX = Math.Vec3.get_X(pt); endY = Math.Vec3.get_Y(pt); endZ = Math.Vec3.get_Z(pt);
+        var nm = G3D.PhysicsHit3D.get_Normal(hit);
+        hitNX = Math.Vec3.get_X(nm); hitNY = Math.Vec3.get_Y(nm); hitNZ = Math.Vec3.get_Z(nm);
+        hitSolid = true;
+    }
+    hide func recordMiss(origin: Math.Vec3, dir: Math.Vec3, maxDist: Float) {
+        if captureVisual == false { return; }
+        endX = Math.Vec3.get_X(origin) + Math.Vec3.get_X(dir) * maxDist;
+        endY = Math.Vec3.get_Y(origin) + Math.Vec3.get_Y(dir) * maxDist;
+        endZ = Math.Vec3.get_Z(origin) + Math.Vec3.get_Z(dir) * maxDist;
+        hitSolid = false;
+    }
+
+    hide func traceAll(origin: Math.Vec3, dir: Math.Vec3, damage: Float,
+                       penetration: Integer, maxDist: Float, dmgKind: Integer) -> Integer {
+        var list = phys.RaycastAll(origin, dir, maxDist, config.MASK_SHOOTABLE);
+        if list == null {
+            recordMiss(origin, dir, maxDist);
+            return 0;
+        }
+        var n = G3D.PhysicsHitList3D.get_Count(list);
+        if n > 0 { recordHit(G3D.PhysicsHitList3D.Get(list, 0)); }
+        else { recordMiss(origin, dir, maxDist); }
+        var landed = 0;
+        var i = 0;
+        while i < n && landed < penetration {
+            var hit = G3D.PhysicsHitList3D.Get(list, i);
+            var slot = reg.resolve(G3D.PhysicsHit3D.get_Body(hit));
+            // The first unregistered collider is world geometry. Rail rounds
+            // penetrate targets, never walls; hits returned beyond it are ignored.
+            if slot < 0 {
+                i = n;
+            } else if targetAppearedEarlier(list, i, reg.kindAt(slot), reg.indexAt(slot)) == false {
+                // Penetration loses 25% per distinct target, not per overlapping
+                // body/head/weak-point collider belonging to the same target.
+                var falloff = 1.0 - (landed + 0.0) * 0.25;
+                if falloff < 0.2 { falloff = 0.2; }
+                if resolveHit(hit, damage * falloff, dmgKind, dir) { landed = landed + 1; }
+                i = i + 1;
+            } else {
+                i = i + 1;
+            }
+        }
+        return landed;
+    }
+
+    // Overlap/raycast queries can return several registered region colliders for
+    // one logical target. Scan the already-sorted prefix to keep one damage row.
+    hide func targetAppearedEarlier(list: G3D.PhysicsHitList3D, before: Integer,
+                                    kind: Integer, index: Integer) -> Boolean {
+        var j = 0;
+        while j < before {
+            var prev = G3D.PhysicsHitList3D.Get(list, j);
+            var prevSlot = reg.resolve(G3D.PhysicsHit3D.get_Body(prev));
+            if prevSlot >= 0 && reg.kindAt(prevSlot) == kind && reg.indexAt(prevSlot) == index {
+                return true;
+            }
+            j = j + 1;
+        }
+        return false;
+    }
+
+    hide func resolveHit(hit: G3D.PhysicsHit3D, damage: Float, dmgKind: Integer,
+                         dir: Math.Vec3) -> Boolean {
+        var b = G3D.PhysicsHit3D.get_Body(hit);
+        var slot = reg.resolve(b);
+        if slot < 0 { return false; }   // hit world geometry, not a target
+        applyDamage(reg.kindAt(slot), reg.indexAt(slot), reg.regionAt(slot), damage,
+                    dmgKind, sourceBearingOf(dir));
+        return true;
+    }
+
+    // A ray points source -> victim; directional defense needs victim -> source.
+    hide func sourceBearingOf(dir: Math.Vec3) -> Float {
+        return M.toDeg(Math.Atan2(0.0 - Math.Vec3.get_X(dir), Math.Vec3.get_Z(dir)));
+    }
+
+    // --- Blast (explosions) --------------------------------------------------
+    // OverlapSphere for candidate victims; a center-to-victim occlusion ray
+    // halves damage through cover; linear falloff to the radius edge.
+    expose func blast(cx: Float, cy: Float, cz: Float, radius: Float, damage: Float,
+                      dmgKind: Integer) -> Integer {
+        var center = Math.Vec3.New(cx, cy, cz);
+        var list = phys.OverlapSphere(center, radius, config.MASK_SHOOTABLE);
+        var n = 0;
+        if list != null { n = G3D.PhysicsHitList3D.get_Count(list); }
+        var landed = 0;
+        var i = 0;
+        while i < n {
+            var hit = G3D.PhysicsHitList3D.Get(list, i);
+            var b = G3D.PhysicsHit3D.get_Body(hit);
+            var slot = reg.resolve(b);
+            if slot >= 0 &&
+               targetAppearedEarlier(list, i, reg.kindAt(slot), reg.indexAt(slot)) == false {
+                var pt = G3D.PhysicsHit3D.get_Point(hit);
+                var vx = Math.Vec3.get_X(pt);
+                var vy = Math.Vec3.get_Y(pt);
+                var vz = Math.Vec3.get_Z(pt);
+                var d = M.dist3(cx, cy, cz, vx, vy, vz);
+                var falloff = M.clampf(1.0 - d / radius, 0.0, 1.0);
+                var occ = occlusionFactor(cx, cy, cz, vx, vy, vz);
+                var eff = damage * falloff * occ;
+                if eff > 0.5 {
+                    var sourceBearing = M.toDeg(Math.Atan2(cx - vx, 0.0 - (cz - vz)));
+                    applyDamage(reg.kindAt(slot), reg.indexAt(slot), config.REGION_BODY,
+                                eff, dmgKind, sourceBearing);
+                    landed = landed + 1;
+                }
+            }
+            i = i + 1;
+        }
+        // c=dmgKind+1 distinguishes a damaging world blast from cosmetic burst
+        // events. Game uses the metadata to apply the same falloff/cover rules to
+        // the player, who intentionally is not part of the target registry.
+        bus.push(config.EV_EXPLOSION, M.roundi(damage), M.roundi(radius), dmgKind + 1,
+                 cx, cy, cz);
+        return landed;
+    }
+
+    // 1.0 clear line, 0.5 if a wall sits between the blast center and the victim.
+    hide func occlusionFactor(cx: Float, cy: Float, cz: Float,
+                              vx: Float, vy: Float, vz: Float) -> Float {
+        var dx = vx - cx; var dy = vy - cy; var dz = vz - cz;
+        var len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if len < 0.01 { return 1.0; }
+        var dir = Math.Vec3.New(dx / len, dy / len, dz / len);
+        var origin = Math.Vec3.New(cx, cy, cz);
+        var hit = phys.Raycast(origin, dir, len - 0.1, config.LAYER_WORLD);
+        if hit == null { return 1.0; }
+        return 0.5;
+    }
+
+    // --- Spread perturbation -------------------------------------------------
+    // Perturb a unit direction inside a cone of half-angle `spreadRad`.
+    hide func perturb(dx: Float, dy: Float, dz: Float, spreadRad: Float) -> Math.Vec3 {
+        if spreadRad < 0.0001 {
+            return Math.Vec3.New(dx, dy, dz);
+        }
+        // Build an orthonormal basis (right, up) around the fire direction.
+        var ux = 0.0; var uy = 1.0; var uz = 0.0;
+        if M.absf(dy) > 0.99 { ux = 1.0; uy = 0.0; }
+        var rx = dy * uz - dz * uy;
+        var ry = dz * ux - dx * uz;
+        var rz = dx * uy - dy * ux;
+        var rl = Math.Sqrt(rx * rx + ry * ry + rz * rz);
+        if rl < 0.0001 { return Math.Vec3.New(dx, dy, dz); }
+        rx = rx / rl; ry = ry / rl; rz = rz / rl;
+        var bx = ry * dz - rz * dy;
+        var by = rz * dx - rx * dz;
+        var bz = rx * dy - ry * dx;
+        // Uniform-in-cone sample.
+        var ang = spreadRng.range(0.0, 6.2831853);
+        var mag = spreadRad * Math.Sqrt(spreadRng.nextFloat());
+        var ox = Math.Cos(ang) * mag;
+        var oy = Math.Sin(ang) * mag;
+        var nx = dx + rx * ox + bx * oy;
+        var ny = dy + ry * ox + by * oy;
+        var nz = dz + rz * ox + bz * oy;
+        var nl = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+        return Math.Vec3.New(nx / nl, ny / nl, nz / nl);
+    }
+}

@@ -48,9 +48,14 @@ template <class T> class StableList {
         std::optional<T> value;
         Slot *nextFree{nullptr};
 
+        /// @brief Access the live value stored in this slot.
+        /// @return Pointer to the value, or nullptr while the slot is free.
         T *get() noexcept {
             return value ? &*value : nullptr;
         }
+
+        /// @brief Access the live value stored in this slot without mutation.
+        /// @return Const pointer to the value, or nullptr while the slot is free.
         const T *get() const noexcept {
             return value ? &*value : nullptr;
         }
@@ -174,31 +179,43 @@ template <class T> class StableList {
         }
 
         /// @brief Compare iterator positions for equality.
+        /// @param rhs Iterator over the same backing slot vector.
+        /// @return True when both iterators address the same slot position.
         bool operator==(const IteratorBase &rhs) const {
             return it_ == rhs.it_;
         }
 
         /// @brief Compare iterator positions for inequality.
+        /// @param rhs Iterator over the same backing slot vector.
+        /// @return True when the positions differ.
         bool operator!=(const IteratorBase &rhs) const {
             return !(*this == rhs);
         }
 
         /// @brief Compare iterator positions.
+        /// @param rhs Iterator over the same backing slot vector.
+        /// @return True when this position precedes @p rhs.
         bool operator<(const IteratorBase &rhs) const {
             return it_ < rhs.it_;
         }
 
         /// @brief Compare iterator positions.
+        /// @param rhs Iterator over the same backing slot vector.
+        /// @return True when this position follows @p rhs.
         bool operator>(const IteratorBase &rhs) const {
             return rhs < *this;
         }
 
         /// @brief Compare iterator positions.
+        /// @param rhs Iterator over the same backing slot vector.
+        /// @return True when this position does not follow @p rhs.
         bool operator<=(const IteratorBase &rhs) const {
             return !(rhs < *this);
         }
 
         /// @brief Compare iterator positions.
+        /// @param rhs Iterator over the same backing slot vector.
+        /// @return True when this position does not precede @p rhs.
         bool operator>=(const IteratorBase &rhs) const {
             return !(*this < rhs);
         }
@@ -208,6 +225,7 @@ template <class T> class StableList {
         template <bool> friend class IteratorBase;
 
         /// @brief Construct an iterator from a backing storage iterator.
+        /// @param it Backing slot-vector position.
         explicit IteratorBase(StorageIterator it) : it_(it) {}
 
         StorageIterator it_{};
@@ -592,6 +610,8 @@ template <class T> class StableList {
   private:
     static constexpr size_type kSlotsPerChunk = 64;
 
+    /// @brief Grow pooled slot storage until at least @p requested slots are free.
+    /// @param requested Minimum desired free-slot count.
     void ensureFree(size_type requested) {
         while (freeCount_ < requested) {
             const size_type chunkSize = std::max(kSlotsPerChunk, requested - freeCount_);
@@ -606,6 +626,11 @@ template <class T> class StableList {
         }
     }
 
+    /// @brief Acquire a pooled slot and construct an element in place.
+    /// @tparam Args Element-constructor argument types.
+    /// @param args Arguments forwarded to `T`.
+    /// @return Live slot not yet inserted into the logical sequence.
+    /// @details If construction throws, the slot is returned to the free list.
     template <class... Args> Slot *create(Args &&...args) {
         ensureFree(1);
         Slot *slot = free_;
@@ -623,6 +648,8 @@ template <class T> class StableList {
         return slot;
     }
 
+    /// @brief Destroy a live element and return its slot to the free list.
+    /// @param slot Non-null slot owned by this list.
     void release(Slot *slot) noexcept {
         slot->value.reset();
         slot->nextFree = free_;
@@ -630,6 +657,9 @@ template <class T> class StableList {
         ++freeCount_;
     }
 
+    /// @brief Append an already constructed slot to the logical sequence.
+    /// @param slot Live pooled slot.
+    /// @details Returns @p slot to the free list if vector insertion throws.
     void appendSlot(Slot *slot) {
         try {
             slots_.push_back(slot);
@@ -639,6 +669,10 @@ template <class T> class StableList {
         }
     }
 
+    /// @brief Preserve a range element's value category while acquiring a slot.
+    /// @tparam U Forwarded source type.
+    /// @param value Value copied or moved into the new element.
+    /// @return Constructed pooled slot.
     template <class U> Slot *createForwarded(U &&value) {
         return create(std::forward<U>(value));
     }
@@ -650,6 +684,8 @@ template <class T> class StableList {
         appendSlot(createForwarded(std::forward<U>(value)));
     }
 
+    /// @brief Exchange logical storage, pooled chunks, and free-list state.
+    /// @param other List to exchange with.
     void swap(StableList &other) noexcept {
         slots_.swap(other.slots_);
         chunks_.swap(other.chunks_);
@@ -657,6 +693,8 @@ template <class T> class StableList {
         std::swap(freeCount_, other.freeCount_);
     }
 
+    /// @brief Transfer all owned storage while leaving the source empty.
+    /// @param other Source list.
     void moveFrom(StableList &&other) noexcept {
         slots_ = std::move(other.slots_);
         chunks_ = std::move(other.chunks_);

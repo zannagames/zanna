@@ -45,17 +45,29 @@ void emitWarning(const VerifyCtx &ctx, std::string_view message) {
     ctx.diags.report(Diag{Severity::Warning, formatDiag(ctx, message), ctx.instr.loc, {}});
 }
 
+/// @brief Extract a signed constant offset or allocation size.
+/// @param value Value to inspect.
+/// @return Integer payload for a constant, or no value otherwise.
 std::optional<long long> constInt(const Value &value) {
     if (value.kind != Value::Kind::ConstInt)
         return std::nullopt;
     return value.i64;
 }
 
+/// @brief Test whether signed addition would overflow `long long`.
+/// @param lhs Left addend.
+/// @param rhs Right addend.
+/// @return `true` when the mathematical sum is not representable.
 bool addOverflows(long long lhs, long long rhs) {
     return (rhs > 0 && lhs > std::numeric_limits<long long>::max() - rhs) ||
            (rhs < 0 && lhs < std::numeric_limits<long long>::min() - rhs);
 }
 
+/// @brief Reject direct global-address literals where a computed pointer is required.
+/// @param ctx Current instruction context used for diagnostics.
+/// @param ptr Candidate pointer operand.
+/// @param operation Operation name included in any diagnostic.
+/// @return Success unless @p ptr is a direct `GlobalAddr`.
 Expected<void> rejectDirectGlobalAddress(const VerifyCtx &ctx,
                                          const Value &ptr,
                                          std::string_view operation) {
@@ -66,6 +78,10 @@ Expected<void> rejectDirectGlobalAddress(const VerifyCtx &ctx,
     return {};
 }
 
+/// @brief Find the instruction defining a temporary within a function.
+/// @param fn Function scanned in block and instruction order.
+/// @param temp Temporary identifier to locate.
+/// @return Pointer to the first matching result definition, or null.
 const il::core::Instr *findDef(const il::core::Function &fn, unsigned temp) {
     for (const auto &block : fn.blocks)
         for (const auto &instr : block.instructions)
@@ -74,11 +90,23 @@ const il::core::Instr *findDef(const il::core::Function &fn, unsigned temp) {
     return nullptr;
 }
 
+/// @brief Statically known allocation size and pointer offset within it.
 struct StackBounds {
+    /// @brief Root `alloca` size in bytes.
     long long size = 0;
+
+    /// @brief Signed constant offset from the root allocation.
     long long offset = 0;
 };
 
+/// @brief Resolve an alloca-derived pointer to static size and offset bounds.
+/// @details Follows result definitions through constant-offset GEP chains,
+///          stopping after 32 links or whenever size, offset, definition, or
+///          addition cannot be proven safely.
+/// @param fn Function containing pointer definitions.
+/// @param ptr Pointer value to resolve.
+/// @param depth Current recursion depth.
+/// @return Static bounds when rooted in a constant nonnegative alloca.
 std::optional<StackBounds> stackBoundsForPointer(const il::core::Function &fn,
                                                  const Value &ptr,
                                                  unsigned depth = 0) {
@@ -107,6 +135,15 @@ std::optional<StackBounds> stackBoundsForPointer(const il::core::Function &fn,
     return base;
 }
 
+/// @brief Check a statically resolvable stack load or store against its allocation.
+/// @details Unknown provenance is accepted for later/runtime handling. Known
+///          provenance rejects negative offsets, pointers beyond the one-past
+///          endpoint, and accesses whose storage size crosses the allocation.
+/// @param ctx Verification context providing the function and diagnostics.
+/// @param ptr Pointer operand used by the access.
+/// @param accessKind Type kind loaded or stored.
+/// @param operation Operation name included in diagnostics.
+/// @return Success when unknown or in bounds; otherwise an error.
 Expected<void> checkStackAccessBounds(const VerifyCtx &ctx,
                                       const Value &ptr,
                                       Type::Kind accessKind,
@@ -132,6 +169,9 @@ Expected<void> checkStackAccessBounds(const VerifyCtx &ctx,
 /// @details Ensures the size operand exists, is i64-typed, and warns when the
 ///          requested allocation is suspiciously large.  Records the result as a
 ///          pointer type when validation succeeds.
+/// @param ctx Verification context containing the allocation.
+/// @return Success for a valid size, or an error for missing, mistyped, or
+///         negative sizes.
 Expected<void> checkAlloca(const VerifyCtx &ctx) {
     if (ctx.instr.operands.empty())
         return fail(ctx, "missing size operand");
@@ -152,8 +192,11 @@ Expected<void> checkAlloca(const VerifyCtx &ctx) {
 }
 
 /// @brief Verify the @c gep instruction.
-/// @details Checks operand count and records the result as a pointer type.  More
-///          advanced structural checks are deferred to future passes.
+/// @details Requires a pointer base and i64 byte offset, rejects direct global
+///          address literals, checks constant offsets against statically known
+///          alloca bounds, and records a pointer result.
+/// @param ctx Verification context containing the GEP.
+/// @return Success when operand types and any provable bounds are valid.
 Expected<void> checkGEP(const VerifyCtx &ctx) {
     if (ctx.instr.operands.size() < 2)
         return fail(ctx, "invalid operand count");
@@ -192,6 +235,8 @@ Expected<void> checkGEP(const VerifyCtx &ctx) {
 /// @details Requires a pointer operand and records the result as the annotated
 ///          instruction type, reporting diagnostics when the pointer type does
 ///          not match expectations.
+/// @param ctx Verification context containing the load.
+/// @return Success when pointer type and any provable stack bounds are valid.
 Expected<void> checkLoad(const VerifyCtx &ctx) {
     if (ctx.instr.operands.empty())
         return fail(ctx, "missing operand");
@@ -214,6 +259,8 @@ Expected<void> checkLoad(const VerifyCtx &ctx) {
 /// @details Validates pointer operand type, checks boolean stores for legal
 ///          literal values, and enforces integer literal bounds based on the
 ///          target type.
+/// @param ctx Verification context containing the store.
+/// @return Success when pointer, stack bounds, and literal range are valid.
 Expected<void> checkStore(const VerifyCtx &ctx) {
     if (ctx.instr.operands.size() < 2)
         return fail(ctx, "invalid operand count");
@@ -257,7 +304,9 @@ Expected<void> checkStore(const VerifyCtx &ctx) {
 
 /// @brief Verify the @c addr.of instruction.
 /// @details Requires a single global-address operand and records the result as a
-///          pointer type.
+///          pointer type. The named global must exist and have string type.
+/// @param ctx Verification context containing `addr.of`.
+/// @return Success for a known string global; otherwise an error.
 Expected<void> checkAddrOf(const VerifyCtx &ctx) {
     if (ctx.instr.operands.size() != 1 || ctx.instr.operands[0].kind != Value::Kind::GlobalAddr)
         return fail(ctx, "operand must be global");
@@ -276,6 +325,8 @@ Expected<void> checkAddrOf(const VerifyCtx &ctx) {
 /// @brief Verify the @c const.str instruction.
 /// @details Confirms the operand references a known string global and records
 ///          the result as a string type.
+/// @param ctx Verification context containing `const.str`.
+/// @return Success for a known string global; otherwise an error.
 Expected<void> checkConstStr(const VerifyCtx &ctx) {
     if (ctx.instr.operands.size() != 1 || ctx.instr.operands[0].kind != Value::Kind::GlobalAddr)
         return fail(ctx, "unknown string global");
@@ -293,6 +344,8 @@ Expected<void> checkConstStr(const VerifyCtx &ctx) {
 
 /// @brief Verify the @c gaddr instruction.
 /// @details Requires a declared non-string global with addressable storage.
+/// @param ctx Verification context containing `gaddr`.
+/// @return Success for a known supported scalar global; otherwise an error.
 Expected<void> checkGAddr(const VerifyCtx &ctx) {
     if (ctx.instr.operands.size() != 1 || ctx.instr.operands[0].kind != Value::Kind::GlobalAddr)
         return fail(ctx, "gaddr operand must be global");
@@ -315,6 +368,8 @@ Expected<void> checkGAddr(const VerifyCtx &ctx) {
 /// @brief Verify the @c const.null instruction.
 /// @details Accepts only pointer-like result annotations and records the result
 ///          for downstream passes.
+/// @param ctx Verification context containing `const.null`.
+/// @return Success for ptr, str, error, or resumetok; otherwise an error.
 Expected<void> checkConstNull(const VerifyCtx &ctx) {
     Type resultType = ctx.instr.type;
     switch (resultType.kind) {

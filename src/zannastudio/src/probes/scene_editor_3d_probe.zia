@@ -2614,7 +2614,7 @@ func main() {
     if sceneDoc.content != canonicalBeforeSave
        or documents.SaveAsBlockReason(documents.activeIndex, wrongPath) == ""
        or documents.SaveAs(saveStem) == false
-       or sceneDoc.filePath != saveStem + ".vscn"
+       or sceneDoc.filePath != saveStem + ".scene3d"
        or sceneDoc.kind != file_utils.DOC_KIND_SCENE_3D
        or File.Exists(sceneDoc.filePath) == false {
         Dir.RemoveAll(saveDir);

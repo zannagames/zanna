@@ -33,6 +33,9 @@ namespace il::transform::simplify_cfg {
 namespace {
 
 /// @brief Find a basic block by label.
+/// @param F Function whose blocks are searched.
+/// @param label Exact block label.
+/// @return Borrowed mutable block, or null when absent.
 il::core::BasicBlock *findBlock(il::core::Function &F, const std::string &label) {
     for (auto &block : F.blocks) {
         if (block.label == label)
@@ -43,10 +46,15 @@ il::core::BasicBlock *findBlock(il::core::Function &F, const std::string &label)
 
 /// @brief Build a map of all predecessors for each block.
 struct PredEdge {
+    /// Block owning the incoming terminator edge.
     il::core::BasicBlock *block = nullptr;
+    /// Successor slot in that terminator.
     size_t edgeIndex = 0;
 };
 
+/// @brief Index every concrete predecessor edge by target label.
+/// @param F Function whose terminators are scanned.
+/// @return Edge lists preserving duplicate successor slots.
 std::unordered_map<std::string, std::vector<PredEdge>> buildPredecessorMap(il::core::Function &F) {
     std::unordered_map<std::string, std::vector<PredEdge>> preds;
 
@@ -64,6 +72,11 @@ std::unordered_map<std::string, std::vector<PredEdge>> buildPredecessorMap(il::c
 }
 
 /// @brief Determine what constant value (if any) flows to a block parameter.
+/// @param pred Predecessor block supplying the argument.
+/// @param target Expected target block.
+/// @param edgeIndex Successor slot from @p pred to @p target.
+/// @param paramIndex Target block-parameter position.
+/// @return Integer, float, or null constant at that slot, otherwise `std::nullopt`.
 std::optional<il::core::Value> getConstantArgForParam(const il::core::BasicBlock &pred,
                                                       const il::core::BasicBlock &target,
                                                       size_t edgeIndex,
@@ -93,7 +106,8 @@ std::optional<il::core::Value> getConstantArgForParam(const il::core::BasicBlock
 }
 
 /// @brief Check if a block is a simple conditional branch with condition from params.
-/// Returns the param index of the condition if found.
+/// @param block Candidate intermediate block.
+/// @return Parameter index used as the branch condition, or `std::nullopt`.
 std::optional<size_t> findConditionParamIndex(const il::core::BasicBlock &block) {
     if (block.instructions.empty())
         return std::nullopt;
@@ -119,6 +133,8 @@ std::optional<size_t> findConditionParamIndex(const il::core::BasicBlock &block)
 }
 
 /// @brief Check if a block has only a conditional branch (no other instructions).
+/// @param block Candidate intermediate block.
+/// @return `true` when its sole instruction is a conditional branch.
 bool isSimpleCbrBlock(const il::core::BasicBlock &block) {
     // Allow blocks with only a cbr terminator, or with simple non-side-effect
     // instructions that can be duplicated
@@ -135,6 +151,13 @@ bool isSimpleCbrBlock(const il::core::BasicBlock &block) {
 }
 
 /// @brief Compute the arguments to pass to the threaded target.
+/// @param pred Predecessor whose edge is redirected.
+/// @param intermediate Conditional block being bypassed.
+/// @param target Selected successor of @p intermediate.
+/// @param predToIntermediateEdge Successor slot on @p pred.
+/// @param targetBranchIdx Successor slot on the intermediate terminator.
+/// @return Target arguments after substituting intermediate parameters, or
+///         `std::nullopt` for inconsistent edge arity.
 std::optional<std::vector<il::core::Value>> computeThreadedArgs(
     const il::core::BasicBlock &pred,
     const il::core::BasicBlock &intermediate,
@@ -191,6 +214,7 @@ std::optional<std::vector<il::core::Value>> computeThreadedArgs(
 
 } // namespace
 
+/// @copydoc threadJumps()
 bool threadJumps(SimplifyCFG::SimplifyCFGPassContext &ctx) {
     il::core::Function &F = ctx.function;
     bool changed = false;
@@ -199,11 +223,17 @@ bool threadJumps(SimplifyCFG::SimplifyCFGPassContext &ctx) {
     auto predecessors = buildPredecessorMap(F);
 
     // Collect blocks to thread (don't modify while iterating)
+    /// @brief Fully validated edge rewrite applied after the discovery scan.
     struct ThreadingCandidate {
+        /// Predecessor whose terminator is changed.
         il::core::BasicBlock *pred{nullptr};
+        /// Predictable conditional block being bypassed.
         il::core::BasicBlock *intermediate{nullptr};
+        /// Selected final target label.
         std::string newTarget;
+        /// Arguments after substituting intermediate block parameters.
         std::vector<il::core::Value> newArgs;
+        /// Successor slot in the predecessor terminator.
         size_t predBranchIdx{0};
     };
 

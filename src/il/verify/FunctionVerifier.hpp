@@ -10,11 +10,11 @@
 // coordinator for verifying function bodies, dispatching to specialized strategies
 // for different instruction categories.
 //
-// Functions are the primary unit of code in IL modules. Each function contains
-// zero or more basic blocks, each block contains zero or more instructions. The
-// FunctionVerifier ensures that every function adheres to IL specification rules
-// including proper control flow structure, type safety, and exception handling
-// semantics.
+// Functions are the primary unit of code in IL modules. Import declarations have
+// no blocks; defined functions contain one or more blocks whose instructions are
+// structurally and semantically verified. The FunctionVerifier ensures that every
+// function adheres to IL specification rules including proper control flow
+// structure, type safety, and exception handling semantics.
 //
 // Key Responsibilities:
 // - Validate function signature (name, parameters, return type)
@@ -32,12 +32,19 @@
 // extern/function tables) needed by all strategies.
 //
 // Ownership and Lifetime:
-// The FunctionVerifier holds const pointers into the module being verified. These
-// pointers are valid only during the run() method execution and must not be
-// retained afterward. The verifier builds temporary maps and type environments
-// that exist only for the duration of a single function's verification.
+// The FunctionVerifier retains references to caller-owned extern and global maps,
+// which must outlive it. Function pointers indexed during run() borrow the module
+// and are used only for that invocation. Per-function block maps and type
+// environments remain local to verification.
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares module-wide coordination of IL function verification.
+/// @details `FunctionVerifier` validates names and signatures, block structure,
+///          SSA typing and dominance, effect promises, ownership-release
+///          discipline, stack-pointer escape rules, and handler-local semantics
+///          through opcode strategies.
 
 #pragma once
 
@@ -130,6 +137,10 @@ class FunctionVerifier {
     /// checks that call instructions to external functions match the declared
     /// signature (parameter count and types, return type).
     using ExternMap = std::unordered_map<std::string, const il::core::Extern *>;
+
+    /// @brief Map from global symbol names to borrowed declarations.
+    /// @details Used to validate global-address operands and detect collisions
+    ///          with functions and externs.
     using GlobalMap = std::unordered_map<std::string, const il::core::Global *>;
 
     /// @brief Constructs a function verifier with access to external declarations.
@@ -152,7 +163,9 @@ class FunctionVerifier {
      *
      * @param module Module containing functions to verify.
      * @param sink Collector for non-fatal warnings during verification.
-     * @return Success if all functions pass, error with diagnostic on first failure.
+     * @return Success if all functions pass, or the first function diagnostic.
+     *         Per-function failures are also reported to @p sink while later
+     *         independent functions continue to be checked.
      */
     [[nodiscard]] il::support::Expected<void> run(const il::core::Module &module, DiagSink &sink);
 
@@ -245,7 +258,15 @@ class FunctionVerifier {
 
     /// @brief Verify SSA dominance (every temp use dominated by its def) and
     ///        alloca-escape rules — PASS 3 and PASS 4 of verifyFunction.
+    /// @details Also checks runtime-handle release ordering with both dominance
+    ///          and forward data-flow analyses.
+    /// @param fn Function whose control flow and uses are inspected.
+    /// @param blockMap Resolved label map for CFG construction.
     /// @param temps Pre-collected temp id → type map from PASS 1.
+    /// @param definingBlock Defining block for each instruction or block-param
+    ///        temporary; function parameters are absent.
+    /// @return Success when dominance, release, and escape constraints hold;
+    ///         otherwise the first diagnostic.
     il::support::Expected<void> verifyDominanceAndEscapes(
         const il::core::Function &fn,
         const BlockMap &blockMap,

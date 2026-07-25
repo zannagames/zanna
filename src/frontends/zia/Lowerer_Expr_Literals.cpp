@@ -8,6 +8,12 @@
 /// @file Lowerer_Expr_Literals.cpp
 /// @brief Literal expression lowering for the Zia IL lowerer.
 ///
+/// @details Scalar literals become immediate IL constants, while string
+///          literals materialize owned handles from interned module globals.
+///          Range expressions are eagerly materialized as boxed-integer lists
+///          with optional reverse and positive-step modifiers, overflow-safe
+///          termination, and explicit scratch-slot lifetime management.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -23,16 +29,22 @@ using namespace runtime;
 //=============================================================================
 
 /// @brief Lower an integer literal to a constant I64 value.
+/// @param expr Integer literal carrying the parsed signed value.
+/// @return Constant `i64` result.
 LowerResult Lowerer::lowerIntLiteral(IntLiteralExpr *expr) {
     return {Value::constInt(expr->value), Type(Type::Kind::I64)};
 }
 
 /// @brief Lower a floating-point literal to a constant F64 value.
+/// @param expr Number literal carrying the parsed double value.
+/// @return Constant `f64` result.
 LowerResult Lowerer::lowerNumberLiteral(NumberLiteralExpr *expr) {
     return {Value::constFloat(expr->value), Type(Type::Kind::F64)};
 }
 
 /// @brief Lower a string literal to a constant referencing an interned string global.
+/// @param expr String literal carrying decoded contents.
+/// @return Owned `str` handle scheduled for deferred release.
 LowerResult Lowerer::lowerStringLiteral(StringLiteralExpr *expr) {
     std::string globalName = getStringGlobal(expr->value);
     Value val = emitConstStr(globalName);
@@ -40,16 +52,20 @@ LowerResult Lowerer::lowerStringLiteral(StringLiteralExpr *expr) {
 }
 
 /// @brief Lower a boolean literal to a constant I1 value.
+/// @param expr Boolean literal carrying the parsed truth value.
+/// @return Constant `i1` result.
 LowerResult Lowerer::lowerBoolLiteral(BoolLiteralExpr *expr) {
     return {Value::constBool(expr->value), Type(Type::Kind::I1)};
 }
 
 /// @brief Lower a `null` literal to a null pointer value.
+/// @return Null pointer result.
 LowerResult Lowerer::lowerNullLiteral(NullLiteralExpr * /*expr*/) {
     return {Value::null(), Type(Type::Kind::Ptr)};
 }
 
 /// @brief Lower a `unit` literal to the pointer-sized unit singleton (null).
+/// @return Null pointer used as the IL Unit representation.
 LowerResult Lowerer::lowerUnitLiteral(UnitLiteralExpr * /*expr*/) {
     return {Value::null(), Type(Type::Kind::Ptr)};
 }

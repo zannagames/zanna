@@ -47,6 +47,9 @@ int compareLoc(const SourceLoc &a, const SourceLoc &b) {
 //=============================================================================
 
 /// @brief Push a new child scope onto the scope stack.
+/// @param startLoc Source location where the lexical scope begins.
+/// @details Creates a tooling snapshot, assigns a monotonic scope identifier and depth, and
+///          starts a parallel flow-narrowing layer.
 void Sema::pushScope(SourceLoc startLoc) {
     const uint32_t scopeId = nextScopeId_++;
     const size_t depth = currentScope_ ? currentScope_->depth() + 1 : 0;
@@ -58,8 +61,10 @@ void Sema::pushScope(SourceLoc startLoc) {
 }
 
 /// @brief Pop the current scope, restoring its parent as the active scope.
+/// @param endLoc Source location where the lexical scope ends.
 /// @pre There must be more than the global scope remaining.
-/// @details Checks for unused variables (W001) in the scope before popping.
+/// @details Checks for unused variables, removes scope-qualified initialization state, closes the
+///          tooling snapshot, and removes the matching narrowing layer.
 void Sema::popScope(SourceLoc endLoc) {
     assert(scopes_.size() > 1 && "cannot pop global scope");
 
@@ -85,6 +90,9 @@ void Sema::popScope(SourceLoc endLoc) {
 /// @param name The symbol name to register.
 /// @param symbol The symbol metadata to associate with the name.
 /// @param locOverride Optional source location for symbols without decl (locals, params).
+/// @return True when defined, or false after a duplicate-definition diagnostic.
+/// @details Compatible extern redefinitions refine the existing entry. Successful definitions
+///          are also copied into the position-aware tooling index.
 bool Sema::defineSymbol(const std::string &name, Symbol symbol, SourceLoc locOverride) {
     SourceLoc defLoc =
         locOverride.isValid() ? locOverride : (symbol.decl ? symbol.decl->loc : SourceLoc{});
@@ -116,6 +124,12 @@ bool Sema::defineSymbol(const std::string &name, Symbol symbol, SourceLoc locOve
 }
 
 /// @brief Find the most relevant symbol at a given cursor position.
+/// @param name Symbol spelling to search.
+/// @param fileId Cursor file, or zero to accept any file.
+/// @param line Cursor line.
+/// @param col Cursor column.
+/// @return Deepest visible preceding definition, preferring the latest declaration at equal depth,
+///         or nullptr.
 const ScopedSymbol *Sema::findSymbolAtPosition(const std::string &name,
                                                uint32_t fileId,
                                                uint32_t line,
@@ -169,6 +183,10 @@ Symbol *Sema::lookupSymbol(const std::string &name) {
     return currentScope_->lookup(name);
 }
 
+/// @brief Recover an identifier's declared Optional surface after flow narrowing.
+/// @param expr Analyzed expression, currently recognized when it is an identifier.
+/// @param analyzedType Flow-sensitive result type.
+/// @return Declared Optional variable/parameter type when available; otherwise @p analyzedType.
 TypeRef Sema::declaredOptionalSurfaceType(Expr *expr, TypeRef analyzedType) {
     if (analyzedType && analyzedType->kind == TypeKindSem::Optional)
         return analyzedType;
@@ -190,6 +208,13 @@ TypeRef Sema::declaredOptionalSurfaceType(Expr *expr, TypeRef analyzedType) {
     return analyzedType;
 }
 
+/// @brief Check cross-file visibility for a resolved symbol.
+/// @param sym Symbol being referenced.
+/// @param useLoc Source location of the use.
+/// @param name Source spelling reserved for richer access policies.
+/// @param viaQualifiedModule Whether the use was module-qualified, reserved for richer policies.
+/// @return True for externs, same-file uses, non-top-level declarations, or exported top-level
+///         declarations; false for private top-level declarations used from another file.
 bool Sema::canAccessSymbol(const Symbol &sym,
                            SourceLoc useLoc,
                            const std::string &name,
@@ -225,6 +250,11 @@ bool Sema::canAccessSymbol(const Symbol &sym,
     return true;
 }
 
+/// @brief Emit the access diagnostic corresponding to a rejected symbol.
+/// @param useLoc Source location of the use.
+/// @param name Source-visible declaration name.
+/// @param sym Inaccessible symbol metadata.
+/// @param viaQualifiedModule Whether lookup was module-qualified.
 void Sema::reportInaccessibleSymbol(SourceLoc useLoc,
                                     const std::string &name,
                                     const Symbol &sym,
@@ -237,6 +267,11 @@ void Sema::reportInaccessibleSymbol(SourceLoc useLoc,
     }
 }
 
+/// @brief Look up a symbol and enforce cross-file export visibility.
+/// @param name Semantic symbol name.
+/// @param useLoc Source location of the use.
+/// @param viaQualifiedModule Whether lookup followed a module qualifier.
+/// @return Accessible symbol, or nullptr when absent or after an access diagnostic.
 Symbol *Sema::lookupAccessibleSymbol(const std::string &name,
                                      SourceLoc useLoc,
                                      bool viaQualifiedModule) {
@@ -267,6 +302,9 @@ TypeRef Sema::lookupVarType(const std::string &name) {
     return nullptr;
 }
 
+/// @brief Look up a flow-sensitive type refinement by narrowing key.
+/// @param key Identifier, member path, or supported literal-index path.
+/// @return Innermost active refinement, or nullptr when none exists.
 TypeRef Sema::lookupNarrowedType(const std::string &key) const {
     if (key.empty())
         return nullptr;
@@ -284,11 +322,13 @@ TypeRef Sema::lookupNarrowedType(const std::string &key) const {
 //=============================================================================
 
 /// @brief Push a new type narrowing scope for flow-sensitive analysis.
+/// @details Refinements added afterward shadow outer layers until @ref popNarrowingScope.
 void Sema::pushNarrowingScope() {
     narrowedTypes_.push_back({});
 }
 
 /// @brief Pop the current type narrowing scope.
+/// @details A call on an empty stack is tolerated for diagnostic recovery.
 void Sema::popNarrowingScope() {
     if (!narrowedTypes_.empty()) {
         narrowedTypes_.pop_back();
@@ -305,11 +345,14 @@ void Sema::narrowType(const std::string &name, TypeRef narrowedType) {
 }
 
 /// @brief Mark a variable as definitely initialized.
+/// @param name Source variable name; lexical ownership is encoded into the stored key.
 void Sema::markInitialized(const std::string &name) {
     initializedVars_.insert(initializedSymbolKey(name));
 }
 
 /// @brief Check if a variable has been definitely initialized.
+/// @param name Source variable name resolved under normal shadowing rules.
+/// @return True when the current control-flow state contains its scope-qualified key.
 bool Sema::isInitialized(const std::string &name) const {
     return initializedVars_.count(initializedSymbolKey(name)) > 0;
 }
@@ -319,6 +362,8 @@ bool Sema::isInitialized(const std::string &name) const {
 ///          scope that owns @p name, matching normal shadowing lookup. If no
 ///          symbol is available because recovery is continuing after an
 ///          earlier error, the raw name remains as a fallback key.
+/// @param name Source symbol name.
+/// @return `scopeId:name` for the nearest owning scope, or the raw name.
 std::string Sema::initializedSymbolKey(const std::string &name) const {
     for (Scope *scope = currentScope_; scope != nullptr; scope = scope->parent()) {
         if (scope->lookupLocal(name))
@@ -328,12 +373,15 @@ std::string Sema::initializedSymbolKey(const std::string &name) const {
 }
 
 /// @brief Save the current initialization state for branching analysis.
+/// @return Copy of the active scope-qualified initialized-variable set.
 std::unordered_set<std::string> Sema::saveInitState() const {
     return initializedVars_;
 }
 
 /// @brief Intersect two branch initialization states.
 /// Only variables initialized in BOTH branches remain initialized.
+/// @param branchA Initialization set from the first control-flow branch.
+/// @param branchB Initialization set from the second control-flow branch.
 void Sema::intersectInitState(const std::unordered_set<std::string> &branchA,
                               const std::unordered_set<std::string> &branchB) {
     std::unordered_set<std::string> result;
@@ -349,6 +397,7 @@ void Sema::intersectInitState(const std::unordered_set<std::string> &branchA,
 /// @param[in] cond The condition expression to analyze.
 /// @param[out] varName The variable name being null-checked.
 /// @param[out] isNotNull True if the pattern is != null, false if == null.
+/// @param[out] checkedType Optional destination for the operand's declared optional surface type.
 /// @return True if a null-check pattern was recognized.
 bool Sema::tryExtractNullCheck(Expr *cond,
                                std::string &varName,
@@ -388,6 +437,9 @@ bool Sema::tryExtractNullCheck(Expr *cond,
     return false;
 }
 
+/// @brief Build a stable flow-narrowing key for an expression.
+/// @param expr Identifier, `self`, dotted field chain, or literal-index chain.
+/// @return Reconstructable access path, or an empty string for unsupported expressions/indexes.
 std::string Sema::narrowingKeyForExpr(Expr *expr) const {
     if (!expr)
         return {};

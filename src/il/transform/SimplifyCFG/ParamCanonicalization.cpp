@@ -45,6 +45,7 @@ namespace {
 ///
 /// @param ctx   SimplifyCFG context providing access to the parent function.
 /// @param block Block whose incoming arguments must be realigned.
+/// @return `true` when every targeted edge has the required argument arity.
 bool realignBranchArgs(SimplifyCFG::SimplifyCFGPassContext &ctx, il::core::BasicBlock &block) {
     bool ok = true;
     for (auto &pred : ctx.function.blocks) {
@@ -221,6 +222,7 @@ bool shrinkParamsEqualAcrossPreds(SimplifyCFG::SimplifyCFGPassContext &ctx,
                 }
             }
 
+            /// Substitute the unanimous incoming value for one block parameter use.
             auto replaceUses = [&](il::core::Value &value) {
                 if (value.kind == il::core::Value::Kind::Temp && value.id == paramId)
                     value = commonValue;
@@ -281,6 +283,7 @@ bool shrinkParamsEqualAcrossPreds(SimplifyCFG::SimplifyCFGPassContext &ctx,
 ///
 /// @param ctx   SimplifyCFG context with access to the function being mutated.
 /// @param block Block whose parameters are assessed.
+/// @param allUsedIds Function-wide set of temporary ids appearing in value uses.
 /// @returns True if any parameters were eliminated.
 bool dropUnusedParams(SimplifyCFG::SimplifyCFGPassContext &ctx,
                       il::core::BasicBlock &block,

@@ -5,11 +5,19 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/StringUtils.hpp
+// File: src/frontends/common/StringUtils.hpp
 // Purpose: Shared string utility functions for all language frontends.
-// Key invariants: All functions are stateless and non-owning.
-// Ownership/Lifetime: Header-only, no dynamic allocation.
-// Links: frontends/common/CharUtils.hpp
+// Key invariants:
+//   * Comparisons are ASCII case-insensitive and locale-independent.
+//   * Input string views are never retained.
+// Ownership: Header-only stateless utilities; all source storage remains
+//            caller-owned.
+// References: src/frontends/common/CharUtils.hpp
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares lightweight shared string comparison utilities.
 //
 //===----------------------------------------------------------------------===//
 

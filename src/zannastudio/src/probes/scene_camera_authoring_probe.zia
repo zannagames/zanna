@@ -1,0 +1,330 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_camera_authoring_probe.zia
+// Purpose: Verify authored camera nodes, look-through, and the preview inset.
+// Key invariants:
+//   - Camera drafts normalize into the VSCN save validation envelope and
+//     reconstruct equivalently from runtime cameras.
+//   - Add Camera, Apply, and Remove are one canonical history transaction
+//     each with exact rollback; exact no-op applies refuse history.
+//   - Authored cameras persist through VSCN serialize + editor reload.
+//   - Look-through drives the shared viewport camera from the authored node
+//     pose and projection without touching the editor pose or content.
+//   - Removing the camera component exits look-through automatically.
+//   - The bounded preview inset composites only while enabled with a camera
+//     selected, and never changes canonical bytes.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell and destroys it before reporting.
+// Links: zannastudio/src/ui/scene_camera_3d.zia,
+//        zannastudio/src/ui/scene_camera_inspector_3d.zia,
+//        docs/adr/0184-scene-camera-nodes-look-through-and-preview.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_camera_authoring_probe;
+
+// ============================================================================
+// MODULE: scene_camera_authoring_probe
+// PURPOSE: Regress ADR 0184 — camera component authoring, look-through pose
+//          isolation, and inset presentation discipline.
+//
+// WHERE-THIS-FITS: Display probe registered as
+//          zia_zannastudio_scene_camera_authoring.
+//
+// TEACHING-NOTE: Look-through assertions read projections back through the
+//          editor's shared camera; expected positions come from the authored
+//          node pose, not duplicated matrix math.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_camera_3d";
+bind "../ui/scene_editor_3d";
+
+bind GUI = Zanna.GUI;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+bind Color = Zanna.Graphics.Color;
+
+func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
+func withinPixels(actual: Integer,
+                  expected: Integer,
+                  tolerance: Integer) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0 { difference = 0 - difference; }
+    return difference <= tolerance;
+}
+
+func fail(shell: app_shell.AppShell, reason: String) {
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          doc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(doc);
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Camera Authoring Probe", 1180, 780);
+
+    // ------------------------------------------------------------------
+    // Draft normalization and reconstruction round-trip.
+    // ------------------------------------------------------------------
+    var draft = new scene_camera_3d.CameraState3D();
+    draft.isOrtho = false;
+    draft.fovDegrees = 500.0;
+    draft.nearPlane = -3.0;
+    draft.farPlane = 0.00001;
+    var normalized = scene_camera_3d.Normalize(draft);
+    if near(normalized.fovDegrees, 179.0) == false
+       or near(normalized.nearPlane, 0.1) == false
+       or normalized.farPlane <= normalized.nearPlane {
+        fail(shell, "camera draft normalization drifted");
+        return;
+    }
+    var built = scene_camera_3d.BuildCamera(normalized);
+    if built == null
+       or scene_camera_3d.Matches(built, normalized) == false {
+        fail(shell, "camera reconstruction was not equivalent");
+        return;
+    }
+    var rebuilt = scene_camera_3d.BuildCamera(
+        scene_camera_3d.FromCamera(built));
+    if rebuilt == null
+       or scene_camera_3d.Matches(
+              rebuilt, scene_camera_3d.FromCamera(built)) == false {
+        fail(shell, "camera FromCamera round-trip drifted");
+        return;
+    }
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Add Camera: one canonical transaction, persisted VSCN camera.
+    // ------------------------------------------------------------------
+    var addBaseline = sceneDoc.content;
+    var addRevision = editor.GetRevision();
+    var cameraIndex = editor.AddCameraNode("Intro Camera", -1);
+    if cameraIndex != 0
+       or editor.GetRevision() != addRevision + 1
+       or editor.flatNodes.get(cameraIndex).Camera == null
+       or sceneDoc.content == addBaseline
+       or Str.Contains(sceneDoc.content, "\"isOrtho\"") == false {
+        fail(shell, "camera node was not one canonical VSCN edit");
+        return;
+    }
+    var rowText = GUI.TreeView.Node.GetText(
+        editor.hierarchyTreeNodes.get(cameraIndex));
+    if Str.Contains(rowText, "[camera]") == false {
+        fail(shell, "hierarchy row lacked the camera badge: " + rowText);
+        return;
+    }
+    if editor.Undo() == false or sceneDoc.content != addBaseline {
+        fail(shell, "camera creation did not undo to the exact baseline");
+        return;
+    }
+    if editor.Redo() == false
+       or editor.flatNodes.get(0).Camera == null {
+        fail(shell, "camera creation did not redo");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Inspector apply: one transaction, no-op refusal, exact undo.
+    // ------------------------------------------------------------------
+    var node = editor.flatNodes.get(0);
+    var applyBaseline = sceneDoc.content;
+    var applyRevision = editor.GetRevision();
+    var edit = new scene_camera_3d.CameraState3D();
+    edit.isOrtho = false;
+    edit.fovDegrees = 72.5;
+    edit.nearPlane = 0.25;
+    edit.farPlane = 500.0;
+    if editor.ApplyNodeCamera(0, edit) == false
+       or editor.GetRevision() != applyRevision + 1
+       or near(node.Camera.Fov, 72.5) == false
+       or near(node.Camera.NearPlane, 0.25) == false
+       or near(node.Camera.FarPlane, 500.0) == false {
+        fail(shell, "camera apply was not one exact transaction");
+        return;
+    }
+    if editor.ApplyNodeCamera(0, edit)
+       or editor.GetRevision() != applyRevision + 1 {
+        fail(shell, "exact no-op camera apply still created history");
+        return;
+    }
+    var orthoEdit = new scene_camera_3d.CameraState3D();
+    orthoEdit.isOrtho = true;
+    orthoEdit.orthoSize = 7.5;
+    orthoEdit.nearPlane = 0.1;
+    orthoEdit.farPlane = 100.0;
+    if editor.ApplyNodeCamera(0, orthoEdit) == false
+       or node.Camera.IsOrtho == false
+       or near(node.Camera.OrthoSize, 7.5) == false {
+        fail(shell, "orthographic camera apply did not latch");
+        return;
+    }
+    if editor.Undo() == false
+       or editor.flatNodes.get(0).Camera.IsOrtho
+       or editor.Undo() == false
+       or sceneDoc.content != applyBaseline {
+        fail(shell, "camera applies did not undo exactly");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Persisted camera reload through the editor loader.
+    // ------------------------------------------------------------------
+    if editor.ApplyNodeCamera(0, edit) == false {
+        fail(shell, "camera reload staging apply failed");
+        return;
+    }
+    var reloadDoc = documents.NewScene3DDocument();
+    reloadDoc.content = sceneDoc.content;
+    editor.Activate(reloadDoc);
+    pump(editor, reloadDoc, shell);
+    if editor.flatNodes.count() != 1
+       or editor.flatNodes.get(0).Camera == null
+       or near(editor.flatNodes.get(0).Camera.Fov, 72.5) == false {
+        fail(shell, "authored camera did not survive VSCN reload");
+        return;
+    }
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Look-through: authored pose drives the shared projection while the
+    // editor pose and canonical bytes stay untouched.
+    // ------------------------------------------------------------------
+    node = editor.flatNodes.get(0);
+    node.SetPosition(0.0, 0.0, 10.0);
+    editor.ApplyViewportSelection(0, false, false);
+    pump(editor, sceneDoc, shell);
+    var lookBaseline = sceneDoc.content;
+    var lookRevision = editor.GetRevision();
+    var yawBefore = editor.viewYawDegrees;
+    var pitchBefore = editor.viewPitchDegrees;
+    var scaleBefore = editor.viewScale;
+    var targetXBefore = editor.viewTargetX;
+    if editor.ToggleLookThrough() == false
+       or editor.IsLookingThroughCamera() == false {
+        fail(shell, "look-through did not begin from a camera node");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    // The node sits at (0,0,10) with identity rotation looking down -Z, so
+    // the world origin is 10 units ahead and projects to the exact center.
+    var width = editor.renderedViewportWidth;
+    var height = editor.renderedViewportHeight;
+    var centered = editor.ProjectWorldPoint(0.0, 0.0, 0.0);
+    if centered.visible == false
+       or withinPixels(centered.x, width / 2, 1) == false
+       or withinPixels(centered.y, height / 2, 1) == false {
+        fail(shell, "look-through did not project the authored vantage: "
+             + centered.x + "," + centered.y
+             + " expected " + (width / 2) + "," + (height / 2));
+        return;
+    }
+    var behind = editor.ProjectWorldPoint(0.0, 0.0, 20.0);
+    if behind.visible {
+        fail(shell, "look-through kept behind-camera points visible");
+        return;
+    }
+    if editor.viewYawDegrees != yawBefore
+       or editor.viewPitchDegrees != pitchBefore
+       or editor.viewScale != scaleBefore
+       or near(editor.viewTargetX, targetXBefore) == false {
+        fail(shell, "look-through modified the editor camera pose");
+        return;
+    }
+    if editor.ToggleLookThrough() == false
+       or editor.IsLookingThroughCamera() {
+        fail(shell, "exiting look-through did not restore the editor pose");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    var restored = editor.ProjectWorldPoint(0.0, 0.0, 0.0);
+    if restored.visible == false
+       or withinPixels(restored.x, width / 2, 1) == false {
+        fail(shell, "editor projection did not resume after look-through");
+        return;
+    }
+
+    // Removing the camera component exits an active look-through.
+    if editor.ToggleLookThrough() == false
+       or editor.RemoveNodeCamera(0) == false
+       or editor.IsLookingThroughCamera() {
+        fail(shell, "removing the camera did not exit look-through");
+        return;
+    }
+    if editor.Undo() == false
+       or editor.flatNodes.get(0).Camera == null {
+        fail(shell, "camera removal did not undo");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    if sceneDoc.content != lookBaseline {
+        fail(shell, "look-through session leaked into canonical history");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Preview inset: bounded corner composite, presentation only.
+    // ------------------------------------------------------------------
+    editor.ApplyViewportSelection(0, false, false);
+    pump(editor, sceneDoc, shell);
+    pump(editor, sceneDoc, shell);
+    if editor.IsViewportRenderFallback() == false {
+        var insetX = width - 256 - 8;
+        var insetY = height - 144 - 8;
+        var border = editor.viewportPixels.GetRgb(
+            insetX - 1, insetY - 1);
+        if border != Color.RGB(126, 214, 204) {
+            fail(shell, "preview inset border was not composited: "
+                 + border + " at " + (insetX - 1) + "," + (insetY - 1));
+            return;
+        }
+        editor.cameraInspector.previewCheck.SetChecked(false);
+        pump(editor, sceneDoc, shell);
+        pump(editor, sceneDoc, shell);
+        var cleared = editor.viewportPixels.GetRgb(
+            insetX - 1, insetY - 1);
+        if cleared == Color.RGB(126, 214, 204) {
+            fail(shell, "disabling the preview inset did not clear it");
+            return;
+        }
+        editor.cameraInspector.previewCheck.SetChecked(true);
+        pump(editor, sceneDoc, shell);
+    }
+    if sceneDoc.content != lookBaseline {
+        fail(shell, "the preview inset dirtied canonical content");
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

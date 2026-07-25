@@ -48,6 +48,11 @@ namespace zanna::analysis {
 
 namespace detail {
 
+/// @brief Add two signed offsets without invoking integer overflow.
+/// @param lhs First addend.
+/// @param rhs Second addend.
+/// @param out Receives the sum when it is representable.
+/// @return True when addition succeeded; false leaves @p out unchanged.
 inline bool checkedAdd(long long lhs, long long rhs, long long &out) {
     if ((rhs > 0 && lhs > (std::numeric_limits<long long>::max)() - rhs) ||
         (rhs < 0 && lhs < (std::numeric_limits<long long>::min)() - rhs)) {
@@ -69,34 +74,51 @@ enum class ModRefResult { NoModRef, Ref, Mod, ModRef };
 class BasicAA {
   public:
     /// @brief Build analysis state for @p function optionally referencing @p module.
+    /// @param function Function whose SSA definitions and parameters are indexed.
+    /// @param module Optional containing module used to resolve direct callees.
+    /// @pre @p function and any supplied @p module outlive this analysis object.
     explicit BasicAA(const il::core::Function &function, const il::core::Module *module = nullptr);
 
     /// @brief Convenience constructor when both module and function are known.
+    /// @param module Module containing direct function and extern declarations.
+    /// @param function Function whose memory locations are analyzed.
+    /// @pre Both arguments outlive this analysis object.
     BasicAA(const il::core::Module &module, const il::core::Function &function);
 
     /// @brief Query aliasing behaviour for two pointer-like values.
+    /// @param lhs First pointer-like value.
+    /// @param rhs Second pointer-like value.
     /// @param lhsSize Optional byte width of the lhs access when known.
     /// @param rhsSize Optional byte width of the rhs access when known.
+    /// @return Proven no-alias/must-alias result, or MayAlias when evidence is insufficient.
     [[nodiscard]] AliasResult alias(const il::core::Value &lhs,
                                     const il::core::Value &rhs,
                                     std::optional<unsigned> lhsSize = std::nullopt,
                                     std::optional<unsigned> rhsSize = std::nullopt) const;
 
     /// @brief Classify the ModRef behaviour for a call instruction.
+    /// @param instr Instruction to classify.
+    /// @return NoModRef for pure direct calls, Ref for readonly direct calls,
+    ///         and conservative ModRef otherwise.
     [[nodiscard]] ModRefResult modRef(const il::core::Instr &instr) const;
 
     /// @brief Compute the byte width of a scalar IL type when known.
+    /// @param type IL type whose storage representation is queried.
+    /// @return Storage width in bytes, or no value for unsized/unknown types.
     [[nodiscard]] static std::optional<unsigned> typeSizeBytes(const il::core::Type &type);
 
     /// @brief Check whether a temp id is a non-escaping alloca.
     /// @details Non-escaping allocas are stack slots whose addresses never leave
     ///          the function (not passed to calls, not stored as values). Loads
     ///          from such allocas are safe to hoist past calls.
+    /// @param id SSA temporary identifier of a candidate alloca.
+    /// @return True when construction proved the alloca address does not escape.
     [[nodiscard]] bool isNonEscapingAlloca(unsigned id) const;
 
   private:
     enum class BaseKind { Unknown, Alloca, Param, NoAliasParam, Global, ConstStr, Null };
 
+    /// @brief Canonical base identity and optional byte offset for a pointer value.
     struct Location {
         BaseKind kind = BaseKind::Unknown;
         /// @brief Identity of the base (alloca id, param id).
@@ -105,6 +127,7 @@ class BasicAA {
         std::string_view global;
         /// @brief Byte offset from the base when known.
         long long offset = 0;
+        /// @brief Whether @ref offset remained statically computable without overflow.
         bool hasOffset = true;
     };
 
@@ -121,6 +144,7 @@ class BasicAA {
 
     std::unordered_map<unsigned, DefInfo> defs_;
 
+    /// @brief Memory-effect facts known for a potential direct callee.
     struct CallEffect {
         bool pure = false;
         bool readonly = false;
@@ -138,20 +162,45 @@ class BasicAA {
     ///          queries later.  Called once during construction.
     void collectFunctionInfo(const il::core::Function &function);
 
+    /// @brief Compare two IL value records for exact semantic identity.
+    /// @param lhs First value.
+    /// @param rhs Second value.
+    /// @return True when both values have the same kind and payload.
     [[nodiscard]] static bool equalValues(const il::core::Value &lhs, const il::core::Value &rhs);
 
+    /// @brief Test whether an SSA temporary is defined by alloca.
+    /// @param id Temporary identifier.
+    /// @return True when @p id belongs to the collected alloca set.
     [[nodiscard]] bool isAlloca(unsigned id) const;
 
+    /// @brief Test whether an SSA temporary is a noalias parameter.
+    /// @param id Temporary identifier.
+    /// @return True when the corresponding parameter carries the noalias attribute.
     [[nodiscard]] bool isNoAliasParam(unsigned id) const;
 
+    /// @brief Test whether an SSA temporary is any function parameter.
+    /// @param id Temporary identifier.
+    /// @return True when @p id belongs to the collected parameter set.
     [[nodiscard]] bool isParam(unsigned id) const;
 
+    /// @brief Resolve a direct callee name to a function definition.
+    /// @param name Callee name.
+    /// @return Borrowed function pointer, or nullptr when it is not defined locally.
     [[nodiscard]] const il::core::Function *findFunction(std::string_view name) const;
 
+    /// @brief Read memory-effect attributes from a defined function.
+    /// @param fn Function definition.
+    /// @return Known effect facts derived from its attributes.
     [[nodiscard]] CallEffect queryFunctionEffect(const il::core::Function &fn) const;
 
+    /// @brief Read explicit memory-effect attributes from an extern declaration.
+    /// @param name Extern symbol name.
+    /// @return Known facts for pure/readonly declarations, otherwise unknown.
     [[nodiscard]] CallEffect queryExternEffect(std::string_view name) const;
 
+    /// @brief Query generated, dynamic, and classified runtime helper effects.
+    /// @param name Runtime helper symbol.
+    /// @return First known effect description, or an unknown effect.
     [[nodiscard]] CallEffect queryRuntimeEffect(std::string_view name) const;
 
     /// @brief Query dynamically registered runtime test signatures by name.
@@ -163,22 +212,40 @@ class BasicAA {
     /// @return Effect metadata when a dynamic signature is registered.
     [[nodiscard]] static CallEffect queryRegisteredSignatureEffect(std::string_view name);
 
+    /// @brief Resolve direct-callee effects in local, extern, then runtime order.
+    /// @param name Direct call target.
+    /// @return Best known effect metadata.
     [[nodiscard]] CallEffect computeCalleeEffect(std::string_view name) const;
 
+    /// @brief Reduce a pointer-like value to a canonical base and offset.
+    /// @param value Value to trace through GEP and address definitions.
+    /// @return Location description; BaseKind::Unknown represents insufficient evidence.
     [[nodiscard]] Location describe(const il::core::Value &value) const;
 
+    /// @brief Extract a signed constant integer offset.
+    /// @param v Candidate IL value.
+    /// @param out Receives the constant payload on success.
+    /// @return True only for ConstInt values.
     [[nodiscard]] static bool constOffset(const il::core::Value &v, long long &out);
 };
 
+/// @brief Construct per-function alias facts with optional module context.
+/// @param function Function to analyze.
+/// @param module Optional containing module used for callee-effect resolution.
 inline BasicAA::BasicAA(const il::core::Function &function, const il::core::Module *module)
     : function_(&function), module_(module) {
     collectModuleInfo();
     collectFunctionInfo(function);
 }
 
+/// @brief Construct alias facts with an explicit containing module.
+/// @param module Module used for function and extern lookup.
+/// @param function Function to analyze.
 inline BasicAA::BasicAA(const il::core::Module &module, const il::core::Function &function)
     : BasicAA(function, &module) {}
 
+/// @brief Index defined functions and extern declarations by borrowed names.
+/// @details Does nothing when construction did not receive module context.
 inline void BasicAA::collectModuleInfo() {
     if (!module_)
         return;
@@ -192,6 +259,8 @@ inline void BasicAA::collectModuleInfo() {
         externIndex_.emplace(std::string_view(ext.name), &ext);
 }
 
+/// @brief Collect pointer parameters, SSA definitions, allocas, and escape facts.
+/// @param function Function whose complete body is scanned once.
 inline void BasicAA::collectFunctionInfo(const il::core::Function &function) {
     for (const auto &param : function.params) {
         if (param.isNoAlias())
@@ -214,6 +283,10 @@ inline void BasicAA::collectFunctionInfo(const il::core::Function &function) {
             nonEscapingAllocas_.insert(allocaId);
 }
 
+/// @brief Compare two IL values for exact identity.
+/// @param lhs First value.
+/// @param rhs Second value.
+/// @return True when value kind and kind-specific payload match.
 inline bool BasicAA::equalValues(const il::core::Value &lhs, const il::core::Value &rhs) {
     if (lhs.kind != rhs.kind)
         return false;
@@ -235,22 +308,37 @@ inline bool BasicAA::equalValues(const il::core::Value &lhs, const il::core::Val
     return false;
 }
 
+/// @brief Test membership in the collected alloca-result set.
+/// @param id SSA temporary identifier.
+/// @return True when @p id is an alloca result.
 inline bool BasicAA::isAlloca(unsigned id) const {
     return allocas_.count(id) != 0;
 }
 
+/// @brief Test membership in the collected noalias-parameter set.
+/// @param id SSA temporary identifier.
+/// @return True when @p id names a noalias parameter.
 inline bool BasicAA::isNoAliasParam(unsigned id) const {
     return noaliasParams_.count(id) != 0;
 }
 
+/// @brief Test membership in the collected parameter set.
+/// @param id SSA temporary identifier.
+/// @return True when @p id names any parameter.
 inline bool BasicAA::isParam(unsigned id) const {
     return params_.count(id) != 0;
 }
 
+/// @brief Test membership in the proven non-escaping alloca set.
+/// @param id SSA temporary identifier.
+/// @return True when the corresponding alloca address cannot escape.
 inline bool BasicAA::isNonEscapingAlloca(unsigned id) const {
     return nonEscapingAllocas_.count(id) != 0;
 }
 
+/// @brief Find a local function definition by exact name.
+/// @param name Direct callee name.
+/// @return Borrowed function pointer, or nullptr when absent.
 inline const il::core::Function *BasicAA::findFunction(std::string_view name) const {
     if (name.empty())
         return nullptr;
@@ -262,6 +350,9 @@ inline const il::core::Function *BasicAA::findFunction(std::string_view name) co
     return it == functionIndex_.end() ? nullptr : it->second;
 }
 
+/// @brief Translate function attributes into known memory-effect facts.
+/// @param fn Defined function.
+/// @return Known pure and readonly flags.
 inline BasicAA::CallEffect BasicAA::queryFunctionEffect(const il::core::Function &fn) const {
     CallEffect effect;
     effect.pure = fn.attrs().pure;
@@ -270,6 +361,9 @@ inline BasicAA::CallEffect BasicAA::queryFunctionEffect(const il::core::Function
     return effect;
 }
 
+/// @brief Query built-in and dynamically classified runtime helper effects.
+/// @param name Runtime helper name.
+/// @return Known facts from the first matching registry, or an unknown effect.
 inline BasicAA::CallEffect BasicAA::queryRuntimeEffect(std::string_view name) const {
     if (const auto *sig = il::runtime::findRuntimeSignature(name))
         return CallEffect{sig->pure, sig->readonly, true};
@@ -283,6 +377,9 @@ inline BasicAA::CallEffect BasicAA::queryRuntimeEffect(std::string_view name) co
     return {};
 }
 
+/// @brief Query append-only runtime signature registrations.
+/// @param name Runtime helper name.
+/// @return Known registered pure/readonly facts, or an unknown effect.
 inline BasicAA::CallEffect BasicAA::queryRegisteredSignatureEffect(std::string_view name) {
     bool pure = false;
     bool readonly = false;
@@ -291,6 +388,9 @@ inline BasicAA::CallEffect BasicAA::queryRegisteredSignatureEffect(std::string_v
     return {};
 }
 
+/// @brief Query explicit memory-effect attributes on an extern declaration.
+/// @param name Extern symbol name.
+/// @return Known pure/readonly facts, or unknown when absent/unannotated.
 inline BasicAA::CallEffect BasicAA::queryExternEffect(std::string_view name) const {
     auto it = externIndex_.find(name);
     if (it == externIndex_.end())
@@ -304,6 +404,9 @@ inline BasicAA::CallEffect BasicAA::queryExternEffect(std::string_view name) con
     return {};
 }
 
+/// @brief Resolve direct-callee effects using the most authoritative source.
+/// @param name Direct call target name.
+/// @return Local definition, extern declaration, or runtime-registry effects.
 inline BasicAA::CallEffect BasicAA::computeCalleeEffect(std::string_view name) const {
     // Module-level analysis is authoritative when the callee is defined locally.
     // Fall back to the runtime signature table only for external functions.
@@ -316,6 +419,10 @@ inline BasicAA::CallEffect BasicAA::computeCalleeEffect(std::string_view name) c
     return queryRuntimeEffect(name);
 }
 
+/// @brief Extract a signed constant used as a GEP byte offset.
+/// @param v Candidate IL value.
+/// @param out Receives the integer payload on success.
+/// @return True when @p v is a ConstInt.
 inline bool BasicAA::constOffset(const il::core::Value &v, long long &out) {
     if (v.kind == il::core::Value::Kind::ConstInt) {
         out = v.i64;
@@ -324,6 +431,9 @@ inline bool BasicAA::constOffset(const il::core::Value &v, long long &out) {
     return false;
 }
 
+/// @brief Trace a pointer through definitions to its base identity and offset.
+/// @param value Pointer-like IL value.
+/// @return Canonical location, or an unknown location for cycles/unsupported definitions.
 inline BasicAA::Location BasicAA::describe(const il::core::Value &value) const {
     using Kind = il::core::Value::Kind;
     Location loc;
@@ -413,10 +523,19 @@ inline BasicAA::Location BasicAA::describe(const il::core::Value &value) const {
     }
 }
 
+/// @brief Compute storage width using the canonical IL layout helper.
+/// @param type IL type to inspect.
+/// @return Byte width when the type has a statically known storage size.
 inline std::optional<unsigned> BasicAA::typeSizeBytes(const il::core::Type &type) {
     return il::core::storageSizeBytes(type);
 }
 
+/// @brief Determine whether two pointer-like values can denote overlapping storage.
+/// @param lhs First pointer-like value.
+/// @param rhs Second pointer-like value.
+/// @param lhsSize Optional byte width accessed through @p lhs.
+/// @param rhsSize Optional byte width accessed through @p rhs.
+/// @return NoAlias or MustAlias when proven, otherwise conservative MayAlias.
 inline AliasResult BasicAA::alias(const il::core::Value &lhs,
                                   const il::core::Value &rhs,
                                   std::optional<unsigned> lhsSize,
@@ -493,6 +612,10 @@ inline AliasResult BasicAA::alias(const il::core::Value &lhs,
     return AliasResult::MayAlias;
 }
 
+/// @brief Classify memory reads and writes performed by a call instruction.
+/// @param instr Direct or indirect call candidate.
+/// @return NoModRef for known pure calls, Ref for known readonly calls,
+///         and ModRef for indirect, unknown, or non-call instructions.
 inline ModRefResult BasicAA::modRef(const il::core::Instr &instr) const {
     if (instr.op != il::core::Opcode::Call && instr.op != il::core::Opcode::CallIndirect)
         return ModRefResult::ModRef;

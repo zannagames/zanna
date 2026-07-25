@@ -1,0 +1,126 @@
+// =============================================================================
+// core/savegame.zia — settings / profile / checkpoint persistence (JSON)
+// =============================================================================
+//
+// Three versioned JSON files under Path.DataDir("ashfall"):
+//   settings.json    — video/audio/controls/accessibility (written on change)
+//   profile.json     — campaign progress, medals, stats, upgrades, collectibles
+//   checkpoint.json  — level id, checkpoint, loadout, ammo, health, RNG cursors
+//
+// Reads never trap: a missing or malformed file yields an empty Map and every
+// getter supplies a default (the *Or Map accessors), so a corrupt save falls
+// back to defaults after renaming the bad file aside. Writes go through a temp
+// file + move so a crash mid-write cannot leave a half-written save.
+// =============================================================================
+module savegame;
+
+bind Zanna.IO.File as File;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.IO.Path as Path;
+bind Zanna.Data.Json as Json;
+bind Zanna.Collections.Map as Map;
+bind "../config" as config;
+
+class SaveManager {
+    hide String baseDir;
+    hide Boolean ready;
+    hide Boolean transient;
+
+    expose func init() {
+        baseDir = "";
+        ready = false;
+        transient = false;
+    }
+
+    // Real game: pass Path.DataDir("ashfall"). Probes: pass a temp directory.
+    expose func setup(dir: String) {
+        baseDir = dir;
+        transient = false;
+        if Dir.Exists(baseDir) == false { Dir.MakeAll(baseDir); }
+        ready = true;
+    }
+
+    // Headless integration probes should never read or mutate the player's
+    // real profile. Transient mode keeps the normal serialization surface but
+    // backs it with fresh empty objects and successful no-op writes.
+    expose func setupTransient() {
+        baseDir = "";
+        transient = true;
+        ready = true;
+    }
+
+    expose func setupDefault() {
+        setup(Path.DataDir(config.APP_DATA_NAME));
+    }
+
+    expose func isReady() -> Boolean { return ready; }
+
+    hide func pathFor(name: String) -> String {
+        return Path.Join(baseDir, name);
+    }
+
+    // Serialize a Map to JSON and write it durably (temp + move).
+    hide func writeMap(name: String, m: Map) -> Boolean {
+        if ready == false { return false; }
+        if transient { return true; }
+        var path = pathFor(name);
+        var tmp = path + ".tmp";
+        var text = Json.FormatPretty(m, 2);
+        File.WriteAllText(tmp, text);
+        // Move over the destination (atomic-ish rename on all platforms).
+        if File.Exists(path) { File.Delete(path); }
+        File.Move(tmp, path);
+        return true;
+    }
+
+    // Read a Map back. Any failure (missing, unreadable, invalid JSON) returns a
+    // fresh empty Map and renames the bad file aside for post-mortem.
+    hide func readMap(name: String) -> Map {
+        if transient { return Json.NewObject(); }
+        var path = pathFor(name);
+        if ready == false || File.Exists(path) == false {
+            return Json.NewObject();
+        }
+        var text = File.ReadAllText(path);
+        if Json.IsValid(text) == false {
+            // Preserve the corrupt file rather than clobbering it silently.
+            var bad = path + ".bad";
+            if File.Exists(bad) { File.Delete(bad); }
+            File.Move(path, bad);
+            return Json.NewObject();
+        }
+        // IsValid already gated malformed input; ParseObject returns a Map
+        // (it traps rather than returning null), so no null check is needed.
+        return Json.ParseObject(text);
+    }
+
+    // --- Settings ------------------------------------------------------------
+    expose func saveSettings(s: Map) -> Boolean {
+        Map.SetInt(s, "version", config.SAVE_VERSION);
+        return writeMap("settings.json", s);
+    }
+    expose func loadSettings() -> Map { return readMap("settings.json"); }
+
+    // --- Profile -------------------------------------------------------------
+    expose func saveProfile(p: Map) -> Boolean {
+        Map.SetInt(p, "version", config.SAVE_VERSION);
+        return writeMap("profile.json", p);
+    }
+    expose func loadProfile() -> Map { return readMap("profile.json"); }
+
+    // --- Checkpoint ----------------------------------------------------------
+    expose func saveCheckpoint(c: Map) -> Boolean {
+        Map.SetInt(c, "version", config.SAVE_VERSION);
+        return writeMap("checkpoint.json", c);
+    }
+    expose func loadCheckpoint() -> Map { return readMap("checkpoint.json"); }
+    expose func hasCheckpoint() -> Boolean {
+        if ready == false || transient { return false; }
+        return File.Exists(pathFor("checkpoint.json"));
+    }
+    expose func clearCheckpoint() {
+        if ready == false || transient { return; }
+        var path = pathFor("checkpoint.json");
+        if File.Exists(path) { File.Delete(path); }
+    }
+}

@@ -1,0 +1,190 @@
+// =============================================================================
+// player/camera_rig.zia — first-person camera: look, feel, interpolation
+// =============================================================================
+//
+// Owns yaw/pitch (from raw look input), the eye-height spring, and the feel
+// layers (landing dip, sprint FOV, ADS zoom, shake). The simulation half runs in
+// the fixed tick and records (prevEye, curEye); `applyToCamera` runs in the
+// overlay phase and interpolates between them by the fixed-step alpha — the one
+// place render-state math lives outside the fixed tick.
+// =============================================================================
+module camera_rig;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Game3D as Game3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../player/playerctl" as playerctl;
+
+class CameraRig {
+    hide Float yaw;               // degrees
+    hide Float pitch;             // degrees
+    hide Float sensitivity;
+    hide Boolean invertY;
+    hide Float fovBase;
+    hide Float fovCur;
+    hide Float eyeHeight;         // sprung eye height above feet
+    hide Float dip;               // landing-dip vertical offset (<= 0)
+    hide Float dipVel;
+    hide Float adsT;              // 0 hip .. 1 ADS
+    hide Float roll;              // slide roll degrees
+    hide Float shakeAmp;
+    hide Float shakeTime;
+    hide Float shakeScale;        // accessibility 0..1.5
+    // Interpolation state.
+    hide Float prevX; hide Float prevY; hide Float prevZ;
+    hide Float curX;  hide Float curY;  hide Float curZ;
+    hide Boolean primed;
+
+    expose func init() {
+        yaw = 0.0; pitch = 0.0;
+        sensitivity = config.LOOK_SENS;
+        invertY = false;
+        fovBase = config.CAMERA_FOV;
+        fovCur = config.CAMERA_FOV;
+        eyeHeight = config.EYE_HEIGHT;
+        dip = 0.0; dipVel = 0.0;
+        adsT = 0.0; roll = 0.0;
+        shakeAmp = 0.0; shakeTime = 0.0;
+        shakeScale = config.SHAKE_SCALE_DEFAULT;
+        prevX = 0.0; prevY = 0.0; prevZ = 0.0;
+        curX = 0.0; curY = 0.0; curZ = 0.0;
+        primed = false;
+    }
+
+    expose func getYaw() -> Float { return yaw; }
+    expose func getPitch() -> Float { return pitch; }
+    expose func setYaw(y: Float) { yaw = y; }
+    expose func setPitchDeg(p: Float) { pitch = M.clampf(p, 0.0 - config.PITCH_LIMIT, config.PITCH_LIMIT); }
+    expose func setSensitivity(s: Float) { sensitivity = s; }
+    expose func setInvertY(v: Boolean) { invertY = v; }
+    expose func setFovBase(f: Float) { fovBase = M.clampf(f, config.CAMERA_FOV_MIN, config.CAMERA_FOV_MAX); }
+    expose func setShakeScale(s: Float) { shakeScale = M.clampf(s, 0.0, 1.5); }
+    expose func getFov() -> Float { return fovCur; }
+    expose func getAdsT() -> Float { return adsT; }
+
+    // Apply a look delta (raw device units). Called each fixed tick before the
+    // player moves, so movement is relative to this frame's aim.
+    expose func applyLook(dx: Float, dy: Float) {
+        yaw = M.wrapDeg(yaw + dx * sensitivity);
+        var dp = dy * sensitivity;
+        if invertY { dp = 0.0 - dp; }
+        pitch = M.clampf(pitch - dp, 0.0 - config.PITCH_LIMIT, config.PITCH_LIMIT);
+    }
+
+    // Weapon recoil: push the view up by `pitchUp` degrees plus a yaw kick.
+    expose func addRecoil(pitchUp: Float, yawKick: Float) {
+        pitch = M.clampf(pitch + pitchUp, 0.0 - config.PITCH_LIMIT, config.PITCH_LIMIT);
+        yaw = M.wrapDeg(yaw + yawKick);
+    }
+
+    // Add a shake impulse (amplitude clamped; scaled by accessibility setting).
+    expose func addShake(amp: Float) {
+        var a = amp * shakeScale;
+        if a > shakeAmp { shakeAmp = M.minf(a, 0.6); }
+        shakeTime = 0.0;
+    }
+
+    // Fixed-tick feel update. `zoomFov` is the current weapon's ADS FOV.
+    expose func updateSim(dt: Float, player: playerctl.PlayerCtl, adsHeld: Boolean, zoomFov: Float) {
+        // Eye-height spring toward the stance target.
+        var targetEye = player.eyeTargetHeight();
+        eyeHeight = M.approach(eyeHeight, targetEye, 0.35, dt);
+
+        // Landing dip: a damped spring kicked by fall speed.
+        if player.getJustLanded() {
+            dipVel = dipVel - M.minf(player.getFallSpeed() * 0.02, 0.35);
+        }
+        // Spring the dip back to 0.
+        var k = 90.0;
+        var damp = 14.0;
+        dipVel = dipVel + (0.0 - dip) * k * dt - dipVel * damp * dt;
+        dip = dip + dipVel * dt;
+        if dip < -0.4 { dip = -0.4; }
+
+        // ADS blend + FOV.
+        var adsTarget = 0.0;
+        if adsHeld { adsTarget = 1.0; }
+        var adsSeconds = config.ADS_TIME_MAX;
+        if adsTarget > adsT { adsSeconds = config.ADS_TIME_MIN; }
+        adsT = approachDuration(adsT, adsTarget, adsSeconds, dt);
+        var hipFov = fovBase;
+        if player.isSprinting() { hipFov = fovBase + config.SPRINT_FOV_ADD; }
+        fovCur = M.lerpf(hipFov, zoomFov, adsT);
+
+        // Slide roll.
+        var rollTarget = 0.0;
+        if player.getStance() == 2 { rollTarget = config.SLIDE_ROLL_DEG; }
+        roll = M.approach(roll, rollTarget, 0.35, dt);
+
+        // Shake decay.
+        if shakeAmp > 0.0 {
+            shakeTime = shakeTime + dt;
+            shakeAmp = shakeAmp - shakeAmp * M.clampf(6.0 * dt, 0.0, 1.0);
+            if shakeAmp < 0.001 { shakeAmp = 0.0; }
+        }
+
+        // Record interpolation endpoints from the player's eye position.
+        prevX = curX; prevY = curY; prevZ = curZ;
+        curX = player.getX();
+        curY = player.getFeetY() + eyeHeight + dip;
+        curZ = player.getZ();
+        if primed == false {
+            prevX = curX; prevY = curY; prevZ = curZ;
+            primed = true;
+        }
+    }
+
+    // Compute the current forward vector from yaw/pitch.
+    hide func forward(pitchDeg: Float) -> Math.Vec3 {
+        var y = M.toRad(yaw);
+        var p = M.toRad(pitchDeg);
+        var cp = Math.Cos(p);
+        return Math.Vec3.New(cp * Math.Sin(y), Math.Sin(p), 0.0 - cp * Math.Cos(y));
+    }
+
+    // Overlay-phase: drive the engine camera from the interpolated eye.
+    expose func applyToCamera(cam: G3D.Camera3D, alpha: Float) {
+        var a = M.clampf(alpha, 0.0, 1.0);
+        var ex = M.lerpf(prevX, curX, a);
+        var ey = M.lerpf(prevY, curY, a);
+        var ez = M.lerpf(prevZ, curZ, a);
+
+        // Deterministic shake wobble.
+        if shakeAmp > 0.0 {
+            var t = shakeTime * 47.0;
+            ex = ex + Math.Sin(t) * shakeAmp;
+            ey = ey + Math.Cos(t * 1.3) * shakeAmp;
+        }
+
+        var fwd = forward(pitch);
+        var eye = Math.Vec3.New(ex, ey, ez);
+        var target = Math.Vec3.New(ex + Math.Vec3.get_X(fwd), ey + Math.Vec3.get_Y(fwd), ez + Math.Vec3.get_Z(fwd));
+        // Roll the camera up vector around the view direction during a slide.
+        var rr = M.toRad(roll);
+        var rx = 0.0 - Math.Vec3.get_Z(fwd);
+        var rz = Math.Vec3.get_X(fwd);
+        var rl = Math.Sqrt(rx * rx + rz * rz);
+        if rl > 0.001 { rx = rx / rl; rz = rz / rl; }
+        var up = Math.Vec3.New(rx * Math.Sin(rr), Math.Cos(rr), rz * Math.Sin(rr));
+        cam.LookAt(eye, target, up);
+        cam.Fov = fovCur;
+    }
+
+    // Eye position accessors (weapons/AI line-of-sight use these).
+    expose func getEyeX() -> Float { return curX; }
+    expose func getEyeY() -> Float { return curY; }
+    expose func getEyeZ() -> Float { return curZ; }
+    expose func forwardX() -> Float { return Math.Vec3.get_X(forward(pitch)); }
+    expose func forwardY() -> Float { return Math.Vec3.get_Y(forward(pitch)); }
+    expose func forwardZ() -> Float { return Math.Vec3.get_Z(forward(pitch)); }
+
+    hide func approachDuration(cur: Float, target: Float, seconds: Float, dt: Float) -> Float {
+        if seconds <= 0.001 { return target; }
+        var step = dt / seconds;
+        if step > 1.0 { step = 1.0; }
+        if target > cur { return M.minf(target, cur + step); }
+        return M.maxf(target, cur - step);
+    }
+}

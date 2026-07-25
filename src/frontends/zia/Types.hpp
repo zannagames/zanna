@@ -36,7 +36,7 @@
 /// - `Set[T]`: Collection of unique elements
 ///
 /// **User-Defined Types:**
-/// - `Value`: Copy-semantics type (struct-like)
+/// - `Struct`: Copy-semantics value type
 /// - `Class`: Reference-semantics type (class)
 /// - `Interface`: Abstract type contract
 ///
@@ -60,10 +60,10 @@
 /// Zia types are mapped to IL types for code generation:
 /// - `Integer` → `i64`
 /// - `Number` → `f64`
-/// - `Boolean` → `i64` (0 or 1)
-/// - `String` → `ptr` (pointer to string data)
+/// - `Boolean` → `i1` (0 or 1)
+/// - `String` → `str`
 /// - Reference types → `ptr` (pointer to object)
-/// - Struct types → inline struct layout
+/// - Struct values → `ptr` to separately managed inline aggregate storage
 ///
 /// ## Type Compatibility
 ///
@@ -293,8 +293,8 @@ enum class TypeKindSem {
     /// type or function. Replaced with concrete types during instantiation.
     TypeParam,
 
-    /// @brief Imported module namespace.
-    /// @details Represents an imported module that can be used to access
+    /// @brief Bound module namespace.
+    /// @details Represents a bound module that can be used to access
     /// its exported symbols via dot notation (e.g., `colors.initColors()`).
     Module,
 
@@ -380,6 +380,7 @@ struct ZannaType {
         : kind(k), name(std::move(n)), typeArgs(std::move(args)) {}
 
     /// @brief Construct a fixed-size array type.
+    /// @param k Type kind, expected to be FixedArray.
     /// @param elemType The element type (stored in typeArgs[0]).
     /// @param count Number of elements (stored in elementCount).
     ZannaType(TypeKindSem k, TypeRef elemType, size_t count)
@@ -835,18 +836,28 @@ TypeRef enumType(const std::string &name);
 void clearInterfaceImplementations();
 
 /// @brief Record that @p typeName implements @p interfaceName.
+/// @param typeName Concrete nominal type name.
+/// @param interfaceName Canonical implemented interface name.
 void registerInterfaceImplementation(const std::string &typeName, const std::string &interfaceName);
 
 /// @brief Check whether @p typeName implements @p interfaceName.
+/// @param typeName Concrete class or struct name.
+/// @param interfaceName Canonical interface name.
+/// @return True for a direct implementation or one inherited from a registered base class.
 bool implementsInterface(const std::string &typeName, const std::string &interfaceName);
 
 /// @brief Clear all class inheritance registrations.
 void clearClassInheritance();
 
 /// @brief Register that @p childName extends @p parentName.
+/// @param childName Derived class name.
+/// @param parentName Direct base class name.
 void registerClassInheritance(const std::string &childName, const std::string &parentName);
 
 /// @brief Check whether @p childName is a subclass of @p parentName.
+/// @param childName Candidate derived class.
+/// @param parentName Candidate ancestor.
+/// @return True when the registered parent chain reaches @p parentName.
 bool isSubclassOf(const std::string &childName, const std::string &parentName);
 
 /// @brief Create a type parameter placeholder.
@@ -861,12 +872,17 @@ TypeRef typeParam(const std::string &name);
 /// @details Used for runtime classes where we need to track the type name
 /// for method call resolution.
 TypeRef runtimeClass(const std::string &name);
+
+/// @brief Create a parameterized runtime class type.
+/// @param name Fully qualified runtime class name.
+/// @param typeArgs Element, key/value, or payload metadata carried by the handle.
+/// @return A named pointer type retaining @p typeArgs for semantic refinement.
 TypeRef runtimeClass(const std::string &name, std::vector<TypeRef> typeArgs);
 
 /// @brief Create a module namespace type.
 /// @param name The module name (e.g., "colors").
-/// @return A new module type for accessing imported symbols.
-/// @details Used for imported modules to enable qualified access like `colors.func()`.
+/// @return A new module type for accessing bound symbols.
+/// @details Used for bound modules to enable qualified access like `colors.func()`.
 TypeRef module(const std::string &name);
 
 /// @brief Create a fixed-size array type: `T[N]`.
@@ -897,8 +913,8 @@ TypeRef fixedArray(TypeRef elemType, size_t count);
 /// @details Type mapping rules:
 /// - Integer → i64
 /// - Number → f64
-/// - Boolean → i64 (stored as 0 or 1)
-/// - String → ptr (pointer to string structure)
+/// - Boolean → i1
+/// - String → str
 /// - Byte → i32 (IL has no i8)
 /// - Class → ptr (pointer to object)
 /// - List/Map/Set → ptr (pointer to collection)

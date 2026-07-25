@@ -258,6 +258,12 @@ func main() {
     editor.Pump(sceneDoc);
     shell.Render();
 
+    // Exact pixel-for-pixel pan displacement is an orthographic property:
+    // perspective parallax legitimately moves off-target-plane points by a
+    // depth-dependent amount (ADR 0183). Pin the exact contract in ortho.
+    editor.SetViewProjection(false);
+    editor.Pump(sceneDoc);
+    shell.Render();
     var beforeX = editor.projectedX.get(1);
     var beforeY = editor.projectedY.get(1);
     canonical = sceneDoc.content;
@@ -303,6 +309,9 @@ func main() {
              + " dirty=" + sceneDoc.isModified + "/" + dirty);
         return;
     }
+    editor.SetViewProjection(true);
+    editor.Pump(sceneDoc);
+    shell.Render();
     if editor.PanViewportByPixels(0.0, 0.0) {
         Fail(shell, harness, "zero camera-plane pan was not a no-op");
         return;

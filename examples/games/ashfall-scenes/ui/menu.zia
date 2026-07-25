@@ -1,0 +1,605 @@
+// =============================================================================
+// ui/menu.zia — the frontend: title / level select / options / pause / death /
+//               complete / credits / loading
+// =============================================================================
+//
+// All screens are menu-internal submodes over the game's existing ST_* states —
+// no new global states, so the probes' state-machine expectations are
+// untouched. The game gathers discrete nav input (up/down/left/right/confirm/
+// back), calls update() once per tick, and executes the returned CMD_*. Options
+// hold the persisted settings (savegame settings.json: quality/fov/sens/
+// invertY/volume/shake/fullscreen/difficulty/flash/high-contrast HUD); the game applies them live via the
+// accessors after any CMD_SETTINGS_CHANGED. Drawing is panel + AA text house
+// style: dim scrim, 0x0A0E14 plates, accent corner frames, animated selector.
+// =============================================================================
+module menu;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Collections.Map as Map;
+bind Zanna.String as Str;
+bind Zanna.Core.Convert as Convert;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/strings" as S;
+bind "../core/savegame" as savegame;
+
+// Commands handed back to the game.
+var CMD_NONE: Integer = 0;
+var CMD_NEW_GAME: Integer = 1;
+var CMD_CONTINUE: Integer = 2;
+var CMD_LOAD_LEVEL: Integer = 3;      // selectedLevelId() carries which
+var CMD_RESUME: Integer = 4;
+var CMD_RESTART: Integer = 5;
+var CMD_QUIT_TITLE: Integer = 6;
+var CMD_QUIT_APP: Integer = 7;
+var CMD_NEXT_LEVEL: Integer = 8;
+var CMD_REPLAY: Integer = 9;
+var CMD_CREDITS_DONE: Integer = 10;
+var CMD_SETTINGS_CHANGED: Integer = 11;
+var CMD_BUY_UPGRADE: Integer = 12;
+
+// Screen contexts (which ST_* family the menu is serving).
+var CTX_TITLE: Integer = 0;
+var CTX_PAUSE: Integer = 1;
+var CTX_DEATH: Integer = 2;
+var CTX_COMPLETE: Integer = 3;
+var CTX_CREDITS: Integer = 4;
+
+// Submodes inside title/pause.
+var SUB_ROOT: Integer = 0;
+var SUB_LEVELS: Integer = 1;
+var SUB_OPTIONS: Integer = 2;
+var SUB_ARMORY: Integer = 3;
+
+var COL_PANEL: Integer = 0x0A0E14;
+var COL_ACCENT: Integer = 0xFFA850;
+var COL_TEXT: Integer = 0xE8E8F0;
+var COL_DIM: Integer = 0x8890A0;
+var COL_SEL: Integer = 0xFFD080;
+
+class MenuSystem {
+    hide savegame.SaveManager save;
+    hide Integer ctx;
+    hide Integer sub;
+    hide Integer sel;
+    hide Float animT;
+    hide Integer chosenLevel;
+    hide Integer highestLevel;
+    hide Boolean hasCheckpoint;
+    hide Float creditsScroll;
+    hide String deathLine;
+    hide List[String] statLines;
+    hide String medalLine;
+    // Armory snapshot supplied by Game (keeps this UI independent of economy).
+    hide Integer armorySalvage;
+    hide List[Integer] armoryTier;
+    hide List[Integer] armoryCost;
+    hide String armoryMessage;
+    // Persisted settings.
+    hide Integer quality;          // 0 perf / 1 balanced / 2 cinematic
+    hide Integer fov;              // 70..110 step 5
+    hide Float sens;               // 0.02..0.30
+    hide Boolean invertY;
+    hide Integer volume;           // 0..100
+    hide Integer shakePct;         // 0..150
+    hide Boolean fullscreen;
+    hide Integer difficulty;
+    hide Integer flashPct;         // 0..100, full-screen damage/lightning flashes
+    hide Boolean highContrast;
+
+    expose func init() {
+        ctx = CTX_TITLE;
+        sub = SUB_ROOT;
+        sel = 0;
+        animT = 0.0;
+        chosenLevel = config.LV_L1;
+        highestLevel = config.LV_L1;
+        hasCheckpoint = false;
+        creditsScroll = 0.0;
+        deathLine = "";
+        statLines = [];
+        medalLine = "";
+        armorySalvage = 0;
+        armoryTier = [];
+        armoryCost = [];
+        var aw = 0;
+        while aw < config.WEAPON_COUNT {
+            armoryTier.Add(0);
+            armoryCost.Add(-1);
+            aw = aw + 1;
+        }
+        armoryMessage = "";
+        quality = 1;
+        fov = 90;
+        sens = 0.10;
+        invertY = false;
+        volume = 80;
+        shakePct = 100;
+        fullscreen = true;
+        difficulty = config.DIFF_SOLDIER;
+        flashPct = 100;
+        highContrast = false;
+    }
+
+    expose func setup(sv: savegame.SaveManager) {
+        save = sv;
+        loadSettings();
+    }
+
+    // --- Settings persistence -------------------------------------------------
+    expose func loadSettings() {
+        var m = save.loadSettings();
+        var q = Map.GetStr(m, "quality");
+        if Str.get_Length(q) > 0 { quality = M.clampi(Convert.ToInt64(q), 0, 2); }
+        var f = Map.GetStr(m, "fov");
+        if Str.get_Length(f) > 0 { fov = M.clampi(Convert.ToInt64(f), 70, 110); }
+        var sn = Map.GetStr(m, "sens");
+        if Str.get_Length(sn) > 0 { sens = M.clampf(Convert.ToDouble(sn), 0.02, 0.30); }
+        var iv = Map.GetStr(m, "invertY");
+        if Str.get_Length(iv) > 0 { invertY = iv == "1"; }
+        var vo = Map.GetStr(m, "volume");
+        if Str.get_Length(vo) > 0 { volume = M.clampi(Convert.ToInt64(vo), 0, 100); }
+        var sh = Map.GetStr(m, "shake");
+        if Str.get_Length(sh) > 0 { shakePct = M.clampi(Convert.ToInt64(sh), 0, 150); }
+        var fs = Map.GetStr(m, "fullscreen");
+        if Str.get_Length(fs) > 0 { fullscreen = fs == "1"; }
+        var df = Map.GetStr(m, "difficulty");
+        if Str.get_Length(df) > 0 { difficulty = M.clampi(Convert.ToInt64(df), 0, config.DIFF_COUNT - 1); }
+        var fl = Map.GetStr(m, "flash");
+        if Str.get_Length(fl) > 0 { flashPct = M.clampi(Convert.ToInt64(fl), 0, 100); }
+        var hc = Map.GetStr(m, "highContrast");
+        if Str.get_Length(hc) > 0 { highContrast = hc == "1"; }
+    }
+
+    expose func saveSettings() {
+        var m = Map.New();
+        Map.SetStr(m, "quality", S.intStr(quality));
+        Map.SetStr(m, "fov", S.intStr(fov));
+        Map.SetStr(m, "sens", S.fixed(sens, 3));
+        if invertY { Map.SetStr(m, "invertY", "1"); } else { Map.SetStr(m, "invertY", "0"); }
+        Map.SetStr(m, "volume", S.intStr(volume));
+        Map.SetStr(m, "shake", S.intStr(shakePct));
+        if fullscreen { Map.SetStr(m, "fullscreen", "1"); } else { Map.SetStr(m, "fullscreen", "0"); }
+        Map.SetStr(m, "difficulty", S.intStr(difficulty));
+        Map.SetStr(m, "flash", S.intStr(flashPct));
+        if highContrast { Map.SetStr(m, "highContrast", "1"); }
+        else { Map.SetStr(m, "highContrast", "0"); }
+        save.saveSettings(m);
+    }
+
+    // Applied-value accessors (the game pushes these into subsystems).
+    expose func qualityTier() -> Integer { return quality; }
+    expose func fovValue() -> Float { return fov + 0.0; }
+    expose func sensValue() -> Float { return sens; }
+    expose func invertYOn() -> Boolean { return invertY; }
+    expose func volumeValue() -> Float { return (volume + 0.0) / 100.0; }
+    expose func shakeValue() -> Float { return (shakePct + 0.0) / 100.0; }
+    expose func fullscreenOn() -> Boolean { return fullscreen; }
+    expose func difficultyValue() -> Integer { return difficulty; }
+    expose func flashValue() -> Float { return (flashPct + 0.0) / 100.0; }
+    expose func highContrastOn() -> Boolean { return highContrast; }
+
+    // --- Screen entry ----------------------------------------------------------
+    expose func enterTitle(checkpoint: Boolean) {
+        ctx = CTX_TITLE;
+        sub = SUB_ROOT;
+        hasCheckpoint = checkpoint;
+        sel = 0;
+        animT = 0.0;
+    }
+    expose func enterPause() { ctx = CTX_PAUSE; sub = SUB_ROOT; sel = 0; }
+    expose func enterDeath(line: String) { ctx = CTX_DEATH; sub = SUB_ROOT; sel = 0; deathLine = line; }
+    expose func enterComplete(lines: List[String], medal: String) {
+        ctx = CTX_COMPLETE;
+        sub = SUB_ROOT;
+        sel = 0;
+        statLines = lines;
+        medalLine = medal;
+        animT = 0.0;
+    }
+    expose func enterCredits() { ctx = CTX_CREDITS; creditsScroll = 0.0; }
+    expose func selectedLevelId() -> Integer { return chosenLevel; }
+    expose func setHighestLevel(id: Integer) {
+        highestLevel = M.clampi(id, config.LV_L1, config.LV_L9);
+    }
+    expose func currentCtx() -> Integer { return ctx; }
+    expose func currentSub() -> Integer { return sub; }
+    expose func selectedUpgradeWeapon() -> Integer { return sel; }
+    expose func setArmorySalvage(value: Integer) { armorySalvage = M.maxi(value, 0); }
+    expose func setArmoryWeapon(w: Integer, tier: Integer, cost: Integer) {
+        if w < 0 || w >= config.WEAPON_COUNT { return; }
+        armoryTier[w] = M.clampi(tier, 0, 3);
+        armoryCost[w] = cost;
+    }
+    expose func setArmoryMessage(msg: String) { armoryMessage = msg; }
+
+    // --- Row tables ----------------------------------------------------------
+    hide func rootRowCount() -> Integer {
+        if ctx == CTX_TITLE {
+            if hasCheckpoint { return 7; }
+            return 6;
+        }
+        if ctx == CTX_PAUSE { return 4; }
+        if ctx == CTX_DEATH { return 2; }
+        if ctx == CTX_COMPLETE { return 4; }
+        return 1;
+    }
+
+    hide func rootLabel(i: Integer) -> String {
+        if ctx == CTX_TITLE {
+            var k = i;
+            if hasCheckpoint == false { k = i + 1; }
+            if k == 0 { return "CONTINUE"; }
+            if k == 1 { return "NEW GAME"; }
+            if k == 2 { return "LEVEL SELECT"; }
+            if k == 3 { return "ARMORY"; }
+            if k == 4 { return "OPTIONS"; }
+            if k == 5 { return "CREDITS"; }
+            return "QUIT";
+        }
+        if ctx == CTX_PAUSE {
+            if i == 0 { return "RESUME"; }
+            if i == 1 { return "OPTIONS"; }
+            if i == 2 { return "RESTART LEVEL"; }
+            return "QUIT TO TITLE";
+        }
+        if ctx == CTX_DEATH {
+            if i == 0 { return "RETRY"; }
+            return "QUIT TO TITLE";
+        }
+        if ctx == CTX_COMPLETE {
+            if i == 0 { return "CONTINUE"; }
+            if i == 1 { return "ARMORY"; }
+            if i == 2 { return "REPLAY"; }
+            return "QUIT TO TITLE";
+        }
+        return "BACK";
+    }
+
+    hide func rootCommand(i: Integer) -> Integer {
+        if ctx == CTX_TITLE {
+            var k = i;
+            if hasCheckpoint == false { k = i + 1; }
+            if k == 0 { return CMD_CONTINUE; }
+            if k == 1 { return CMD_NEW_GAME; }
+            if k == 2 { sub = SUB_LEVELS; sel = 0; return CMD_NONE; }
+            if k == 3 {
+                sub = SUB_ARMORY; sel = 0; armoryMessage = ""; return CMD_NONE;
+            }
+            if k == 4 { sub = SUB_OPTIONS; sel = 0; return CMD_NONE; }
+            if k == 5 { return CMD_CREDITS_DONE + 100; }   // sentinel: open credits
+            return CMD_QUIT_APP;
+        }
+        if ctx == CTX_PAUSE {
+            if i == 0 { return CMD_RESUME; }
+            if i == 1 { sub = SUB_OPTIONS; sel = 0; return CMD_NONE; }
+            if i == 2 { return CMD_RESTART; }
+            return CMD_QUIT_TITLE;
+        }
+        if ctx == CTX_DEATH {
+            if i == 0 { return CMD_RESTART; }
+            return CMD_QUIT_TITLE;
+        }
+        if ctx == CTX_COMPLETE {
+            if i == 0 { return CMD_NEXT_LEVEL; }
+            if i == 1 {
+                sub = SUB_ARMORY; sel = 0; armoryMessage = ""; return CMD_NONE;
+            }
+            if i == 2 { return CMD_REPLAY; }
+            return CMD_QUIT_TITLE;
+        }
+        return CMD_NONE;
+    }
+
+    hide func levelName(id: Integer) -> String {
+        if id >= config.LV_L1 && id <= config.LV_L9 && id > highestLevel {
+            return "LOCKED — COMPLETE THE PREVIOUS MISSION";
+        }
+        if id == config.LV_L1 { return "L1  CRASHSITE CANYON"; }
+        if id == config.LV_L2 { return "L2  RELAY OUTPOST"; }
+        if id == config.LV_L3 { return "L3  ASHVEIL CROSSING"; }
+        if id == config.LV_L4 { return "L4  HABITAT ARCOLOGY"; }
+        if id == config.LV_L5 { return "L5  HYDROPONICS CAVERNS"; }
+        if id == config.LV_L6 { return "L6  STORM TERRACES"; }
+        if id == config.LV_L7 { return "L7  THE FOUNDRY"; }
+        if id == config.LV_L8 { return "L8  SPIRE ASCENT"; }
+        if id == config.LV_L9 { return "L9  HELIX CORE"; }
+        if id == config.LV_HUB { return "THE REDOUBT (HUB)"; }
+        return "TEST ARENA";
+    }
+
+    // Lore line shown on the loading wash.
+    expose func loreFor(id: Integer) -> String {
+        if id == config.LV_L1 { return "The colony ship EREBOS-4 broke apart over the ash belt."; }
+        if id == config.LV_L2 { return "The relay went dark six weeks before anyone noticed."; }
+        if id == config.LV_L3 { return "The crossing was built for cargo. Nothing crosses now."; }
+        if id == config.LV_L4 { return "Ten thousand lived here. The lights still run on schedule."; }
+        if id == config.LV_L5 { return "The gardens grew wild in the dark, and something grew with them."; }
+        if id == config.LV_L6 { return "Storm season lasts nine months on Erebos. This is month one."; }
+        if id == config.LV_L7 { return "The foundry never cooled. HELIX kept it fed."; }
+        if id == config.LV_L8 { return "Above the cloud band, the spire still broadcasts to nobody."; }
+        if id == config.LV_L9 { return "HELIX is not malfunctioning. It works exactly as it decided to."; }
+        return "The Redoubt holds. For now.";
+    }
+
+    // Level-select list: campaign + hub + arena.
+    hide func levelIdAt(i: Integer) -> Integer {
+        if i < 9 { return config.LV_L1 + i; }
+        if i == 9 { return config.LV_HUB; }
+        return config.LV_ARENA;
+    }
+
+    hide func armoryWeaponName(w: Integer) -> String {
+        if w == config.W_BOLT { return "BOLT PISTOL"; }
+        if w == config.W_SCATTER { return "SCATTERGUN"; }
+        if w == config.W_CYCLER { return "CYCLER SMG"; }
+        if w == config.W_PULSE { return "PULSE RIFLE"; }
+        if w == config.W_RAIL { return "MARKSMAN RAIL"; }
+        if w == config.W_ARC { return "ARC LAUNCHER"; }
+        if w == config.W_RIVET { return "RIVET DRIVER"; }
+        if w == config.W_SHARD { return "SHARD CASTER"; }
+        if w == config.W_EMP { return "EMP PROJECTOR"; }
+        return "HELIX LANCE";
+    }
+
+    hide func armoryLabel(w: Integer) -> String {
+        var key = S.intStr(w + 1);
+        if w == config.W_LANCE { key = "0"; }
+        var tail = "TIER " + S.intStr(armoryTier[w]);
+        if armoryCost[w] < 0 { tail = tail + "   MAX"; }
+        else { tail = tail + "   " + S.intStr(armoryCost[w]) + " SALVAGE"; }
+        return key + "  " + armoryWeaponName(w) + "   " + tail;
+    }
+
+    // --- Update ----------------------------------------------------------------
+    expose func update(dt: Float, up: Boolean, down: Boolean, left: Boolean, right: Boolean,
+                       confirm: Boolean, back: Boolean) -> Integer {
+        animT = animT + dt;
+        if ctx == CTX_CREDITS {
+            creditsScroll = creditsScroll + dt * 36.0;
+            if confirm || back { return CMD_CREDITS_DONE; }
+            return CMD_NONE;
+        }
+        if sub == SUB_LEVELS {
+            if up { sel = (sel + 10) % 11; }
+            if down { sel = (sel + 1) % 11; }
+            if back { sub = SUB_ROOT; sel = 0; return CMD_NONE; }
+            if confirm {
+                chosenLevel = levelIdAt(sel);
+                if chosenLevel >= config.LV_L1 && chosenLevel <= config.LV_L9 &&
+                   chosenLevel > highestLevel {
+                    return CMD_NONE;
+                }
+                sub = SUB_ROOT;
+                return CMD_LOAD_LEVEL;
+            }
+            return CMD_NONE;
+        }
+        if sub == SUB_ARMORY {
+            if up { sel = (sel + config.WEAPON_COUNT - 1) % config.WEAPON_COUNT; }
+            if down { sel = (sel + 1) % config.WEAPON_COUNT; }
+            if back { sub = SUB_ROOT; sel = 0; armoryMessage = ""; return CMD_NONE; }
+            if confirm { return CMD_BUY_UPGRADE; }
+            return CMD_NONE;
+        }
+        if sub == SUB_OPTIONS {
+            var rows = 11;
+            if up { sel = (sel + rows - 1) % rows; }
+            if down { sel = (sel + 1) % rows; }
+            if back { saveSettings(); sub = SUB_ROOT; sel = 0; return CMD_SETTINGS_CHANGED; }
+            if sel == 10 && confirm { saveSettings(); sub = SUB_ROOT; sel = 0; return CMD_SETTINGS_CHANGED; }
+            if left || right { adjustOption(sel, right); return CMD_SETTINGS_CHANGED; }
+            return CMD_NONE;
+        }
+        // Root rows.
+        var n = rootRowCount();
+        if up { sel = (sel + n - 1) % n; }
+        if down { sel = (sel + 1) % n; }
+        if back {
+            if ctx == CTX_PAUSE { return CMD_RESUME; }
+            return CMD_NONE;
+        }
+        if confirm {
+            var cmd = rootCommand(sel);
+            if cmd == CMD_CREDITS_DONE + 100 { enterCredits(); return CMD_NONE; }
+            return cmd;
+        }
+        return CMD_NONE;
+    }
+
+    hide func adjustOption(row: Integer, inc: Boolean) {
+        var d = -1;
+        if inc { d = 1; }
+        if row == 0 { quality = M.clampi(quality + d, 0, 2); }
+        else if row == 1 { fov = M.clampi(fov + d * 5, 70, 110); }
+        else if row == 2 { sens = M.clampf(sens + (d + 0.0) * 0.02, 0.02, 0.30); }
+        else if row == 3 { invertY = invertY == false; }
+        else if row == 4 { volume = M.clampi(volume + d * 10, 0, 100); }
+        else if row == 5 { shakePct = M.clampi(shakePct + d * 25, 0, 150); }
+        else if row == 6 { fullscreen = fullscreen == false; }
+        else if row == 7 { difficulty = M.clampi(difficulty + d, 0, config.DIFF_COUNT - 1); }
+        else if row == 8 { flashPct = M.clampi(flashPct + d * 25, 0, 100); }
+        else if row == 9 { highContrast = highContrast == false; }
+    }
+
+    hide func optionLabel(row: Integer) -> String {
+        if row == 0 {
+            if quality == 0 { return "QUALITY          < PERFORMANCE >"; }
+            if quality == 1 { return "QUALITY          < BALANCED >"; }
+            return "QUALITY          < CINEMATIC >";
+        }
+        if row == 1 { return "FIELD OF VIEW    < " + S.intStr(fov) + " >"; }
+        if row == 2 { return "SENSITIVITY      < " + S.fixed(sens, 2) + " >"; }
+        if row == 3 {
+            if invertY { return "INVERT Y         < ON >"; }
+            return "INVERT Y         < OFF >";
+        }
+        if row == 4 { return "MASTER VOLUME    < " + S.intStr(volume) + " >"; }
+        if row == 5 { return "SCREEN SHAKE     < " + S.intStr(shakePct) + "% >"; }
+        if row == 6 {
+            if fullscreen { return "FULLSCREEN       < ON >  (applies at launch)"; }
+            return "FULLSCREEN       < OFF > (applies at launch)";
+        }
+        if row == 7 {
+            if difficulty == config.DIFF_STORY { return "DIFFICULTY       < STORY >"; }
+            if difficulty == config.DIFF_VETERAN { return "DIFFICULTY       < VETERAN >"; }
+            return "DIFFICULTY       < SOLDIER >";
+        }
+        if row == 8 { return "FLASH EFFECTS    < " + S.intStr(flashPct) + "% >"; }
+        if row == 9 {
+            if highContrast { return "HIGH-CONTRAST HUD < ON >"; }
+            return "HIGH-CONTRAST HUD < OFF >";
+        }
+        return "BACK";
+    }
+
+    // --- Drawing -----------------------------------------------------------------
+    hide func centerText(canvas: G3D.Canvas3D, w: Integer, y: Integer, txt: String,
+                         col: Integer, scale: Float) {
+        var tw = G3D.Canvas3D.MeasureText2DAA(canvas, txt, scale);
+        G3D.Canvas3D.DrawText2DAA(canvas, w / 2 - tw / 2, y, txt, col, scale);
+    }
+
+    hide func panel(canvas: G3D.Canvas3D, x: Integer, y: Integer, w: Integer, h: Integer) {
+        G3D.Canvas3D.DrawRect2DAlpha(canvas, x, y, w, h, COL_PANEL, 0.85);
+        // Accent corner frames (2 px).
+        G3D.Canvas3D.DrawRect2D(canvas, x, y, 26, 2, COL_ACCENT);
+        G3D.Canvas3D.DrawRect2D(canvas, x, y, 2, 26, COL_ACCENT);
+        G3D.Canvas3D.DrawRect2D(canvas, x + w - 26, y + h - 2, 26, 2, COL_ACCENT);
+        G3D.Canvas3D.DrawRect2D(canvas, x + w - 2, y + h - 26, 2, 26, COL_ACCENT);
+    }
+
+    hide func rows(canvas: G3D.Canvas3D, w: Integer, y0: Integer, count: Integer, isOptions: Boolean) {
+        var i = 0;
+        while i < count {
+            var label = "";
+            if isOptions { label = optionLabel(i); }
+            else if sub == SUB_LEVELS { label = levelName(levelIdAt(i)); }
+            else if sub == SUB_ARMORY { label = armoryLabel(i); }
+            else { label = rootLabel(i); }
+            var yy = y0 + i * 34;
+            var scale = 1.6;
+            if sub == SUB_ARMORY { scale = 1.12; }
+            var col = COL_DIM;
+            if i == sel {
+                col = COL_SEL;
+                // Animated selector chevron + glow row.
+                var pulse = M.absf(Math.Sin(animT * 4.0)) * 0.25 + 0.1;
+                G3D.Canvas3D.DrawRect2DAlpha(canvas, w / 2 - 220, yy - 4, 440, 28, COL_ACCENT, pulse * 0.35);
+                var tw = G3D.Canvas3D.MeasureText2DAA(canvas, label, scale);
+                G3D.Canvas3D.DrawText2DAA(canvas, w / 2 - tw / 2 - 28, yy, ">", COL_ACCENT, scale);
+            }
+            centerText(canvas, w, yy, label, col, scale);
+            i = i + 1;
+        }
+    }
+
+    // Main draw entry — the game calls this in the overlay pass for menu states.
+    expose func draw(canvas: G3D.Canvas3D, w: Integer, h: Integer) {
+        if ctx == CTX_CREDITS { drawCredits(canvas, w, h); return; }
+        if ctx == CTX_TITLE { drawTitle(canvas, w, h); return; }
+        // Pause/death/complete share the dim-scrim + panel look.
+        G3D.Canvas3D.DrawRect2DAlpha(canvas, 0, 0, w, h, 0x000000, 0.45);
+        var count = rootRowCount();
+        if sub == SUB_OPTIONS { count = 11; }
+        if sub == SUB_LEVELS { count = 11; }
+        if sub == SUB_ARMORY { count = config.WEAPON_COUNT; }
+        var statsExtra = 0;
+        if ctx == CTX_COMPLETE && sub == SUB_ROOT {
+            statsExtra = statLines.Count * 22 + 40;
+        }
+        var ph = 140 + count * 34 + statsExtra;
+        var py = h / 2 - ph / 2;
+        panel(canvas, w / 2 - 260, py, 520, ph);
+        if ctx == CTX_PAUSE { centerText(canvas, w, py + 22, "PAUSED", COL_TEXT, 2.4); }
+        else if ctx == CTX_DEATH {
+            centerText(canvas, w, py + 22, "YOU DIED", 0xFF5040, 2.8);
+            if Str.get_Length(deathLine) > 0 {
+                centerText(canvas, w, py + 58, deathLine, COL_DIM, 1.2);
+            }
+        } else if ctx == CTX_COMPLETE {
+            centerText(canvas, w, py + 22, "LEVEL COMPLETE", 0x60FF90, 2.4);
+        }
+        var listY = py + 90;
+        if ctx == CTX_COMPLETE && sub == SUB_ROOT {
+            // Stats block above the rows.
+            var si = 0;
+            while si < statLines.Count {
+                centerText(canvas, w, listY + si * 22, statLines[si], COL_TEXT, 1.2);
+                si = si + 1;
+            }
+            if Str.get_Length(medalLine) > 0 {
+                centerText(canvas, w, listY + statLines.Count * 22 + 6, medalLine, COL_SEL, 1.6);
+            }
+            listY = listY + statLines.Count * 22 + 40;
+        }
+        if sub == SUB_ARMORY {
+            centerText(canvas, w, listY - 30,
+                       "SALVAGE " + S.intStr(armorySalvage) + "   ENTER TO UPGRADE",
+                       COL_SEL, 1.15);
+        }
+        rows(canvas, w, listY, count, sub == SUB_OPTIONS);
+        if sub == SUB_ARMORY && Str.get_Length(armoryMessage) > 0 {
+            centerText(canvas, w, listY + count * 34 + 2, armoryMessage, COL_TEXT, 1.0);
+        }
+    }
+
+    hide func drawTitle(canvas: G3D.Canvas3D, w: Integer, h: Integer) {
+        // Logotype over the live vista (no scrim — the world is the backdrop).
+        var ty = h / 4 - 40;
+        centerText(canvas, w, ty, "ASHFALL", COL_TEXT, 7.0);
+        var tw = G3D.Canvas3D.MeasureText2DAA(canvas, "ASHFALL", 7.0);
+        G3D.Canvas3D.DrawRect2D(canvas, w / 2 - tw / 2, ty + 62, tw, 3, COL_ACCENT);
+        centerText(canvas, w, ty + 74, "E R E B O S - 4", COL_DIM, 1.4);
+        var count = rootRowCount();
+        if sub == SUB_OPTIONS { count = 11; }
+        if sub == SUB_LEVELS { count = 11; }
+        if sub == SUB_ARMORY { count = config.WEAPON_COUNT; }
+        var listY = h / 2 + 40;
+        if sub != SUB_ROOT {
+            var ph = 60 + count * 34;
+            panel(canvas, w / 2 - 280, listY - 30, 560, ph);
+        }
+        if sub == SUB_ARMORY {
+            centerText(canvas, w, listY - 26,
+                       "SALVAGE " + S.intStr(armorySalvage) + "   ENTER TO UPGRADE",
+                       COL_SEL, 1.15);
+        }
+        rows(canvas, w, listY, count, sub == SUB_OPTIONS);
+        if sub == SUB_ARMORY && Str.get_Length(armoryMessage) > 0 {
+            centerText(canvas, w, listY + count * 34 + 2, armoryMessage, COL_TEXT, 1.0);
+        }
+        G3D.Canvas3D.DrawText2DAA(canvas, 16, h - 24, "ASHFALL pre-alpha  |  Zanna engine", 0x606878, 1.0);
+    }
+
+    hide func drawCredits(canvas: G3D.Canvas3D, w: Integer, h: Integer) {
+        G3D.Canvas3D.DrawRect2DAlpha(canvas, 0, 0, w, h, 0x000000, 0.7);
+        var y = h - M.roundi(creditsScroll);
+        creditsLine(canvas, w, y, "A S H F A L L", COL_TEXT, 3.0);
+        creditsLine(canvas, w, y + 70, "a Zanna engine showcase", COL_DIM, 1.4);
+        creditsLine(canvas, w, y + 130, "GAME + ENGINE", COL_ACCENT, 1.6);
+        creditsLine(canvas, w, y + 160, "The Zanna project", COL_TEXT, 1.3);
+        creditsLine(canvas, w, y + 220, "CC0 ASSET PACKS", COL_ACCENT, 1.6);
+        creditsLine(canvas, w, y + 250, "Quaternius - Animated Mech Pack", COL_TEXT, 1.3);
+        creditsLine(canvas, w, y + 275, "Quaternius - Ultimate Monsters Pack", COL_TEXT, 1.3);
+        creditsLine(canvas, w, y + 300, "Kenney - Blaster Kit", COL_TEXT, 1.3);
+        creditsLine(canvas, w, y + 360, "Set on Erebos-4. The ash remembers.", COL_DIM, 1.2);
+        creditsLine(canvas, w, y + 430, "press ENTER", COL_DIM, 1.1);
+    }
+
+    hide func creditsLine(canvas: G3D.Canvas3D, w: Integer, y: Integer, txt: String,
+                          col: Integer, scale: Float) {
+        if y < -40 || y > 4000 { return; }
+        centerText(canvas, w, y, txt, col, scale);
+    }
+
+    // Loading wash: accent color + level name + lore, min 0.5 s (game owns the timer).
+    expose func drawLoading(canvas: G3D.Canvas3D, w: Integer, h: Integer, levelId: Integer) {
+        G3D.Canvas3D.DrawRect2D(canvas, 0, 0, w, h, 0x0A0E14);
+        G3D.Canvas3D.DrawRect2DAlpha(canvas, 0, h / 2 - 90, w, 180, COL_ACCENT, 0.08);
+        centerText(canvas, w, h / 2 - 40, levelName(levelId), COL_TEXT, 2.6);
+        centerText(canvas, w, h / 2 + 10, loreFor(levelId), COL_DIM, 1.3);
+        centerText(canvas, w, h - 60, "LOADING", COL_ACCENT, 1.3);
+    }
+}

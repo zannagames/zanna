@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements branch-edge payload and return-value verification.
+/// @details The helpers validate terminator-local structure and inferred value
+///          compatibility. They consult a caller-built block map but defer
+///          diagnostics for unresolved labels to the dedicated control-flow
+///          checks.
+
 #include "il/verify/BranchVerifier.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -41,6 +48,15 @@ using il::support::makeError;
 
 namespace {
 
+/// @brief Test whether a value can satisfy an expected IL type.
+/// @details Exact inferred kinds are accepted. Integer constants may also
+///          satisfy a different integer kind when their value is representable;
+///          boolean constants remain restricted to i1 and non-boolean integers
+///          are never implicitly accepted as i1.
+/// @param value Source value whose constant metadata may permit compatibility.
+/// @param actualType Type inferred for @p value.
+/// @param expectedType Type required by the consuming position.
+/// @return `true` when the value may be consumed as @p expectedType.
 bool valueCompatibleWithType(const Value &value, const Type &actualType, const Type &expectedType) {
     if (actualType.kind == expectedType.kind)
         return true;
@@ -69,6 +85,7 @@ bool valueCompatibleWithType(const Value &value, const Type &actualType, const T
 /// @param args Optional branch argument vector aligned with @p target params.
 /// @param label Label string associated with the evaluated branch edge.
 /// @param types Inference context used to obtain operand types for comparison.
+/// @return Success when counts and types agree, otherwise the first diagnostic.
 Expected<void> verifyBranchArgs(const Function &fn,
                                 const BasicBlock &bb,
                                 const Instr &instr,
@@ -122,6 +139,8 @@ Expected<void> verifyBranchArgs(const Function &fn,
 /// @param instr The branch instruction to verify.
 /// @param blockMap Lookup table mapping block labels to their definitions.
 /// @param types Type inference cache supplying operand type information.
+/// @return Success when local structure and any resolved edge are valid;
+///         otherwise the first diagnostic.
 Expected<void> verifyBr_E(const Function &fn,
                           const BasicBlock &bb,
                           const Instr &instr,
@@ -147,15 +166,18 @@ Expected<void> verifyBr_E(const Function &fn,
 ///
 /// @details Requires a single i1 condition operand plus exactly two successor
 ///          labels, then checks each edge's branch arguments using
-///          @ref verifyBranchArgs.  Any deviation—including missing labels,
-///          type mismatches, or mal-typed conditions—produces a diagnostic tied
-///          to @p instr.
+///          @ref verifyBranchArgs. Unresolved labels are skipped for the
+///          dedicated target-existence checker; malformed structure, unknown
+///          conditions, and type mismatches produce a diagnostic tied to
+///          @p instr.
 ///
 /// @param fn Function currently being verified.
 /// @param bb Block containing the conditional branch.
 /// @param instr Conditional branch instruction under validation.
 /// @param blockMap Mapping from block labels to their resolved blocks.
 /// @param types Type inference cache used for operand type queries.
+/// @return Success when local structure and each resolved edge are valid;
+///         otherwise the first diagnostic.
 Expected<void> verifyCBr_E(const Function &fn,
                            const BasicBlock &bb,
                            const Instr &instr,
@@ -204,6 +226,8 @@ Expected<void> verifyCBr_E(const Function &fn,
 /// @param instr switch.i32 instruction whose structure is examined.
 /// @param blockMap Lookup for resolving target blocks referenced by labels.
 /// @param types Type inference context providing operand type data.
+/// @return Success when the switch and each resolved edge are valid; otherwise
+///         the first structural, constant, or type diagnostic.
 Expected<void> verifySwitchI32_E(const Function &fn,
                                  const BasicBlock &bb,
                                  const Instr &instr,

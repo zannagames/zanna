@@ -1,0 +1,144 @@
+// =============================================================================
+// probes/movement_probe.zia — P1b gate: scripted movement course (headless)
+// =============================================================================
+//
+// Drives the player through a deterministic waypoint program and checks numeric
+// feel invariants: forward travel, stop-and-settle, jump apex + return to
+// ground, sprint > walk, footstep-event count, and run-to-run determinism.
+// Movement is camera-relative; with no synthetic mouse the yaw stays 0, so
+// "forward" is -Z.
+// =============================================================================
+module movement_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../game" as game;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+// Run a booted headless game through the course; return final Z (forward travel).
+func runCourse(g: game.Game) -> Float {
+    var p = g.getPlayer();
+
+    // Phase 1 (0..80): walk forward. Expect z to decrease (moving -Z).
+    var i = 0;
+    while i < 80 {
+        g.scriptMove(0.0, 1.0);
+        g.scriptSprint(false);
+        g.scriptJump(false);
+        g.scriptCrouch(false);
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        i = i + 1;
+    }
+    return p.getZ();
+}
+
+func start() {
+    var g = new game.Game();
+    game.setGame(g);
+    g.initCore(0x1111);
+    g.setScripted(true);
+    g.boot(true, false);
+
+    var p = g.getPlayer();
+    var startZ = p.getZ();
+
+    // --- Walk forward -------------------------------------------------------
+    var i = 0;
+    while i < 80 {
+        g.scriptMove(0.0, 1.0);
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        i = i + 1;
+    }
+    var afterWalkZ = p.getZ();
+    if afterWalkZ >= startZ - 3.0 {
+        fail("forward travel too small: dz=" + toString(M.roundi(startZ - afterWalkZ)));
+        return;
+    }
+    if p.getFootstepCount() <= 0 { fail("no footstep events while walking"); return; }
+    if g.getBus().countKind(config.EV_GUNSHOT) > 0 {
+        fail("footsteps leaked into gunshot events");
+        return;
+    }
+
+    // --- Stop and settle ----------------------------------------------------
+    i = 0;
+    while i < 40 {
+        g.scriptMove(0.0, 0.0);
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        i = i + 1;
+    }
+    if p.getSpeed() > 0.5 { fail("did not settle to rest"); return; }
+    if p.isGrounded() == false { fail("not grounded at rest"); return; }
+    var restFeet = p.getFeetY();
+
+    // --- Jump: track apex ---------------------------------------------------
+    var apex = restFeet;
+    g.scriptJump(true);
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+    g.scriptJump(false);
+    i = 0;
+    while i < 90 {
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        if p.getFeetY() > apex { apex = p.getFeetY(); }
+        i = i + 1;
+    }
+    if apex - restFeet < 0.4 {
+        fail("jump apex too low: " + toString(M.roundi((apex - restFeet) * 100.0)) + "cm");
+        return;
+    }
+    if p.isGrounded() == false { fail("did not land after jump"); return; }
+
+    // --- Sprint travels farther than walk in equal time ---------------------
+    var walkStart = p.getZ();
+    i = 0;
+    while i < 60 {
+        g.scriptMove(0.0, 1.0); g.scriptSprint(false);
+        g.tickSim(config.FIXED_DT); g.stepPhysics(config.FIXED_DT);
+        i = i + 1;
+    }
+    var walkDist = M.absf(walkStart - p.getZ());
+    // Reset to a clean stretch.
+    i = 0;
+    while i < 30 { g.scriptMove(0.0, 0.0); g.tickSim(config.FIXED_DT); g.stepPhysics(config.FIXED_DT); i = i + 1; }
+    var sprintStart = p.getZ();
+    i = 0;
+    while i < 60 {
+        g.scriptMove(0.0, 1.0); g.scriptSprint(true);
+        g.tickSim(config.FIXED_DT); g.stepPhysics(config.FIXED_DT);
+        i = i + 1;
+    }
+    var sprintDist = M.absf(sprintStart - p.getZ());
+    if sprintDist <= walkDist + 0.5 {
+        fail("sprint not faster: walk=" + toString(M.roundi(walkDist)) + " sprint=" + toString(M.roundi(sprintDist)));
+        return;
+    }
+
+    // --- Determinism: a fresh run reaches the same forward Z -----------------
+    var g2 = new game.Game();
+    g2.initCore(0x1111);
+    g2.setScripted(true);
+    g2.boot(true, false);
+    var z1 = runCourse(g2);
+    var g3 = new game.Game();
+    g3.initCore(0x1111);
+    g3.setScripted(true);
+    g3.boot(true, false);
+    var z2 = runCourse(g3);
+    if M.absf(z1 - z2) > 0.001 {
+        fail("nondeterministic: z1 != z2");
+        return;
+    }
+
+    Terminal.Say("walkDist=" + toString(M.roundi(walkDist)) + " sprintDist=" + toString(M.roundi(sprintDist)) +
+                 " apexCm=" + toString(M.roundi((apex - restFeet) * 100.0)) +
+                 " footsteps=" + toString(p.getFootstepCount()));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

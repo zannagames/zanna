@@ -497,7 +497,8 @@ reconstructs complete independent `Light3D` objects, converts live components
 back into inspector state, and compares normalized observable values for exact
 no-op detection. It has no widget, `Document`, or `SceneGraph` ownership.
 
-`ui/scene_light_inspector_3d.zia` owns only the single-node light widgets,
+`ui/scene_light_inspector_3d.zia` owns only the light widgets and their
+mixed-value presentation,
 type-specific visibility and enablement, accessible labels, and normalized
 draft intent. It explicitly disables mutation for zero or multiple selected
 nodes rather than inventing an incomplete mixed-state patch.

@@ -19,6 +19,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the stateless textual IL serializer.
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -28,24 +31,33 @@
 namespace il::io {
 
 /// @brief Serializes IL modules to their textual form.
+/// @details Pretty and canonical output are accepted by the textual parser and
+///          preserve value identity. All methods borrow their input and retain
+///          no state after returning.
 class Serializer {
   public:
     /// @brief Controls output formatting style and malformed-IR handling.
     /// @details Pretty and Canonical produce parseable IL and throw when the
     ///          module contains malformed instruction shapes. Debug preserves the
     ///          historical best-effort comments for diagnostics and crash dumps.
+    ///          Pretty preserves declaration order, Canonical sorts declarations
+    ///          where order is insignificant, and Debug tolerates malformed
+    ///          instruction shapes.
     enum class Mode { Pretty, Canonical, Debug };
 
     /// @brief Write module @p m to output stream @p os.
     /// @param m Module to serialize.
     /// @param os Destination stream.
     /// @param mode Formatting mode (pretty by default).
+    /// @throws std::invalid_argument if normal-mode input cannot be represented
+    ///         as valid textual IL.
     static void write(const il::core::Module &m, std::ostream &os, Mode mode = Mode::Pretty);
 
     /// @brief Serialize module @p m to a string.
     /// @param m Module to serialize.
     /// @param mode Formatting mode (pretty by default).
     /// @return Textual IL representation.
+    /// @throws std::invalid_argument under the same conditions as @ref write.
     static std::string toString(const il::core::Module &m, Mode mode = Mode::Pretty);
 };
 

@@ -4,8 +4,22 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/ImportResolver.cpp
+// Purpose: Resolve Zia file binds recursively, parse imported modules, and
+//          merge their declarations and transitive bind metadata.
+// Key invariants:
+//   * Normalized paths identify processed and in-progress files.
+//   * Circular re-entry is skipped while the outer traversal completes.
+//   * Imported source is bounded before allocation and assigned a SourceManager
+//     file ID before lexing.
+// Ownership: Parsed modules and copied source buffers are owned locally until
+//            declarations move into the root AST; shared services are borrowed.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file ImportResolver.cpp
+/// @file
 /// @brief Implementation of the Zia import resolver.
 ///
 //===----------------------------------------------------------------------===//

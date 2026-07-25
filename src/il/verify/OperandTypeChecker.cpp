@@ -41,6 +41,10 @@ namespace {
 ///          with an i64 bitwise op.  The operation result remains i64; this only
 ///          relaxes the operand width for integer temps that already occupy the
 ///          VM/native scalar register width.
+/// @param op Opcode whose operands are being checked.
+/// @param expectedKind Metadata-required kind.
+/// @param actualKind Inferred operand kind.
+/// @return `true` only for i16/i32 operands of i64 `and`, `or`, or `xor`.
 bool acceptsWidenedBitwiseOperand(il::core::Opcode op,
                                   il::core::Type::Kind expectedKind,
                                   il::core::Type::Kind actualKind) {
@@ -65,7 +69,7 @@ bool acceptsWidenedBitwiseOperand(il::core::Opcode op,
 ///          so later calls to @ref run can validate operands without additional
 ///          lookups.
 /// @param ctx Verification context for the instruction under inspection.
-/// @param info Opcode metadata describing operand expectations.
+/// @param spec Opcode specification describing operand expectations.
 OperandTypeChecker::OperandTypeChecker(const VerifyCtx &ctx, const InstructionSpec &spec)
     : ctx_(ctx), spec_(spec) {}
 

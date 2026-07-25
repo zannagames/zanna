@@ -44,6 +44,7 @@ bool LivenessInfo::SetView::contains(unsigned valueId) const {
 ///
 /// @return @c true when no bitset is attached or every bit is clear.
 bool LivenessInfo::SetView::empty() const {
+    /// Treat a bit as empty only when it is clear.
     return bits_ == nullptr ||
            std::none_of(bits_->begin(), bits_->end(), [](bool bit) { return bit; });
 }
@@ -124,14 +125,19 @@ namespace {
 ///          the iterative liveness fixed-point computation.
 class ChunkedBitset {
   public:
+    /// Number of bits stored in one machine word.
     static constexpr std::size_t kBitsPerChunk = 64;
 
+    /// @brief Construct an empty bitset.
     ChunkedBitset() = default;
 
+    /// @brief Construct a zero-filled bitset.
+    /// @param bitCount Number of addressable bits.
     explicit ChunkedBitset(std::size_t bitCount)
         : bitCount_(bitCount), chunks_((bitCount + kBitsPerChunk - 1) / kBitsPerChunk, 0) {}
 
     /// @brief Set a bit at the given index.
+    /// @param idx Zero-based index; out-of-range indices are ignored.
     void set(std::size_t idx) {
         if (idx >= bitCount_)
             return;
@@ -139,6 +145,8 @@ class ChunkedBitset {
     }
 
     /// @brief Test if a bit is set.
+    /// @param idx Zero-based index.
+    /// @return False for an out-of-range or clear bit.
     bool test(std::size_t idx) const {
         if (idx >= bitCount_)
             return false;
@@ -152,6 +160,7 @@ class ChunkedBitset {
 
     /// @brief Merge (OR) another bitset into this one.
     /// @details Uses word-level OR for SIMD-friendly bulk operation.
+    /// @param other Equal-sized source bitset.
     void merge(const ChunkedBitset &other) {
         assert(chunks_.size() == other.chunks_.size());
         for (std::size_t i = 0; i < chunks_.size(); ++i)
@@ -159,16 +168,22 @@ class ChunkedBitset {
     }
 
     /// @brief Copy assignment from another bitset.
+    /// @param other Equal-sized source bitset.
     void copyFrom(const ChunkedBitset &other) {
         assert(chunks_.size() == other.chunks_.size());
         chunks_ = other.chunks_;
     }
 
     /// @brief Check equality with another bitset.
+    /// @param other Bitset to compare.
+    /// @return True when all chunks match.
     bool operator==(const ChunkedBitset &other) const {
         return chunks_ == other.chunks_;
     }
 
+    /// @brief Check inequality with another bitset.
+    /// @param other Bitset to compare.
+    /// @return Negation of equality.
     bool operator!=(const ChunkedBitset &other) const {
         return !(*this == other);
     }
@@ -176,6 +191,9 @@ class ChunkedBitset {
     /// @brief Compute liveIn = uses | (liveOut & ~defs) efficiently.
     /// @details Performs the data-flow transfer function in a single pass
     ///          over the chunks, avoiding multiple iterations.
+    /// @param uses Values used before definition in the block.
+    /// @param defs Values defined by the block.
+    /// @param liveOut Values live on outgoing edges.
     void computeLiveIn(const ChunkedBitset &uses,
                        const ChunkedBitset &defs,
                        const ChunkedBitset &liveOut) {
@@ -187,6 +205,7 @@ class ChunkedBitset {
     }
 
     /// @brief Convert to std::vector<bool> for API compatibility.
+    /// @return Dense boolean vector containing the same bits.
     std::vector<bool> toVectorBool() const {
         std::vector<bool> result(bitCount_, false);
         for (std::size_t i = 0; i < bitCount_; ++i) {
@@ -196,6 +215,8 @@ class ChunkedBitset {
         return result;
     }
 
+    /// @brief Return the number of addressable bits.
+    /// @return Bit capacity supplied at construction.
     std::size_t bitCount() const {
         return bitCount_;
     }
@@ -209,7 +230,9 @@ struct BlockInfo {
     /// @brief Prepare per-block definition/use bitsets sized to @p valueCount.
     explicit BlockInfo(std::size_t valueCount = 0) : defs(valueCount), uses(valueCount) {}
 
+    /// Values defined by block parameters or instruction results.
     ChunkedBitset defs;
+    /// Values used before their first definition in the block.
     ChunkedBitset uses;
 };
 
@@ -223,6 +246,7 @@ struct BlockInfo {
 std::size_t determineValueCapacity(const core::Function &fn) {
     unsigned maxId = 0;
     bool sawId = false;
+    /// Extend the observed dense-id range with one temporary.
     auto noteId = [&](unsigned id) {
         maxId = std::max(maxId, id);
         sawId = true;

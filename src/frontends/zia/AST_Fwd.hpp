@@ -4,8 +4,19 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/AST_Fwd.hpp
+// Purpose: Break AST header dependency cycles with shared node declarations,
+//          owning pointer aliases, and the common source-location alias.
+// Key invariants:
+//   * AST child pointers use unique ownership.
+//   * Forward declarations remain sufficient for cross-category pointer fields.
+// Ownership: Pointer aliases transfer ownership; SourceLoc is a value alias.
+// References: src/frontends/zia/AST.hpp, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file AST_Fwd.hpp
+/// @file
 /// @brief Forward declarations and shared aliases for Zia AST nodes.
 ///
 /// @details This header provides forward declarations for the four core AST

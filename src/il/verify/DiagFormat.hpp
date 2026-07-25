@@ -9,7 +9,7 @@
 // Purpose: Diagnostic formatting utilities for the IL verifier -- generates
 //          human-readable error messages with hierarchical context (function,
 //          block label, instruction snippet). Consistent format:
-//          "function 'name' block 'label': instruction 'snippet': message".
+//          "function:block: instruction-snippet: message".
 // Key invariants:
 //   - All formatters are stateless pure functions; never modify IL or take
 //     ownership.
@@ -17,6 +17,12 @@
 // Links: il/core/fwd.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares deterministic textual context formatting for IL diagnostics.
+/// @details The formatters return single-line strings and append optional
+///          caller text only when it is nonempty. They neither emit diagnostics
+///          nor retain references to the supplied IL objects.
 
 #pragma once
 

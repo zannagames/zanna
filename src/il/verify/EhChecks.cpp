@@ -18,6 +18,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements path-sensitive exception-handling verification checks.
+/// @details The implementation explores canonical CFG and exception edges while
+///          tracking concrete handler push sites and resume-token provenance.
+///          It also computes local dominance, post-dominance, reachability, and
+///          handler-coverage summaries without depending on analysis-layer
+///          assumptions about already-valid IL.
+
 #include "il/verify/EhChecks.hpp"
 
 #include "il/verify/ControlFlowChecker.hpp"
@@ -96,11 +104,21 @@ std::string encodeStateKey(const std::vector<HandlerFrame> &stack, const ResumeT
     return key;
 }
 
+/// @brief One queued path state in the EH stack and token traversal.
 struct StackState {
+    /// @brief Block processed by this state.
     const BasicBlock *block = nullptr;
+
+    /// @brief Handler frames active on entry to @ref block.
     std::vector<HandlerFrame> handlerStack;
+
+    /// @brief Resume-token provenance active on entry to @ref block.
     ResumeTokenState resumeToken;
+
+    /// @brief Index of the predecessor state used for diagnostic paths.
     int parent = -1;
+
+    /// @brief Recorded handler-stack depth after processing the block.
     int depth = 0;
 };
 
@@ -138,25 +156,46 @@ std::string formatPathString(const std::vector<const BasicBlock *> &path) {
     return buffer;
 }
 
+/// @brief First-error accumulator shared by the EH traversal helpers.
 struct Diagnostics {
+    /// @brief Retain @p diag when no earlier invariant failure was recorded.
+    /// @param diag Diagnostic moved into the accumulator on first failure.
     void fail(il::support::Diag diag) {
         if (!error)
             error = std::move(diag);
     }
 
+    /// @brief Test whether an invariant failure has already been retained.
+    /// @return `true` when @ref error contains a diagnostic.
     [[nodiscard]] bool hasError() const noexcept {
         return error.has_value();
     }
 
+    /// @brief Move the retained diagnostic into an `Expected` result.
+    /// @return Failure containing the first diagnostic, or success when empty.
     il::support::Expected<void> take() {
         if (error)
             return il::support::Expected<void>{std::move(*error)};
         return {};
     }
 
+    /// @brief First reported EH diagnostic, if any.
     std::optional<il::support::Diag> error;
 };
 
+/// @brief Build and retain a path-qualified EH invariant diagnostic.
+/// @details Does nothing after an earlier failure. Otherwise reconstructs the
+///          current path, formats invariant-specific text, and records an error
+///          at @p instr.
+/// @param diags First-error accumulator receiving the result.
+/// @param invariant Internal invariant name included in the diagnostic.
+/// @param code Structured verifier code selecting failure-specific wording.
+/// @param model EH model providing the enclosing function.
+/// @param bb Block containing @p instr.
+/// @param instr Instruction at which the invariant failed.
+/// @param states Explored-state arena used to reconstruct the path.
+/// @param stateIndex Current state's index in @p states.
+/// @param depth Current handler-stack depth used by leak diagnostics.
 void emitInvariantFailure(Diagnostics &diags,
                           std::string_view invariant,
                           VerifyDiagCode code,
@@ -205,6 +244,19 @@ void emitInvariantFailure(Diagnostics &diags,
     diags.fail(makeVerifierError(code, instr.loc, std::move(message)));
 }
 
+/// @brief Simulate an `eh.pop` without crossing an uninstalled handler.
+/// @details Pops one installed frame. An empty stack is accepted only while a
+///          runtime-created resume token is active, matching the runtime's
+///          compatibility no-op for handler cleanup guards.
+/// @param model EH model used to format any failure.
+/// @param bb Block containing @p instr.
+/// @param instr `eh.pop` instruction being simulated.
+/// @param handlerStack Mutable active handler stack.
+/// @param resumeToken Current resume-token state.
+/// @param diags First-error accumulator.
+/// @param states Explored-state arena for path reconstruction.
+/// @param stateIndex Current state's index in @p states.
+/// @return `true` when the pop is valid; otherwise `false` after reporting.
 bool checkNoHandlerCrossing(const EhModel &model,
                             const BasicBlock &bb,
                             const Instr &instr,
@@ -238,6 +290,19 @@ bool checkNoHandlerCrossing(const EhModel &model,
     return false;
 }
 
+/// @brief Validate and consume the active token used by a resume instruction.
+/// @details Requires the first operand to be the current provenance-tracked
+///          token. A `resume.label` may not directly target a handler block.
+///          Successful validation clears the active token.
+/// @param model EH model used for block classification and diagnostics.
+/// @param bb Block containing @p instr.
+/// @param instr Resume instruction being checked.
+/// @param handlerStack Active handler frames used for diagnostic depth.
+/// @param resumeToken Mutable token state consumed on success.
+/// @param diags First-error accumulator.
+/// @param states Explored-state arena for path reconstruction.
+/// @param stateIndex Current state's index in @p states.
+/// @return `true` when token use and target are valid; otherwise `false`.
 bool checkUnreachableAfterThrow(const EhModel &model,
                                 const BasicBlock &bb,
                                 const Instr &instr,
@@ -293,6 +358,11 @@ bool checkUnreachableAfterThrow(const EhModel &model,
     return true;
 }
 
+/// @brief Derive the handler stack visible after runtime trap dispatch.
+/// @details Runtime dispatch removes the selected innermost handler before
+///          transferring control to its handler block.
+/// @param handlerStack Stack active at the faulting instruction.
+/// @return Copy of @p handlerStack with its top frame removed when present.
 std::vector<HandlerFrame> handlerStackAfterDispatch(const std::vector<HandlerFrame> &handlerStack) {
     std::vector<HandlerFrame> nextStack = handlerStack;
     if (!nextStack.empty())
@@ -300,6 +370,15 @@ std::vector<HandlerFrame> handlerStackAfterDispatch(const std::vector<HandlerFra
     return nextStack;
 }
 
+/// @brief Reject returns that leave one or more handler frames installed.
+/// @param model EH model used to format any failure.
+/// @param bb Block containing @p terminator.
+/// @param terminator Final instruction being checked.
+/// @param handlerStack Active handler frames at the terminator.
+/// @param diags First-error accumulator.
+/// @param states Explored-state arena for path reconstruction.
+/// @param stateIndex Current state's index in @p states.
+/// @return `false` after reporting a leaking return; otherwise `true`.
 bool checkAllPathsCloseTry(const EhModel &model,
                            const BasicBlock &bb,
                            const Instr &terminator,
@@ -445,10 +524,22 @@ std::optional<ResumeTokenState> transitionResumeTokenForEdge(
 ///          too complex to verify soundly, so the verifier fails closed instead of hanging.
 constexpr std::size_t kEhStateTraversalBudget = 1u << 20;
 
+/// @brief Explore reachable EH states and enforce stack/token invariants.
+/// @details States are deduplicated by block, concrete handler-stack contents,
+///          and active resume-token provenance. Parent indices retain enough
+///          ancestry to reconstruct the first failing control-flow path.
 class EhStackTraversal {
   public:
+    /// @brief Bind a traversal to an EH model and shared diagnostic accumulator.
+    /// @param model Canonical model traversed for the lifetime of this object.
+    /// @param diags First-error accumulator receiving invariant failures.
     EhStackTraversal(const EhModel &model, Diagnostics &diags) : model(model), diags(diags) {}
 
+    /// @brief Explore all unique reachable EH states from the function entry.
+    /// @details Applies a finite dequeue budget and fails closed if the
+    ///          block/stack/token state space exceeds that budget.
+    /// @return `true` when traversal finishes without a diagnostic; `false` on
+    ///         an invariant failure or budget exhaustion.
     bool run() {
         if (!model.entry())
             return true;
@@ -477,8 +568,13 @@ class EhStackTraversal {
     }
 
   private:
+    /// @brief Arena of queued states, retained for parent-path reconstruction.
     std::vector<StackState> states;
 
+    /// @brief Queue a previously unseen state with a non-null block.
+    /// @details Deduplicates using the block and encoded handler/token state,
+    ///          then stores the state in the arena and worklist.
+    /// @param state Candidate state moved into the arena when unique.
     void enqueueState(StackState state) {
         if (!state.block)
             return;
@@ -492,6 +588,12 @@ class EhStackTraversal {
         worklist.push_back(index);
     }
 
+    /// @brief Simulate one queued block and schedule its outgoing states.
+    /// @details Processes EH stack operations through the first terminator,
+    ///          validates returns and resume operations, then follows either
+    ///          trap dispatch or ordinary/resume successor edges.
+    /// @param stateIndex Index of the snapshot in @ref states.
+    /// @return `false` when an invariant fails; otherwise `true`.
     bool processState(int stateIndex) {
         const StackState &snapshot = states[stateIndex];
         if (!snapshot.block)
@@ -548,6 +650,13 @@ class EhStackTraversal {
         return true;
     }
 
+    /// @brief Schedule runtime dispatch to the innermost installed handler.
+    /// @details Removes the dispatched frame, activates provenance for the
+    ///          handler's resume-token parameter, and links the new state to the
+    ///          faulting state. Missing handlers or token parameters are skipped
+    ///          because their structural diagnostics are owned elsewhere.
+    /// @param stateIndex Parent state containing the trap.
+    /// @param handlerStack Handler stack active at the trap.
     void enqueueTrapHandler(int stateIndex, const std::vector<HandlerFrame> &handlerStack) {
         if (handlerStack.empty())
             return;
@@ -573,6 +682,12 @@ class EhStackTraversal {
         enqueueState(std::move(nextState));
     }
 
+    /// @brief Validate token flow and queue every resolved terminator successor.
+    /// @param sourceBlock Block containing @p terminator.
+    /// @param terminator Instruction whose canonical edges are followed.
+    /// @param stateIndex Parent state index used for paths and child links.
+    /// @param handlerStack Handler stack propagated to successors.
+    /// @param resumeToken Token provenance before taking each edge.
     void enqueueSuccessors(const BasicBlock &sourceBlock,
                            const Instr &terminator,
                            int stateIndex,
@@ -602,9 +717,16 @@ class EhStackTraversal {
         }
     }
 
+    /// @brief Canonical EH graph and lookup data being traversed.
     const EhModel &model;
+
+    /// @brief Shared first-error accumulator.
     Diagnostics &diags;
+
+    /// @brief Encoded EH states already scheduled for each block.
     std::unordered_map<const BasicBlock *, std::unordered_set<std::string>> visited;
+
+    /// @brief Indices of arena states awaiting processing.
     std::deque<int> worklist;
 };
 
@@ -693,8 +815,13 @@ class HandlerCoverageTraversal {
 
   private:
     struct State {
+        /// @brief Block entered by this traversal state.
         const BasicBlock *block = nullptr;
+
+        /// @brief Active handler frames on block entry.
         std::vector<HandlerFrame> handlerStack;
+
+        /// @brief Active resume-token provenance on block entry.
         ResumeTokenState resumeToken;
     };
 
@@ -863,9 +990,16 @@ class HandlerCoverageTraversal {
         pending.push_back(state);
     }
 
+    /// @brief Canonical EH graph and lookup data being traversed.
     const EhModel &model;
+
+    /// @brief Output relation populated as faulting sites are discovered.
     HandlerCoverage &coverage;
+
+    /// @brief Encoded EH states already scheduled for each block.
     std::unordered_map<const BasicBlock *, std::unordered_set<std::string>> visited;
+
+    /// @brief Bootstrap queue populated before the main worklist is created.
     std::deque<State> pending;
 };
 
@@ -883,9 +1017,15 @@ HandlerCoverage computeHandlerCoverage(const EhModel &model) {
     return coverage;
 }
 
+/// @brief Reachable-block index and immediate-dominator summary.
 struct DomInfo {
+    /// @brief Reverse-post-order index assigned to each reachable block.
     std::unordered_map<const BasicBlock *, size_t> indices;
+
+    /// @brief Reachable blocks in reverse postorder.
     std::vector<const BasicBlock *> nodes;
+
+    /// @brief Immediate dominator for each reachable block; entry maps to null.
     std::unordered_map<const BasicBlock *, const BasicBlock *> idom;
 };
 
@@ -937,11 +1077,19 @@ DomInfo computeDominators(const EhModel &model) {
     std::unordered_set<const BasicBlock *> visited;
 
     struct DFSFrame {
+        /// @brief Block represented by this explicit DFS frame.
         const BasicBlock *block;
+
+        /// @brief Resolved successors awaiting consideration.
         std::vector<const BasicBlock *> successors;
+
+        /// @brief Index of the next successor to inspect.
         std::size_t successorIndex{0};
     };
 
+    /// @brief Resolve the canonical successors of a block's terminator.
+    /// @param block Block whose outgoing edges are requested.
+    /// @return Resolved successors, or an empty vector without a terminator.
     auto successorsOf = [&](const BasicBlock &block) {
         if (const Instr *terminator = model.findTerminator(block))
             return model.gatherSuccessors(*terminator);
@@ -987,7 +1135,10 @@ DomInfo computeDominators(const EhModel &model) {
     // Initialize: entry has no dominator
     info.idom[entry] = nullptr;
 
-    // Intersect helper: find nearest common ancestor in dominator tree
+    /// @brief Find the nearest common ancestor in the partial dominator tree.
+    /// @param b1 First block on an established immediate-dominator chain.
+    /// @param b2 Second block on an established immediate-dominator chain.
+    /// @return Common ancestor, or null if either chain is incomplete.
     auto intersect = [&](const BasicBlock *b1, const BasicBlock *b2) -> const BasicBlock * {
         while (b1 != b2) {
             while (info.indices[b1] > info.indices[b2]) {
@@ -1069,9 +1220,15 @@ bool isDominator(const DomInfo &info, const BasicBlock *dominator, const BasicBl
     return false;
 }
 
+/// @brief Reachable-block index and dense post-dominator relation.
 struct PostDomInfo {
+    /// @brief Dense index assigned to each reachable block.
     std::unordered_map<const BasicBlock *, size_t> indices;
+
+    /// @brief Reachable block stored at each dense index.
     std::vector<const BasicBlock *> nodes;
+
+    /// @brief Matrix where row A, column B denotes that B post-dominates A.
     std::vector<std::vector<uint8_t>> matrix;
 };
 

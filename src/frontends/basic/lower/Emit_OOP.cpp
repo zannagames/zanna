@@ -6,12 +6,17 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/lower/Emit_OOP.cpp
-//
-// Summary:
-//   Provides the thin Lowerer forwarding methods that expose OOP-specific
-//   emitter functionality.  The emitters centralise code generation for
-//   reference counting and parameter cleanup while these wrappers ensure the
-//   higher-level lowering code can remain agnostic of the emitter internals.
+// Purpose: Forwards object-local and object-parameter cleanup requests from
+//          Lowerer to the shared Emitter.
+// Key invariants:
+//   - Local cleanup excludes names identified as parameters.
+//   - Parameter cleanup considers only the caller-provided parameter set.
+//   - Destructor dispatch and reference releases remain centralized in Emitter.
+// Ownership/Lifetime:
+//   - Name sets are borrowed for each call.
+//   - Lowerer owns the Emitter and symbol state used for cleanup emission.
+// Links: src/frontends/basic/lower/Emitter.hpp,
+//        src/frontends/basic/NameMangler_OOP.hpp
 //
 //===----------------------------------------------------------------------===//
 

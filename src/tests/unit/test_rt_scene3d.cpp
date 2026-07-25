@@ -4492,6 +4492,218 @@ static void test_node_animator_survives_target_removal_mid_clip() {
     EXPECT_TRUE(1, "animator update after target removal is memory-safe");
 }
 
+
+/// @brief Read one whole file into a std::string ("" when unreadable).
+static std::string prefab_read_file(const char *path) {
+    std::string contents;
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return contents;
+    char chunk[4096];
+    size_t got;
+    while ((got = fread(chunk, 1, sizeof(chunk), file)) > 0)
+        contents.append(chunk, got);
+    fclose(file);
+    return contents;
+}
+
+/// @brief ADR 0187: VSCN v7 prefab references — serialize reference-only,
+///        graft on load, placeholder safety, unpack, and v6 non-promotion.
+static void test_scene_prefab_reference_nodes() {
+    const char *source_path = "/tmp/zanna_prefab_source.scene3d";
+    const char *world_path = "/tmp/zanna_prefab_world.scene3d";
+    const char *world_resaved_path = "/tmp/zanna_prefab_world_resaved.scene3d";
+    const char *broken_path = "/tmp/zanna_prefab_broken.scene3d";
+    const char *broken_resaved_path = "/tmp/zanna_prefab_broken_resaved.scene3d";
+    const char *cycle_path = "/tmp/zanna_prefab_cycle.scene3d";
+    const char *plain_path = "/tmp/zanna_prefab_plain.scene3d";
+
+    /* Source prefab: a parent mesh node with one child. */
+    void *source = rt_scene3d_new();
+    void *lamp = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(lamp, rt_const_cstr("Lamp Post"));
+    void *lamp_head = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(lamp_head, rt_const_cstr("Lamp Head"));
+    rt_scene_node3d_set_position(lamp_head, 0.0, 1.6, 0.0);
+    rt_scene_node3d_add_child(lamp, lamp_head);
+    rt_scene3d_add(source, lamp);
+    EXPECT_TRUE(rt_scene3d_save(source, rt_const_cstr(source_path)) == 1,
+                "prefab source scene saves");
+
+    /* Referencing world: two instances plus one plain node. */
+    void *world = rt_scene3d_new();
+    void *instance_a = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(instance_a, rt_const_cstr("Lamp A"));
+    rt_scene_node3d_set_position(instance_a, 5.0, 0.0, 0.0);
+    EXPECT_TRUE(rt_scene_node3d_set_prefab_reference(
+                    instance_a, rt_const_cstr("zanna_prefab_source.scene3d")) == 1,
+                "relative prefab reference is authored");
+    EXPECT_TRUE(rt_scene_node3d_set_prefab_reference(
+                    instance_a, rt_const_cstr("/abs/source.scene3d")) == 0,
+                "absolute prefab reference is rejected at authoring time");
+    {
+        rt_string ref = rt_scene_node3d_get_prefab_path(instance_a);
+        EXPECT_TRUE(ref && strcmp(rt_string_cstr(ref), "zanna_prefab_source.scene3d") == 0,
+                    "PrefabPath reports the authored reference");
+        rt_string_unref(ref);
+    }
+    void *instance_b = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(instance_b, rt_const_cstr("Lamp B"));
+    rt_scene_node3d_set_prefab_reference(instance_b,
+                                         rt_const_cstr("zanna_prefab_source.scene3d"));
+    rt_scene_node3d_metadata_set_string(
+        instance_b, rt_const_cstr("zone"), rt_const_cstr("plaza"));
+    void *plain = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(plain, rt_const_cstr("Ground"));
+    rt_scene3d_add(world, instance_a);
+    rt_scene3d_add(world, instance_b);
+    rt_scene3d_add(world, plain);
+    EXPECT_TRUE(rt_scene3d_save(world, rt_const_cstr(world_path)) == 1,
+                "prefab world scene saves");
+    {
+        std::string text = prefab_read_file(world_path);
+        EXPECT_TRUE(text.find("\"version\": 7") != std::string::npos,
+                    "prefab scenes serialize as VSCN v7");
+        EXPECT_TRUE(text.find("Lamp Post") == std::string::npos,
+                    "grafted source content never serializes into the referencing file");
+    }
+
+    void *loaded = rt_scene3d_load(rt_const_cstr(world_path));
+    EXPECT_TRUE(loaded != nullptr, "v7 world loads");
+    if (loaded) {
+        void *root = rt_scene3d_get_root(loaded);
+        EXPECT_TRUE(rt_scene_node3d_child_count(root) == 3, "world keeps three top nodes");
+        void *loaded_a = rt_scene_node3d_get_child(root, 0);
+        EXPECT_TRUE(rt_scene_node3d_child_count(loaded_a) == 1,
+                    "instance grafts the referenced root children");
+        void *grafted = rt_scene_node3d_get_child(loaded_a, 0);
+        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(grafted) == 1,
+                    "grafted nodes carry the instance-content flag");
+        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(
+                        rt_scene_node3d_get_child(grafted, 0)) == 1,
+                    "instance-content flag reaches grafted descendants");
+        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(
+                        rt_scene_node3d_get_child(root, 2)) == 0,
+                    "plain nodes never gain the instance flag");
+        {
+            rt_string zone = rt_scene_node3d_metadata_get_string(
+                rt_scene_node3d_get_child(root, 1),
+                rt_const_cstr("zone"),
+                rt_const_cstr(""));
+            EXPECT_TRUE(zone && strcmp(rt_string_cstr(zone), "plaza") == 0,
+                        "prefab node metadata overrides round-trip");
+            rt_string_unref(zone);
+        }
+        EXPECT_TRUE(rt_scene3d_save(loaded, rt_const_cstr(world_resaved_path)) == 1,
+                    "loaded v7 world resaves");
+        EXPECT_TRUE(prefab_read_file(world_resaved_path) == prefab_read_file(world_path),
+                    "v7 round-trip is byte-identical");
+    }
+
+    /* Missing source: reference-retaining placeholder, byte-stable. */
+    void *broken = rt_scene3d_new();
+    void *ghost = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(ghost, rt_const_cstr("Ghost"));
+    rt_scene_node3d_set_prefab_reference(ghost, rt_const_cstr("zanna_prefab_missing.scene3d"));
+    rt_scene3d_add(broken, ghost);
+    EXPECT_TRUE(rt_scene3d_save(broken, rt_const_cstr(broken_path)) == 1,
+                "broken-reference scene saves");
+    void *broken_loaded = rt_scene3d_load(rt_const_cstr(broken_path));
+    EXPECT_TRUE(broken_loaded != nullptr, "missing prefab source still loads the scene");
+    if (broken_loaded) {
+        void *ghost_loaded =
+            rt_scene_node3d_get_child(rt_scene3d_get_root(broken_loaded), 0);
+        EXPECT_TRUE(rt_scene_node3d_child_count(ghost_loaded) == 0,
+                    "missing source loads as an empty placeholder");
+        rt_string ref = rt_scene_node3d_get_prefab_path(ghost_loaded);
+        EXPECT_TRUE(ref &&
+                        strcmp(rt_string_cstr(ref), "zanna_prefab_missing.scene3d") == 0,
+                    "placeholder retains its prefab reference");
+        rt_string_unref(ref);
+        EXPECT_TRUE(rt_scene3d_save(broken_loaded, rt_const_cstr(broken_resaved_path)) == 1,
+                    "placeholder scene resaves");
+        EXPECT_TRUE(prefab_read_file(broken_resaved_path) == prefab_read_file(broken_path),
+                    "placeholder round-trip is byte-identical");
+    }
+
+    /* Self-cycle: loads as a placeholder without recursion. */
+    void *cyclic = rt_scene3d_new();
+    void *self_node = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(self_node, rt_const_cstr("Self"));
+    rt_scene_node3d_set_prefab_reference(self_node, rt_const_cstr("zanna_prefab_cycle.scene3d"));
+    rt_scene3d_add(cyclic, self_node);
+    EXPECT_TRUE(rt_scene3d_save(cyclic, rt_const_cstr(cycle_path)) == 1, "cycle scene saves");
+    void *cycle_loaded = rt_scene3d_load(rt_const_cstr(cycle_path));
+    EXPECT_TRUE(cycle_loaded != nullptr, "self-referencing scene loads");
+    if (cycle_loaded) {
+        EXPECT_TRUE(rt_scene_node3d_child_count(rt_scene_node3d_get_child(
+                        rt_scene3d_get_root(cycle_loaded), 0)) == 0,
+                    "self-reference resolves to an empty placeholder");
+    }
+
+    /* Unpack: clearing the reference makes grafted content plain. */
+    void *unpack_scene = rt_scene3d_load(rt_const_cstr(world_path));
+    if (unpack_scene) {
+        void *unpack_node =
+            rt_scene_node3d_get_child(rt_scene3d_get_root(unpack_scene), 0);
+        EXPECT_TRUE(rt_scene_node3d_clear_prefab_reference(unpack_node) == 1,
+                    "unpack clears the prefab reference");
+        rt_string cleared = rt_scene_node3d_get_prefab_path(unpack_node);
+        EXPECT_TRUE(cleared && rt_string_cstr(cleared)[0] == '\0',
+                    "unpacked nodes report an empty reference");
+        rt_string_unref(cleared);
+        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(
+                        rt_scene_node3d_get_child(unpack_node, 0)) == 0,
+                    "unpack clears descendant instance flags");
+        EXPECT_TRUE(rt_scene3d_save(unpack_scene, rt_const_cstr(plain_path)) == 1,
+                    "unpacked scene saves");
+        std::string unpacked_text = prefab_read_file(plain_path);
+        EXPECT_TRUE(unpacked_text.find("Lamp Post") != std::string::npos,
+                    "unpacked instance content serializes as plain nodes");
+    }
+
+    /* Golden fixture: the checked-in v7 file keeps loading with the same
+     * structure and resaving byte-identically as the serializer evolves. */
+    {
+        std::string golden_path = "src/tests/fixtures/runtime/prefab_world_v7.scene3d";
+        const char *golden_resave = "/tmp/zanna_prefab_golden_resave.scene3d";
+        std::string golden_text = prefab_read_file(golden_path.c_str());
+        if (golden_text.empty()) {
+            /* ctest runs from build/src/tests; direct runs use the repo root. */
+            golden_path = "../../../src/tests/fixtures/runtime/prefab_world_v7.scene3d";
+            golden_text = prefab_read_file(golden_path.c_str());
+        }
+        EXPECT_TRUE(!golden_text.empty(), "golden v7 fixture is present");
+        if (!golden_text.empty()) {
+            void *golden = rt_scene3d_load(rt_const_cstr(golden_path.c_str()));
+            EXPECT_TRUE(golden != nullptr, "golden v7 fixture loads");
+            if (golden) {
+                void *golden_root = rt_scene3d_get_root(golden);
+                void *golden_instance = rt_scene_node3d_get_child(golden_root, 0);
+                EXPECT_TRUE(rt_scene_node3d_child_count(golden_instance) == 1,
+                            "golden fixture grafts its referenced pillar");
+                EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(
+                                rt_scene_node3d_get_child(golden_instance, 0)) == 1,
+                            "golden grafted content is instance-flagged");
+                EXPECT_TRUE(rt_scene3d_save(golden, rt_const_cstr(golden_resave)) == 1,
+                            "golden fixture resaves");
+                EXPECT_TRUE(prefab_read_file(golden_resave) == golden_text,
+                            "golden v7 fixture round-trips byte-identically");
+            }
+        }
+    }
+
+    /* Scenes without prefabs never promote to v7. */
+    void *plain_scene = rt_scene3d_new();
+    void *sole = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(sole, rt_const_cstr("Sole"));
+    rt_scene3d_add(plain_scene, sole);
+    EXPECT_TRUE(rt_scene3d_save(plain_scene, rt_const_cstr(plain_path)) == 1,
+                "prefab-free scene saves");
+    EXPECT_TRUE(prefab_read_file(plain_path).find("\"version\": 7") == std::string::npos,
+                "prefab-free scenes stay below v7");
+}
+
 int main() {
     test_node_animator_survives_target_removal_mid_clip();
     test_create_scene_and_node();
@@ -4556,6 +4768,7 @@ int main() {
     test_scene_spatial_index_preserves_far_origin_precision();
     test_scene_draw_reuses_active_frame();
     test_scene_draw_culling_uses_canvas_output_aspect();
+    test_scene_prefab_reference_nodes();
     test_scene_save_escapes_json_names();
     test_scene_save_serializes_visibility_and_lod_metadata();
     test_scene_roundtrip_loads_shared_assets();

@@ -16,6 +16,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements whole-module IL linking and import resolution.
+/// @details Linking consumes independent modules, validates their shared
+///          metadata and symbol contracts, disambiguates internal names,
+///          synthesizes supported interop thunks, and produces one self-contained
+///          module with initializer calls wired into the entry point.
+
 #include "il/link/ModuleLinker.hpp"
 
 #include "il/core/Extern.hpp"
@@ -44,6 +51,8 @@ using il::core::Type;
 namespace {
 
 /// @brief Identify which module index contains the "main" function.
+/// @param modules Candidate input modules.
+/// @param errors Destination for missing or duplicate-entry diagnostics.
 /// @return Index of the entry module, or -1 if none found.
 int findEntryModule(const std::vector<Module> &modules, std::vector<std::string> &errors) {
     int entryIdx = -1;
@@ -64,17 +73,26 @@ int findEntryModule(const std::vector<Module> &modules, std::vector<std::string>
     return entryIdx;
 }
 
+/// @brief Identifies an exported function within the input module vector.
 struct FunctionRef {
+    /// Zero-based index of the owning module.
     size_t moduleIndex = 0;
+    /// Zero-based index within the owning module's function collection.
     size_t functionIndex = 0;
 };
 
+/// @brief Identifies an exported global within the input module vector.
 struct GlobalRef {
+    /// Zero-based index of the owning module.
     size_t moduleIndex = 0;
+    /// Zero-based index within the owning module's global collection.
     size_t globalIndex = 0;
 };
 
 /// @brief Build an index of all exported function names → function location.
+/// @param modules Modules whose export definitions are indexed.
+/// @param errors Destination for duplicate-export diagnostics.
+/// @return Map from exported symbol name to its unique input location.
 std::unordered_map<std::string, FunctionRef> buildExportIndex(const std::vector<Module> &modules,
                                                               std::vector<std::string> &errors) {
     std::unordered_map<std::string, FunctionRef> index;
@@ -92,6 +110,10 @@ std::unordered_map<std::string, FunctionRef> buildExportIndex(const std::vector<
     return index;
 }
 
+/// @brief Build an index of all exported global names to their input locations.
+/// @param modules Modules whose global exports are indexed.
+/// @param errors Destination for duplicate-export diagnostics.
+/// @return Map from exported global name to its unique input location.
 std::unordered_map<std::string, GlobalRef>
 buildGlobalExportIndex(const std::vector<Module> &modules, std::vector<std::string> &errors) {
     std::unordered_map<std::string, GlobalRef> index;
@@ -109,6 +131,8 @@ buildGlobalExportIndex(const std::vector<Module> &modules, std::vector<std::stri
 
 /// @brief Generate a module prefix for disambiguating Internal functions.
 /// @details Uses "m<index>$" to prefix function names from non-entry modules.
+/// @param moduleIndex Zero-based input module index.
+/// @return Prefix ending in `$`, suitable for prepending to a symbol.
 std::string modulePrefix(size_t moduleIndex) {
     return "m" + std::to_string(moduleIndex) + "$";
 }
@@ -117,6 +141,10 @@ std::string modulePrefix(size_t moduleIndex) {
 /// @details Compares return type, parameter count + types, and varargs flag. Used
 ///          when matching an Import stub to its Export definition before deciding
 ///          whether a thunk is needed.
+/// @param a First function declaration.
+/// @param b Second function declaration.
+/// @return True when return type, fixed parameters, variadic status, and calling
+///         convention are identical.
 bool sameSignature(const Function &a, const Function &b) {
     if (a.retType.kind != b.retType.kind || a.params.size() != b.params.size() ||
         a.isVarArg != b.isVarArg || a.callingConv != b.callingConv)
@@ -129,6 +157,9 @@ bool sameSignature(const Function &a, const Function &b) {
 }
 
 /// @brief Detect the I1 ↔ I64 narrow/widen pair that boolean-interop thunks bridge.
+/// @param a First type kind.
+/// @param b Second type kind.
+/// @return True only when one kind is I1 and the other is I64.
 bool isBooleanMismatch(Type::Kind a, Type::Kind b) {
     return (a == Type::Kind::I1 && b == Type::Kind::I64) ||
            (a == Type::Kind::I64 && b == Type::Kind::I1);
@@ -138,6 +169,10 @@ bool isBooleanMismatch(Type::Kind a, Type::Kind b) {
 ///        coercion in the return type or any parameter slot.
 /// @details When this returns true the linker can synthesise a boolean-coercion
 ///          thunk via il::link::generateBooleanThunks instead of erroring out.
+/// @param importDecl Import-side function signature expected by the caller.
+/// @param definition Resolved function definition signature.
+/// @return True when every mismatch is a supported fixed-arity I1/I64
+///         conversion and all other ABI properties agree.
 bool booleanInteropCompatible(const Function &importDecl, const Function &definition) {
     if (importDecl.params.size() != definition.params.size() ||
         importDecl.isVarArg != definition.isVarArg ||
@@ -161,6 +196,9 @@ bool booleanInteropCompatible(const Function &importDecl, const Function &defini
 
 /// @brief Reserve @p base in @p usedNames, appending "$N" suffixes until unique.
 /// @details Mutates @p usedNames so subsequent callers see the chosen name as taken.
+/// @param base Preferred symbol name.
+/// @param usedNames Set of already reserved names, updated with the result.
+/// @return @p base when available, otherwise the first available suffixed form.
 std::string makeUniqueName(const std::string &base, std::unordered_set<std::string> &usedNames) {
     if (usedNames.insert(base).second)
         return base;
@@ -172,6 +210,8 @@ std::string makeUniqueName(const std::string &base, std::unordered_set<std::stri
 }
 
 /// @brief Apply the global-rename map to a single Value if it is a GlobalAddr.
+/// @param value Operand whose global address spelling may be rewritten.
+/// @param globalRenameMap Old-to-new global symbol mapping for the value's module.
 void rewriteGlobalValue(il::core::Value &value,
                         const std::unordered_map<std::string, std::string> &globalRenameMap) {
     if (value.kind != il::core::Value::Kind::GlobalAddr)
@@ -184,6 +224,9 @@ void rewriteGlobalValue(il::core::Value &value,
 /// @brief Rewrite a Value's symbol reference using the function- or global-rename map.
 /// @details Function renames take precedence — if @p value points at a renamed
 ///          function, the global map is not consulted.
+/// @param value Operand whose address-valued symbol spelling may be rewritten.
+/// @param functionRenameMap Old-to-new function symbol mapping.
+/// @param globalRenameMap Old-to-new global symbol mapping.
 void rewriteSymbolValue(il::core::Value &value,
                         const std::unordered_map<std::string, std::string> &functionRenameMap,
                         const std::unordered_map<std::string, std::string> &globalRenameMap) {
@@ -197,6 +240,11 @@ void rewriteSymbolValue(il::core::Value &value,
 }
 
 /// @brief Rewrite function and global references inside one function.
+/// @details Updates direct callees, ordinary operands, and branch arguments so
+///          all references follow symbol renames performed before module merge.
+/// @param fn Function whose instruction graph is updated in place.
+/// @param functionRenameMap Old-to-new function symbol mapping.
+/// @param globalRenameMap Old-to-new global symbol mapping.
 void rewriteFunctionRefs(Function &fn,
                          const std::unordered_map<std::string, std::string> &functionRenameMap,
                          const std::unordered_map<std::string, std::string> &globalRenameMap) {
@@ -219,6 +267,15 @@ void rewriteFunctionRefs(Function &fn,
 
 } // namespace
 
+/// @brief Consume and merge a set of IL modules into one linked program.
+/// @details Validates versions, targets, entries, imports, and symbol namespaces
+///          before moving definitions into the result. Internal collisions are
+///          renamed with module prefixes, supported boolean ABI mismatches
+///          receive generated thunks, and non-entry module initializers are
+///          prepended to `main`.
+/// @param modules Input modules consumed by the linking operation.
+/// @return Linked module on success, or diagnostics with no usable module on
+///         failure.
 LinkResult linkModules(std::vector<Module> modules) {
     LinkResult result;
 

@@ -42,6 +42,9 @@
 
 namespace il::transform {
 namespace {
+/// @brief Count blocks and instructions across every function in a module.
+/// @param module Module measured for instrumentation.
+/// @return Aggregate IR size snapshot.
 PipelineExecutor::PassMetrics::IRSize computeIRSize(const core::Module &module) {
     PipelineExecutor::PassMetrics::IRSize size{};
     for (const auto &fn : module.functions) {
@@ -52,11 +55,16 @@ PipelineExecutor::PassMetrics::IRSize computeIRSize(const core::Module &module) 
     return size;
 }
 
+/// @brief Identify idempotent cleanup passes eligible for redundant-run suppression.
+/// @param passId Registered pass identifier.
+/// @return `true` for DCE, CFG simplification, and late cleanup.
 bool isCleanupPass(std::string_view passId) {
     return passId == "dce" || passId == "simplify-cfg" || passId == "late-cleanup";
 }
 
+/// @brief Initial FNV-family state for structural fingerprints.
 constexpr std::uint64_t kFingerprintOffset = 1469598103934665603ull;
+/// @brief FNV prime used while mixing variable-length byte sequences.
 constexpr std::uint64_t kFingerprintPrime = 1099511628211ull;
 
 /// @brief Mix one integer payload into a structural IR fingerprint.
@@ -292,8 +300,8 @@ std::size_t optimizerWorkerCount(std::size_t functionCount) {
 ///          invocation without sharing mutable state.
 /// @param registry Pass registry supplying factories for module/function passes.
 /// @param analysisRegistry Registry describing available analyses.
-/// @param verifyBetweenPasses Controls whether debug builds run the verifier
-///                            after each pass.
+/// @param instrumentation Optional print, verification, and metrics hooks.
+/// @param parallelFunctionPasses Permit audited function passes to use worker threads.
 PipelineExecutor::PipelineExecutor(const PassRegistry &registry,
                                    const AnalysisRegistry &analysisRegistry,
                                    Instrumentation instrumentation,
@@ -307,9 +315,10 @@ PipelineExecutor::PipelineExecutor(const PassRegistry &registry,
 ///          registry, and invokes it with the module or function as appropriate.
 ///          After each run the helper invalidates analyses based on the
 ///          preserved set reported by the pass.  In debug builds it can also run
-///          the IL verifier between passes when @p verifyBetweenPasses was set.
+///          the configured verification hook between passes.
 /// @param module Module undergoing transformation.
 /// @param pipeline Ordered list of pass identifiers.
+/// @return `true` when every pass was found, constructed, executed, and verified.
 bool PipelineExecutor::run(core::Module &module, const std::vector<std::string> &pipeline) const {
     AnalysisManager analysis(module, analysisRegistry_);
     const bool collectMetrics = static_cast<bool>(instrumentation_.passMetrics);
@@ -324,6 +333,7 @@ bool PipelineExecutor::run(core::Module &module, const std::vector<std::string> 
     bool hasRunAnyPass = false;
     std::unordered_set<std::string> cleanupPassesRunSinceChange;
     for (const auto &passId : pipeline) {
+        /// Materialize and execute one registered pass when the generic driver reaches its id.
         driver.registerPass(
             passId,
             [this,
@@ -375,6 +385,7 @@ bool PipelineExecutor::run(core::Module &module, const std::vector<std::string> 
                         if (!factory->makeFunction)
                             return false;
 
+                        /// Construct and run one fresh function-pass instance with invalidation.
                         auto runFunctionPass = [&](core::Function &fn,
                                                    AnalysisManager &functionAnalysis,
                                                    bool &functionChanged) -> bool {
@@ -401,6 +412,7 @@ bool PipelineExecutor::run(core::Module &module, const std::vector<std::string> 
                             std::vector<std::thread> workers;
                             workers.reserve(workerCount);
                             for (std::size_t w = 0; w < workerCount; ++w) {
+                                /// Consume function indices and collect analysis counts for one worker.
                                 workers.emplace_back([&, w]() {
                                     AnalysisManager workerAnalysis(module, analysisRegistry_);
                                     for (;;) {

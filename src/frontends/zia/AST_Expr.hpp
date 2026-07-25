@@ -4,8 +4,22 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/AST_Expr.hpp
+// Purpose: Define Zia expression nodes, operators, literals, calls, and pattern
+//          matching expression data.
+// Key invariants:
+//   * Expr::kind identifies the concrete node used for visitor dispatch.
+//   * Owning expression/type children are represented by unique_ptr aliases.
+//   * Semantic metadata is populated after parsing without changing tree
+//     ownership.
+// Ownership: Expression nodes own their syntactic children; borrowed semantic
+//            links are documented at their individual fields.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file AST_Expr.hpp
+/// @file
 /// @brief Expression nodes for the Zia AST.
 ///
 /// @details Defines all expression AST nodes produced by the Zia parser.
@@ -991,6 +1005,10 @@ struct StructLiteralExpr : Expr {
     /// @brief Named field initializers (in source order).
     std::vector<Field> fields;
 
+    /// @brief Construct a struct literal with named field initializers.
+    /// @param l Source location of the literal.
+    /// @param name Struct type name as written.
+    /// @param fs Owned field initializers in source order.
     StructLiteralExpr(SourceLoc l, std::string name, std::vector<Field> fs)
         : Expr(ExprKind::StructLiteral, l), typeName(std::move(name)), fields(std::move(fs)) {}
 };

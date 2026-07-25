@@ -27,11 +27,10 @@
  * @code{.cpp}
  *   Module m;
  *   IRBuilder builder(m);
- *   auto &fn = builder.startFunction("main", Type(Type::Kind::I64), {});
+ *   auto &fn = builder.startFunction("main", Type(Type::Kind::Void), {});
  *   auto &entry = builder.createBlock(fn, "entry");
  *   builder.setInsertPoint(entry);
- *   auto result = builder.add(builder.constInt(10), builder.constInt(32));
- *   builder.ret(result);
+ *   builder.emitRet(std::nullopt, {});
  * @endcode
  *
  * @section design Design Philosophy
@@ -112,6 +111,9 @@ class IRBuilder {
                                       const std::vector<il::core::Param> &params = {});
 
     /// @brief Backward-compatible helper without parameters.
+    /// @param fn Function receiving the block.
+    /// @param label Unique block label.
+    /// @return Reference to the appended parameter-less block.
     il::core::BasicBlock &addBlock(il::core::Function &fn, const std::string &label);
 
     /// @brief Insert a basic block at a specific index in @p fn.
@@ -125,12 +127,25 @@ class IRBuilder {
     il::core::BasicBlock &insertBlock(il::core::Function &fn, size_t idx, const std::string &label);
 
     /// @brief Access parameter @p idx of block @p bb as a value.
+    /// @param bb Block whose parameter is referenced.
+    /// @param idx Zero-based parameter index.
+    /// @return Temporary value carrying the parameter's assigned SSA ID.
+    /// @throws std::out_of_range when @p idx is not present.
     il::core::Value blockParam(il::core::BasicBlock &bb, unsigned idx);
 
     /// @brief Emit unconditional branch to @p dst with arguments @p args.
+    /// @param dst Destination block.
+    /// @param args Values bound to destination block parameters.
+    /// @throws std::invalid_argument when argument arity does not match.
     void br(il::core::BasicBlock &dst, const std::vector<il::core::Value> &args = {});
 
     /// @brief Emit conditional branch.
+    /// @param cond Condition value selecting the true or false edge.
+    /// @param t True-edge destination.
+    /// @param targs Values bound to @p t parameters.
+    /// @param f False-edge destination.
+    /// @param fargs Values bound to @p f parameters.
+    /// @throws std::invalid_argument when either edge has incorrect arity.
     void cbr(const il::core::Value &cond,
              il::core::BasicBlock &t,
              const std::vector<il::core::Value> &targs,
@@ -143,6 +158,7 @@ class IRBuilder {
 
     /// @brief Emit reference to global string @p globalName.
     /// @param globalName Name of global string.
+    /// @param loc Source location attached to the emitted instruction.
     /// @return Value representing constant string pointer.
     il::core::Value emitConstStr(const std::string &globalName, il::support::SourceLoc loc);
 
@@ -160,6 +176,7 @@ class IRBuilder {
 
     /// @brief Emit return from current function.
     /// @param v Optional return value.
+    /// @param loc Source location attached to the return instruction.
     void emitRet(const std::optional<il::core::Value> &v, il::support::SourceLoc loc);
 
     /// @brief Emit resume that rethrows the current error within the same handler.
@@ -195,6 +212,7 @@ class IRBuilder {
     void setValueName(unsigned id, const std::string &name);
 
     /// @brief Save the current temp ID counter (for lambda context switching).
+    /// @return First currently unallocated SSA temporary identifier.
     unsigned saveTempId() const {
         return nextTemp;
     }
@@ -206,6 +224,9 @@ class IRBuilder {
     void restoreTempId(unsigned saved);
 
     /// @brief Restore the current function pointer (for lambda context switching).
+    /// @param fn Function to make active, or nullptr to clear the active function.
+    /// @note This low-level context helper does not alter the insertion-block
+    ///       index or temporary counter; callers restore those separately.
     void restoreFunction(il::core::Function *fn) {
         curFunc = fn;
     }

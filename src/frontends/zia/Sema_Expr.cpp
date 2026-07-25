@@ -8,6 +8,9 @@
 /// @file Sema_Expr.cpp
 /// @brief Expression analysis dispatcher and literal analysis for the Zia
 ///        semantic analyzer.
+/// @details Centralizes expression-kind dispatch, result caching, literal singleton types,
+///          identifier resolution, and `self` validation. Complex expression families are
+///          implemented in the companion `Sema_Expr_*` translation units.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -246,30 +249,35 @@ TypeRef Sema::analyzeExpr(Expr *expr) {
 //=============================================================================
 
 /// @brief Analyze an integer literal expression.
+/// @param expr Integer literal node; its value does not affect the semantic primitive type.
 /// @return The Integer type singleton.
 TypeRef Sema::analyzeIntLiteral(IntLiteralExpr * /*expr*/) {
     return types::integer();
 }
 
 /// @brief Analyze a floating-point number literal expression.
+/// @param expr Number literal node; its value does not affect the semantic primitive type.
 /// @return The Number type singleton.
 TypeRef Sema::analyzeNumberLiteral(NumberLiteralExpr * /*expr*/) {
     return types::number();
 }
 
 /// @brief Analyze a string literal expression.
+/// @param expr String literal node; its contents do not affect the semantic primitive type.
 /// @return The String type singleton.
 TypeRef Sema::analyzeStringLiteral(StringLiteralExpr * /*expr*/) {
     return types::string();
 }
 
 /// @brief Analyze a boolean literal expression (true/false).
+/// @param expr Boolean literal node.
 /// @return The Boolean type singleton.
 TypeRef Sema::analyzeBoolLiteral(BoolLiteralExpr * /*expr*/) {
     return types::boolean();
 }
 
 /// @brief Analyze a null literal expression.
+/// @param expr Null literal node.
 /// @return Optional[Unknown] type; actual type determined by context.
 TypeRef Sema::analyzeNullLiteral(NullLiteralExpr * /*expr*/) {
     // null is Optional[Unknown] - needs context to determine actual type
@@ -277,6 +285,7 @@ TypeRef Sema::analyzeNullLiteral(NullLiteralExpr * /*expr*/) {
 }
 
 /// @brief Analyze a unit literal expression ().
+/// @param expr Unit literal node.
 /// @return The Unit type singleton.
 TypeRef Sema::analyzeUnitLiteral(UnitLiteralExpr * /*expr*/) {
     return types::unit();
@@ -375,8 +384,14 @@ TypeRef Sema::analyzeIdent(IdentExpr *expr) {
     // For variables and parameters, respect flow-sensitive type narrowing
     // (e.g., after `if x != null`, x is narrowed from T? to T)
     if (sym->kind == Symbol::Kind::Variable || sym->kind == Symbol::Kind::Parameter) {
-        // Warn if variable used before initialization
-        if (sym->kind == Symbol::Kind::Variable && !isInitialized(expr->name)) {
+        // Warn if variable used before initialization. Module-level globals
+        // are exempt by construction: registration marks them initialized
+        // (explicitly or default-initialized), and re-deriving their state
+        // from the current scope chain misresolves when two modules declare
+        // same-named globals, producing false positives in both modules.
+        const bool moduleGlobal = sym->decl && sym->decl->kind == DeclKind::GlobalVar;
+        if (sym->kind == Symbol::Kind::Variable && !moduleGlobal &&
+            !isInitialized(expr->name)) {
             warn(WarningCode::W015_UninitializedVariable,
                  expr->loc,
                  "Variable '" + expr->name + "' may be used before initialization");

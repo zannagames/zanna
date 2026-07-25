@@ -50,7 +50,11 @@ struct ParserState {
 
     /// @brief Line number of the input being processed.
     unsigned lineNo = 0;
+
+    /// @brief Cumulative basic-block count used for parser resource limits.
     std::size_t totalBlocks = 0;
+
+    /// @brief Cumulative instruction count used for parser resource limits.
     std::size_t totalInstructions = 0;
 
     /// @brief Module declaration indexes used for constant-time collision checks.
@@ -81,6 +85,8 @@ struct ParserState {
     bool sawVersion = false;
 
     /// @brief Construct parser state for the provided module.
+    /// @param mod Caller-owned module populated by parser components.
+    /// @param parserLimits Resource budgets enforced during parsing.
     ParserState(il::core::Module &mod,
                 const il::io::ParserLimits &parserLimits = il::io::ParserLimits{});
 };

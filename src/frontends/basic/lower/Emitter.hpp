@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/lower/Emitter.hpp
+// File: src/frontends/basic/lower/Emitter.hpp
 // Purpose: Declares the IL emission helper composed by the BASIC lowerer.
 // Key invariants: Appends instructions to the active basic block when one is set.
 // Ownership/Lifetime: References Lowerer state without owning IR structures.
@@ -26,6 +26,12 @@
 #include <string_view>
 #include <unordered_set>
 #include <vector>
+
+/// @file
+/// @brief Declares the stateful IL emission facade used by the BASIC lowerer.
+/// @details Emitter centralizes instruction construction, runtime ownership
+///          cleanup, deferred-temporary release, exception-handler state, and
+///          return/trap terminators while borrowing all IR storage from Lowerer.
 
 namespace il::core {
 struct BasicBlock;
@@ -278,10 +284,13 @@ class Emitter {
     }
 
   private:
+    /// Lowerer whose procedure, symbol, runtime, and builder state is mutated.
     Lowerer &lowerer_;
+    /// Shared primitive-emission helper bound to @ref lowerer_.
     common::CommonLowering common_;
 
     /// @brief Release a single object slot, emitting destructor call if needed.
+    /// @param info Mutable symbol metadata describing the object slot.
     void releaseObjectSlot(SymbolInfo &info);
 
     /// @brief State tracking for array release runtime helper requests.
@@ -303,12 +312,16 @@ class Emitter {
                           ArrayReleaseState &state,
                           bool skipObjectArrays);
 
+    /// @brief One deferred ownership release scheduled at statement boundary.
     struct TempRelease {
+        /// Runtime handle to release.
         Value v;
+        /// True for string handles; false for object handles.
         bool isString{false};
         std::string className; // optional, for object destructors
     };
 
+    /// Deferred releases retained in scheduling order.
     std::vector<TempRelease> deferredTemps_;
 };
 

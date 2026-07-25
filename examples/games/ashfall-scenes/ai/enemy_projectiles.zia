@@ -1,0 +1,195 @@
+// =============================================================================
+// ai/enemy_projectiles.zia — pooled, visible, dodgeable hostile fire
+// =============================================================================
+//
+// Ranged enemies lock an aim point during their telegraph and launch a physical
+// world-space bolt when the wind-up completes. Bolts sweep against level
+// geometry, test the player along the same segment, emit readable muzzle/impact
+// events, and never allocate after setup.
+// =============================================================================
+module enemy_projectiles;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/events" as events;
+bind "../core/mathutil" as M;
+
+class EnemyProjectiles {
+    hide G3D.PhysicsWorld3D phys;
+    hide events.EventBus bus;
+    hide List[Float] x; hide List[Float] y; hide List[Float] z;
+    hide List[Float] vx; hide List[Float] vy; hide List[Float] vz;
+    hide List[Float] damage; hide List[Float] life;
+    hide List[Integer] dmgKind; hide List[Integer] sourceArch; hide List[Integer] alive;
+    hide Integer cap;
+    hide Integer active;
+    hide Integer fired;
+    hide Integer landed;
+    hide G3D.Mesh3D boltMesh;
+    hide G3D.Mesh3D heavyMesh;
+    hide G3D.Material3D boltMat;
+    hide G3D.Material3D heavyMat;
+    hide G3D.Material3D bossMat;
+
+    expose func init() {
+        x = []; y = []; z = []; vx = []; vy = []; vz = [];
+        damage = []; life = []; dmgKind = []; sourceArch = []; alive = [];
+        cap = 64;
+        active = 0;
+        fired = 0;
+        landed = 0;
+    }
+
+    expose func setup(p: G3D.PhysicsWorld3D, b: events.EventBus) {
+        phys = p;
+        bus = b;
+        var i = 0;
+        while i < cap {
+            x.Add(0.0); y.Add(0.0); z.Add(0.0);
+            vx.Add(0.0); vy.Add(0.0); vz.Add(0.0);
+            damage.Add(0.0); life.Add(0.0); dmgKind.Add(0); sourceArch.Add(0); alive.Add(0);
+            i = i + 1;
+        }
+        boltMesh = G3D.Mesh3D.Sphere(0.11, 8);
+        heavyMesh = G3D.Mesh3D.Sphere(0.18, 10);
+        boltMat = makeGlow(1.0, 0.28, 0.12, 3.5);
+        heavyMat = makeGlow(1.0, 0.72, 0.18, 4.0);
+        bossMat = makeGlow(0.95, 0.18, 0.92, 5.0);
+    }
+
+    hide func makeGlow(r: Float, g: Float, b: Float, intensity: Float) -> G3D.Material3D {
+        var mat = G3D.Material3D.FromColor(r, g, b);
+        G3D.Material3D.SetEmissiveColor(mat, r, g, b);
+        mat.EmissiveIntensity = intensity;
+        mat.Roughness = 0.25;
+        return mat;
+    }
+
+    hide func freeSlot() -> Integer {
+        var i = 0;
+        while i < cap {
+            if alive[i] == 0 { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    expose func spawn(archetype: Integer, ox: Float, oy: Float, oz: Float,
+                      tx: Float, ty: Float, tz: Float, speed: Float,
+                      amount: Float, kind: Integer) {
+        var s = freeSlot();
+        if s < 0 { return; }
+        var dx = tx - ox; var dy = ty - oy; var dz = tz - oz;
+        var len = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if len < 0.01 { return; }
+        x[s] = ox; y[s] = oy; z[s] = oz;
+        vx[s] = dx / len * speed; vy[s] = dy / len * speed; vz[s] = dz / len * speed;
+        damage[s] = amount;
+        dmgKind[s] = kind;
+        sourceArch[s] = archetype;
+        life[s] = 5.0;
+        alive[s] = 1;
+        active = active + 1;
+        fired = fired + 1;
+        bus.pushAt(config.EV_ENEMY_SHOT, archetype, kind, ox, oy, oz);
+    }
+
+    expose func clear() {
+        var i = 0;
+        while i < cap { alive[i] = 0; i = i + 1; }
+        active = 0;
+    }
+
+    hide func kill(s: Integer) {
+        if alive[s] == 1 {
+            alive[s] = 0;
+            active = active - 1;
+        }
+    }
+
+    expose func update(dt: Float, px: Float, py: Float, pz: Float, playerAlive: Boolean) {
+        var i = 0;
+        while i < cap {
+            if alive[i] == 1 { stepOne(i, dt, px, py, pz, playerAlive); }
+            i = i + 1;
+        }
+    }
+
+    hide func stepOne(s: Integer, dt: Float, px: Float, py: Float, pz: Float,
+                      playerAlive: Boolean) {
+        life[s] = life[s] - dt;
+        if life[s] <= 0.0 { kill(s); return; }
+        var ox = x[s]; var oy = y[s]; var oz = z[s];
+        var nx = ox + vx[s] * dt; var ny = oy + vy[s] * dt; var nz = oz + vz[s] * dt;
+        var dx = nx - ox; var dy = ny - oy; var dz = nz - oz;
+        var dist = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+        if dist < 0.0001 { return; }
+        var origin = Math.Vec3.New(ox, oy, oz);
+        var dir = Math.Vec3.New(dx / dist, dy / dist, dz / dist);
+        var hit = phys.Raycast(origin, dir, dist, config.LAYER_WORLD);
+        var playerHit = -1.0;
+        if playerAlive {
+            playerHit = playerHitDistance(ox, oy, oz, dir, dist, px, py, pz);
+        }
+        var worldDistance = dist + 1.0;
+        if hit != null { worldDistance = G3D.PhysicsHit3D.get_Distance(hit); }
+        // Resolve whichever the swept segment meets first. Testing the whole
+        // world ray before the player used to let a wall just behind the player
+        // incorrectly absorb a bolt that had already crossed their capsule.
+        if playerHit >= 0.0 && playerHit < worldDistance {
+            var sourceBearing = M.toDeg(Math.Atan2(ox - px, 0.0 - (oz - pz)));
+            bus.push(config.EV_DAMAGE, config.TGT_PLAYER, sourceArch[s], config.REGION_BODY,
+                     damage[s], sourceBearing, dmgKind[s] + 0.0);
+            bus.pushAt(config.EV_IMPACT, 1, dmgKind[s], px, py, pz);
+            landed = landed + 1;
+            kill(s);
+            return;
+        }
+        if hit != null {
+            var pt = G3D.PhysicsHit3D.get_Point(hit);
+            var hx = Math.Vec3.get_X(pt); var hy = Math.Vec3.get_Y(pt); var hz = Math.Vec3.get_Z(pt);
+            bus.pushAt(config.EV_IMPACT, 0, dmgKind[s], hx, hy, hz);
+            kill(s);
+            return;
+        }
+        x[s] = nx; y[s] = ny; z[s] = nz;
+    }
+
+    // Ray/sphere entry distance for the player's chest capsule approximation.
+    // Returns -1 when this segment misses or the sphere lies beyond the step.
+    hide func playerHitDistance(ax: Float, ay: Float, az: Float, dir: Math.Vec3,
+                                maxDist: Float, px: Float, py: Float, pz: Float) -> Float {
+        var mx = ax - px; var my = ay - py; var mz = az - pz;
+        var radius = 0.58;
+        var c = mx * mx + my * my + mz * mz - radius * radius;
+        if c <= 0.0 { return 0.0; }
+        var b = mx * Math.Vec3.get_X(dir) + my * Math.Vec3.get_Y(dir) +
+                mz * Math.Vec3.get_Z(dir);
+        if b > 0.0 { return -1.0; }
+        var disc = b * b - c;
+        if disc < 0.0 { return -1.0; }
+        var t = 0.0 - b - Math.Sqrt(disc);
+        if t < 0.0 { t = 0.0; }
+        if t > maxDist { return -1.0; }
+        return t;
+    }
+
+    expose func draw(canvas: G3D.Canvas3D) {
+        var i = 0;
+        while i < cap {
+            if alive[i] == 1 {
+                var mesh = boltMesh;
+                var mat = boltMat;
+                if dmgKind[i] == config.DMG_EXPLOSION { mesh = heavyMesh; mat = heavyMat; }
+                if sourceArch[i] >= config.BOSS_WARDEN { mesh = heavyMesh; mat = bossMat; }
+                G3D.Canvas3D.DrawMesh(canvas, mesh, Math.Mat4.Translate(x[i], y[i], z[i]), mat);
+            }
+            i = i + 1;
+        }
+    }
+
+    expose func activeCount() -> Integer { return active; }
+    expose func firedCount() -> Integer { return fired; }
+    expose func landedCount() -> Integer { return landed; }
+}

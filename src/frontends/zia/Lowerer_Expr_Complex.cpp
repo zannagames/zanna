@@ -4,18 +4,17 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Expr_Complex.cpp
-// Purpose: Field access and new-expression lowering for the Zia IL lowerer.
-// Key invariants:
-//   - Field access checks struct types, class types, and built-in properties
-//   - New expressions handle collections, runtime classes, struct types, entities
-// Ownership/Lifetime:
-//   - Lowerer owns IL builder; field lookups use classTypes_/structTypes_ maps
-// Links: src/frontends/zia/Lowerer.hpp,
-//        src/frontends/zia/Lowerer_Expr_Optional.cpp,
-//        src/frontends/zia/Lowerer_Expr_Lambda.cpp
-//
+///
+/// @file Lowerer_Expr_Complex.cpp
+/// @brief Lowers Zia field access and object/value construction expressions.
+///
+/// @details Field resolution covers properties, enum variants, module symbols,
+///          error metadata, stored struct/class fields, collection properties,
+///          and runtime-class getters. Construction dispatches among built-in
+///          collections, cataloged runtime classes, stack-allocated value
+///          types, and heap-allocated user classes while honoring resolved
+///          constructor bindings, field defaults, coercions, and ownership.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -32,6 +31,10 @@ namespace {
 /// @brief Append @p typeName's field declarations (base-class fields first,
 ///        then this class's) to @p out — gives the in-memory field order used
 ///        when lowering class construction/initialization.
+/// @param sema Semantic analyzer used to resolve class declarations.
+/// @param typeName Qualified class name whose fields are collected.
+/// @param out Destination vector extended with inherited and local non-static
+///        fields.
 void appendClassFieldDecls(Sema &sema,
                            const std::string &typeName,
                            std::vector<const FieldDecl *> &out) {

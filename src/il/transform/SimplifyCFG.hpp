@@ -37,13 +37,13 @@ namespace il::transform {
 
 class AnalysisManager;
 
-/// \brief Simplify IL control-flow graphs by folding and pruning trivial shapes.
+/// @brief Simplify IL control-flow graphs by folding and pruning trivial shapes.
 ///
-/// \details The pass focuses on canonicalising branching and block structure so
+/// @details The pass focuses on canonicalising branching and block structure so
 /// subsequent optimisations can operate on a predictable CFG. The scaffold keeps
-/// statistics about the transformations performed once they are implemented.
+/// statistics for each transformation performed during fixed-point iteration.
 struct SimplifyCFG {
-    /// \brief Aggregated statistics from a pass invocation.
+    /// @brief Aggregated statistics from a pass invocation.
     struct Stats {
         size_t cbrToBr = 0;            ///< Number of conditional branches simplified.
         size_t emptyBlocksRemoved = 0; ///< Count of empty blocks eliminated.
@@ -54,12 +54,12 @@ struct SimplifyCFG {
         size_t switchToBr = 0;         ///< Switches rewritten to unconditional branches.
     };
 
-    /// \brief Per-run context shared across helper routines.
+    /// @brief Per-run context shared across helper routines.
     struct SimplifyCFGPassContext {
-        /// \brief Construct a pass context for simplifying a function.
-        /// \param function The function to simplify.
-        /// \param module Parent module (may be null if unavailable).
-        /// \param stats Statistics accumulator updated during the pass.
+        /// @brief Construct a pass context for simplifying a function.
+        /// @param function The function to simplify.
+        /// @param module Parent module (may be null if unavailable).
+        /// @param stats Statistics accumulator updated during the pass.
         SimplifyCFGPassContext(il::core::Function &function,
                                const il::core::Module *module,
                                Stats &stats);
@@ -68,45 +68,45 @@ struct SimplifyCFG {
         const il::core::Module *module; ///< Parent module, may be null.
         Stats &stats;                   ///< Mutable statistics for the run.
 
-        /// \brief Check if debug logging is enabled for this pass context.
-        /// \return True if debug messages should be emitted.
+        /// @brief Check if debug logging is enabled for this pass context.
+        /// @return True if debug messages should be emitted.
         bool isDebugLoggingEnabled() const;
 
-        /// \brief Emit a debug log message if logging is enabled.
-        /// \param message The message to log.
+        /// @brief Emit a debug log message if logging is enabled.
+        /// @param message The message to log.
         void logDebug(std::string_view message) const;
 
-        /// \brief Check if a block is sensitive to exception handling.
-        /// \details EH-sensitive blocks (handlers, cleanup) require special care
+        /// @brief Check if a block is sensitive to exception handling.
+        /// @details EH-sensitive blocks (handlers, cleanup) require special care
         ///          during CFG transformations to preserve exception semantics.
-        /// \param block The block to check.
-        /// \return True if the block should be treated as EH-sensitive.
+        /// @param block The block to check.
+        /// @return True if the block should be treated as EH-sensitive.
         bool isEHSensitive(const il::core::BasicBlock &block) const;
 
       private:
         bool debugLoggingEnabled_ = false; ///< Cached debug logging flag.
     };
 
-    /// \brief Create a CFG simplifier.
-    /// \param aggressive Enable more aggressive canonicalisations when true.
+    /// @brief Create a CFG simplifier.
+    /// @param aggressive Enable switch folding and jump threading when true.
     explicit SimplifyCFG(bool aggressive = true) : aggressive(aggressive) {}
 
-    /// \brief Provide the module containing functions processed by this pass.
-    /// \param module Pointer to the parent module; may be null when unavailable.
+    /// @brief Provide the module containing functions processed by this pass.
+    /// @param module Borrowed parent module pointer, or null when unavailable.
     void setModule(const il::core::Module *module) {
         module_ = module;
     }
 
-    /// \brief Provide the active analysis manager so the pass can invalidate caches.
-    /// \param manager Pointer to the analysis manager driving the pipeline; may be null.
+    /// @brief Provide the active analysis manager so the pass can invalidate caches.
+    /// @param manager Borrowed analysis manager pointer, or null for standalone use.
     void setAnalysisManager(AnalysisManager *manager) {
         analysisManager_ = manager;
     }
 
-    /// \brief Run the simplification pass on a single function.
-    /// \param F Function mutated in place.
-    /// \param outStats Optional pointer populated with pass statistics.
-    /// \return True if the pass modified the function.
+    /// @brief Run the simplification pass on a single function.
+    /// @param F Function mutated in place.
+    /// @param outStats Optional pointer populated with pass statistics.
+    /// @return True if the pass modified the function.
     bool run(il::core::Function &F, Stats *outStats = nullptr);
 
   private:

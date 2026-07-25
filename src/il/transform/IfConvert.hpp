@@ -29,10 +29,22 @@ namespace il::transform {
 /// @ownership Owned by the pass registry factory; no per-run state.
 class IfConvert : public FunctionPass {
   public:
+    /// @brief Return the stable pipeline identifier for this pass.
+    /// @return The pass name `"if-conv"`.
     std::string_view id() const override;
+
+    /// @brief Replace eligible conditional control flow with `select` instructions.
+    /// @param function Function whose diamonds, triangles, and collapsed branches are examined.
+    /// @param analysis Analysis manager supplied by the pass pipeline; this pass does not query it.
+    /// @return All analyses when no rewrite occurs, otherwise no preserved analyses.
+    /// @details The pass repeatedly rescans after a successful rewrite because removing arm
+    ///          blocks invalidates block indices and predecessor counts. Conversion may be
+    ///          disabled by setting `ZANNA_NO_IF_CONVERT` in the process environment.
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 };
 
+/// @brief Register the `if-conv` function-pass factory.
+/// @param registry Registry that receives the enabled-by-default pass entry.
 void registerIfConvertPass(PassRegistry &registry);
 
 } // namespace il::transform

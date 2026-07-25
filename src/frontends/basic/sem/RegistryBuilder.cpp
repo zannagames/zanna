@@ -4,8 +4,21 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/basic/sem/RegistryBuilder.cpp
+// Purpose: Populate BASIC namespace, USING, type, property, and method indexes
+//          from runtime catalogs and parsed declarations.
+// Key invariants:
+//   * Runtime catalogs are seeded before user declarations are scanned.
+//   * The namespace stack is restored after every nested namespace body.
+//   * Only top-level USING directives enter the file-scoped UsingContext.
+// Ownership: Output registries own copied metadata; the program AST and runtime
+//            catalogs are borrowed for the duration of the build.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file RegistryBuilder.cpp
+/// @file
 /// @brief Registry builder for namespace and type declarations in BASIC programs.
 ///
 /// @details This file implements the `buildNamespaceRegistry` function which

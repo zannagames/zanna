@@ -1091,6 +1091,10 @@ inline constexpr std::array<InstructionSpec, il::core::kNumOpcodes> kSpecs = {{
 
 } // namespace
 
+/// @brief Retrieve generated verifier metadata for an opcode.
+/// @param opcode Valid opcode enumerator used as the table index.
+/// @return Const reference to immutable process-lifetime metadata.
+/// @pre @p opcode is less than `Opcode::Count`.
 const InstructionSpec &getInstructionSpec(il::core::Opcode opcode) {
     return kSpecs[static_cast<size_t>(opcode)];
 }

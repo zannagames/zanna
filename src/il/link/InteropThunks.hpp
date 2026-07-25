@@ -17,6 +17,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares boolean ABI interop thunk generation for the IL linker.
+
 #pragma once
 
 #include "il/core/Function.hpp"
@@ -45,6 +48,7 @@ struct ThunkInfo {
 /// @details For each pair where the Import declaration differs from the Export
 ///          definition in boolean type (i1 vs i64 in return type or parameters),
 ///          a wrapper function is generated that performs the conversion.
+///          Variadic pairs and any non-boolean mismatch are not adapted.
 ///
 /// @param importModule Module containing Import declarations.
 /// @param exportModule Module containing Export definitions.

@@ -14,6 +14,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements canonical serialization of BASIC declarations,
+///        assignments, classes, interfaces, properties, and DELETE.
+
 #include "frontends/basic/BasicTypes.hpp"
 #include "frontends/basic/print/Print_Stmt_Common.hpp"
 

@@ -200,7 +200,7 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
     /// @details Requests the @c ObjNew runtime feature whenever a @c NEW
     ///          expression is observed so the generated program links the
     ///          corresponding runtime helper.
-    /// @param unused Ignored expression instance.
+    /// The visited expression is borrowed and otherwise ignored.
     void after(const NewExpr &) {
         lowerer_.requestRuntimeFeature(il::runtime::RuntimeFeature::ObjNew);
     }
@@ -209,7 +209,7 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
     /// @details Ensures both conditional retain and checked release helpers are
     ///          linked when the program invokes methods that may manipulate
     ///          object lifetimes.
-    /// @param unused Ignored expression instance.
+    /// The visited expression is borrowed and otherwise ignored.
     void after(const MethodCallExpr &) {
         using Feature = il::runtime::RuntimeFeature;
         lowerer_.requestRuntimeFeature(Feature::ObjRetainMaybe);
@@ -219,7 +219,7 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
     /// @brief Track runtime support for member access expressions.
     /// @details Member access can require retaining the receiver object; the
     ///          walker therefore requests the optional retain helper.
-    /// @param unused Ignored expression instance.
+    /// The visited expression is borrowed and otherwise ignored.
     void after(const MemberAccessExpr &) {
         lowerer_.requestRuntimeFeature(il::runtime::RuntimeFeature::ObjRetainMaybe);
     }
@@ -227,16 +227,20 @@ class OopScanWalker final : public BasicAstWalker<OopScanWalker> {
     /// @brief Record runtime support for object destruction statements.
     /// @details Requests the object free helper so generated programs can
     ///          dispose of dynamically allocated instances.
-    /// @param unused Ignored statement instance.
+    /// The visited statement is borrowed and otherwise ignored.
     void after(const DeleteStmt &) {
         lowerer_.requestRuntimeFeature(il::runtime::RuntimeFeature::ObjFree);
     }
 
+    /// Layouts accumulated in traversal order before transfer to Lowerer.
     std::vector<std::pair<std::string, Lowerer::ClassLayout>> layouts;
 
   private:
+    /// Borrowed lowerer receiving runtime feature requests.
     Lowerer &lowerer_;
+    /// Borrowed semantic OOP index used for inherited-field discovery.
     const OopIndex &oopIndex_;
+    /// Monotonic positive class ID assigned to discovered layouts.
     std::int64_t nextClassId_{1};
 };
 } // namespace

@@ -5,16 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/EscapeSequences.hpp
+// File: src/frontends/common/EscapeSequences.hpp
 // Purpose: Common escape sequence processing utilities for lexers.
 // Key invariants:
-//   - processEscape maps single-char escapes; returns nullopt for unknowns
-//   - processHexEscape decodes 2 hex digit characters into a byte
-//   - processUnicodeEscape decodes 4 hex digits and encodes to UTF-8
-//   - codepointToUtf8 converts a Unicode codepoint to its UTF-8 encoding
-// Ownership/Lifetime:
-//   - Header-only, stateless utility functions
-// Links: frontends/common/CharUtils.hpp, frontends/zia/Lexer.cpp
+//   * Simple and hexadecimal decoders return nullopt for invalid spellings.
+//   * Unicode conversion rejects surrogate code points and values above
+//     U+10FFFF.
+//   * UTF-8 output uses the shortest valid encoding for the input code point.
+// Ownership: Header-only stateless utilities; returned strings own their bytes.
+// References: src/frontends/common/CharUtils.hpp,
+//             src/frontends/zia/Lexer.cpp
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares escape decoding and Unicode-to-UTF-8 helpers.
 //
 //===----------------------------------------------------------------------===//
 

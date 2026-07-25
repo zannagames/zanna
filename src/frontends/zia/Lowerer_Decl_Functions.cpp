@@ -4,19 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Decl_Functions.cpp
-// Purpose: Function and method declaration lowering for the Zia IL lowerer —
-//          top-level functions, class/struct methods, properties, destructors,
-//          global variable declarations, and generic function instantiation.
-// Key invariants:
-//   - Functions are created via builder_->startFunction and terminated with ret/retVoid
-//   - Parameters are stored in slots for cross-block SSA correctness
-//   - currentClassType_/currentStructType_ are set/cleared around method lowering
-// Ownership/Lifetime:
-//   - Lowerer owns IL builder; function pointers are stable within a lowering session
-// Links: src/frontends/zia/Lowerer.hpp, src/frontends/zia/Lowerer_Decl.cpp
-//
+///
+/// @file Lowerer_Decl_Functions.cpp
+/// @brief Lowers Zia globals, functions, methods, properties, destructors,
+///        asynchronous functions, and generic function instantiations.
+///
+/// @details Each concrete callable is emitted through the active IL builder
+///          with slot-backed parameters for cross-block access. The routines
+///          maintain the current function and owning-type contexts, synthesize
+///          type-correct fall-through returns, and arrange managed-value
+///          ownership cleanup. Module globals are either folded into constants
+///          or initialized through runtime-backed storage at program startup.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"

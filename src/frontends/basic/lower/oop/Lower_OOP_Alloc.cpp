@@ -12,6 +12,12 @@
 // Links: docs/internals/codemap.md
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements BASIC object allocation and constructor-call lowering.
+/// @details Handles both catalogued runtime classes and user-defined class
+///          layouts, including argument coercion, allocation metadata, runtime
+///          helper selection, and optional OOP-context cache priming.
+
 #include "frontends/basic/ASTUtils.hpp"
 #include "frontends/basic/DiagnosticEmitter.hpp"
 #include "frontends/basic/ILTypeUtils.hpp"

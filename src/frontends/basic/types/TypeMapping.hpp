@@ -5,22 +5,22 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the mapIlToBasic() utility function, which translates
-// IL core types to their corresponding BASIC frontend scalar types. This
-// mapping is used when importing external function signatures (e.g., from
-// runtime library declarations) into the BASIC frontend's type system.
-//
-// Supported mappings include i64 -> Long, f64 -> Double, i1 -> Boolean,
-// ptr -> String (for string pointer parameters), and void -> Void.
-// Unsupported or unrecognized IL types return std::nullopt.
-//
+// File: src/frontends/basic/types/TypeMapping.hpp
+// Purpose: Declare the scalar IL-to-BASIC type mapping used when importing
+//          procedure and runtime signatures.
 // Key invariants:
-//   - The mapping is one-directional (IL -> BASIC only).
-//   - Returns std::nullopt for aggregate or vector types not representable
-//     in the BASIC scalar type system.
-//   - The returned type is a BASIC AST Type value, not an IL type.
+//   * I16, I32, I64, and opaque pointers map to BASIC Type::I64.
+//   * F64, string, and I1 map to their corresponding scalar BASIC types.
+//   * Void and unsupported IL kinds return std::nullopt.
+// Ownership: The mapping is stateless and retains no reference to its input.
+// References: docs/internals/codemap/basic.md
 //
-// Ownership: Stateless function; no heap allocation or external state.
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares scalar IL-to-BASIC signature type translation.
+/// @details This boundary deliberately represents opaque pointers as integer
+///          handles; object identity is refined by later semantic/OOP layers.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,10 +33,9 @@
 namespace il::frontends::basic::types {
 
 /// @brief Map an IL core type to the corresponding BASIC AST scalar type.
-/// @details Translates IL types (i64, f64, i1, ptr, void) into their BASIC
-///          equivalents (Long, Double, Boolean, String, Void). Returns nullopt
-///          for IL types that have no direct BASIC representation, such as
-///          aggregate or vector types.
+/// @details Translates integer, floating-point, string, boolean, and pointer
+///          kinds into the frontend's canonical scalar types. Void and any IL
+///          kind without a BASIC scalar representation return std::nullopt.
 /// @param ilType The IL core type to translate.
 /// @return The corresponding BASIC type, or std::nullopt if unsupported.
 std::optional<Type> mapIlToBasic(const il::core::Type &ilType);

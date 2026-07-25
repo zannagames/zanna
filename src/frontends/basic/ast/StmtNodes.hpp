@@ -5,14 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/ast/StmtNodes.hpp
-// Purpose: Legacy umbrella header maintained for downstream compatibility.
-// Key invariants: Delegates to StmtNodesAll.hpp which aggregates every statement
-// Ownership/Lifetime: Statements follow ownership rules documented in family headers.
-// Links: docs/internals/codemap.md
+// File: src/frontends/basic/ast/StmtNodes.hpp
+// Purpose: Preserves the legacy umbrella include for every BASIC statement node.
+// Key invariants:
+//   - This header contributes no declarations beyond StmtNodesAll.hpp.
+//   - Legacy and direct aggregate includes expose the same statement families.
+// Ownership/Lifetime:
+//   - Ownership rules are defined by the included node-family headers.
+// Links: src/frontends/basic/ast/StmtNodesAll.hpp,
+//        src/frontends/basic/AST.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #pragma once
+
+/// @file
+/// @brief Compatibility include for the complete BASIC statement AST.
 
 #include "frontends/basic/ast/StmtNodesAll.hpp"

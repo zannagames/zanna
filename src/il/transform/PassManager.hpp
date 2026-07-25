@@ -45,6 +45,7 @@ class PipelineExecutor;
 ///          verification and printing between pass executions.
 class PassManager {
   public:
+    /// @brief Ordered sequence of pass identifiers executed as one pipeline.
     using Pipeline = std::vector<std::string>;
 
     /// @brief Construct a new PassManager with default settings.
@@ -96,6 +97,7 @@ class PassManager {
     /// @brief Register a module pass using a factory function.
     /// @param id Unique identifier for the pass.
     /// @param factory Function returning a new ModulePass instance.
+    /// @param parallelSafe Whether the pass is audited for concurrent execution.
     void registerModulePass(const std::string &id,
                             PassRegistry::ModulePassFactory factory,
                             bool parallelSafe = false) {
@@ -105,6 +107,7 @@ class PassManager {
     /// @brief Register a module pass using a callback with analysis access.
     /// @param id Unique identifier for the pass.
     /// @param callback Function implementing the pass transformation.
+    /// @param parallelSafe Whether the callback is audited for concurrent execution.
     void registerModulePass(const std::string &id,
                             PassRegistry::ModulePassCallback callback,
                             bool parallelSafe = false) {
@@ -114,6 +117,7 @@ class PassManager {
     /// @brief Register a simple module pass without analysis access.
     /// @param id Unique identifier for the pass.
     /// @param fn Function transforming the module (no return value).
+    /// @param parallelSafe Whether the callback is audited for concurrent execution.
     void registerModulePass(const std::string &id,
                             const std::function<void(core::Module &)> &fn,
                             bool parallelSafe = false) {
@@ -123,6 +127,7 @@ class PassManager {
     /// @brief Register a function pass using a factory function.
     /// @param id Unique identifier for the pass.
     /// @param factory Function returning a new FunctionPass instance.
+    /// @param parallelSafe Permit execution across functions when parallel mode is enabled.
     void registerFunctionPass(const std::string &id,
                               PassRegistry::FunctionPassFactory factory,
                               bool parallelSafe = false) {
@@ -132,6 +137,7 @@ class PassManager {
     /// @brief Register a function pass using a callback with analysis access.
     /// @param id Unique identifier for the pass.
     /// @param callback Function implementing the pass transformation.
+    /// @param parallelSafe Permit execution across functions when parallel mode is enabled.
     void registerFunctionPass(const std::string &id,
                               PassRegistry::FunctionPassCallback callback,
                               bool parallelSafe = false) {
@@ -141,6 +147,7 @@ class PassManager {
     /// @brief Register a simple function pass without analysis access.
     /// @param id Unique identifier for the pass.
     /// @param fn Function transforming a function (no return value).
+    /// @param parallelSafe Permit execution across functions when parallel mode is enabled.
     void registerFunctionPass(const std::string &id,
                               const std::function<void(core::Function &)> &fn,
                               bool parallelSafe = false) {

@@ -132,6 +132,9 @@ void tarjanDFS(const std::string &start,
 
 } // namespace
 
+/// @brief Test whether a function belongs to a recursive call-graph component.
+/// @param fn Function name to query.
+/// @return True for a multi-node SCC or a singleton with a self-edge.
 bool CallGraph::isRecursive(const std::string &fn) const {
     auto it = sccIndex.find(fn);
     if (it == sccIndex.end())
@@ -154,7 +157,7 @@ bool CallGraph::isRecursive(const std::string &fn) const {
 ///          direct call (`Opcode::Call` with a non-empty callee name) it appends
 ///          the callee to the caller's edge list and increments the callee's
 ///          call count. Indirect calls or unresolved callees are skipped, and
-///          repeated call sites are kept as duplicate entries in the edge list.
+///          repeated call sites increase the count without duplicating topology edges.
 ///          After building the edge set, Tarjan's SCC algorithm is applied to
 ///          produce SCCs in reverse topological order.
 /// @param module Module to scan; the IL is not modified.

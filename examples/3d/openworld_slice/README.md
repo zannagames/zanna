@@ -1,6 +1,8 @@
 # Open World Slice
 
-`openworld_slice/` is the Phase 12 vertical-slice smoke project. It combines a
+`openworld_slice/` is the Phase 12 vertical-slice smoke project.
+Its world cells deliberately keep the legacy `.vscn` extension as the living
+compatibility proof for ADR 0182 (`.scene3d` is canonical for new content). It combines a
 manifest-driven >4 km² world stand-in, cell and terrain residency, async model
 loading, KTX2 texture-asset residency, a first-person character, physics,
 local-avoidance nav agents, a synthetic skinned glTF agent that crossfades from

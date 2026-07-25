@@ -231,14 +231,148 @@ func main() {
         return;
     }
 
+    // ------------------------------------------------------------------
+    // ADR 0186: batch light editing with truthful mixed-value fields.
+    // ------------------------------------------------------------------
     var emptyIndex = editor.AddEmptyNode("Second Node", -1);
     var selection: List[Integer] = [];
     selection.add(lightIndex);
     selection.add(emptyIndex);
     editor.SelectSceneNodes(selection, lightIndex);
-    if editor.lightInspector.applyButton.IsEnabled()
-       or editor.lightInspector.removeButton.IsEnabled() {
-        fail(shell, "multi-selection exposed ambiguous light actions");
+    if editor.lightInspector.applyButton.IsEnabled() == false
+       or editor.lightInspector.removeButton.IsEnabled() == false {
+        fail(shell, "partial light coverage disabled batch actions");
+        return;
+    }
+
+    // Create lights across an all-lightless selection in one transaction.
+    var thirdIndex = editor.AddEmptyNode("Third Node", -1);
+    var lightless: List[Integer] = [];
+    lightless.add(emptyIndex);
+    lightless.add(thirdIndex);
+    editor.SelectSceneNodes(lightless, emptyIndex);
+    var createDraft = new scene_light_3d.LightState3D();
+    createDraft.kind = scene_light_3d.LIGHT_POINT;
+    createDraft.intensity = 2.0;
+    var createRevision = editor.GetRevision();
+    if editor.CreateLightsOnSelection(createDraft) == false
+       or editor.GetRevision() != createRevision + 1
+       or editor.flatNodes.get(emptyIndex).Light == null
+       or editor.flatNodes.get(thirdIndex).Light == null
+       or near(editor.flatNodes.get(emptyIndex).Light.Intensity,
+               2.0) == false {
+        fail(shell, "batch light creation was not one exact transaction");
+        return;
+    }
+    if editor.CreateLightsOnSelection(createDraft) {
+        fail(shell, "covered selection still claimed light creation");
+        return;
+    }
+
+    // Distinct intensities survive a concrete color-only patch.
+    var varyDraft = new scene_light_3d.LightState3D();
+    varyDraft.kind = scene_light_3d.LIGHT_POINT;
+    varyDraft.intensity = 3.0;
+    if editor.ApplyNodeLight(thirdIndex, varyDraft) == false {
+        fail(shell, "could not stage differing batch intensities");
+        return;
+    }
+    editor.SelectSceneNodes(lightless, emptyIndex);
+    var colorPatch = new scene_light_3d.LightPatch3D();
+    colorPatch.applyColor = true;
+    colorPatch.red = 0.0;
+    colorPatch.green = 1.0;
+    colorPatch.blue = 0.25;
+    var mixRevision = editor.GetRevision();
+    if editor.ApplySelectedLightPatch(colorPatch) == false
+       or editor.GetRevision() != mixRevision + 1
+       or near(editor.flatNodes.get(emptyIndex).Light.Intensity,
+               2.0) == false
+       or near(editor.flatNodes.get(thirdIndex).Light.Intensity,
+               3.0) == false
+       or near(editor.flatNodes.get(emptyIndex).Light.Color.Y,
+               1.0) == false
+       or near(editor.flatNodes.get(thirdIndex).Light.Color.Z,
+               0.25) == false {
+        fail(shell,
+             "concrete color patch did not preserve mixed intensities");
+        return;
+    }
+
+    // Mixed presentation: differing intensities read as indeterminate.
+    editor.SelectSceneNodes(lightless, emptyIndex);
+    if editor.lightInspector.intensity.IsIndeterminate() == false
+       or editor.lightInspector.typeDropdown.Selected
+          != scene_light_3d.LIGHT_POINT {
+        fail(shell, "mixed intensity was not presented indeterminate");
+        return;
+    }
+
+    // Mixed-kind concrete rebuild: both lights become directional.
+    var mixedKindDraft = new scene_light_3d.LightState3D();
+    mixedKindDraft.kind = scene_light_3d.LIGHT_SPOT;
+    if editor.ApplyNodeLight(thirdIndex, mixedKindDraft) == false {
+        fail(shell, "could not stage the mixed-kind selection");
+        return;
+    }
+    editor.SelectSceneNodes(lightless, emptyIndex);
+    if editor.lightInspector.typeDropdown.Selected >= 0 {
+        fail(shell, "mixed kinds did not present a mixed dropdown");
+        return;
+    }
+    var kindPatch = new scene_light_3d.LightPatch3D();
+    kindPatch.applyKind = true;
+    kindPatch.kind = scene_light_3d.LIGHT_DIRECTIONAL;
+    if editor.ApplySelectedLightPatch(kindPatch) == false
+       or editor.flatNodes.get(emptyIndex).Light.Type
+          != scene_light_3d.LIGHT_DIRECTIONAL
+       or editor.flatNodes.get(thirdIndex).Light.Type
+          != scene_light_3d.LIGHT_DIRECTIONAL
+       or near(editor.flatNodes.get(emptyIndex).Light.Intensity,
+               2.0) == false {
+        fail(shell,
+             "concrete kind rebuild lost compatible fields");
+        return;
+    }
+
+    // Shared-light staging: the selected group reuses one clone, the
+    // unselected sharer and the original object stay untouched.
+    var shareA = editor.AddEmptyNode("Share A", -1);
+    var shareB = editor.AddEmptyNode("Share B", -1);
+    var shareC = editor.AddEmptyNode("Share C", -1);
+    var sharedLight = scene_light_3d.BuildLight(createDraft);
+    editor.flatNodes.get(shareA).Light = sharedLight;
+    editor.flatNodes.get(shareB).Light = sharedLight;
+    editor.flatNodes.get(shareC).Light = sharedLight;
+    var shareSelection: List[Integer] = [];
+    shareSelection.add(shareA);
+    shareSelection.add(shareB);
+    editor.SelectSceneNodes(shareSelection, shareA);
+    var sharePatch = new scene_light_3d.LightPatch3D();
+    sharePatch.applyIntensity = true;
+    sharePatch.intensity = 9.0;
+    if editor.ApplySelectedLightPatch(sharePatch) == false
+       or editor.flatNodes.get(shareA).Light == sharedLight
+       or editor.flatNodes.get(shareB).Light
+          != editor.flatNodes.get(shareA).Light
+       or editor.flatNodes.get(shareC).Light != sharedLight
+       or near(sharedLight.Intensity, 2.0) == false
+       or near(editor.flatNodes.get(shareA).Light.Intensity,
+               9.0) == false {
+        fail(shell, "shared-light staging broke the clone rules");
+        return;
+    }
+
+    // Batch removal: one transaction, unselected sharer preserved.
+    var batchRemoveRevision = editor.GetRevision();
+    if editor.RemoveSelectedLights() == false
+       or editor.GetRevision() != batchRemoveRevision + 1
+       or editor.flatNodes.get(shareA).Light != null
+       or editor.flatNodes.get(shareB).Light != null
+       or editor.flatNodes.get(shareC).Light == null
+       or editor.Undo() == false
+       or editor.flatNodes.get(shareA).Light == null {
+        fail(shell, "batch light removal was not one exact transaction");
         return;
     }
 

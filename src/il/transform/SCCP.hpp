@@ -14,7 +14,7 @@
 // Key invariants:
 //   - Conservative: values are assumed overdefined unless proven constant.
 //   - Only executable CFG edges are analysed; dead code is skipped.
-// Ownership/Lifetime: Free function operating on a caller-owned Module.
+// Ownership/Lifetime: Free functions operating on caller-owned Function/Module IR.
 // Links: il/core/fwd.hpp
 //
 //===----------------------------------------------------------------------===//
@@ -25,23 +25,23 @@
 
 namespace il::transform {
 
-/// \brief Propagate constants through the IL using sparse conditional evaluation.
+/// @brief Propagate constants through the IL using sparse conditional evaluation.
 ///
-/// \details Identifies executable regions of the CFG, evaluates instructions whose
+/// @details Identifies executable regions of the CFG, evaluates instructions whose
 /// operands become constant, folds conditional branches, and rewrites uses of
 /// discovered constants.  Block parameters are treated as SSA phi nodes whose
 /// meet only considers executable predecessors.
 ///
-/// \param function Function optimised in place.
-/// \return True when the function IR was rewritten.
+/// @param function Function optimised in place.
+/// @return True when the function IR was rewritten.
 bool sccp(core::Function &function);
 
-/// \brief Propagate constants through every function in a module.
+/// @brief Propagate constants through every function in a module.
 ///
-/// \details Applies SCCP independently to each function. Callers that need
+/// @details Applies SCCP independently to each function. Callers that need
 /// change tracking should invoke the function overload instead.
 ///
-/// \param module Module optimised in place.
+/// @param module Module optimised in place.
 void sccp(core::Module &module);
 
 } // namespace il::transform

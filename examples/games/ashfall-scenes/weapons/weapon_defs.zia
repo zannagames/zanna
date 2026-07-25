@@ -1,0 +1,92 @@
+// =============================================================================
+// weapons/weapon_defs.zia — static weapon stat tables
+// =============================================================================
+//
+// Parallel Lists indexed by weapon id (config.W_*). Each weapon is a distinct
+// mechanic; the numbers here are the design intent (per 00-vision / 13-14), and
+// 27-gamefeel owns the final tuning pass. Grenades share a small parallel table.
+// =============================================================================
+module weapon_defs;
+
+bind "../config" as config;
+
+// Fire modes.
+var FM_HITSCAN: Integer = 0;
+var FM_PROJECTILE: Integer = 1;
+var FM_BEAM: Integer = 2;
+var FM_RICOCHET: Integer = 3;
+
+class WeaponDefs {
+    hide List[String] name;
+    hide List[Float] damage;
+    hide List[Float] interval;     // seconds between shots
+    hide List[Integer] magSize;
+    hide List[Integer] reserveMax;
+    hide List[Float] reloadTime;
+    hide List[Float] spreadHip;    // degrees
+    hide List[Float] spreadADS;
+    hide List[Integer] pellets;
+    hide List[Integer] fireMode;
+    hide List[Float] projSpeed;
+    hide List[Float] adsFov;
+    hide List[Float] recoil;
+    hide List[Integer] penetration;
+    hide List[Float] range;
+    hide List[Float] dotDPS;
+    hide List[Float] dotTime;
+    hide List[Float] blastRadius;
+
+    expose func init() {
+        name = []; damage = []; interval = []; magSize = []; reserveMax = [];
+        reloadTime = []; spreadHip = []; spreadADS = []; pellets = []; fireMode = [];
+        projSpeed = []; adsFov = []; recoil = []; penetration = []; range = [];
+        dotDPS = []; dotTime = []; blastRadius = [];
+    }
+
+    hide func add(nm: String, dmg: Float, iv: Float, mag: Integer, res: Integer, rl: Float,
+                  shp: Float, sads: Float, pel: Integer, fm: Integer, ps: Float, afov: Float,
+                  rc: Float, pen: Integer, rng: Float, ddps: Float, dt: Float, br: Float) {
+        name.Add(nm); damage.Add(dmg); interval.Add(iv); magSize.Add(mag); reserveMax.Add(res);
+        reloadTime.Add(rl); spreadHip.Add(shp); spreadADS.Add(sads); pellets.Add(pel);
+        fireMode.Add(fm); projSpeed.Add(ps); adsFov.Add(afov); recoil.Add(rc);
+        penetration.Add(pen); range.Add(rng); dotDPS.Add(ddps); dotTime.Add(dt); blastRadius.Add(br);
+    }
+
+    expose func setup() {
+        //  name         dmg   iv    mag res  rl   shp  sads pel fm            ps   afov rc   pen rng   ddps dt  br
+        add("Bolt Pistol",  24.0, 0.18, 12, 120, 1.1, 1.0, 0.3, 1, FM_HITSCAN,   0.0, 55.0, 0.6, 1, 200.0, 0.0, 0.0, 0.0);
+        add("Scattergun",    9.0, 0.70,  6,  48, 2.2, 6.0, 4.0, 8, FM_HITSCAN,   0.0, 62.0, 1.8, 1,  45.0, 0.0, 0.0, 0.0);
+        add("Cycler SMG",   12.0, 0.07, 35, 280, 1.6, 2.5, 1.5, 1, FM_HITSCAN,   0.0, 62.0, 0.4, 1, 120.0, 0.0, 0.0, 0.0);
+        add("Pulse Rifle",  20.0, 0.11, 30, 240, 1.8, 1.5, 0.4, 1, FM_HITSCAN,   0.0, 58.0, 0.7, 1, 180.0, 0.0, 0.0, 0.0);
+        add("Marksman Rail",70.0, 0.90,  5,  40, 2.4, 0.2, 0.05,1, FM_HITSCAN,   0.0, 40.0, 2.0, 3, 400.0, 0.0, 0.0, 0.0);
+        add("Arc Launcher", 80.0, 0.90,  4,  24, 2.6, 1.0, 1.0, 1, FM_PROJECTILE,22.0,60.0, 1.2, 1, 120.0, 0.0, 0.0, 5.0);
+        add("Rivet Driver", 30.0, 0.40,  8,  64, 2.0, 1.5, 1.0, 1, FM_PROJECTILE,60.0,60.0, 0.9, 1, 120.0, 5.0, 4.0, 0.0);
+        add("Shard Caster", 22.0, 0.25, 10,  80, 1.7, 2.0, 1.2, 1, FM_RICOCHET,  0.0, 60.0, 0.8, 1, 120.0, 0.0, 0.0, 0.0);
+        add("EMP Projector",10.0, 0.80,  6,  36, 2.0, 1.0, 0.6, 1, FM_PROJECTILE,45.0,60.0, 0.5, 1, 100.0, 0.0, 0.0, 4.0);
+        add("Helix Lance",  40.0, 0.0,  100,100, 1.5, 0.4, 0.2, 1, FM_BEAM,      0.0, 55.0, 0.2, 1,  60.0, 0.0, 0.0, 0.0);
+    }
+
+    expose func count() -> Integer { return name.Count; }
+    expose func nameOf(w: Integer) -> String { return name[w]; }
+    expose func damageOf(w: Integer) -> Float { return damage[w]; }
+    expose func intervalOf(w: Integer) -> Float { return interval[w]; }
+    expose func magOf(w: Integer) -> Integer { return magSize[w]; }
+    expose func reserveMaxOf(w: Integer) -> Integer { return reserveMax[w]; }
+    expose func reloadOf(w: Integer) -> Float { return reloadTime[w]; }
+    expose func spreadHipOf(w: Integer) -> Float { return spreadHip[w]; }
+    expose func spreadADSOf(w: Integer) -> Float { return spreadADS[w]; }
+    expose func pelletsOf(w: Integer) -> Integer { return pellets[w]; }
+    expose func fireModeOf(w: Integer) -> Integer { return fireMode[w]; }
+    expose func projSpeedOf(w: Integer) -> Float { return projSpeed[w]; }
+    expose func adsFovOf(w: Integer) -> Float { return adsFov[w]; }
+    expose func recoilOf(w: Integer) -> Float { return recoil[w]; }
+    expose func penetrationOf(w: Integer) -> Integer { return penetration[w]; }
+    expose func rangeOf(w: Integer) -> Float { return range[w]; }
+    expose func dotDPSOf(w: Integer) -> Float { return dotDPS[w]; }
+    expose func dotTimeOf(w: Integer) -> Float { return dotTime[w]; }
+    expose func blastRadiusOf(w: Integer) -> Float { return blastRadius[w]; }
+    expose func isHitscan(w: Integer) -> Boolean { return fireMode[w] == FM_HITSCAN || fireMode[w] == FM_RICOCHET; }
+    expose func isRicochet(w: Integer) -> Boolean { return fireMode[w] == FM_RICOCHET; }
+    expose func isBeam(w: Integer) -> Boolean { return fireMode[w] == FM_BEAM; }
+    expose func isProjectile(w: Integer) -> Boolean { return fireMode[w] == FM_PROJECTILE; }
+}

@@ -161,6 +161,7 @@ static std::vector<Value> normaliseOperands(const Instr &instr) {
     if (!isCommutativeCSE(instr.op))
         return ops;
 
+    /// Map one operand to a deterministic descending-order sort tuple.
     auto rank = [](const Value &v)
         -> std::tuple<int, bool, unsigned long long, std::string> {
         switch (v.kind) {

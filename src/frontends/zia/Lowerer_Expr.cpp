@@ -4,19 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Expr.cpp
-// Purpose: Dispatch Zia expressions and lower identifiers and ternary expressions.
-// Key invariants:
-//   - Expression lowering returns an IL value paired with its exact IL type.
-//   - Managed merge values move through an owning slot on every reachable edge.
-// Ownership/Lifetime:
-//   - Identifier loads borrow local slots unless an explicit retain establishes ownership.
-//   - Ternary result slots transfer their managed value to the enclosing expression.
-// Links: src/frontends/zia/Lowerer_Expr_Complex.cpp,
-//        src/frontends/zia/Lowerer_Expr_Call.cpp,
-//        src/frontends/zia/Lowerer_Expr_Binary.cpp
-//
+///
+/// @file Lowerer_Expr.cpp
+/// @brief Dispatches Zia expressions and lowers identifiers, ternaries, and
+///        value-producing `if` expressions.
+///
+/// @details Every expression produces an IL value paired with its precise IL
+///          representation. Identifier resolution spans local SSA bindings,
+///          slots, implicit fields, globals, properties, and function
+///          addresses. Conditional expressions move managed branch results
+///          through an owning merge slot so exactly one reachable value is
+///          transferred to the enclosing expression.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -52,6 +51,7 @@ LowerResult Lowerer::lowerExpr(Expr *expr) {
     struct DepthGuard {
         unsigned &d;
 
+        /// @brief Restore the expression-recursion counter on every exit path.
         ~DepthGuard() {
             --d;
         }

@@ -8,6 +8,10 @@
 // File: src/il/transform/RuntimeFastPathOpt.cpp
 // Purpose: Rewrite generic object RC helpers to known-object helpers when the
 //          value provenance proves a heap object rather than a string handle.
+// Key invariants:
+//   - Provenance originates only from live runtime signature metadata.
+//   - Same-block definitions must precede uses; cross-block definitions dominate.
+// Ownership/Lifetime: Rewrites borrowed function instructions in place.
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,6 +35,9 @@ using namespace il::core;
 namespace il::transform {
 namespace {
 
+/// @brief Query whether a runtime helper guarantees an object result.
+/// @param callee Direct callee name to resolve in the runtime signature registry.
+/// @return `true` when the live signature exists and marks its result as a known object.
 [[nodiscard]] bool isKnownObjectFactory(std::string_view callee) {
     const auto *signature = il::runtime::findRuntimeSignature(callee);
     return signature && signature->returnsKnownObject;
@@ -38,13 +45,18 @@ namespace {
 
 } // namespace
 
+/// @copydoc RuntimeFastPathOpt::id()
 std::string_view RuntimeFastPathOpt::id() const {
     return "runtime-fastpath";
 }
 
+/// @copydoc RuntimeFastPathOpt::run()
 PreservedAnalyses RuntimeFastPathOpt::run(Function &function, AnalysisManager &analysis) {
+    /// @brief Location of a factory result used for dominance checks.
     struct ObjectDefinition {
+        /// Block containing the defining call.
         BasicBlock *block{nullptr};
+        /// Instruction position used to order same-block definitions and uses.
         std::size_t instructionIndex{0};
     };
 
@@ -102,7 +114,9 @@ PreservedAnalyses RuntimeFastPathOpt::run(Function &function, AnalysisManager &a
     return preserved;
 }
 
+/// @copydoc registerRuntimeFastPathOptPass()
 void registerRuntimeFastPathOptPass(PassRegistry &registry) {
+    /// Construct a stateless optimizer for one independently assigned function.
     registry.registerFunctionPass(
         "runtime-fastpath", []() { return std::make_unique<RuntimeFastPathOpt>(); }, true);
 }

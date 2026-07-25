@@ -1,0 +1,57 @@
+// =============================================================================
+// assets/fallbacks.zia — procedural fallback material + mesh factory
+// =============================================================================
+//
+// ASHFALL is fully playable before any GLB/PNG is downloaded (the asset-optional
+// rule): every material and prop has a procedural fallback built here. Once real
+// assets land (26-assets), the registry swaps them in; until then this factory
+// gives each surface class a distinct, readable look. Centralizing the palette
+// keeps the graybox art direction consistent.
+// =============================================================================
+module fallbacks;
+
+bind Zanna.Graphics3D as G3D;
+bind "./textures" as textures;
+
+class Fallbacks {
+    hide textures.TextureLib texLib;
+
+    expose func init() { }
+
+    // Route materials through the shared texture library (set at boot). When
+    // unset the factory degrades to flat PBR (asset-optional rule).
+    expose func use(t: textures.TextureLib) { texLib = t; }
+
+    // Prototype-grid floor/wall look (matte PBR).
+    expose func structural(r: Float, g: Float, b: Float) -> G3D.Material3D {
+        if texLib != null { return texLib.mat(textures.SURF_DEFAULT, r, g, b); }
+        var m = G3D.Material3D.PBR(r, g, b);
+        m.Roughness = 0.85;
+        m.Metallic = 0.05;
+        return m;
+    }
+
+    // Machine chassis (semi-metallic, per-archetype tint).
+    expose func chassis(r: Float, g: Float, b: Float) -> G3D.Material3D {
+        if texLib != null { return texLib.mat(textures.SURF_METAL, r, g, b); }
+        var m = G3D.Material3D.PBR(r, g, b);
+        m.Roughness = 0.5;
+        m.Metallic = 0.6;
+        return m;
+    }
+
+    // Emissive accent (eye strips, glows, pickups).
+    expose func emissive(r: Float, g: Float, b: Float) -> G3D.Material3D {
+        var m = G3D.Material3D.FromColor(r, g, b);
+        m.EmissiveIntensity = 1.5;
+        return m;
+    }
+
+    // A generic humanoid-ish fallback body mesh (capsule-block).
+    expose func bodyMesh(w: Float, h: Float) -> G3D.Mesh3D {
+        return G3D.Mesh3D.Box(w * 2.0, h * 2.0, w * 2.0);
+    }
+    expose func headMesh(r: Float) -> G3D.Mesh3D {
+        return G3D.Mesh3D.Sphere(r, 8);
+    }
+}

@@ -1,0 +1,173 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_camera_3d.zia
+// Purpose: Complete, clone-safe Camera3D drafts for Studio's 3D scene editor.
+// Key invariants:
+//   - Every accepted edit builds an independent Camera3D before assignment,
+//     so shared imported camera instances are never mutated in place.
+//   - Draft values satisfy the VSCN save validation contract before reaching
+//     the runtime: positive near, far strictly beyond near, positive ortho
+//     size, and perspective fov inside (0, 180).
+//   - Aspect ratio is never authored; drafts carry one deterministic default
+//     and consumers derive display aspect at use time (ADR 0184).
+//   - Equality follows normalized public state, never object identity.
+// Ownership/Lifetime: Returned cameras are independent runtime objects owned
+//                     by the receiving SceneNode.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        zannastudio/src/ui/scene_camera_inspector_3d.zia,
+//        zannastudio/src/probes/scene_camera_authoring_probe.zia,
+//        docs/adr/0184-scene-camera-nodes-look-through-and-preview.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_camera_3d;
+
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+
+// ============================================================================
+// MODULE: scene_camera_3d
+// PURPOSE: Keep camera reconstruction and comparison outside the already
+//          large SceneEditor3D document controller.
+//
+// WHERE-THIS-FITS: SceneCameraInspector3D owns widgets. SceneEditor3D owns
+//          selection, VSCN history, and node assignment. This module owns
+//          only normalized value drafts and new Camera3D construction.
+//
+// TEACHING-NOTE: VSCN refuses to save invalid cameras (non-positive near,
+//          far <= near, out-of-range fov). Normalizing here keeps every
+//          authored camera serializable by construction.
+// ============================================================================
+
+final DEFAULT_FOV_DEGREES: Number = 60.0;
+final DEFAULT_ORTHO_SIZE: Number = 10.0;
+final DEFAULT_NEAR_PLANE: Number = 0.1;
+final DEFAULT_FAR_PLANE: Number = 1000.0;
+final DEFAULT_ASPECT: Number = 1.7777777777777777;
+final MIN_FOV_DEGREES: Number = 1.0;
+final MAX_FOV_DEGREES: Number = 179.0;
+// The runtime sanitizes clip planes on read (rt_camera3d.c): near below 0.1
+// snaps to 0.1 and degenerate spans reset entirely. Authoring inside that
+// envelope keeps inspector values identical to effective renderer values.
+final MIN_PLANE_DISTANCE: Number = 0.1;
+final MAX_PLANE_DISTANCE: Number = 1000000.0;
+final MIN_ORTHO_SIZE: Number = 0.001;
+final MAX_ORTHO_SIZE: Number = 1000000.0;
+final MIN_PLANE_SEPARATION: Number = 0.001;
+final CAMERA_VALUE_EPSILON: Number = 0.000001;
+
+/// @brief Complete editable state for one node-attached runtime camera.
+class CameraState3D {
+    expose Boolean isOrtho;
+    expose Number fovDegrees;
+    expose Number orthoSize;
+    expose Number nearPlane;
+    expose Number farPlane;
+
+    expose func init() {
+        isOrtho = false;
+        fovDegrees = DEFAULT_FOV_DEGREES;
+        orthoSize = DEFAULT_ORTHO_SIZE;
+        nearPlane = DEFAULT_NEAR_PLANE;
+        farPlane = DEFAULT_FAR_PLANE;
+    }
+}
+
+/// @brief Return a stable display label for one projection mode.
+expose func ProjectionName(isOrtho: Boolean) -> String {
+    if isOrtho { return "Orthographic"; }
+    return "Perspective";
+}
+
+/// @brief Clamp one value into finite bounds, replacing NaN with the minimum.
+hide func Bound(value: Number,
+                minimum: Number,
+                maximum: Number) -> Number {
+    if (value >= minimum) == false { return minimum; }
+    if value > maximum { return maximum; }
+    return value;
+}
+
+/// @brief Clamp and mutually validate a complete inspector draft in place.
+expose func Normalize(state: CameraState3D) -> CameraState3D {
+    if state == null { return new CameraState3D(); }
+    state.fovDegrees = Bound(
+        state.fovDegrees, MIN_FOV_DEGREES, MAX_FOV_DEGREES);
+    state.orthoSize = Bound(
+        state.orthoSize, MIN_ORTHO_SIZE, MAX_ORTHO_SIZE);
+    state.nearPlane = Bound(
+        state.nearPlane, MIN_PLANE_DISTANCE, MAX_PLANE_DISTANCE);
+    state.farPlane = Bound(
+        state.farPlane, MIN_PLANE_DISTANCE, MAX_PLANE_DISTANCE);
+    if state.farPlane <= state.nearPlane + MIN_PLANE_SEPARATION {
+        state.farPlane = state.nearPlane + MIN_PLANE_SEPARATION;
+    }
+    return state;
+}
+
+/// @brief Snapshot every authored public field from one runtime camera.
+expose func FromCamera(camera: Camera3D) -> CameraState3D {
+    var state = new CameraState3D();
+    if camera == null { return state; }
+    state.isOrtho = camera.IsOrtho;
+    state.fovDegrees = camera.Fov;
+    state.orthoSize = camera.OrthoSize;
+    state.nearPlane = camera.NearPlane;
+    state.farPlane = camera.FarPlane;
+    return Normalize(state);
+}
+
+/// @brief Construct one independent camera from a normalized draft.
+/// @details The camera keeps the constructor's origin pose; scene usage
+///          derives pose from the owning node's world transform, so only the
+///          projection fields carry authored meaning.
+expose func BuildCamera(state: CameraState3D) -> Camera3D {
+    var normalized = Normalize(state);
+    var camera = Camera3D.New(
+        normalized.fovDegrees,
+        DEFAULT_ASPECT,
+        normalized.nearPlane,
+        normalized.farPlane);
+    if camera == null { return null; }
+    camera.IsOrtho = normalized.isOrtho;
+    camera.OrthoSize = normalized.orthoSize;
+    return camera;
+}
+
+/// @brief Return whether two numbers match inside the authoring epsilon.
+hide func NearValue(a: Number, b: Number) -> Boolean {
+    var difference = a - b;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < CAMERA_VALUE_EPSILON;
+}
+
+/// @brief Return whether a camera already equals one normalized draft.
+expose func Matches(camera: Camera3D,
+                    state: CameraState3D) -> Boolean {
+    if camera == null or state == null { return false; }
+    var current = FromCamera(camera);
+    var next = Normalize(state);
+    return current.isOrtho == next.isOrtho
+        and NearValue(current.fovDegrees, next.fovDegrees)
+        and NearValue(current.orthoSize, next.orthoSize)
+        and NearValue(current.nearPlane, next.nearPlane)
+        and NearValue(current.farPlane, next.farPlane);
+}
+
+/// @brief Describe one camera for hierarchy and status summaries.
+expose func Describe(camera: Camera3D) -> String {
+    if camera == null { return "No camera component."; }
+    var state = FromCamera(camera);
+    if state.isOrtho {
+        return "Orthographic • size " + state.orthoSize
+            + " • near " + state.nearPlane
+            + " • far " + state.farPlane;
+    }
+    return "Perspective • fov " + state.fovDegrees
+        + " deg • near " + state.nearPlane
+        + " • far " + state.farPlane;
+}

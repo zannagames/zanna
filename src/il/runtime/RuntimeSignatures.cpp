@@ -349,10 +349,15 @@
 #include <unordered_set>
 
 namespace il::runtime::signatures {
+/// @brief Register debug expectations for file-I/O runtime helpers.
 void register_fileio_signatures();
+/// @brief Register debug expectations for string runtime helpers.
 void register_string_signatures();
+/// @brief Register debug expectations for mathematical runtime helpers.
 void register_math_signatures();
+/// @brief Register debug expectations for array runtime helpers.
 void register_array_signatures();
+/// @brief Register debug expectations for object-model runtime helpers.
 void register_oop_signatures();
 } // namespace il::runtime::signatures
 #endif
@@ -364,6 +369,9 @@ using Kind = il::core::Type::Kind;
 
 constexpr std::size_t kRtSigCount = data::kRtSigCount;
 
+/// @brief Merge name-based ownership facts into a parsed runtime signature.
+/// @param signature Signature updated in place without clearing existing facts.
+/// @param name Canonical or native helper name used for classification.
 void applyOwnershipEffects(RuntimeSignature &signature, std::string_view name) {
     const auto ownership = classifyRuntimeOwnership(name);
     signature.consumedArgMask |= ownership.consumedArgMask;
@@ -384,6 +392,7 @@ void applyOwnershipEffects(RuntimeSignature &signature, std::string_view name) {
 /// @param sig Enumerated runtime signature identifier.
 /// @return Reference to the parsed runtime signature.
 const RuntimeSignature &signatureFor(RtSig sig) {
+    /// Parse and annotate the generated signature table on first use.
     static const auto table = [] {
         std::array<RuntimeSignature, kRtSigCount> entries;
         for (std::size_t i = 0; i < kRtSigCount; ++i) {
@@ -415,6 +424,10 @@ bool isValid(RtSig sig) {
 /// @details Packs the lowering metadata into a @ref RuntimeLowering structure,
 ///          optionally recording the feature enum and whether ordering matters
 ///          when comparing runtime calls.
+/// @param kind Declaration-selection strategy.
+/// @param feature Optional feature key when @p kind is Feature.
+/// @param ordered Whether declaration request order must be preserved.
+/// @return Aggregate lowering metadata.
 constexpr RuntimeLowering makeLowering(RuntimeLoweringKind kind,
                                        RuntimeFeature feature = RuntimeFeature::Count,
                                        bool ordered = false) {
@@ -433,6 +446,9 @@ constexpr RuntimeLowering kManualLowering = makeLowering(RuntimeLoweringKind::Ma
 /// @details Produces a @ref RuntimeLowering descriptor indicating that the
 ///          runtime function should only be linked when the given feature is
 ///          requested by the front end.
+/// @param feature Feature that requests the helper.
+/// @param ordered Whether request order must be preserved.
+/// @return Feature-gated lowering metadata.
 constexpr RuntimeLowering featureLowering(RuntimeFeature feature, bool ordered = false) {
     return makeLowering(RuntimeLoweringKind::Feature, feature, ordered);
 }
@@ -440,6 +456,8 @@ constexpr RuntimeLowering featureLowering(RuntimeFeature feature, bool ordered =
 /// @brief VM-only handler that reports non-native execution.
 /// @details Used for Zanna.System.Environment.IsNative so VM runs return false while
 ///          native binaries link against the real rt_env_is_native helper.
+/// @param args Ignored argument array; the helper has no visible parameters.
+/// @param result Required result slot receiving integer false.
 void vm_env_is_native(void ** /*args*/, void *result) {
     detail::storeRequiredResult<int64_t>(result, 0);
 }
@@ -447,16 +465,27 @@ void vm_env_is_native(void ** /*args*/, void *result) {
 constexpr std::array<RuntimeHiddenParam, 1> kPowHidden{
     RuntimeHiddenParam{RuntimeHiddenParamKind::PowStatusPointer}};
 
+/// @brief Compile-time source row for one runtime registry descriptor.
 struct DescriptorRow {
+    /// Exported runtime name used for registry lookup.
     std::string_view name;
+    /// Optional identifier into the generated compact signature table.
     std::optional<RtSig> signatureId;
+    /// Public textual signature used when no generated identifier is available.
     std::string_view spec;
+    /// VM adapter that invokes the underlying C implementation.
     RuntimeHandler handler{nullptr};
+    /// Policy controlling when lowering declares the helper.
     RuntimeLowering lowering;
+    /// Borrowed pointer to hidden bridge-parameter metadata.
     const RuntimeHiddenParam *hidden{nullptr};
+    /// Number of entries reachable through @ref hidden.
     std::size_t hiddenCount{0};
+    /// Runtime trap translation applied after invocation.
     RuntimeTrapClass trapClass{RuntimeTrapClass::None};
+    /// Whether frontends may expose this row as a standalone runtime function.
     bool publicSurface{true};
+    /// Backing linker-visible C symbol, if distinct metadata is available.
     std::string_view cSymbol{};
 };
 
@@ -2243,16 +2272,21 @@ constexpr auto kDescriptorRows = std::to_array<DescriptorRow>({
         RuntimeTrapClass::None},
 });
 
+/// @brief Name-sorted index entry pointing back to a descriptor source row.
 struct Descriptor {
+    /// Runtime name used as the sort and binary-search key.
     std::string_view name{};
+    /// Index into @ref kDescriptorRows.
     std::size_t rowIndex{};
 };
 
-/// @brief Build a sorted index over @ref kDescriptorRows by symbol name.
-/// @details Copies every descriptor row alongside its row index and performs a
-///          simple insertion-sort so lookups can binary search the resulting
-///          array without constructing dynamic state at runtime.
-/// @brief Constexpr merge sort helper - merge two sorted ranges.
+/// @brief Merge two adjacent sorted descriptor ranges.
+/// @tparam N Capacity of both working arrays.
+/// @param arr Array updated with the merged range.
+/// @param temp Scratch array used during merging.
+/// @param left Inclusive beginning of the first range.
+/// @param mid Exclusive end of the first and inclusive start of the second range.
+/// @param right Exclusive end of the second range.
 template <std::size_t N>
 constexpr void mergeRanges(std::array<Descriptor, N> &arr,
                            std::array<Descriptor, N> &temp,
@@ -2274,7 +2308,12 @@ constexpr void mergeRanges(std::array<Descriptor, N> &arr,
         arr[x] = temp[x];
 }
 
-/// @brief Constexpr merge sort - O(n log n) complexity.
+/// @brief Sort one descriptor-index range by symbol name at compile time.
+/// @tparam N Capacity of both working arrays.
+/// @param arr Array whose half-open range is sorted.
+/// @param temp Scratch array forwarded to merge operations.
+/// @param left Inclusive range beginning.
+/// @param right Exclusive range end.
 template <std::size_t N>
 constexpr void mergeSort(std::array<Descriptor, N> &arr,
                          std::array<Descriptor, N> &temp,
@@ -2288,6 +2327,8 @@ constexpr void mergeSort(std::array<Descriptor, N> &arr,
     mergeRanges(arr, temp, left, mid, right);
 }
 
+/// @brief Build a name-sorted index over all descriptor source rows.
+/// @return Compile-time array pairing every symbol name with its original row.
 constexpr auto makeDescriptorIndex() {
     std::array<Descriptor, kDescriptorRows.size()> index{};
     for (std::size_t i = 0; i < index.size(); ++i)
@@ -2306,6 +2347,7 @@ constexpr std::array<Descriptor, kDescriptorRows.size()> kDescriptors = makeDesc
 /// @details Projects @ref kDescriptors into an array of string views so
 ///          @ref indexOf can use `std::lower_bound` without touching the row
 ///          metadata.
+/// @return Name keys in descriptor-index order.
 constexpr auto makeDescriptorNames() {
     std::array<std::string_view, kDescriptors.size()> names{};
     for (std::size_t i = 0; i < names.size(); ++i)
@@ -2319,6 +2361,7 @@ constexpr std::array<std::string_view, kDescriptors.size()> kNames = makeDescrip
 /// @details Initialises an array keyed by @ref RuntimeFeature enumerators and
 ///          records the first descriptor row that requires each feature.  Entries
 ///          left at -1 indicate the feature has no dedicated runtime helper.
+/// @return Array mapping each feature to its descriptor-row index or -1.
 constexpr auto makeFeatureIndex() {
     std::array<int, static_cast<std::size_t>(RuntimeFeature::Count)> featureIndex{};
     for (auto &entry : featureIndex)
@@ -2343,6 +2386,8 @@ const std::array<int, static_cast<std::size_t>(RuntimeFeature::Count)> kFeatureI
 /// @details Performs a binary search over @ref kNames and returns the matching
 ///          index or -1 when the symbol is absent, enabling callers to fetch
 ///          either the descriptor row or parsed signature without allocating.
+/// @param name Exact runtime symbol name.
+/// @return Sorted descriptor index, or -1 when not registered.
 static constexpr int indexOf(std::string_view name) noexcept {
     const auto it = std::lower_bound(kNames.begin(), kNames.end(), name);
     if (it == kNames.end() || *it != name)
@@ -2355,6 +2400,8 @@ static constexpr int indexOf(std::string_view name) noexcept {
 /// @details Uses a pre-generated signature when available or parses the spec
 ///          string otherwise.  Hidden parameters and trap metadata are copied
 ///          from the descriptor row.
+/// @param row Source metadata to translate.
+/// @return Fully annotated runtime signature.
 RuntimeSignature buildSignature(const DescriptorRow &row) {
     RuntimeSignature signature =
         row.signatureId ? signatureFor(*row.signatureId) : parseSignatureSpec(row.spec);
@@ -2372,6 +2419,8 @@ RuntimeSignature buildSignature(const DescriptorRow &row) {
 ///
 /// @details Populates the descriptor with the name, parsed signature, handler
 ///          thunk, lowering metadata, and trap classification.
+/// @param row Compile-time source row.
+/// @return Runtime descriptor owning the parsed signature metadata.
 RuntimeDescriptor buildDescriptor(const DescriptorRow &row) {
     RuntimeDescriptor descriptor;
     descriptor.name = row.name;
@@ -2385,6 +2434,9 @@ RuntimeDescriptor buildDescriptor(const DescriptorRow &row) {
     return descriptor;
 }
 
+/// @brief Convert an IL type kind to a stable diagnostic spelling.
+/// @param kind Type kind to describe.
+/// @return Pointer to a static lowercase name, or `"unknown"`.
 const char *runtimeTypeKindName(il::core::Type::Kind kind) {
     switch (kind) {
         case Kind::Void:
@@ -2416,6 +2468,8 @@ const char *runtimeTypeKindName(il::core::Type::Kind kind) {
 /// @details Used exclusively in debug assertions to emit human-friendly
 ///          diagnostics when runtime descriptors drift from the expected
 ///          registry entries.
+/// @param kind Debug-whitelist parameter kind.
+/// @return Pointer to a static lowercase diagnostic spelling.
 const char *sigParamKindName(signatures::SigParam::Kind kind) {
     using signatures::SigParam;
     switch (kind) {
@@ -2437,6 +2491,12 @@ const char *sigParamKindName(signatures::SigParam::Kind kind) {
     return "unknown";
 }
 
+/// @brief Compare expected and actual debug signature kinds.
+/// @details String and pointer kinds are accepted interchangeably because both
+///          use the pointer-shaped bridge ABI.
+/// @param expected Whitelist kind.
+/// @param actual Kind derived from the runtime descriptor.
+/// @return True when identical or a supported string/pointer pair.
 bool sigParamKindsCompatible(signatures::SigParam::Kind expected,
                              signatures::SigParam::Kind actual) {
     using signatures::SigParam;
@@ -2450,6 +2510,8 @@ bool sigParamKindsCompatible(signatures::SigParam::Kind expected,
 /// @details Normalises several IL integer types down to the ABI shapes used in
 ///          runtime signatures, asserting in debug builds when encountering
 ///          unsupported kinds so descriptor drift is caught early.
+/// @param kind IL type kind to translate.
+/// @return Corresponding debug-whitelist ABI kind.
 signatures::SigParam::Kind mapToSigParamKind(il::core::Type::Kind kind) {
     using signatures::SigParam;
     switch (kind) {
@@ -2481,6 +2543,8 @@ signatures::SigParam::Kind mapToSigParamKind(il::core::Type::Kind kind) {
 /// @details Iterates the IL type descriptors recorded in @p signature and maps
 ///          them into the signature::SigParam domain using @ref mapToSigParamKind
 ///          so debug validation can compare against whitelisted expectations.
+/// @param signature Runtime signature whose visible parameters are converted.
+/// @return Parameter kinds in ABI declaration order.
 std::vector<signatures::SigParam::Kind> makeParamKinds(const RuntimeSignature &signature) {
     std::vector<signatures::SigParam::Kind> kinds;
     kinds.reserve(signature.paramTypes.size());
@@ -2493,6 +2557,8 @@ std::vector<signatures::SigParam::Kind> makeParamKinds(const RuntimeSignature &s
 /// @details Produces either an empty vector (for void results) or a single entry
 ///          that mirrors the ABI-visible type, enabling uniform comparison logic
 ///          for both parameters and results.
+/// @param signature Runtime signature whose return type is converted.
+/// @return Empty vector for void or one ABI kind for a value result.
 std::vector<signatures::SigParam::Kind> makeReturnKinds(const RuntimeSignature &signature) {
     std::vector<signatures::SigParam::Kind> kinds;
     if (signature.retType.kind != il::core::Type::Kind::Void)
@@ -2505,6 +2571,7 @@ std::vector<signatures::SigParam::Kind> makeReturnKinds(const RuntimeSignature &
 ///          runs so later checks can compare descriptors against the whitelist
 ///          emitted by the dedicated signature modules.
 void ensureSignatureWhitelist() {
+    /// Register all debug signature groups exactly once.
     static const bool registered = [] {
         signatures::register_fileio_signatures();
         signatures::register_string_signatures();
@@ -2521,6 +2588,7 @@ void ensureSignatureWhitelist() {
 ///          signature is present exactly once, and checks that parameter/return
 ///          kinds match.  Any mismatch triggers assertions accompanied by a
 ///          descriptive message to simplify debugging.
+/// @param descriptors Generated runtime descriptors to compare.
 void validateRuntimeDescriptors(const std::vector<RuntimeDescriptor> &descriptors) {
     ensureSignatureWhitelist();
     const auto &expected = signatures::all_signatures();
@@ -2640,7 +2708,9 @@ void validateRuntimeDescriptors(const std::vector<RuntimeDescriptor> &descriptor
 ///
 /// @details Lazily constructs the registry from @ref kDescriptorRows on first
 ///          use and caches it for subsequent lookups.
+/// @return Stable process-lifetime descriptor vector in source-row order.
 const std::vector<RuntimeDescriptor> &runtimeRegistry() {
+    /// Materialize descriptors and install VM-specific handler overrides.
     static const std::vector<RuntimeDescriptor> registry = [] {
         std::vector<RuntimeDescriptor> entries;
         entries.reserve(kDescriptorRows.size());
@@ -2684,6 +2754,8 @@ const std::vector<RuntimeDescriptor> &runtimeRegistry() {
 ///
 /// @details Performs a binary search over the compile-time sorted descriptor
 ///          index, avoiding dynamic map construction on lookup.
+/// @param name Exact exported runtime symbol.
+/// @return Borrowed process-lifetime descriptor pointer, or null.
 const RuntimeDescriptor *findRuntimeDescriptor(std::string_view name) {
     const int idx = indexOf(name);
     if (idx < 0)
@@ -2697,6 +2769,9 @@ const RuntimeDescriptor *findRuntimeDescriptor(std::string_view name) {
 ///
 /// @details Uses a precomputed table mapping features to descriptor indices for
 ///          constant-time lookup without allocating supporting data structures.
+/// @param feature Lowering feature to resolve.
+/// @return Borrowed process-lifetime descriptor pointer, or null when the
+///         feature has no registered provider.
 const RuntimeDescriptor *findRuntimeDescriptor(RuntimeFeature feature) {
     const auto index = kFeatureIndex[static_cast<std::size_t>(feature)];
     if (index < 0)
@@ -2708,7 +2783,9 @@ const RuntimeDescriptor *findRuntimeDescriptor(RuntimeFeature feature) {
 ///
 /// @details Materialises an unordered_map on first access by iterating over the
 ///          registry, enabling quick signature lookups by string name.
+/// @return Stable process-lifetime mapping from names to signature copies.
 const std::unordered_map<std::string_view, RuntimeSignature> &runtimeSignatures() {
+    /// Populate the compatibility lookup map from the canonical registry.
     static const std::unordered_map<std::string_view, RuntimeSignature> table = [] {
         std::unordered_map<std::string_view, RuntimeSignature> map;
         map.reserve(runtimeRegistry().size());
@@ -2802,6 +2879,7 @@ bool isVarArgCallee(std::string_view name) {
 ///         on failure. In debug builds, also asserts.
 bool selfCheckRuntimeDescriptors() {
     // Run once per process via static init guard
+    /// Perform the cached validation pass used by all callers.
     static const bool result = []() -> bool {
         const auto &descriptors = runtimeRegistry();
         bool valid = true;
@@ -2917,22 +2995,35 @@ static std::atomic<InvariantViolationMode> g_violationMode{InvariantViolationMod
 static std::atomic<InvariantTrapHandler> g_trapHandler{nullptr};
 } // namespace
 
+/// @brief Select how future invariant violations are reported.
+/// @param mode New process-wide reporting mode.
 void setInvariantViolationMode(InvariantViolationMode mode) {
     g_violationMode.store(mode, std::memory_order_relaxed);
 }
 
+/// @brief Read the process-wide invariant violation mode.
+/// @return Currently configured reporting mode.
 InvariantViolationMode getInvariantViolationMode() {
     return g_violationMode.load(std::memory_order_relaxed);
 }
 
+/// @brief Install or remove the VM invariant-trap callback.
+/// @param handler Callback pointer, or null to unregister.
 void setInvariantTrapHandler(InvariantTrapHandler handler) {
     g_trapHandler.store(handler, std::memory_order_relaxed);
 }
 
+/// @brief Read the currently installed invariant-trap callback.
+/// @return Callback pointer, or null when none is installed.
 InvariantTrapHandler getInvariantTrapHandler() {
     return g_trapHandler.load(std::memory_order_relaxed);
 }
 
+/// @brief Report an unrecoverable runtime signature invariant violation.
+/// @details Trap mode first offers the message to the registered VM callback;
+///          returning from that callback still falls back to logging and abort.
+/// @param message Null-terminated diagnostic message.
+/// @return This function never returns.
 [[noreturn]] void reportInvariantViolation(const char *message) {
     // In Trap mode with a registered handler, attempt to route through the VM.
     if (g_violationMode.load(std::memory_order_relaxed) == InvariantViolationMode::Trap &&

@@ -11,6 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements redundancy elimination and safe motion for IL checks.
+/// @details The pass combines constant and range proofs, dominating equivalent
+///          checks, guarded overflow facts, and conservative loop hoisting while
+///          preserving trap ordering and result types.
+
 #include "il/transform/CheckOpt.hpp"
 
 #include "il/transform/AnalysisIDs.hpp"
@@ -51,6 +57,9 @@ using zanna::analysis::RangeMap;
 using zanna::analysis::rangeForValue;
 
 /// @brief Check if an opcode is a check operation that can be optimized.
+/// @param op Opcode to classify.
+/// @return True for bounds, checked division/remainder, checked cast, or checked
+///         arithmetic operations handled by this pass.
 bool isCheckOpcode(Opcode op) {
     switch (op) {
         case Opcode::IdxChk:
@@ -72,20 +81,29 @@ bool isCheckOpcode(Opcode op) {
 }
 
 /// @brief Check if an opcode is an overflow-checked arithmetic operation.
+/// @param op Opcode to classify.
+/// @return True for checked add, subtract, or multiply.
 bool isOverflowOpcode(Opcode op) {
     return op == Opcode::IAddOvf || op == Opcode::ISubOvf || op == Opcode::IMulOvf;
 }
 
+/// @brief Test whether a checked instruction can use a plain I64 result shape.
+/// @param instr Checked arithmetic instruction.
+/// @return True for explicit I64 or parser-placeholder Void result types.
 bool canDemoteToPlainI64(const Instr &instr) {
     return instr.type.kind == Type::Kind::Void || instr.type.kind == Type::Kind::I64;
 }
 
+/// @brief Stamp the canonical I64 result type after checked-op demotion.
+/// @param instr Rewritten instruction; result-less instructions are unchanged.
 void stampPlainI64ResultType(Instr &instr) {
     if (instr.result)
         instr.type = Type(Type::Kind::I64);
 }
 
 /// @brief Return the plain arithmetic opcode corresponding to a checked op.
+/// @param op Checked arithmetic opcode.
+/// @return Plain add, subtract, or multiply opcode; empty for other operations.
 std::optional<Opcode> plainOpcodeForOverflow(Opcode op) {
     switch (op) {
         case Opcode::IAddOvf:
@@ -143,6 +161,8 @@ bool tryConstantFoldOverflow(Instr &instr) {
 
 /// @brief Return true when a checked div/rem instruction can be represented by
 ///        its plain counterpart because the divisor check is statically proven.
+/// @param instr Candidate division or remainder instruction, rewritten on success.
+/// @return True when zero and signed overflow traps are impossible.
 bool tryDemoteCheckedDivRem(Instr &instr) {
     if (instr.operands.size() < 2 || instr.operands[1].kind != Value::Kind::ConstInt)
         return false;
@@ -191,6 +211,11 @@ bool tryDemoteCheckedDivRem(Instr &instr) {
     }
 }
 
+/// @brief Find a temporary definition earlier than a limiting instruction.
+/// @param block Block whose instructions are scanned in order.
+/// @param limit Instruction at which the search stops.
+/// @param id Temporary identifier to locate.
+/// @return Borrowed definition pointer, or null when absent before @p limit.
 const Instr *findDefBefore(const BasicBlock &block, const Instr &limit, unsigned id) {
     for (const auto &instr : block.instructions) {
         if (&instr == &limit)
@@ -201,6 +226,12 @@ const Instr *findDefBefore(const BasicBlock &block, const Instr &limit, unsigned
     return nullptr;
 }
 
+/// @brief Recognize the nonnegative sign-bias term used by signed division lowering.
+/// @param block Block containing the candidate chain.
+/// @param limit Addition instruction that must follow the definitions.
+/// @param dividend Value shifted to extract its sign.
+/// @param biasValue Candidate `(dividend >> 63) & mask` result.
+/// @return True when the definition chain proves the bias cannot overflow.
 bool isSignBiasForDividend(const BasicBlock &block,
                            const Instr &limit,
                            const Value &dividend,
@@ -221,6 +252,10 @@ bool isSignBiasForDividend(const BasicBlock &block,
            sign->operands[1].kind == Value::Kind::ConstInt && sign->operands[1].i64 == 63;
 }
 
+/// @brief Demote a checked add used solely to apply a signed-division bias.
+/// @param block Block containing @p instr and its operands' definitions.
+/// @param instr Candidate checked add, rewritten on success.
+/// @return True when either operand is a recognized sign-bias value.
 bool tryDemoteSignBiasAdd(const BasicBlock &block, Instr &instr) {
     if (instr.op != Opcode::IAddOvf || instr.operands.size() != 2)
         return false;
@@ -236,6 +271,9 @@ bool tryDemoteSignBiasAdd(const BasicBlock &block, Instr &instr) {
     return false;
 }
 
+/// @brief Count incoming CFG edges for every referenced block label.
+/// @param function Function whose terminator labels are scanned.
+/// @return Map from block label to predecessor-edge count.
 std::unordered_map<std::string, unsigned> computePredecessorCounts(const Function &function) {
     std::unordered_map<std::string, unsigned> counts;
     for (const auto &block : function.blocks) {
@@ -252,10 +290,16 @@ std::unordered_map<std::string, unsigned> computePredecessorCounts(const Functio
 /// @details Two checks with the same key test the same condition. Uses the
 ///          shared valueEquals() helper for consistent value comparison.
 struct CheckKey {
+    /// Check opcode.
     Opcode op{Opcode::Count};
+    /// Instruction type relevant to check identity.
     Type type;
+    /// Ordered checked values and limits.
     std::vector<Value> operands;
 
+    /// @brief Compare two check conditions structurally.
+    /// @param other Candidate key.
+    /// @return True when opcode, type, and every operand are equivalent.
     bool operator==(const CheckKey &other) const {
         if (op != other.op || operands.size() != other.operands.size())
             return false;
@@ -274,6 +318,9 @@ struct CheckKey {
 /// @details Combines opcode and type with each operand hash using the
 ///          shared valueHash() helper for consistency.
 struct CheckKeyHash {
+    /// @brief Hash a structural check key.
+    /// @param key Key to hash.
+    /// @return Combined opcode, type, and operand hash.
     size_t operator()(const CheckKey &key) const {
         size_t h = static_cast<size_t>(key.op);
         h ^= static_cast<size_t>(key.type.kind) << 8;
@@ -285,6 +332,8 @@ struct CheckKeyHash {
 };
 
 /// @brief Build a CheckKey from an instruction.
+/// @param instr Check instruction to snapshot.
+/// @return Owning key containing its opcode, type, and operands.
 CheckKey makeCheckKey(const Instr &instr) {
     CheckKey key;
     key.op = instr.op;
@@ -313,6 +362,7 @@ CheckKey makeCheckKey(const Instr &instr) {
 ///        (the normalized value produced by the check).
 /// @return True when the check condition is statically guaranteed to succeed.
 bool isCheckTriviallyTrue(const Instr &instr, Value &replacementOut) {
+    /// Test whether one operand is an integer literal.
     auto isConstInt = [](const Value &v) { return v.kind == Value::Kind::ConstInt; };
 
     switch (instr.op) {
@@ -338,7 +388,9 @@ bool isCheckTriviallyTrue(const Instr &instr, Value &replacementOut) {
 
 /// @brief Information about a dominating check instruction.
 struct DominatingCheck {
+    /// Block containing the available check.
     BasicBlock *block{nullptr};
+    /// Optional SSA result reusable by a dominated equivalent.
     std::optional<unsigned> resultId;
 };
 
@@ -443,6 +495,9 @@ bool isGuaranteedToExecute(const BasicBlock &block, const Loop &loop) {
 /// memory operation, or earlier trapping instruction must not be moved ahead
 /// of it. Instructions already hoisted are absent from the prefix, which lets
 /// consecutive checks move while retaining their original order.
+/// @param block Candidate loop-header block.
+/// @param index Index of the instruction considered for hoisting.
+/// @return True when every preceding instruction is side-effect and memory free.
 bool hasSpeculatablePrefix(const BasicBlock &block, size_t index) {
     for (size_t i = 0; i < index; ++i) {
         const Instr &prefix = block.instructions[i];
@@ -458,7 +513,7 @@ bool hasSpeculatablePrefix(const BasicBlock &block, size_t index) {
 ///          instructions, trap instructions) require special care when
 ///          hoisting. This function conservatively detects such loops.
 /// @param loop The loop to check.
-/// @param function The function containing the loop.
+/// @param blockMap Function block-label lookup map.
 /// @return True if the loop contains any EH-sensitive operations.
 bool loopHasEHSensitiveOps(const Loop &loop,
                            const std::unordered_map<std::string, BasicBlock *> &blockMap) {
@@ -486,10 +541,19 @@ bool loopHasEHSensitiveOps(const Loop &loop,
 
 } // namespace
 
+/// @brief Return the pass registry identifier.
+/// @return Stable `check-opt` identifier.
 std::string_view CheckOpt::id() const {
     return "check-opt";
 }
 
+/// @brief Optimize check instructions in one function.
+/// @details Runs guarded and range-based demotion, constant elimination,
+///          dominance-based reuse, and trap-order-preserving loop hoisting.
+/// @param function Function updated in place.
+/// @param analysis Manager providing dominators, loop info, and integer ranges.
+/// @return All analyses when unchanged; otherwise preserves module analyses and
+///         the unchanged CFG, dominator, and loop structure.
 PreservedAnalyses CheckOpt::run(Function &function, AnalysisManager &analysis) {
     if (function.blocks.empty())
         return PreservedAnalyses::all();
@@ -669,6 +733,7 @@ PreservedAnalyses CheckOpt::run(Function &function, AnalysisManager &analysis) {
     std::unordered_map<CheckKey, unsigned, CheckKeyHash> depthCount;
     std::vector<std::pair<BasicBlock *, size_t>> toErase;
 
+    /// Visit the dominator tree while maintaining path-scoped available checks.
     std::function<void(BasicBlock *)> visit = [&](BasicBlock *block) {
         if (!block)
             return;
@@ -841,6 +906,11 @@ PreservedAnalyses CheckOpt::run(Function &function, AnalysisManager &analysis) {
     return preserved;
 }
 
+/// @brief Demote subtraction guarded by a unique signed-comparison edge.
+/// @param function Function whose conditional branches are scanned.
+/// @param blockMap Label-to-block lookup for guard successors.
+/// @param predecessorCounts Incoming edge counts used to require unique guards.
+/// @return True when at least one checked subtraction became plain.
 bool CheckOpt::runGuardOverflowElim(
     Function &function,
     const std::unordered_map<std::string, BasicBlock *> &blockMap,
@@ -930,8 +1000,11 @@ bool CheckOpt::runGuardOverflowElim(
     return changed;
 }
 
+/// @brief Register the sequential check optimization factory.
+/// @param registry Pass registry updated with `check-opt`.
 void registerCheckOptPass(PassRegistry &registry) {
     // Sequential: consumes whole-module dominator/loop analyses while moving checks.
+    /// Construct a fresh check optimization pass for each pipeline request.
     registry.registerFunctionPass("check-opt", []() { return std::make_unique<CheckOpt>(); }, false);
 }
 

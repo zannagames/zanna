@@ -37,6 +37,10 @@
 namespace il::transform::simplify_cfg {
 namespace {
 
+/// @brief Classify opcodes whose unused execution is pure and non-trapping.
+/// @param op Opcode to inspect.
+/// @return `true` for the explicitly enumerated arithmetic, comparison, cast,
+///         and constant/address operations.
 bool isAlwaysNonTrappingSideEffectFree(il::core::Opcode op) {
     using il::core::Opcode;
     switch (op) {
@@ -78,6 +82,10 @@ bool isAlwaysNonTrappingSideEffectFree(il::core::Opcode op) {
     }
 }
 
+/// @brief Determine whether an unused instruction may disappear with a forwarder.
+/// @param function Function providing allocation provenance for load safety.
+/// @param instr Non-terminator instruction to classify.
+/// @return `true` for a known pure/non-trapping operation or a proven-safe load.
 bool canEraseForwardingInstruction(const il::core::Function &function,
                                    const il::core::Instr &instr) {
     if (hasSideEffects(instr))
@@ -87,6 +95,8 @@ bool canEraseForwardingInstruction(const il::core::Function &function,
     return isAlwaysNonTrappingSideEffectFree(instr.op);
 }
 
+/// @brief Canonicalize a non-switch terminator whose argument bundles are all empty.
+/// @param instr Terminator whose redundant empty bundle vector may be cleared.
 void clearIfAllBranchArgsEmpty(il::core::Instr &instr) {
     if (instr.op == il::core::Opcode::SwitchI32)
         return;
@@ -274,6 +284,7 @@ bool removeEmptyForwarders(SimplifyCFG::SimplifyCFGPassContext &ctx) {
     size_t removedBlocks = 0;
 
     for (const auto &deadLabel : forwardingBlocks) {
+        /// Relocate the recorded forwarder label in current block storage.
         auto deadIt =
             std::find_if(F.blocks.begin(), F.blocks.end(), [&](const il::core::BasicBlock &block) {
                 return block.label == deadLabel;
@@ -290,6 +301,7 @@ bool removeEmptyForwarders(SimplifyCFG::SimplifyCFGPassContext &ctx) {
         if (succLabel == dead.label)
             continue;
 
+        /// Resolve the forwarder's successor label in current block storage.
         auto succIt =
             std::find_if(F.blocks.begin(), F.blocks.end(), [&](const il::core::BasicBlock &block) {
                 return block.label == succLabel;

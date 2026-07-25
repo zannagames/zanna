@@ -37,6 +37,7 @@
 #include "rt_canvas3d_internal.h"
 #include "rt_file_stdio.h"
 #include "rt_json.h"
+#include "rt_path.h"
 #include "rt_map.h"
 #include "rt_morphtarget3d.h"
 #include "rt_morphtarget3d_internal.h"
@@ -1955,6 +1956,15 @@ static rt_scene_node3d *vscn_parse_node_fields(void *node_obj,
     }
 
     {
+        /* VSCN v7 prefab reference (ADR 0187). Absolute references are
+         * tolerated at load (authoring rejects them); resolution happens in
+         * the post-parse graft pass, which needs the referencing file path. */
+        rt_string prefab_ref = vjson_string_value(node_obj, "prefab");
+        if (prefab_ref && rt_str_len(prefab_ref) > 0)
+            node->prefab_path = rt_string_ref(prefab_ref);
+    }
+
+    {
         int64_t mesh_index;
         if (!vscn_read_index_ref(node_obj, "mesh", &mesh_index) ||
             (mesh_index >= 0 && (mesh_index >= mesh_count || !meshes || !meshes[mesh_index]))) {
@@ -2282,6 +2292,196 @@ static char *vscn_strdup_cstr(const char *text) {
     return copy;
 }
 
+/* -------------------------------------------------------------------------
+ * VSCN v7 prefab grafting (ADR 0187)
+ *
+ * One implementation serves every consumer: SceneGraph.Load, SceneAsset,
+ * async handles, and streaming all funnel through the buffer loader below,
+ * so references resolve identically everywhere. The frame stack carries the
+ * canonical path chain for cycle detection, the nesting depth, and a shared
+ * per-root instantiation budget. Failures never fail the outer load: the
+ * offending node stays an empty placeholder that retains its reference and
+ * round-trips byte-identically.
+ * ---------------------------------------------------------------------- */
+
+#define VSCN_PREFAB_MAX_DEPTH 8
+#define VSCN_PREFAB_MAX_INSTANCES 4096
+
+typedef struct vscn_prefab_frame {
+    const char *canonical_path;
+    const struct vscn_prefab_frame *parent;
+    int depth;
+    int32_t *instance_budget;
+} vscn_prefab_frame;
+
+static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
+                                              char *json,
+                                              size_t file_size,
+                                              const vscn_prefab_frame *prefab_stack);
+
+/// @brief Load one referenced scene file with the prefab stack threaded through.
+static void *vscn_prefab_load_file(rt_string path, const vscn_prefab_frame *prefab_stack) {
+    const char *filepath;
+    char *json = NULL;
+    size_t file_size;
+    if (!path)
+        return NULL;
+    filepath = rt_string_cstr(path);
+    if (!filepath)
+        return NULL;
+    json = vscn_read_file(filepath, &file_size);
+    if (!json)
+        return NULL;
+    return rt_scene3d_load_impl_from_buffer(filepath, json, file_size, prefab_stack);
+}
+
+/// @brief Mark one grafted subtree as transient instance content.
+static void vscn_mark_instance_content(rt_scene_node3d *node) {
+    if (!node)
+        return;
+    node->is_instance_content = 1;
+    for (int32_t i = 0; i < scene3d_node_child_count(node); ++i)
+        vscn_mark_instance_content(scene_node3d_checked(node->children[i]));
+}
+
+/// @brief Resolve and graft one prefab node's referenced content.
+/// @details Every guard failure leaves the node an empty placeholder with
+///          its reference retained; the surrounding load still succeeds.
+static void vscn_graft_one_prefab(rt_scene_node3d *node,
+                                  rt_string base_dir,
+                                  const vscn_prefab_frame *self_frame) {
+    rt_string joined = NULL;
+    rt_string canonical = NULL;
+    rt_scene3d *child_scene = NULL;
+
+    if (!node || !node->prefab_path)
+        return;
+    if (self_frame->depth >= VSCN_PREFAB_MAX_DEPTH)
+        return;
+    if (self_frame->instance_budget && *self_frame->instance_budget <= 0)
+        return;
+
+    joined = rt_path_join(base_dir, node->prefab_path);
+    if (!joined)
+        return;
+    canonical = rt_path_abs(joined);
+    if (!canonical) {
+        rt_string_unref(joined);
+        return;
+    }
+    {
+        const char *canonical_cstr = rt_string_cstr(canonical);
+        const vscn_prefab_frame *frame = self_frame;
+        while (canonical_cstr && frame) {
+            if (frame->canonical_path && strcmp(frame->canonical_path, canonical_cstr) == 0) {
+                rt_string_unref(joined);
+                rt_string_unref(canonical);
+                return; /* cycle: placeholder */
+            }
+            frame = frame->parent;
+        }
+        if (!canonical_cstr) {
+            rt_string_unref(joined);
+            rt_string_unref(canonical);
+            return;
+        }
+        if (self_frame->instance_budget)
+            (*self_frame->instance_budget)--;
+        {
+            vscn_prefab_frame child_frame;
+            child_frame.canonical_path = canonical_cstr;
+            child_frame.parent = self_frame;
+            child_frame.depth = self_frame->depth + 1;
+            child_frame.instance_budget = self_frame->instance_budget;
+            child_scene =
+                (rt_scene3d *)vscn_prefab_load_file(canonical, &child_frame);
+        }
+    }
+    rt_string_unref(joined);
+    rt_string_unref(canonical);
+    if (!child_scene)
+        return; /* missing/invalid source: placeholder with retained ref */
+
+    if (child_scene->root) {
+        while (scene3d_node_child_count(child_scene->root) > 0) {
+            rt_scene_node3d *grafted = scene_node3d_checked(child_scene->root->children[0]);
+            if (!grafted || !rt_scene_node3d_try_add_child(node, grafted))
+                break;
+        }
+    }
+    for (int32_t i = 0; i < scene3d_node_child_count(node); ++i)
+        vscn_mark_instance_content(scene_node3d_checked(node->children[i]));
+    {
+        void *scene_ref = child_scene;
+        scene3d_release_ref(&scene_ref);
+    }
+}
+
+/// @brief Resolve every prefab reference in one freshly parsed scene.
+static void vscn_graft_prefabs(rt_scene3d *scene,
+                               const char *filepath,
+                               const vscn_prefab_frame *parent_stack) {
+    rt_scene_node3d **stack = NULL;
+    size_t count = 0;
+    size_t capacity = 256;
+    rt_string self_path = NULL;
+    rt_string self_abs = NULL;
+    rt_string base_dir = NULL;
+    int32_t local_budget = VSCN_PREFAB_MAX_INSTANCES;
+    vscn_prefab_frame self_frame;
+
+    if (!scene || !scene->root || !filepath)
+        return;
+    self_path = rt_string_from_bytes(filepath, strlen(filepath));
+    if (!self_path)
+        return;
+    self_abs = rt_path_abs(self_path);
+    base_dir = rt_path_dir(self_path);
+    rt_string_unref(self_path);
+    if (!self_abs || !base_dir) {
+        if (self_abs)
+            rt_string_unref(self_abs);
+        if (base_dir)
+            rt_string_unref(base_dir);
+        return;
+    }
+    self_frame.canonical_path = rt_string_cstr(self_abs);
+    self_frame.parent = parent_stack;
+    self_frame.depth = parent_stack ? parent_stack->depth + 1 : 1;
+    self_frame.instance_budget =
+        parent_stack ? parent_stack->instance_budget : &local_budget;
+
+    stack = (rt_scene_node3d **)malloc(capacity * sizeof(*stack));
+    if (stack) {
+        stack[count++] = scene->root;
+        while (count > 0) {
+            rt_scene_node3d *current = stack[--count];
+            if (!current)
+                continue;
+            if (current->prefab_path) {
+                vscn_graft_one_prefab(current, base_dir, &self_frame);
+                continue; /* grafted content never re-resolves */
+            }
+            for (int32_t i = 0; i < scene3d_node_child_count(current); ++i) {
+                if (count >= capacity) {
+                    size_t next_capacity = capacity * 2u;
+                    rt_scene_node3d **grown = (rt_scene_node3d **)realloc(
+                        stack, next_capacity * sizeof(*stack));
+                    if (!grown)
+                        break;
+                    stack = grown;
+                    capacity = next_capacity;
+                }
+                if (count < capacity)
+                    stack[count++] = scene_node3d_checked(current->children[i]);
+            }
+        }
+        free(stack);
+    }
+    rt_string_unref(self_abs);
+    rt_string_unref(base_dir);
+}
+
 /// @brief Deserialize a Scene3D from a `.vscn` (JSON) file; returns NULL on failure.
 /// @details Inverts `rt_scene3d_save`: parses the JSON, rebuilds the shared-asset arrays in
 ///   dependency order (textures, then cubemaps, then materials, then meshes), and finally walks the
@@ -2290,7 +2490,10 @@ static char *vscn_strdup_cstr(const char *text) {
 /// @details Owns @p json (a NUL-terminated malloc buffer of @p file_size bytes) and frees it
 ///   on every path. @p filepath is used for diagnostics only — no file IO happens here, which
 ///   lets streaming commit worker-staged VSCN bytes without touching the disk on the main thread.
-static void *rt_scene3d_load_impl_from_buffer(const char *filepath, char *json, size_t file_size) {
+static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
+                                              char *json,
+                                              size_t file_size,
+                                              const vscn_prefab_frame *prefab_stack) {
     rt_string json_text = NULL;
     void *root = NULL;
     void *textures_arr = NULL;
@@ -2377,7 +2580,7 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath, char *json, 
         void *version_value = vjson_get(root, "version");
         if (version_value && !vjson_value_i64_exact(version_value, &version))
             goto fail;
-        if ((format && strcmp(format, "vscn") != 0) || version < 1 || version > 6)
+        if ((format && strcmp(format, "vscn") != 0) || version < 1 || version > 7)
             goto fail;
         if ((textures_arr && !vjson_is_seq(textures_arr)) ||
             (cubemaps_arr && !vjson_is_seq(cubemaps_arr)) ||
@@ -2608,6 +2811,14 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath, char *json, 
                                        version))
             goto fail;
     }
+    /* Document-level root metadata (scene conventions: bake.*, env.*). The
+     * shared node parser reads the same "metadata" member shape. */
+    if (!vscn_parse_node_metadata(scene->root, root, version)) {
+        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                           "Scene3D.Load: invalid root metadata");
+        goto fail;
+    }
+    vscn_graft_prefabs(scene, filepath, prefab_stack);
     scene->node_count = scene3d_count_subtree(scene->root);
     if (scene->node_count < 0) {
         rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE,
@@ -2663,7 +2874,7 @@ static void *rt_scene3d_load_impl(rt_string path) {
     json = vscn_read_file(filepath, &file_size);
     if (!json)
         return NULL;
-    return rt_scene3d_load_impl_from_buffer(filepath, json, file_size);
+    return rt_scene3d_load_impl_from_buffer(filepath, json, file_size, NULL);
 }
 
 /// @brief Deserialize a Scene3D from already-read `.vscn` JSON text (streaming staging path).
@@ -2689,8 +2900,8 @@ void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len) 
     }
     memcpy(copy, text, len);
     copy[len] = '\0';
-    void *scene =
-        rt_scene3d_load_impl_from_buffer(path ? rt_string_cstr(path) : "<memory>", copy, len);
+    void *scene = rt_scene3d_load_impl_from_buffer(
+        path ? rt_string_cstr(path) : "<memory>", copy, len, NULL);
     if (scene) {
         rt_asset_error_end_load_success();
     } else {

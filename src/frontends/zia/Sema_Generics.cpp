@@ -23,6 +23,8 @@ namespace il::frontends::zia {
 namespace {
 
 /// @brief Replace characters invalid in a mangled name (keeping alphanumerics and `.`) with `_`.
+/// @param text Type-name fragment to sanitize.
+/// @return Sanitized copy suitable for embedding in a lowered symbol.
 std::string sanitizeMangledPart(std::string text) {
     for (char &ch : text) {
         unsigned char c = static_cast<unsigned char>(ch);
@@ -33,6 +35,7 @@ std::string sanitizeMangledPart(std::string text) {
 }
 
 /// @brief Build a structurally delimited mangled-name fragment for one type argument.
+/// @param type Concrete or parameterized semantic type.
 /// @return A sanitized fragment from the type's name/kind plus delimited child fragments.
 ///
 /// @details Bare type parameters intentionally remain just their parameter name so generic-context
@@ -71,6 +74,7 @@ std::string mangleTypeArg(TypeRef type) {
 //=============================================================================
 
 /// @brief Push a type-parameter → concrete-type substitution scope.
+/// @param substitutions Bindings visible until the matching @ref popTypeParams call.
 void Sema::pushTypeParams(const std::map<std::string, TypeRef> &substitutions) {
     typeParamStack_.push_back(substitutions);
 }
@@ -85,6 +89,7 @@ void Sema::popTypeParams() {
 }
 
 /// @brief Resolve a type-parameter name through the active substitution scopes.
+/// @param name Generic type-parameter name.
 /// @return The substituted type, or nullptr if @p name is not bound (left unsubstituted).
 TypeRef Sema::lookupTypeParam(const std::string &name) const {
     // Search from innermost to outermost scope
@@ -170,11 +175,14 @@ std::string Sema::mangleGenericName(const std::string &base, const std::vector<T
 }
 
 /// @brief Record a generic type declaration so it can be instantiated on demand.
+/// @param name Semantic base name.
+/// @param decl Generic struct, class, or interface declaration.
 void Sema::registerGenericType(const std::string &name, Decl *decl) {
     genericTypeDecls_[name] = decl;
 }
 
 /// @brief Return the generic parameter names declared by a struct/class/interface/function.
+/// @param decl Declaration to inspect.
 /// @return The parameter name list, or empty for declarations that take none.
 std::vector<std::string> Sema::getGenericParams(const Decl *decl) {
     switch (decl->kind) {
@@ -192,6 +200,7 @@ std::vector<std::string> Sema::getGenericParams(const Decl *decl) {
 }
 
 /// @brief Return the per-parameter interface constraints of a generic declaration.
+/// @param decl Declaration to inspect.
 /// @return Constraint interface names positional to the generic params ("" = unconstrained).
 std::vector<std::string> Sema::getGenericParamConstraints(const Decl *decl) {
     switch (decl->kind) {
@@ -454,16 +463,21 @@ TypeRef Sema::instantiateGenericType(const std::string &name,
 }
 
 /// @brief Record a generic function declaration for on-demand instantiation.
+/// @param name Semantic base name.
+/// @param decl Generic function declaration.
 void Sema::registerGenericFunction(const std::string &name, FunctionDecl *decl) {
     genericFunctionDecls_[name] = decl;
 }
 
 /// @brief Test whether a name refers to a registered generic function.
+/// @param name Semantic function name.
+/// @return True when a generic declaration is registered under @p name.
 bool Sema::isGenericFunction(const std::string &name) const {
     return genericFunctionDecls_.count(name) > 0;
 }
 
 /// @brief Look up a generic function declaration by name.
+/// @param name Semantic function name.
 /// @return The declaration, or nullptr if none is registered.
 FunctionDecl *Sema::getGenericFunction(const std::string &name) const {
     auto it = genericFunctionDecls_.find(name);
@@ -471,6 +485,7 @@ FunctionDecl *Sema::getGenericFunction(const std::string &name) const {
 }
 
 /// @brief Look up an ordinary function declaration by name.
+/// @param name Source or lowered function name.
 /// @return The declaration, or nullptr if not found.
 FunctionDecl *Sema::getFunctionDecl(const std::string &name) const {
     auto it = functionDecls_.find(name);
@@ -478,6 +493,8 @@ FunctionDecl *Sema::getFunctionDecl(const std::string &name) const {
 }
 
 /// @brief Return all overload declarations sharing a function name.
+/// @param name Semantic overload-family name.
+/// @return Registered declarations in insertion order, or an empty vector.
 std::vector<FunctionDecl *> Sema::getFunctionOverloads(const std::string &name) const {
     auto it = functionOverloads_.find(name);
     if (it == functionOverloads_.end())

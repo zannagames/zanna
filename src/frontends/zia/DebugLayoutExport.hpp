@@ -5,20 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/zia/DebugLayoutExport.hpp
+// File: src/frontends/zia/DebugLayoutExport.hpp
 // Purpose: Frontend-owned export shape for per-class field layouts consumed by
 //          the VM debugger's class-instance expansion (ADR 0138).
 // Key invariants:
-//   - Pure data with no IL/VM dependencies; the tool layer converts this to the
-//     VM's DebugClassLayoutTable, so no frontend<->VM include edge exists.
-//   - Field offsets are byte offsets from the object base pointer, exactly as
-//     the lowerer's field GEPs use them; the table key is the runtime class id
-//     stamped into instances by rt_obj_new_i64.
-// Ownership/Lifetime:
-//   - Value-owned by CompilerResult; captured once after lowering.
-// Links: frontends/zia/Compiler.hpp, frontends/zia/Lowerer.hpp,
+//   * Pure data with no IL/VM dependencies; the tool layer performs conversion
+//     to the VM's DebugClassLayoutTable.
+//   * Field offsets are byte offsets from the object base pointer.
+//   * Table keys are runtime class IDs stamped into allocated instances.
+// Ownership: Value-owned by CompilerResult and captured after lowering.
+// References: src/frontends/zia/Compiler.hpp, src/frontends/zia/Lowerer.hpp,
 //        include/zanna/vm/debug/DebugClassLayout.hpp,
 //        docs/adr/0138-debug-class-layout-sidecar.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares the frontend-owned debugger class-layout export shape.
+/// @details Keeps debugger metadata transport independent of VM headers.
 //
 //===----------------------------------------------------------------------===//
 #pragma once

@@ -1,0 +1,82 @@
+// =============================================================================
+// weapons/targets.zia — physics-body → damageable-target registry
+// =============================================================================
+//
+// A raycast/overlap returns the hit PhysicsBody3D; this registry maps that body
+// back to a (targetKind, entityIndex, region) so the damage pipeline knows what
+// it hit and where. Lookup is reference equality on the body handle (no hash
+// map). A damageable typically registers two bodies — a torso (REGION_BODY) and
+// a head/weakpoint (REGION_HEAD/WEAKPOINT) — so a headshot is just "which body
+// did the ray hit". Dynamic targets register on spawn and free on death.
+// =============================================================================
+module targets;
+
+bind Zanna.Graphics3D as G3D;
+bind "../config" as config;
+
+class TargetRegistry {
+    hide List[G3D.PhysicsBody3D] body;
+    hide List[Integer] kind;
+    hide List[Integer] index;
+    hide List[Integer] region;
+    hide List[Integer] alive;
+
+    expose func init() {
+        body = []; kind = []; index = []; region = []; alive = [];
+    }
+
+    expose func clear() {
+        body = []; kind = []; index = []; region = []; alive = [];
+    }
+
+    expose func register(b: G3D.PhysicsBody3D, k: Integer, idx: Integer, reg: Integer) {
+        var i = 0;
+        while i < body.Count {
+            if alive[i] == 0 {
+                body[i] = b; kind[i] = k; index[i] = idx; region[i] = reg; alive[i] = 1;
+                return;
+            }
+            i = i + 1;
+        }
+        body.Add(b); kind.Add(k); index.Add(idx); region.Add(reg); alive.Add(1);
+    }
+
+    // Free every slot pointing at this body (torso + head).
+    expose func unregister(b: G3D.PhysicsBody3D) {
+        var i = 0;
+        while i < body.Count {
+            if alive[i] == 1 && body[i] == b { alive[i] = 0; }
+            i = i + 1;
+        }
+    }
+
+    // Free every slot for a (kind, index) entity regardless of body.
+    expose func unregisterEntity(k: Integer, idx: Integer) {
+        var i = 0;
+        while i < body.Count {
+            if alive[i] == 1 && kind[i] == k && index[i] == idx { alive[i] = 0; }
+            i = i + 1;
+        }
+    }
+
+    // Resolve a hit body to a registry slot, or -1.
+    expose func resolve(b: G3D.PhysicsBody3D) -> Integer {
+        var i = 0;
+        while i < body.Count {
+            if alive[i] == 1 && body[i] == b { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    expose func kindAt(slot: Integer) -> Integer { return kind[slot]; }
+    expose func indexAt(slot: Integer) -> Integer { return index[slot]; }
+    expose func regionAt(slot: Integer) -> Integer { return region[slot]; }
+
+    expose func count() -> Integer {
+        var n = 0;
+        var i = 0;
+        while i < alive.Count { n = n + alive[i]; i = i + 1; }
+        return n;
+    }
+}

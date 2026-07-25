@@ -15,6 +15,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the expression visitor and scalar-entry points for BASIC
+///        AST-to-IL lowering.
+
 #include "frontends/basic/IdentifierUtil.hpp"
 #include "frontends/basic/LowerExprBuiltin.hpp"
 #include "frontends/basic/LowerExprLogical.hpp"
@@ -381,6 +385,12 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
 
     /// @brief Resolve and lower a global / qualified procedure call (the path
     ///        taken when a call is not a field array or current-class method).
+    /// @details Resolves runtime aliases and USING imports before user
+    ///          signatures, lowers BYREF arguments as storage addresses, coerces
+    ///          value arguments to declared types, and records either the call
+    ///          result or the expression-context zero fallback.
+    /// @param expr Call expression not handled as a member-array access or
+    ///        current-class method.
     void lowerGlobalCall(const CallExpr &expr) {
         // Resolve callee (supports qualified call syntax). Canonicalize to
         // maintain case-insensitive semantics for lookups.
@@ -711,6 +721,10 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
     }
 
     /// @brief Lower IS expression via RTTI helpers.
+    /// @details Resolves the target class or interface ID, obtains the runtime
+    ///          type ID of the object value, and converts the runtime predicate
+    ///          result to an IL boolean.
+    /// @param expr Object identity/type-test expression.
     void visit(const IsExpr &expr) override {
         lowerer_.curLoc = expr.loc;
         // Lower left value to an object pointer
@@ -758,6 +772,8 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
     /// @brief Lower ADDRESSOF expression to obtain a function pointer.
     /// @details Emits IL that produces the address of the named SUB or FUNCTION.
     ///          The result is an opaque pointer suitable for passing to threading APIs.
+    /// @param expr Procedure-address expression whose target name is
+    ///        canonicalized for IL linkage.
     void visit(const AddressOfExpr &expr) override {
         lowerer_.curLoc = expr.loc;
         // Emit a global address reference to the function.
@@ -772,6 +788,9 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
     }
 
     /// @brief Lower AS expression via RTTI helpers.
+    /// @details Resolves the target class or interface ID and emits the
+    ///          corresponding runtime checked-cast call.
+    /// @param expr Checked object-cast expression.
     void visit(const AsExpr &expr) override {
         lowerer_.curLoc = expr.loc;
         Lowerer::RVal lhs = lowerer_.lowerExpr(*expr.value);
@@ -816,7 +835,9 @@ class LowererExprVisitor final : public lower::AstVisitor, public ExprVisitor {
     }
 
   private:
+    /// Borrowed lowering context used for all emitted IL and lookups.
     Lowerer &lowerer_;
+    /// Most recent expression result, initialized to an I64 zero fallback.
     Lowerer::RVal result_{IlValue::constInt(0), IlType(IlType::Kind::I64)};
 };
 

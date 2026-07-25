@@ -40,6 +40,9 @@ namespace {
 /// @details Conservative: any call, trap, or checked arithmetic instruction
 ///          is considered potentially throwing. All other instructions are
 ///          considered safe.
+/// @param op Opcode to classify.
+/// @return True when verifier metadata or the conservative fallback marks the
+///         operation as potentially trapping.
 bool canThrow(Opcode op) {
     if (const auto props = il::verify::lookup(op); props && props->canTrap)
         return true;
@@ -61,6 +64,7 @@ bool canThrow(Opcode op) {
 }
 
 /// @brief Optimize EH pairs in a single function.
+/// @param fn Function whose basic blocks are scanned and updated.
 /// @return True if any EH instructions were removed.
 bool ehOptFunction(Function &fn) {
     bool changed = false;
@@ -112,6 +116,9 @@ bool ehOptFunction(Function &fn) {
 
 } // namespace
 
+/// @brief Remove redundant same-block EH regions throughout a module.
+/// @param module Module updated in place.
+/// @return True when at least one `eh.push`/`eh.pop` pair was removed.
 bool ehOpt(Module &module) {
     bool changed = false;
     for (auto &fn : module.functions)

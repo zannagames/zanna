@@ -30,11 +30,13 @@ objects/properties into game-owned entities.
 | `ToJson()` | `String()` | Emit canonical schema v1 JSON. |
 | `Save(path)` | `Boolean(String)` | Save through a same-directory temporary file before replacement. |
 
-Canonical scene files use the `.scene` extension. The loader also accepts legacy
+Canonical scene files use the `.scene2d` extension (`.scene` and `.level`
+remain accepted legacy aliases, ADR 0182). The loader also accepts legacy
 unversioned JSON with `layers[].data` and LevelData-shaped scalar properties for
 import compatibility.
 
-Zanna Studio opens `.scene` and `.level` files in its built-in 2D authoring
+Zanna Studio opens `.scene2d` (plus legacy `.scene` and `.level`) files in
+its built-in 2D authoring
 surface. Its Scene properties group creates, renames, updates, and removes
 scene-wide null, Boolean, integer, floating-point, and string metadata as
 undoable edits. A layer image reference can point to a PNG, JPEG, BMP, or GIF

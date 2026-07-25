@@ -29,6 +29,11 @@
 namespace il::core {
 namespace {
 
+/// @brief Check whether a symbol sidecar already represents its public text field.
+/// @param module Module whose interner owns valid symbols.
+/// @param symbol Existing sidecar handle.
+/// @param text Canonical public identifier text.
+/// @return True when both are empty or the symbol resolves exactly to @p text.
 bool symbolMatches(const Module &module,
                    il::support::Symbol symbol,
                    std::string_view text) {

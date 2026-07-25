@@ -7,6 +7,10 @@
 //
 // File: src/il/transform/OwnershipOpt.cpp
 // Purpose: Implement local ownership traffic cleanup for runtime references.
+// Key invariants:
+//   - A removable pair operates on equal first arguments in the same block.
+//   - Calls are crossed only when shared effect metadata proves them neutral.
+// Ownership/Lifetime: Rewrites caller-owned instruction vectors in place.
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,8 +33,14 @@ using namespace il::core;
 namespace il::transform {
 namespace {
 
+/// @brief Ownership operation represented by a recognized runtime call.
+/// @details Values distinguish unrelated calls, reference increments, and
+///          reference decrements without modifying the original instruction.
 enum class OwnershipCallKind { None, Retain, Release };
 
+/// @brief Classify a direct runtime call as retain, release, or unrelated.
+/// @param instr Instruction whose opcode and callee name are inspected.
+/// @return Ownership kind for supported string and numeric-array helpers.
 [[nodiscard]] OwnershipCallKind classifyOwnershipCall(const Instr &instr) {
     if (instr.op != Opcode::Call)
         return OwnershipCallKind::None;
@@ -50,11 +60,19 @@ enum class OwnershipCallKind { None, Retain, Release };
     return OwnershipCallKind::None;
 }
 
+/// @brief Compare the primary ownership operand of two calls.
+/// @param lhs First instruction.
+/// @param rhs Second instruction.
+/// @return `true` when both have a first operand and those values are equal.
 [[nodiscard]] bool sameFirstArgument(const Instr &lhs, const Instr &rhs) {
     return !lhs.operands.empty() && !rhs.operands.empty() &&
            valueEquals(lhs.operands.front(), rhs.operands.front());
 }
 
+/// @brief Test whether an instruction references a value anywhere.
+/// @param instr Instruction whose ordinary operands and branch bundles are scanned.
+/// @param value Value to find.
+/// @return `true` on the first equal operand or branch argument.
 [[nodiscard]] bool instrUsesValue(const Instr &instr, const Value &value) {
     for (const auto &operand : instr.operands)
         if (valueEquals(operand, value))
@@ -66,6 +84,11 @@ enum class OwnershipCallKind { None, Retain, Release };
     return false;
 }
 
+/// @brief Decide whether an intervening instruction makes pair removal unsafe.
+/// @param instr Instruction between the prospective retain and release.
+/// @param retained Value whose temporary ownership increment would be removed.
+/// @return `true` when the instruction uses the value or may have observable
+///         effects that depend on or disturb ownership state.
 [[nodiscard]] bool mayBlockRetainReleasePair(const Instr &instr, const Value &retained) {
     // Known-neutral runtime helpers borrow every argument: they read handles
     // without touching any reference count and cannot re-enter user code, so
@@ -128,6 +151,11 @@ enum class OwnershipCallKind { None, Retain, Release };
     }
 }
 
+/// @brief Find the first safely matched release after a retain.
+/// @param block Block containing the candidate pair.
+/// @param retainIndex Index of a recognized, result-free retain instruction.
+/// @return Index of the matching result-free release, or `std::nullopt` when
+///         no release is found before a blocking instruction.
 [[nodiscard]] std::optional<std::size_t> findMatchingRelease(const BasicBlock &block,
                                                              std::size_t retainIndex) {
     const Instr &retain = block.instructions[retainIndex];
@@ -150,10 +178,12 @@ enum class OwnershipCallKind { None, Retain, Release };
 
 } // namespace
 
+/// @copydoc OwnershipOpt::id()
 std::string_view OwnershipOpt::id() const {
     return "ownership-opt";
 }
 
+/// @copydoc OwnershipOpt::run()
 PreservedAnalyses OwnershipOpt::run(Function &function, AnalysisManager & /*analysis*/) {
     bool changed = false;
 
@@ -190,7 +220,9 @@ PreservedAnalyses OwnershipOpt::run(Function &function, AnalysisManager & /*anal
     return preserved;
 }
 
+/// @copydoc registerOwnershipOptPass()
 void registerOwnershipOptPass(PassRegistry &registry) {
+    /// Construct a stateless ownership optimizer for each pipeline invocation.
     registry.registerFunctionPass(
         "ownership-opt", []() { return std::make_unique<OwnershipOpt>(); }, true);
 }

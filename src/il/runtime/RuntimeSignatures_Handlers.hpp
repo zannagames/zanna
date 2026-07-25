@@ -16,6 +16,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares typed VM-to-runtime marshalling adapters.
+/// @details Generic templates cover direct C ABI calls, while named adapters
+///          handle array pointers, ownership, narrowing, and hidden parameters.
+
 #pragma once
 
 #include "zanna/runtime/rt.h"
@@ -78,6 +83,9 @@ template <typename T> void storeRequiredResult(void *result, T value) {
 ///          the generic `void **` argument array provided by the VM into typed
 ///          parameters.  The @ref invoke entry point matches the signature
 ///          expected by @ref RuntimeDescriptor.
+/// @tparam Fn Bound runtime function pointer.
+/// @tparam Ret Runtime function return type.
+/// @tparam Args Runtime function parameter types in ABI order.
 template <auto Fn, typename Ret, typename... Args> struct DirectHandler {
     /// @brief Dispatch the runtime call using the supplied argument array.
     ///
@@ -98,6 +106,10 @@ template <auto Fn, typename Ret, typename... Args> struct DirectHandler {
     /// @details Uses `reinterpret_cast` to view each `void *` slot as the
     ///          appropriate type.  When the function returns a value the helper
     ///          stores it through @p result.
+    /// @tparam I Compile-time argument indices.
+    /// @param args Pointer to marshalled argument storage.
+    /// @param result Optional result storage for non-void targets.
+    /// @param Unnamed index sequence selecting each argument slot.
     template <std::size_t... I>
     static void call(void **args, void *result, std::index_sequence<I...>) {
         if constexpr (std::is_void_v<Ret>) {
@@ -116,6 +128,9 @@ template <auto Fn, typename Ret, typename... Args> struct DirectHandler {
 ///          the call to keep values alive.  The wrapper first retains any
 ///          string arguments and then delegates to @ref DirectHandler to
 ///          perform the actual call/return marshalling.
+/// @tparam Fn Bound runtime function pointer.
+/// @tparam Ret Runtime function return type.
+/// @tparam Args Runtime function parameter types in ABI order.
 template <auto Fn, typename Ret, typename... Args> struct ConsumingStringHandler {
     /// @brief Invoke a runtime helper after retaining string arguments.
     /// @param args VM-supplied argument array.
@@ -127,11 +142,17 @@ template <auto Fn, typename Ret, typename... Args> struct ConsumingStringHandler
 
   private:
     /// @brief Retain every string argument present in the parameter pack.
+    /// @tparam I Compile-time argument indices.
+    /// @param args VM-supplied argument array.
+    /// @param Unnamed index sequence selecting argument slots.
     template <std::size_t... I> static void retainStrings(void **args, std::index_sequence<I...>) {
         (retainArg<Args>(args, I), ...);
     }
 
     /// @brief Retain a single argument when it is of type @c rt_string.
+    /// @tparam T Declared argument type.
+    /// @param args VM-supplied argument array.
+    /// @param index Zero-based slot index.
     template <typename T> static void retainArg(void **args, std::size_t index) {
         if constexpr (std::is_same_v<std::remove_cv_t<T>, rt_string>) {
             if (!args)

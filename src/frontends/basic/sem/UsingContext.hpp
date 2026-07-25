@@ -5,11 +5,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/sem/UsingContext.hpp
+// File: src/frontends/basic/sem/UsingContext.hpp
 // Purpose: Tracks file-scoped USING directives with declaration order and alias resolution.
-// Key invariants: // Key invariants:
-// Ownership/Lifetime: Owned by per-file semantic analysis context.
-// Links: docs/internals/codemap.md, CLAUDE.md
+// Key invariants:
+//   * Import iteration preserves source declaration order.
+//   * Alias lookup is case-insensitive while stored spellings are preserved.
+//   * clear() removes imports and aliases together.
+// Ownership: UsingContext owns all stored import and alias strings for the
+//            lifetime of its file-level semantic context.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares ordered BASIC USING imports and alias resolution.
 //
 //===----------------------------------------------------------------------===//
 

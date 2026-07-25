@@ -1,0 +1,309 @@
+// =============================================================================
+// probes/combat_probe.zia — P2 gate: weapons + damage pipeline (headless)
+// =============================================================================
+//
+// Fires the weapon systems at the arena dummies and asserts the damage pipeline
+// invariants: hitscan lands on an aimed target, the headshot multiplier applies,
+// enough shots kill (and unregister) a target, the shotgun fires its pellet
+// count, projectiles travel and impact, blasts damage through the registry, and
+// the whole sequence is deterministic run-to-run.
+// =============================================================================
+module combat_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../game" as game;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func damageRows(g: game.Game, kind: Integer, index: Integer) -> Integer {
+    var bus = g.getBus();
+    var rows = 0;
+    var i = 0;
+    while i < bus.getCount() {
+        if bus.kindAt(i) == config.EV_DAMAGE && bus.aAt(i) == kind && bus.bAt(i) == index {
+            rows = rows + 1;
+        }
+        i = i + 1;
+    }
+    return rows;
+}
+
+// Aim at a dummy body (chest) and hold-fire until `shots` shots have gone off.
+func fireAtBodyUntil(g: game.Game, dummy: Integer, chestY: Float, shots: Integer) {
+    var ball = g.getBallistics();
+    var start = ball.getShotsFired();
+    var spins = 0;
+    while ball.getShotsFired() - start < shots && spins < 4000 {
+        var ax = g.getArena().dummyPosX(dummy);
+        var az = g.getArena().dummyPosZ(dummy);
+        g.scriptAimAt(ax, chestY, az);
+        g.scriptFire(true);
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        spins = spins + 1;
+    }
+    g.scriptFire(false);
+}
+
+func newGame() -> game.Game {
+    var g = new game.Game();
+    g.initCore(0x2222);
+    g.setScripted(true);
+    g.boot(true, false);
+    // Stand at the arena center so every target on the ring has a clear lane.
+    g.devSpawnPlayer(0.0, 0.2, 0.0);
+    // Prime the camera eye position with one idle tick.
+    g.scriptFire(false);
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+    return g;
+}
+
+func start() {
+    // --- Penetration respects logical targets and hard world geometry -------
+    // The body/head boxes overlap at this height. A rail trace may cross both,
+    // but must emit only one damage row for the logical dummy.
+    var gd = newGame();
+    var railLanded = gd.getBallistics().fireHitscan(0.0, 1.75, 0.0, 1.0, 0.0, 0.0,
+                                                     1, 0.0, 40.0, 3, 100.0,
+                                                     config.DMG_HITSCAN);
+    if railLanded != 1 || damageRows(gd, config.TGT_DUMMY, 0) != 1 {
+        fail("rail damaged overlapping hit regions more than once"); return;
+    }
+
+    // An enemy behind the arena wall must not receive a penetrating rail hit.
+    var gw = newGame();
+    var behind = gw.devSpawnEnemy(config.EN_RANGER, 5.0, -24.0);
+    if behind < 0 { fail("could not spawn wall-occluded rail target"); return; }
+    gw.getBallistics().fireHitscan(5.0, 1.0, 0.0, 0.0, 0.0, -1.0,
+                                   1, 0.0, 80.0, 3, 100.0, config.DMG_HITSCAN);
+    if damageRows(gw, config.TGT_ENEMY, behind) != 0 {
+        fail("rail penetrated hard world geometry"); return;
+    }
+
+    // Blast overlap may also return torso and head; damage and hit feedback are
+    // applied once per logical victim.
+    var gbx = newGame();
+    var abx = gbx.getArena();
+    var blastHits0 = abx.dummyHitCount(0);
+    var blastLanded = gbx.getBallistics().blast(abx.dummyPosX(0), 1.75,
+                                                abx.dummyPosZ(0), 0.7, 30.0,
+                                                config.DMG_EXPLOSION);
+    gbx.tickSim(config.FIXED_DT); gbx.stepPhysics(config.FIXED_DT);
+    if blastLanded != 1 || abx.dummyHitCount(0) - blastHits0 != 1 {
+        fail("blast damaged overlapping hit regions more than once"); return;
+    }
+
+    // Explosives are dangerous to their owner, using the same falloff bridge as
+    // sapper and barrel blasts.
+    var gx = newGame();
+    var shield0 = gx.getPlayerHealth().getShield();
+    gx.getBallistics().blast(gx.getPlayer().getX(), gx.getPlayer().getFeetY(),
+                             gx.getPlayer().getZ(), 4.0, 80.0, config.DMG_EXPLOSION);
+    gx.tickSim(config.FIXED_DT); gx.stepPhysics(config.FIXED_DT);
+    if gx.getPlayerHealth().getShield() >= shield0 {
+        fail("player-owned explosion caused no self damage"); return;
+    }
+
+    // Scene changes park every projectile and reset per-level accuracy.
+    var gc = newGame();
+    var projectileShots0 = gc.getBallistics().getShotsFired();
+    gc.getProjectiles().spawn(0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+                              10.0, 20.0, 2.0, 0.0, 0.0, 0.0, 0, 5.0,
+                              config.DMG_PROJECTILE);
+    if gc.getProjectiles().activeProjectiles() != 1 ||
+       gc.getBallistics().getShotsFired() != projectileShots0 + 1 {
+        fail("projectile launch missing from active/accuracy ledgers"); return;
+    }
+    gc.loadCampaignLevel(config.LV_L1);
+    if gc.getProjectiles().activeProjectiles() != 0 || gc.getArena().isBuilt() {
+        fail("scene transition retained arena/projectiles"); return;
+    }
+    if gc.getBallistics().getShotsFired() != 0 {
+        fail("campaign load did not reset level accuracy"); return;
+    }
+
+    // Lance heat cools even while the beam is stowed; swapping weapons cannot
+    // preserve a permanent overheat lockout.
+    var gh = newGame();
+    gh.getWeapons().switchTo(config.W_LANCE);
+    var heatTicks = 0;
+    while heatTicks < 60 {
+        gh.scriptAimAt(gh.getArena().dummyPosX(0), 1.0, gh.getArena().dummyPosZ(0));
+        gh.scriptFire(true);
+        gh.tickSim(config.FIXED_DT); gh.stepPhysics(config.FIXED_DT);
+        heatTicks = heatTicks + 1;
+    }
+    gh.scriptFire(false);
+    var hot = gh.getWeapons().getHeat();
+    gh.getWeapons().switchTo(config.W_BOLT);
+    heatTicks = 0;
+    while heatTicks < 30 {
+        gh.tickSim(config.FIXED_DT); gh.stepPhysics(config.FIXED_DT);
+        heatTicks = heatTicks + 1;
+    }
+    if hot < 0.2 || gh.getWeapons().getHeat() >= hot {
+        fail("stowed Lance heat did not cool"); return;
+    }
+
+    var g = newGame();
+    var arena = g.getArena();
+    var ball = g.getBallistics();
+
+    // --- Hitscan lands on an aimed target -----------------------------------
+    var hpBefore = arena.dummyHealthAt(0);
+    fireAtBodyUntil(g, 0, 1.0, 1);
+    if ball.getHitsLanded() < 1 { fail("no hitscan hit landed"); return; }
+    if arena.dummyHealthAt(0) >= hpBefore { fail("aimed target took no damage"); return; }
+
+    // --- Headshot multiplier ------------------------------------------------
+    // Fresh target: one body shot vs one head shot; head must remove >2x more.
+    var body0 = arena.dummyHealthAt(1);
+    fireAtBodyUntil(g, 1, 0.9, 1);
+    var bodyDelta = body0 - arena.dummyHealthAt(1);
+    var head0 = arena.dummyHealthAt(2);
+    // Aim at the head (2.0m up).
+    var spins = 0;
+    var startShots = ball.getShotsFired();
+    while ball.getShotsFired() - startShots < 1 && spins < 400 {
+        g.scriptAimAt(arena.dummyPosX(2), 2.0, arena.dummyPosZ(2));
+        g.scriptFire(true);
+        g.tickSim(config.FIXED_DT); g.stepPhysics(config.FIXED_DT);
+        spins = spins + 1;
+    }
+    g.scriptFire(false);
+    var headDelta = head0 - arena.dummyHealthAt(2);
+    if headDelta <= bodyDelta * 2.0 {
+        fail("headshot not 2x body: body=" + toString(M.roundi(bodyDelta)) + " head=" + toString(M.roundi(headDelta)));
+        return;
+    }
+
+    // --- Kill: enough body shots kill + unregister --------------------------
+    var aliveBefore = arena.dummyAliveCount();
+    fireAtBodyUntil(g, 3, 0.9, 8);   // 8 * 24 = 192 > 100 hp
+    if arena.dummyIsAlive(3) { fail("target not killed by sustained fire"); return; }
+    if arena.dummyAliveCount() != aliveBefore - 1 { fail("kill did not reduce alive count"); return; }
+    if arena.killCountTotal() < 1 { fail("kill not counted"); return; }
+
+    // --- Shotgun fires its pellet count -------------------------------------
+    var w = g.getWeapons();
+    w.switchTo(config.W_SCATTER);
+    var s0 = ball.getShotsFired();
+    // one shot after switch cooldown
+    var g2 = 0;
+    while ball.getShotsFired() - s0 < 8 && g2 < 200 {
+        g.scriptAimAt(arena.dummyPosX(4), 1.0, arena.dummyPosZ(4));
+        g.scriptFire(true);
+        g.tickSim(config.FIXED_DT); g.stepPhysics(config.FIXED_DT);
+        g2 = g2 + 1;
+    }
+    g.scriptFire(false);
+    if ball.getShotsFired() - s0 < 8 { fail("shotgun did not fire 8 pellets"); return; }
+
+    // --- Shard bank shot records its reflected visual path -----------------
+    var gr = newGame();
+    gr.getBallistics().fireRicochet(0.0, 1.0, 0.0, 1.0, 0.0, 0.0,
+                                    0.0, 22.0, 3, 120.0, config.DMG_HITSCAN);
+    if gr.getBallistics().ricochetPointCount() < 2 {
+        fail("shard ricochet did not record multiple reflected segments"); return;
+    }
+    gr.tickSim(config.FIXED_DT); gr.stepPhysics(config.FIXED_DT);
+
+    // --- Projectile (rivet) travels + impacts -------------------------------
+    w.switchTo(config.W_RIVET);
+    var proj = g.getProjectiles();
+    var projectileAccuracy0 = ball.getShotsFired();
+    var rivetTarget = 7;
+    var rhp0 = arena.dummyHealthAt(rivetTarget);
+    // Hold fire past the switch cooldown until a rivet is airborne, then let it fly.
+    var rg = 0;
+    while rg < 90 {
+        g.scriptAimAt(arena.dummyPosX(rivetTarget), 1.0, arena.dummyPosZ(rivetTarget));
+        // Stop pressing once one rivet exists so we watch a single shot resolve.
+        var pressFire = proj.activeProjectiles() == 0 && arena.dummyHealthAt(rivetTarget) >= rhp0;
+        g.scriptFire(pressFire);
+        g.tickSim(config.FIXED_DT); g.stepPhysics(config.FIXED_DT);
+        rg = rg + 1;
+    }
+    g.scriptFire(false);
+    if arena.dummyHealthAt(rivetTarget) >= rhp0 { fail("rivet projectile did no damage"); return; }
+    if ball.getShotsFired() <= projectileAccuracy0 { fail("rivet launch not counted for accuracy"); return; }
+
+    // Rivet impact must register a real damage-over-time status instead of the
+    // former zero-valued placeholder event.
+    if proj.dotApplications() < 1 { fail("rivet did not register damage over time"); return; }
+
+    // --- Blast damages nearby targets (direct API) --------------------------
+    var b0 = arena.dummyHealthAt(6);
+    ball.blast(arena.dummyPosX(6), 1.0, arena.dummyPosZ(6), 5.0, 60.0, config.DMG_EXPLOSION);
+    g.tickSim(config.FIXED_DT);   // drains EV_DAMAGE
+    g.stepPhysics(config.FIXED_DT);
+    if arena.dummyHealthAt(6) >= b0 { fail("blast did no damage"); return; }
+
+    // --- Player ability verbs: melee + grenade -----------------------------
+    var gm = newGame();
+    var am = gm.getArena();
+    gm.devSpawnPlayer(am.dummyPosX(0) - 2.0, 0.2, am.dummyPosZ(0));
+    gm.scriptAimAt(am.dummyPosX(0), 1.0, am.dummyPosZ(0));
+    var mhp0 = am.dummyHealthAt(0);
+    gm.scriptMelee(true);
+    gm.tickSim(config.FIXED_DT); gm.stepPhysics(config.FIXED_DT);
+    gm.scriptMelee(false);
+    gm.tickSim(config.FIXED_DT); gm.stepPhysics(config.FIXED_DT);
+    if am.dummyHealthAt(0) >= mhp0 { fail("melee did no damage"); return; }
+
+    var gg = newGame();
+    var ag = gg.getArena();
+    gg.devSpawnPlayer(ag.dummyPosX(0) - 5.0, 0.2, ag.dummyPosZ(0));
+    gg.scriptAimAt(ag.dummyPosX(0), 0.6, ag.dummyPosZ(0));
+    var gren0 = gg.devGrenadeCount();
+    var ghp0 = ag.dummyHealthAt(0);
+    gg.scriptGrenade(true);
+    gg.tickSim(config.FIXED_DT); gg.stepPhysics(config.FIXED_DT);
+    gg.scriptGrenade(false);
+    var gt = 0;
+    while gt < 180 {
+        gg.tickSim(config.FIXED_DT);
+        gg.stepPhysics(config.FIXED_DT);
+        gt = gt + 1;
+    }
+    if gg.devGrenadeCount() >= gren0 { fail("grenade inventory did not decrease"); return; }
+    if ag.dummyHealthAt(0) >= ghp0 { fail("frag grenade did no damage"); return; }
+
+    // Economy upgrades must reach the live weapon pipeline (not remain menu
+    // metadata). Compare one Bolt body shot in two otherwise identical games.
+    var gu0 = newGame();
+    var uh0 = gu0.getArena().dummyHealthAt(0);
+    fireAtBodyUntil(gu0, 0, 1.0, 1);
+    var baseUpgradeDelta = uh0 - gu0.getArena().dummyHealthAt(0);
+    var gu1 = newGame();
+    gu1.getEconomy().addSalvage(100);
+    if gu1.getEconomy().buyUpgrade(config.W_BOLT) == false { fail("live upgrade purchase failed"); return; }
+    var uh1 = gu1.getArena().dummyHealthAt(0);
+    fireAtBodyUntil(gu1, 0, 1.0, 1);
+    var upgradedDelta = uh1 - gu1.getArena().dummyHealthAt(0);
+    if upgradedDelta <= baseUpgradeDelta { fail("upgrade did not increase live weapon damage"); return; }
+
+    // Headless audio still maps gameplay events even though playback is a safe
+    // no-op; this locks the event-to-sound integration without needing a device.
+    if g.getMixer().getMappedCueCount() < 1 { fail("combat events were not mapped to audio"); return; }
+
+    // --- Determinism: two accuracy runs land identical hit counts -----------
+    var ga = newGame();
+    fireAtBodyUntil(ga, 0, 1.0, 5);
+    var ha = ga.getBallistics().getHitsLanded();
+    var gb = newGame();
+    fireAtBodyUntil(gb, 0, 1.0, 5);
+    var hb = gb.getBallistics().getHitsLanded();
+    if ha != hb { fail("nondeterministic hit count: " + toString(ha) + " vs " + toString(hb)); return; }
+
+    Terminal.Say("hits=" + toString(ball.getHitsLanded()) +
+                 " bodyDelta=" + toString(M.roundi(bodyDelta)) +
+                 " headDelta=" + toString(M.roundi(headDelta)) +
+                 " kills=" + toString(arena.killCountTotal()) +
+                 " detHits=" + toString(ha));
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

@@ -18,6 +18,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares dominator-scoped early common subexpression elimination.
+
 #pragma once
 
 #include "il/core/Function.hpp"

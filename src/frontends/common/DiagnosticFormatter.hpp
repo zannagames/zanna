@@ -5,14 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/DiagnosticFormatter.hpp
+// File: src/frontends/common/DiagnosticFormatter.hpp
 // Purpose: Language-agnostic diagnostic formatting utilities.
 // Key invariants:
-//   - Source line extraction is O(n) in line count via linear scan
-//   - Caret generation is safe for zero-column locations (defaults to 1 caret)
-// Ownership/Lifetime:
-//   - Header-only, stateless utility functions
-// Links: frontends/common/DiagnosticHelpers.hpp, support/diagnostics.hpp
+//   * Source line extraction is O(n) in line count via linear scan.
+//   * Caret generation is safe for zero-column locations and always emits at
+//     least one caret when source context is available.
+// Ownership: Header-only stateless utilities; returned strings own their data
+//            and streams/source managers remain caller-owned.
+// References: src/frontends/common/DiagnosticHelpers.hpp,
+//             src/support/diagnostics.hpp
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares shared source-location and diagnostic rendering helpers.
 //
 //===----------------------------------------------------------------------===//
 

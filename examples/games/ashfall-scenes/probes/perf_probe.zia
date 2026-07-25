@@ -1,0 +1,80 @@
+// =============================================================================
+// probes/perf_probe.zia — the standing perf harness (arena + load)
+// =============================================================================
+//
+// Boots the arena and runs fixed simulation and software-render workloads,
+// printing measured wall time plus live renderer/physics counters. This probe
+// remains a portable CTest budget/trap gate; gpu_perf_probe.zia is the bounded
+// native benchmark for real presentation backends. It never hard-fails on a
+// timing threshold because shared CI hosts vary, but its values are real and
+// machine-readable for regression comparisons.
+// =============================================================================
+module perf_probe;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Time.Clock as Clock;
+bind "../config" as config;
+bind "../game" as game;
+
+func start() {
+    var g = new game.Game();
+    game.setGame(g);
+    g.initCore(0x00E5F00D);
+    g.setScripted(true);
+    g.boot(true, false);
+
+    // Drive continuous motion so the character controller + physics stay hot.
+    var steps = 600;
+    var i = 0;
+    var simStart = Clock.NowMicros();
+    while i < steps {
+        var mz = 1.0;
+        if (i / 60) % 2 == 1 { mz = -1.0; }
+        g.scriptMove(0.3, mz);
+        g.scriptSprint((i / 30) % 2 == 0);
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        i = i + 1;
+    }
+    var simUs = Clock.NowMicros() - simStart;
+
+    // Exercise the complete draw/HUD submission path at the deterministic
+    // 160x90 software-probe resolution. The warmup fills persistent caches so
+    // the measured block represents steady state rather than one-time setup.
+    var canvas = g.getCanvas();
+    i = 0;
+    while i < 8 {
+        g.devRenderFrame();
+        i = i + 1;
+    }
+    var renderFrames = 30;
+    var renderStart = Clock.NowMicros();
+    i = 0;
+    while i < renderFrames {
+        g.devRenderFrame();
+        i = i + 1;
+    }
+    var renderUs = Clock.NowMicros() - renderStart;
+
+    var diag = g.getDiag();
+    if diag.hasFailed() {
+        Terminal.Say("FAIL: budget assertion — " + diag.getViolation());
+        return;
+    }
+
+    Terminal.Say("perf steps=" + Fmt.Int(steps) +
+                 " sim_ms=" + Fmt.NumFixed((simUs + 0.0) / 1000.0, 3) +
+                 " sim_us_per_step=" + Fmt.NumFixed((simUs + 0.0) / steps, 3) +
+                 " render_frames=" + Fmt.Int(renderFrames) +
+                 " render_avg_ms=" + Fmt.NumFixed((renderUs + 0.0) / (renderFrames * 1000.0), 3) +
+                 " draws=" + Fmt.Int(canvas.DrawsSubmitted) +
+                 " culled=" + Fmt.Int(canvas.FrustumCulledDrawCount + canvas.CpuOccludedDrawCount) +
+                 " active_bodies=" + Fmt.Int(g.getPhys().LastSolverActiveBodyCount) +
+                 " upload_bytes=" + Fmt.Int(canvas.TextureUploadBytes) +
+                 " budgets=clean");
+    g.getWorld().Destroy();
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

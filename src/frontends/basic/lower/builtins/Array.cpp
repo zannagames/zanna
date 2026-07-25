@@ -5,13 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Array-oriented BASIC builtins are currently lowered elsewhere in the pipeline
-// using bespoke passes.  This translation unit therefore provides the
-// intentionally empty registrar used by the BASIC front end to hook in lowering
-// code for each builtin family.  Keeping the stub in-tree documents the
-// extension point for array-specific lowering logic, preserves the invariant
-// that every builtin domain exports a registrar, and makes it obvious where
-// future work should live once the lowering rules expand.
+// File: src/frontends/basic/lower/builtins/Array.cpp
+// Purpose: Provides the array-family registrar hook for the callback-based
+//          BASIC builtin lowering registry.
+// Key invariants: Array operations remain on their dedicated lowering paths;
+//                 this registrar therefore installs no callbacks.
+// Ownership/Lifetime: Owns no state and performs no allocation.
+// Links: src/frontends/basic/lower/builtins/Registrars.hpp,
+//        src/frontends/basic/lower/MemberArrayResolver.cpp
 //
 //===----------------------------------------------------------------------===//
 

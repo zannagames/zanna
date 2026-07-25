@@ -15,6 +15,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements canonical serialization of BASIC control-flow statements.
+
 #include "frontends/basic/print/Print_Stmt_Common.hpp"
 
 namespace il::frontends::basic::print_stmt {

@@ -1,0 +1,275 @@
+// =============================================================================
+// config.zia — ASHFALL central tunables and dispatch constants
+// =============================================================================
+//
+// Every magic number in the game lives here, sectioned by subsystem. The rest
+// of the codebase reads `config.NAME` and never hard-codes tunables inline.
+// Integer "enum" families (states, event kinds, archetypes, weapons, damage
+// kinds, actions) are plain Integer constants rather than Zia `enum`s because
+// they double as array indices into the pool/parallel-list architecture and as
+// packed fields in entity handles — uses that want a bare Integer, not a typed
+// enum value.
+// =============================================================================
+module config;
+
+// --- Identity / window -------------------------------------------------------
+var GAME_TITLE: String = "ASHFALL";
+var WINDOW_TITLE: String = "ASHFALL — Erebos-4";
+var WINDOW_WIDTH: Integer = 1600;
+var WINDOW_HEIGHT: Integer = 900;
+var APP_DATA_NAME: String = "ashfall";
+var SAVE_VERSION: Integer = 1;
+
+// --- Simulation --------------------------------------------------------------
+var FIXED_HZ: Integer = 60;
+var FIXED_DT: Float = 0.0166666667;      // 1/60 s — the sim tick
+var MAX_SUBSTEPS: Integer = 5;
+var CLEAR_R: Float = 0.06;
+var CLEAR_G: Float = 0.05;
+var CLEAR_B: Float = 0.07;
+
+// --- Camera ------------------------------------------------------------------
+var CAMERA_FOV: Float = 90.0;            // default horizontal-ish FOV (accessibility 70-110)
+var CAMERA_FOV_MIN: Float = 70.0;
+var CAMERA_FOV_MAX: Float = 110.0;
+var CAMERA_NEAR: Float = 0.05;
+var CAMERA_FAR: Float = 600.0;
+var EYE_HEIGHT: Float = 1.62;
+var EYE_HEIGHT_CROUCH: Float = 1.05;
+var EYE_SPRING_HZ: Float = 12.0;
+var PITCH_LIMIT: Float = 89.0;           // degrees
+var LOOK_SENS: Float = 0.10;             // degrees per raw mouse unit
+var SPRINT_FOV_ADD: Float = 6.0;
+var ADS_TIME_MIN: Float = 0.12;
+var ADS_TIME_MAX: Float = 0.22;
+var SLIDE_ROLL_DEG: Float = 5.0;
+var SHAKE_SCALE_DEFAULT: Float = 1.0;    // 0..1.5 accessibility
+
+// --- Player movement ---------------------------------------------------------
+var PLAYER_RADIUS: Float = 0.35;
+var PLAYER_HEIGHT: Float = 1.8;
+var PLAYER_HEIGHT_CROUCH: Float = 1.2;
+var PLAYER_STEP: Float = 0.35;
+var PLAYER_SLOPE: Float = 50.0;
+var MOVE_GROUND_ACCEL: Float = 90.0;
+var MOVE_AIR_ACCEL: Float = 14.0;
+var MOVE_FRICTION: Float = 8.0;
+var MOVE_FRICTION_SLIDE: Float = 4.0;
+var SPEED_WALK: Float = 5.2;
+var SPEED_SPRINT: Float = 7.6;
+var SPEED_CROUCH: Float = 2.6;
+var JUMP_SPEED: Float = 4.6;
+var GRAVITY: Float = -18.0;
+var COYOTE_TIME: Float = 0.10;
+var JUMP_BUFFER: Float = 0.15;
+var SLIDE_TIME: Float = 0.8;
+var SLIDE_BOOST: Float = 1.35;
+var NOISE_SPRINT: Float = 14.0;          // hearing radius (m) by stance
+var NOISE_WALK: Float = 7.0;
+var NOISE_CROUCH: Float = 2.5;
+
+// --- Health / defense --------------------------------------------------------
+var PLAYER_HEALTH_MAX: Float = 100.0;
+var PLAYER_ARMOR_MAX: Float = 100.0;
+var PLAYER_SHIELD_MAX: Float = 50.0;
+var SHIELD_REGEN_DELAY: Float = 3.0;
+var SHIELD_REGEN_RATE: Float = 25.0;     // per second
+var HEALTH_REGEN_DELAY: Float = 6.0;
+var HEALTH_REGEN_RATE: Float = 8.0;
+
+// --- Pool sizes (zero allocation during combat) ------------------------------
+var POOL_PROJECTILES: Integer = 48;
+var POOL_CASINGS: Integer = 24;
+var POOL_DECALS: Integer = 64;
+var POOL_POPUPS: Integer = 32;
+var POOL_AI: Integer = 24;               // 12 active cap + margin
+var AI_ACTIVE_CAP: Integer = 12;
+var NAV_AGENT_RADIUS: Float = 0.38;
+var NAV_AGENT_HEIGHT: Float = 1.8;
+var NAV_MAX_SLOPE: Float = 50.0;
+var NAV_CELL_SIZE: Float = 0.30;
+
+// --- Game states (state machine) ---------------------------------------------
+var ST_BOOT: Integer = 0;
+var ST_TITLE: Integer = 1;
+var ST_HUB: Integer = 2;
+var ST_LOADING: Integer = 3;
+var ST_PLAYING: Integer = 4;
+var ST_PAUSED: Integer = 5;
+var ST_DEATH: Integer = 6;
+var ST_LEVEL_COMPLETE: Integer = 7;
+var ST_CREDITS: Integer = 8;
+var ST_PHOTO: Integer = 9;
+
+// --- Event kinds (event bus) -------------------------------------------------
+var EV_NONE: Integer = 0;
+var EV_GUNSHOT: Integer = 1;             // a=pos-encoded, f0..2=pos, b=loudness
+var EV_EXPLOSION: Integer = 2;           // a=damage, b=radius, c=dmgKind+1 (0 cosmetic), f0..2=center
+var EV_ENEMY_DIED: Integer = 3;          // a=archetype, b=handle
+var EV_PLAYER_DAMAGED: Integer = 4;      // b=amount
+var EV_OBJECTIVE: Integer = 5;           // a=objective id, b=state
+var EV_CHECKPOINT: Integer = 6;          // a=checkpoint id
+var EV_PICKUP: Integer = 7;              // a=pickup kind, b=amount
+var EV_DIALOGUE: Integer = 8;            // a=line id
+var EV_MUSIC_CUE: Integer = 9;           // a=cue id
+var EV_ALERT_RAISED: Integer = 10;       // a=source handle
+var EV_STATE_CHANGE: Integer = 11;       // a=from, b=to
+var EV_MELEE: Integer = 12;
+var EV_DECOY: Integer = 13;              // f0..2=pos — feeds AI hearing
+var EV_DAMAGE: Integer = 14;             // a=targetKind, b=target index/source archetype, c=region, f0=amount, f1=dmgKind or source bearing, f2=source bearing or dmgKind
+var EV_HITMARKER: Integer = 15;          // a=region — HUD hit feedback
+var EV_KILL: Integer = 16;               // a=targetKind, b=archetype — confirmed kill
+var EV_FOOTSTEP: Integer = 17;           // a=surface id, b=loudness, f0..2=position
+var EV_ENEMY_SHOT: Integer = 18;         // a=archetype, b=projectile kind, f0..2=muzzle
+var EV_IMPACT: Integer = 19;              // a=material id, b=impact kind, f0..2=position
+
+// --- Damageable target kinds -------------------------------------------------
+var TGT_DUMMY: Integer = 0;
+var TGT_ENEMY: Integer = 1;
+var TGT_DESTRUCTIBLE: Integer = 2;
+var TGT_PLAYER: Integer = 3;
+
+// --- Collision layers (bit flags) --------------------------------------------
+var LAYER_WORLD: Integer = 1;
+var LAYER_PLAYER: Integer = 2;
+var LAYER_ENEMY: Integer = 4;
+var LAYER_PROJECTILE: Integer = 8;
+var LAYER_DUMMY: Integer = 16;
+var LAYER_DESTRUCTIBLE: Integer = 32;
+// Masks: what a hitscan/projectile from the player should hit.
+var MASK_SHOOTABLE: Integer = 53;        // WORLD|ENEMY|DUMMY|DESTRUCTIBLE = 1+4+16+32
+
+// --- Entity archetypes (pool ids) --------------------------------------------
+var ARCH_PROJECTILE: Integer = 0;
+var ARCH_ENEMY: Integer = 1;
+var ARCH_PICKUP: Integer = 2;
+var ARCH_DESTRUCTIBLE: Integer = 3;
+var ARCH_DECAL: Integer = 4;
+var ARCH_POPUP: Integer = 5;
+var ARCH_COUNT: Integer = 6;
+
+// --- Enemy archetype ids (0..10 + bosses) ------------------------------------
+var EN_HUSK: Integer = 0;
+var EN_SAPPER: Integer = 1;
+var EN_DRONE: Integer = 2;
+var EN_RANGER: Integer = 3;
+var EN_MARAUDER: Integer = 4;
+var EN_VANGUARD: Integer = 5;
+var EN_STALKER: Integer = 6;
+var EN_WRAITH: Integer = 7;
+var EN_TURRET: Integer = 8;
+var EN_MITE: Integer = 9;
+var EN_SHRIKE: Integer = 10;
+var BOSS_WARDEN: Integer = 11;
+var BOSS_SHRIKE: Integer = 12;
+var BOSS_HELIX: Integer = 13;
+var EN_TYPE_COUNT: Integer = 14;
+
+// --- Weapon ids --------------------------------------------------------------
+var W_BOLT: Integer = 0;                 // hitscan pistol
+var W_SCATTER: Integer = 1;              // shotgun, 8 pellets
+var W_CYCLER: Integer = 2;              // SMG, high ROF
+var W_PULSE: Integer = 3;               // rifle, 2D recoil, ADS
+var W_RAIL: Integer = 4;                // marksman, penetration
+var W_ARC: Integer = 5;                 // bouncing grenade launcher (CCD)
+var W_RIVET: Integer = 6;               // swept projectile, DoT
+var W_SHARD: Integer = 7;               // ricochet raycasts
+var W_EMP: Integer = 8;                 // disables shields/turrets
+var W_LANCE: Integer = 9;               // beam, overheat
+var WEAPON_COUNT: Integer = 10;
+
+var GRENADE_FRAG: Integer = 0;
+var GRENADE_EMP: Integer = 1;
+var GRENADE_DECOY: Integer = 2;
+var GRENADE_COUNT: Integer = 3;
+
+// --- Damage kinds ------------------------------------------------------------
+var DMG_HITSCAN: Integer = 0;
+var DMG_PROJECTILE: Integer = 1;
+var DMG_EXPLOSION: Integer = 2;
+var DMG_MELEE: Integer = 3;
+var DMG_BEAM: Integer = 4;
+var DMG_EMP: Integer = 5;
+var DMG_DOT: Integer = 6;
+var DMG_CRUSH: Integer = 7;
+var DMG_DECOY: Integer = 8;
+
+// --- Hit regions (locational damage multipliers x1000) -----------------------
+var REGION_BODY: Integer = 0;
+var REGION_HEAD: Integer = 1;
+var REGION_WEAKPOINT: Integer = 2;
+var REGION_ARMOR: Integer = 3;           // plated — reduced
+var HEADSHOT_MULT: Float = 2.5;
+var WEAKPOINT_MULT: Float = 3.0;
+var ARMOR_MULT: Float = 0.35;
+
+// --- Input actions -----------------------------------------------------------
+var A_FORWARD: Integer = 0;
+var A_BACK: Integer = 1;
+var A_LEFT: Integer = 2;
+var A_RIGHT: Integer = 3;
+var A_JUMP: Integer = 4;
+var A_CROUCH: Integer = 5;
+var A_SPRINT: Integer = 6;
+var A_FIRE: Integer = 7;
+var A_ADS: Integer = 8;
+var A_RELOAD: Integer = 9;
+var A_INTERACT: Integer = 10;
+var A_GRENADE: Integer = 11;
+var A_CYCLE_GRENADE: Integer = 12;
+var A_MELEE: Integer = 13;
+var A_FLASHLIGHT: Integer = 14;
+var A_PAUSE: Integer = 15;
+var A_DIAG: Integer = 16;                // F3 diagnostics
+var A_NEXT_WEAPON: Integer = 17;
+var A_PREV_WEAPON: Integer = 18;
+var A_DEV_LIGHTS: Integer = 19;          // arena lighting cycle
+var A_WEAPON_1: Integer = 20;
+var A_WEAPON_2: Integer = 21;
+var A_WEAPON_3: Integer = 22;
+var A_WEAPON_4: Integer = 23;
+var A_WEAPON_5: Integer = 24;
+var A_WEAPON_6: Integer = 25;
+var A_WEAPON_7: Integer = 26;
+var A_WEAPON_8: Integer = 27;
+var A_WEAPON_9: Integer = 28;
+var A_WEAPON_10: Integer = 29;
+var A_COUNT: Integer = 30;
+
+// --- Levels ------------------------------------------------------------------
+var LV_ARENA: Integer = 0;
+var LV_L1: Integer = 1;
+var LV_L2: Integer = 2;
+var LV_L3: Integer = 3;
+var LV_L4: Integer = 4;
+var LV_L5: Integer = 5;
+var LV_L6: Integer = 6;
+var LV_L7: Integer = 7;
+var LV_L8: Integer = 8;
+var LV_L9: Integer = 9;
+var LV_HUB: Integer = 10;
+var LV_COUNT: Integer = 11;
+
+// --- Difficulty --------------------------------------------------------------
+var DIFF_STORY: Integer = 0;
+var DIFF_SOLDIER: Integer = 1;
+var DIFF_VETERAN: Integer = 2;
+var DIFF_COUNT: Integer = 3;
+
+// --- Budgets (asserted by devtools/probes) -----------------------------------
+var BUDGET_ACTIVE_ENEMIES: Integer = 12;
+var BUDGET_PROJECTILES: Integer = 48;
+var BUDGET_LIGHTS: Integer = 64;
+var BUDGET_SHADOW_SLOTS: Integer = 12;
+var BUDGET_DRAWS: Integer = 2000;
+var BUDGET_PARTICLES: Integer = 4096;
+
+// --- Dev flags ---------------------------------------------------------------
+var DEV_CHEATS: Boolean = false;
+
+// --- Pickup kinds ------------------------------------------------------------
+var PK_HEALTH: Integer = 0;
+var PK_ARMOR: Integer = 1;
+var PK_AMMO: Integer = 2;
+var PK_SALVAGE: Integer = 3;
+var PK_DATACORE: Integer = 4;

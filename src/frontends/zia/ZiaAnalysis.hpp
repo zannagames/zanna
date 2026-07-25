@@ -91,7 +91,7 @@ namespace il::frontends::zia {
 ///
 /// This ensures:
 /// - `sema` (holds `&diagnostics`) is destroyed before `diagnostics`.
-/// - `ast`  (pointed into by `sema`) is destroyed before `ast` is freed.
+/// - `sema` (holds raw declaration pointers into `ast`) is destroyed before `ast`.
 struct AnalysisResult {
     /// @brief Diagnostics accumulated during parsing and semantic analysis.
     /// @note Declared first so it is destroyed last (after sema and ast).

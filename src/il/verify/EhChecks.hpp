@@ -35,6 +35,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares exception-handling invariants evaluated over `EhModel`.
+/// @details The checks cover path-sensitive stack and resume-token flow,
+///          dominance of protected regions, relevant handler reachability, and
+///          post-dominance of `resume.label` targets. Each function returns the
+///          first structured verifier diagnostic it encounters.
+
 #pragma once
 
 #include "il/verify/EhModel.hpp"
@@ -44,6 +51,10 @@
 namespace il::verify {
 
 /// @brief Validate that eh.push/eh.pop instructions remain balanced.
+/// @details Simulates reachable paths with handler-stack and resume-token
+///          provenance state. It rejects ordinary stack underflow, live
+///          handlers at returns, invalid handler entry, and malformed resume
+///          token consumption or forwarding.
 /// @param model Canonical EH model describing the function.
 /// @return Success when balanced; diagnostic otherwise.
 [[nodiscard]] il::support::Expected<void> checkEhStackBalance(const EhModel &model);
@@ -65,24 +76,28 @@ namespace il::verify {
 /// @return Success when all eh.push blocks dominate their protected blocks; diagnostic otherwise.
 [[nodiscard]] il::support::Expected<void> checkDominanceOfHandlers(const EhModel &model);
 
-/// @brief Validate that all exception handler blocks are reachable.
+/// @brief Validate reachability of handlers required by protected faulting code.
 ///
 /// Handler Reachability Invariant:
-///   Every handler block referenced by an `eh.push ^handler` instruction must be
-///   reachable from the function entry. Reachability is determined by considering
-///   both normal CFG edges (branches) and exception edges (trap → handler).
-///   Unreachable handlers indicate dead code that could never execute.
+///   A handler associated with a potentially faulting instruction in a reachable
+///   protected region must be reachable from the function entry when normal CFG
+///   edges and simulated exception dispatch edges are both considered. A
+///   referenced handler whose protected region cannot fault is treated as
+///   unused, rather than invalid.
 ///
-/// The check identifies handler blocks by scanning for eh.push instructions, then
-/// performs a CFG traversal from entry tracking the EH stack to determine which
-/// handlers can be reached via trap instructions.
+/// The check identifies handler blocks from canonical push sites, then performs
+/// a CFG traversal from entry while tracking the active handler stack.
 ///
 /// @param model Canonical EH model describing the function.
-/// @return Success when all handlers are reachable; diagnostic listing unreachable handlers
-/// otherwise.
+/// @return Success when every required handler is reachable; otherwise a
+///         diagnostic listing unreachable handler labels.
 [[nodiscard]] il::support::Expected<void> checkUnreachableHandlers(const EhModel &model);
 
 /// @brief Validate resume.label edges against handler coverage information.
+/// @details Computes the blocks protected by each handler and requires every
+///          resolved `resume.label` target in that handler to post-dominate each
+///          covered faulting block with outgoing control flow. Malformed or
+///          unresolved targets are left to structural verification.
 /// @param model Canonical EH model describing the function.
 /// @return Success when all resume targets are valid; diagnostic otherwise.
 [[nodiscard]] il::support::Expected<void> checkResumeEdges(const EhModel &model);

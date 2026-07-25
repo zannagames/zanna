@@ -1,0 +1,208 @@
+// =============================================================================
+// assets/meshkit.zia — shared composite-mesh emitter (props / enemies / weapons)
+// =============================================================================
+//
+// Bakes hand-emitted primitives (boxes, cylinders, ellipsoids) into a single
+// Mesh3D with engine-convention CCW winding, correct normals, and per-meter UV
+// tiling — no RecalcNormals pass needed. Each part can be rotated about its own
+// center by yaw (Y), pitch (X), roll (Z). Usage: begin() → box()/cyl()/... →
+// take(). One kit instance is reusable across bakes (props, enemy composites,
+// weapon viewmodels all share it).
+// =============================================================================
+module meshkit;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+
+class MeshKit {
+    hide G3D.Mesh3D cur;
+    hide Integer vb;
+    // UV tiles per meter (matches the texture library's visual density).
+    hide Float UV_T;
+    // Rotation matrix + translation for the part being emitted.
+    hide Float m00; hide Float m01; hide Float m02;
+    hide Float m10; hide Float m11; hide Float m12;
+    hide Float m20; hide Float m21; hide Float m22;
+    hide Float pcx; hide Float pcy; hide Float pcz;
+
+    expose func init() { vb = 0; UV_T = 0.5; }
+
+    expose func begin() {
+        cur = G3D.Mesh3D.New();
+        vb = 0;
+        setRot(0.0, 0.0, 0.0);
+        pcx = 0.0; pcy = 0.0; pcz = 0.0;
+    }
+
+    expose func take() -> G3D.Mesh3D { return cur; }
+    expose func vertCount() -> Integer { return vb; }
+
+    // Compose R = Yaw(Y) * Pitch(X) * Roll(Z).
+    hide func setRot(yaw: Float, pitch: Float, roll: Float) {
+        var cy = Cos(yaw); var sy = Sin(yaw);
+        var cp = Cos(pitch); var sp = Sin(pitch);
+        var cr = Cos(roll); var sr = Sin(roll);
+        var a00 = cr;            var a01 = 0.0 - sr;       var a02 = 0.0;
+        var a10 = cp * sr;       var a11 = cp * cr;        var a12 = 0.0 - sp;
+        var a20 = sp * sr;       var a21 = sp * cr;        var a22 = cp;
+        m00 = cy * a00 + sy * a20; m01 = cy * a01 + sy * a21; m02 = cy * a02 + sy * a22;
+        m10 = a10;                 m11 = a11;                 m12 = a12;
+        m20 = a20 * cy - a00 * sy; m21 = a21 * cy - a01 * sy; m22 = a22 * cy - a02 * sy;
+    }
+
+    hide func emitV(px: Float, py: Float, pz: Float, nx: Float, ny: Float, nz: Float,
+                    u: Float, v: Float) {
+        var wx = m00 * px + m01 * py + m02 * pz + pcx;
+        var wy = m10 * px + m11 * py + m12 * pz + pcy;
+        var wz = m20 * px + m21 * py + m22 * pz + pcz;
+        var wnx = m00 * nx + m01 * ny + m02 * nz;
+        var wny = m10 * nx + m11 * ny + m12 * nz;
+        var wnz = m20 * nx + m21 * ny + m22 * nz;
+        G3D.Mesh3D.AddVertex(cur, wx, wy, wz, wnx, wny, wnz, u, v);
+    }
+
+    // One quad face (engine box convention: v0=c-U-V uv(0,vMax) → CCW outside).
+    hide func quad(cx0: Float, cy0: Float, cz0: Float,
+                   ux: Float, uy: Float, uz: Float,
+                   vx: Float, vy: Float, vz: Float,
+                   nx: Float, ny: Float, nz: Float,
+                   uMax: Float, vMax: Float) {
+        emitV(cx0 - ux - vx, cy0 - uy - vy, cz0 - uz - vz, nx, ny, nz, 0.0, vMax);
+        emitV(cx0 + ux - vx, cy0 + uy - vy, cz0 + uz - vz, nx, ny, nz, uMax, vMax);
+        emitV(cx0 + ux + vx, cy0 + uy + vy, cz0 + uz + vz, nx, ny, nz, uMax, 0.0);
+        emitV(cx0 - ux + vx, cy0 - uy + vy, cz0 - uz + vz, nx, ny, nz, 0.0, 0.0);
+        G3D.Mesh3D.AddTriangle(cur, vb, vb + 1, vb + 2);
+        G3D.Mesh3D.AddTriangle(cur, vb, vb + 2, vb + 3);
+        vb = vb + 4;
+    }
+
+    expose func box(cx0: Float, cy0: Float, cz0: Float, hx: Float, hy: Float, hz: Float) {
+        boxRot(cx0, cy0, cz0, hx, hy, hz, 0.0, 0.0, 0.0);
+    }
+
+    // Box centered at (cx,cy,cz), half extents (hx,hy,hz), rotated about its
+    // own center by yaw (Y), pitch (X), roll (Z).
+    expose func boxRot(cx0: Float, cy0: Float, cz0: Float, hx: Float, hy: Float, hz: Float,
+                       yaw: Float, pitch: Float, roll: Float) {
+        setRot(yaw, pitch, roll);
+        pcx = cx0; pcy = cy0; pcz = cz0;
+        var tux = hx * 2.0 * UV_T;
+        var tvy = hy * 2.0 * UV_T;
+        var twz = hz * 2.0 * UV_T;
+        quad(0.0, 0.0, hz,  hx, 0.0, 0.0,  0.0, hy, 0.0,  0.0, 0.0, 1.0,  tux, tvy);
+        quad(0.0, 0.0, 0.0 - hz,  0.0 - hx, 0.0, 0.0,  0.0, hy, 0.0,  0.0, 0.0, -1.0,  tux, tvy);
+        quad(hx, 0.0, 0.0,  0.0, 0.0, 0.0 - hz,  0.0, hy, 0.0,  1.0, 0.0, 0.0,  twz, tvy);
+        quad(0.0 - hx, 0.0, 0.0,  0.0, 0.0, hz,  0.0, hy, 0.0,  -1.0, 0.0, 0.0,  twz, tvy);
+        quad(0.0, hy, 0.0,  hx, 0.0, 0.0,  0.0, 0.0, 0.0 - hz,  0.0, 1.0, 0.0,  tux, twz);
+        quad(0.0, 0.0 - hy, 0.0,  hx, 0.0, 0.0,  0.0, 0.0, hz,  0.0, -1.0, 0.0,  tux, twz);
+    }
+
+    expose func cyl(cx0: Float, cy0: Float, cz0: Float, r: Float, h: Float, segs: Integer,
+                    caps: Integer) {
+        cylRot(cx0, cy0, cz0, r, h, segs, caps, 0.0, 0.0, 0.0);
+    }
+
+    // Cylinder with base center at (cx,cy,cz) extending +Y for h (local), then
+    // rotated. caps: 0 = sides only, 1 = top cap, 2 = both caps.
+    expose func cylRot(cx0: Float, cy0: Float, cz0: Float, r: Float, h: Float, segs: Integer,
+                       caps: Integer, yaw: Float, pitch: Float, roll: Float) {
+        setRot(yaw, pitch, roll);
+        pcx = cx0; pcy = cy0; pcz = cz0;
+        var uMax = 6.2831853 * r * UV_T;
+        var vMax = h * UV_T;
+        var i = 0;
+        while i <= segs {
+            var a = (i + 0.0) / (segs + 0.0) * 6.2831853;
+            var ct = Cos(a); var st = Sin(a);
+            var u = (i + 0.0) / (segs + 0.0) * uMax;
+            emitV(r * ct, 0.0, r * st, ct, 0.0, st, u, vMax);
+            emitV(r * ct, h, r * st, ct, 0.0, st, u, 0.0);
+            i = i + 1;
+        }
+        i = 0;
+        while i < segs {
+            var b = vb + i * 2;
+            G3D.Mesh3D.AddTriangle(cur, b, b + 1, b + 2);
+            G3D.Mesh3D.AddTriangle(cur, b + 1, b + 3, b + 2);
+            i = i + 1;
+        }
+        vb = vb + (segs + 1) * 2;
+        if caps >= 1 {
+            var tc = vb;
+            emitV(0.0, h, 0.0, 0.0, 1.0, 0.0, 0.5, 0.5);
+            i = 0;
+            while i < segs {
+                var a2 = (i + 0.0) / (segs + 0.0) * 6.2831853;
+                var c2 = Cos(a2); var s2 = Sin(a2);
+                emitV(r * c2, h, r * s2, 0.0, 1.0, 0.0, c2 * 0.5 + 0.5, s2 * 0.5 + 0.5);
+                i = i + 1;
+            }
+            i = 0;
+            while i < segs {
+                var nx2 = (i + 1) % segs;
+                G3D.Mesh3D.AddTriangle(cur, tc, tc + 1 + nx2, tc + 1 + i);
+                i = i + 1;
+            }
+            vb = vb + segs + 1;
+        }
+        if caps >= 2 {
+            var bc = vb;
+            emitV(0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.5, 0.5);
+            i = 0;
+            while i < segs {
+                var a3 = (i + 0.0) / (segs + 0.0) * 6.2831853;
+                var c3 = Cos(a3); var s3 = Sin(a3);
+                emitV(r * c3, 0.0, r * s3, 0.0, -1.0, 0.0, c3 * 0.5 + 0.5, s3 * 0.5 + 0.5);
+                i = i + 1;
+            }
+            i = 0;
+            while i < segs {
+                var nx3 = (i + 1) % segs;
+                G3D.Mesh3D.AddTriangle(cur, bc, bc + 1 + i, bc + 1 + nx3);
+                i = i + 1;
+            }
+            vb = vb + segs + 1;
+        }
+    }
+
+    // Ellipsoid centered at (cx,cy,cz): radius rx in X/Z, ry in Y. Emitted as
+    // latitude bands sharing the cylinder side winding (CCW outside).
+    expose func sphere(cx0: Float, cy0: Float, cz0: Float, rx: Float, ry: Float, segs: Integer) {
+        setRot(0.0, 0.0, 0.0);
+        pcx = cx0; pcy = cy0; pcz = cz0;
+        var bands = segs;
+        var k = 0;
+        while k < bands {
+            var ph0 = 3.1415927 * (k + 0.0) / (bands + 0.0);
+            var ph1 = 3.1415927 * (k + 1.0) / (bands + 0.0);
+            // Band ring radii + heights (from +Y pole down).
+            var r0 = Sin(ph0); var y0 = Cos(ph0);
+            var r1 = Sin(ph1); var y1 = Cos(ph1);
+            var i = 0;
+            while i <= segs {
+                var a = (i + 0.0) / (segs + 0.0) * 6.2831853;
+                var ct = Cos(a); var st = Sin(a);
+                var u = (i + 0.0) / (segs + 0.0);
+                // Lower ring first (v=1 side), then upper — mirrors cyl sides.
+                emitV(rx * r1 * ct, ry * y1, rx * r1 * st, r1 * ct, y1, r1 * st, u, 1.0);
+                emitV(rx * r0 * ct, ry * y0, rx * r0 * st, r0 * ct, y0, r0 * st, u, 0.0);
+                i = i + 1;
+            }
+            i = 0;
+            while i < segs {
+                var b = vb + i * 2;
+                // Pole bands: one ring collapses to a point — emit only the
+                // surviving triangle (the other would be degenerate).
+                if k < bands - 1 {
+                    G3D.Mesh3D.AddTriangle(cur, b, b + 1, b + 2);
+                }
+                if k > 0 {
+                    G3D.Mesh3D.AddTriangle(cur, b + 1, b + 3, b + 2);
+                }
+                i = i + 1;
+            }
+            vb = vb + (segs + 1) * 2;
+            k = k + 1;
+        }
+    }
+}

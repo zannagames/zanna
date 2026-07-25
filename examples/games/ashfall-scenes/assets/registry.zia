@@ -1,0 +1,213 @@
+// =============================================================================
+// assets/registry.zia — downloaded-asset registry (GLB/GLTF, load-with-fallback)
+// =============================================================================
+//
+// Central table of downloaded CC0 models: enemy rigs (Quaternius, rigged +
+// animated) and weapon viewmodels (Kenney Blaster Kit). Loads are cached and
+// NEVER trap: a missing/bad file returns null and the caller uses its procedural
+// fallback (the asset-optional contract — the game ships fully playable with no
+// assets_src/ present).
+//
+// Policy: disabled by default in headless boots (probes never touch disk or
+// decode GLTFs — keeps probe wall-time flat and asset-less checkouts green);
+// `devForceAssets(true)` opts a probe in explicitly.
+//
+// Clip-name map: Quaternius packs use Idle / Walk / Run / Fast_Flying /
+// Flying_Idle / Shoot / Punch / Kick / Bite_Front / Headbutt / Death /
+// HitReact / HitRecieve[_1] (their spelling). resolveClip() searches an intent's
+// candidate list against the asset's real clip names.
+// =============================================================================
+module registry;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Game3D as Game3D;
+bind Zanna.IO.File as File;
+bind Zanna.String as Str;
+bind "../config" as config;
+
+class AssetRegistry {
+    hide Boolean enabled;
+    hide List[String] enemyPath;       // per archetype id (config.EN_*/BOSS_*)
+    hide List[Float] enemyScale;       // uniform scale applied to the instance
+    hide List[String] weaponPath;      // per weapon id
+    // Cache: loaded SceneAssets per archetype/weapon (null = miss or not tried).
+    hide List[G3D.SceneAsset] enemyAsset;
+    hide List[Integer] enemyTried;
+    hide List[G3D.SceneAsset] weaponAsset;
+    hide List[Integer] weaponTried;
+    // Instantiable templates (skinned rigs; template.Model = the SceneAsset).
+    hide List[Game3D.SceneTemplate] enemyTemplate;
+    hide List[Integer] enemyTemplateTried;
+    hide Integer loadedCount;
+    hide Integer failedCount;
+
+    expose func init() {
+        enabled = false;
+        enemyPath = []; enemyScale = [];
+        weaponPath = [];
+        enemyAsset = []; enemyTried = [];
+        weaponAsset = []; weaponTried = [];
+        enemyTemplate = []; enemyTemplateTried = [];
+        loadedCount = 0;
+        failedCount = 0;
+    }
+
+    expose func setup() {
+        var base = "assets_src/";
+        var i = 0;
+        while i < config.EN_TYPE_COUNT {
+            enemyPath.Add(""); enemyScale.Add(1.0);
+            enemyAsset.Add(null); enemyTried.Add(0);
+            enemyTemplate.Add(null); enemyTemplateTried.Add(0);
+            i = i + 1;
+        }
+        i = 0;
+        while i < config.WEAPON_COUNT {
+            weaponPath.Add("");
+            weaponAsset.Add(null); weaponTried.Add(0);
+            i = i + 1;
+        }
+        // Enemy rig mapping (paths relative to the game working dir).
+        setEnemy(config.EN_HUSK,     base + "enemies/husk.gltf",        0.85);
+        setEnemy(config.EN_SAPPER,   base + "enemies/sapper.gltf",      0.70);
+        setEnemy(config.EN_DRONE,    base + "enemies/drone.gltf",       0.55);
+        setEnemy(config.EN_RANGER,   base + "enemies/ranger.gltf",      0.95);
+        setEnemy(config.EN_MARAUDER, base + "enemies/marauder.gltf",    1.15);
+        setEnemy(config.EN_VANGUARD, base + "enemies/vanguard.gltf",    1.00);
+        setEnemy(config.EN_STALKER,  base + "enemies/stalker.gltf",     0.60);
+        setEnemy(config.EN_WRAITH,   base + "enemies/wraith.gltf",      0.90);
+        setEnemy(config.EN_MITE,     base + "enemies/sapper.gltf",      0.28);
+        setEnemy(config.EN_SHRIKE,   base + "enemies/shrike.gltf",      0.80);
+        setEnemy(config.BOSS_WARDEN, base + "enemies/marauder.gltf",    2.30);
+        setEnemy(config.BOSS_SHRIKE, base + "enemies/shrike_prime.gltf",1.60);
+        // Turret + HELIX stay procedural (pivot head / monolith) — no path.
+        // Weapons.
+        weaponPath[config.W_BOLT] = base + "weapons/bolt.glb";
+        weaponPath[config.W_SCATTER] = base + "weapons/scatter.glb";
+        weaponPath[config.W_CYCLER] = base + "weapons/cycler.glb";
+        weaponPath[config.W_PULSE] = base + "weapons/pulse.glb";
+        weaponPath[config.W_RAIL] = base + "weapons/rail.glb";
+        weaponPath[config.W_ARC] = base + "weapons/arc.glb";
+        weaponPath[config.W_RIVET] = base + "weapons/rivet.glb";
+        weaponPath[config.W_SHARD] = base + "weapons/shard.glb";
+        weaponPath[config.W_EMP] = base + "weapons/emp.glb";
+        weaponPath[config.W_LANCE] = base + "weapons/lance.glb";
+    }
+
+    hide func setEnemy(arch: Integer, path: String, scale: Float) {
+        enemyPath[arch] = path;
+        enemyScale[arch] = scale;
+    }
+
+    expose func setEnabled(v: Boolean) { enabled = v; }
+    expose func isEnabled() -> Boolean { return enabled; }
+    expose func devForceAssets(v: Boolean) { enabled = v; }
+    expose func getLoadedCount() -> Integer { return loadedCount; }
+    expose func getFailedCount() -> Integer { return failedCount; }
+    expose func enemyScaleOf(arch: Integer) -> Float { return enemyScale[arch]; }
+
+    // Load (cached) the SceneAsset for an archetype, or null (fallback path).
+    expose func enemyAssetFor(arch: Integer) -> G3D.SceneAsset {
+        if enabled == false { return null; }
+        if arch < 0 || arch >= config.EN_TYPE_COUNT { return null; }
+        if enemyTried[arch] == 1 { return enemyAsset[arch]; }
+        enemyTried[arch] = 1;
+        enemyAsset[arch] = tryLoad(enemyPath[arch]);
+        return enemyAsset[arch];
+    }
+
+    // Load (cached) an instantiable skinned template for an archetype, or null.
+    // template.Instantiate() yields a world-spawnable Entity3D whose .Anim
+    // animator is pre-wired with the GLB's clips (openworld_slice pattern).
+    expose func enemyTemplateFor(arch: Integer) -> Game3D.SceneTemplate {
+        if enabled == false { return null; }
+        if arch < 0 || arch >= config.EN_TYPE_COUNT { return null; }
+        if enemyTemplateTried[arch] == 1 { return enemyTemplate[arch]; }
+        enemyTemplateTried[arch] = 1;
+        var path = enemyPath[arch];
+        if Str.get_Length(path) == 0 { return null; }
+        if File.Exists(path) == false {
+            failedCount = failedCount + 1;
+            return null;
+        }
+        var t = Game3D.Prefab.LoadAsset(path);
+        if t == null {
+            failedCount = failedCount + 1;
+            return null;
+        }
+        enemyTemplate[arch] = t;
+        loadedCount = loadedCount + 1;
+        return t;
+    }
+
+    // Resolve a clip intent against a template's model (see resolveClip).
+    expose func templateClip(t: Game3D.SceneTemplate, intent: Integer) -> String {
+        if t == null { return ""; }
+        return resolveClip(t.Model, intent);
+    }
+
+    // Load (cached) the weapon viewmodel asset, or null.
+    expose func weaponAssetFor(w: Integer) -> G3D.SceneAsset {
+        if enabled == false { return null; }
+        if w < 0 || w >= config.WEAPON_COUNT { return null; }
+        if weaponTried[w] == 1 { return weaponAsset[w]; }
+        weaponTried[w] = 1;
+        weaponAsset[w] = tryLoad(weaponPath[w]);
+        return weaponAsset[w];
+    }
+
+    hide func tryLoad(path: String) -> G3D.SceneAsset {
+        if Str.get_Length(path) == 0 { return null; }
+        if File.Exists(path) == false {
+            failedCount = failedCount + 1;
+            return null;
+        }
+        var a = G3D.SceneAsset.LoadResult(path);
+        if a == null {
+            failedCount = failedCount + 1;
+            return null;
+        }
+        if G3D.SceneAsset.get_MeshCount(a) <= 0 {
+            failedCount = failedCount + 1;
+            return null;
+        }
+        loadedCount = loadedCount + 1;
+        return a;
+    }
+
+    // Resolve an animation clip for an intent against an asset's real clips.
+    // intent: 0=idle 1=move 2=attack 3=hit 4=death. Returns "" when absent.
+    expose func resolveClip(asset: G3D.SceneAsset, intent: Integer) -> String {
+        if asset == null { return ""; }
+        var n = G3D.SceneAsset.get_AnimationCount(asset);
+        // Candidate substrings in priority order per intent.
+        var c0 = ""; var c1 = ""; var c2 = "";
+        if intent == 0 { c0 = "Flying_Idle"; c1 = "Idle"; c2 = ""; }
+        else if intent == 1 { c0 = "Run"; c1 = "Walk"; c2 = "Fast_Flying"; }
+        else if intent == 2 { c0 = "Shoot"; c1 = "Punch"; c2 = "Bite_Front"; }
+        else if intent == 3 { c0 = "HitRecieve"; c1 = "HitReact"; c2 = ""; }
+        else if intent == 4 { c0 = "Death"; c1 = ""; c2 = ""; }
+        var found = findClip(asset, n, c0);
+        if Str.get_Length(found) > 0 { return found; }
+        found = findClip(asset, n, c1);
+        if Str.get_Length(found) > 0 { return found; }
+        found = findClip(asset, n, c2);
+        if Str.get_Length(found) > 0 { return found; }
+        // Flyers attack via Headbutt when nothing else matched.
+        if intent == 2 { return findClip(asset, n, "Headbutt"); }
+        return "";
+    }
+
+    hide func findClip(asset: G3D.SceneAsset, n: Integer, needle: String) -> String {
+        if Str.get_Length(needle) == 0 { return ""; }
+        var i = 0;
+        while i < n {
+            var anim = G3D.SceneAsset.GetAnimation(asset, i);
+            var name = G3D.Animation3D.get_Name(anim);
+            // String.IndexOf is 1-based; 0 means absent.
+            if Str.IndexOf(name, needle) > 0 { return name; }
+            i = i + 1;
+        }
+        return "";
+    }
+}

@@ -18,6 +18,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements construction and queries for the verifier's EH CFG model.
+/// @details Construction performs all function-local indexing once so
+///          path-sensitive EH checks can use resolved block and push-site
+///          pointers while leaving the borrowed IL unchanged.
+
 #include "il/verify/EhModel.hpp"
 
 #include "il/verify/ControlFlowChecker.hpp"
@@ -33,7 +39,9 @@ namespace il::verify {
 /// @details Builds label lookups for all basic blocks and records the entry
 ///          block so later analyses can answer reachability queries without
 ///          recomputing metadata.  The model stores raw pointers into the
-///          original function and therefore must not outlive it.
+///          original function and therefore must not outlive it. It also
+///          identifies whether any EH-relevant opcode is present and records
+///          each labelled `eh.push` with its resolved handler when available.
 /// @param function Function whose EH layout should be modelled.
 EhModel::EhModel(const Function &function) : fn(&function) {
     if (!function.blocks.empty())
@@ -101,11 +109,10 @@ const BasicBlock *EhModel::findBlock(std::string_view label) const {
 }
 
 /// @brief Enumerate successor blocks referenced by a terminator instruction.
-/// @details Handles the various terminator flavours used by the IL (branch,
-///          conditional branch, switch, resume variants, and trap).  Labels are
+/// @details Handles `br`, `cbr`, `switch.i32`, and `resume.label`. Labels are
 ///          resolved through @ref findBlock so downstream checks receive direct
-///          block pointers.  Missing labels are ignored to keep verification
-///          resilient to malformed modules.
+///          block pointers. Missing labels and terminators without explicit CFG
+///          successors are omitted.
 /// @param terminator Terminator instruction whose outgoing edges are requested.
 /// @return Vector containing zero or more successor block pointers.
 std::vector<const BasicBlock *> EhModel::gatherSuccessors(const Instr &terminator) const {
@@ -121,8 +128,13 @@ std::vector<const BasicBlock *> EhModel::gatherSuccessors(const Instr &terminato
 /// @details This variant preserves the label index so callers can inspect the
 ///          corresponding branch argument bundle and distinguish ordinary
 ///          control flow from `resume.label` transfers.
+/// @param terminator Terminator whose supported labelled edges are resolved.
+/// @return Resolved edges in source-label order; malformed labels are omitted.
 std::vector<EhSuccessorEdge> EhModel::gatherSuccessorEdges(const Instr &terminator) const {
     std::vector<EhSuccessorEdge> successors;
+    /// @brief Resolve and append one label-indexed edge when possible.
+    /// @param labelIndex Index into @p terminator's label vector.
+    /// @param kind Semantic classification assigned to the edge.
     auto addEdge = [&](std::size_t labelIndex, EhEdgeKind kind) {
         if (labelIndex >= terminator.labels.size())
             return;
@@ -166,14 +178,19 @@ const Instr *EhModel::findTerminator(const BasicBlock &block) const {
 /// @brief Identify handler-shaped blocks by their leading marker.
 /// @details Signature validation is performed elsewhere; this helper is a
 ///          lightweight CFG classifier for EH provenance and edge checks.
+/// @param block Block whose first instruction is inspected.
+/// @return `true` when @p block begins with `eh.entry`.
 bool EhModel::isHandlerBlock(const BasicBlock &block) const noexcept {
     return !block.instructions.empty() && block.instructions.front().op == Opcode::EhEntry;
 }
 
-/// @brief Return the resume-token parameter id for canonical handlers.
-/// @details Only the standard two-parameter `Error`/`ResumeTok` handler ABI
-///          produces an id. Helper-shaped or malformed blocks return no value
-///          so callers can defer to existing structural diagnostics.
+/// @brief Return the resume-token parameter id for handler-compatible blocks.
+/// @details The block must begin with `eh.entry` and its first two parameters
+///          must be `Error` and `ResumeTok`; later parameters are ignored.
+///          Helper-shaped or malformed blocks return no value so callers can
+///          defer to existing structural diagnostics.
+/// @param block Candidate handler block whose parameter prefix is inspected.
+/// @return Identifier of the second parameter, or no value when incompatible.
 std::optional<unsigned> EhModel::handlerResumeTokenParam(const BasicBlock &block) const noexcept {
     if (!isHandlerBlock(block) || block.params.size() < 2)
         return std::nullopt;
@@ -188,6 +205,9 @@ std::optional<unsigned> EhModel::handlerResumeTokenParam(const BasicBlock &block
 ///          ADR 0005. Returning no value for multiple token parameters keeps
 ///          malformed or ambiguous blocks from changing provenance state here;
 ///          structural verification reports their independent diagnostics.
+/// @param block Block whose parameter types are scanned.
+/// @return Unique `ResumeTok` parameter identifier, or no value for zero or
+///         multiple matches.
 std::optional<unsigned> EhModel::resumeTokenParam(const BasicBlock &block) const noexcept {
     std::optional<unsigned> tokenId;
     for (const Param &param : block.params) {
@@ -204,6 +224,8 @@ std::optional<unsigned> EhModel::resumeTokenParam(const BasicBlock &block) const
 /// @details The model indexes `eh.push` instructions during construction using
 ///          addresses from the borrowed function. A missing entry means the
 ///          instruction was not a well-formed push in this model.
+/// @param instr Borrowed instruction whose address is used as the lookup key.
+/// @return Pointer into the model's push-site vector, or null when absent.
 const EhHandlerPushSite *EhModel::findPushSite(const Instr &instr) const noexcept {
     auto it = pushSiteByInstr.find(&instr);
     if (it == pushSiteByInstr.end() || it->second >= handlerPushSites.size())

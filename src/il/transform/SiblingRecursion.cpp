@@ -52,7 +52,9 @@ using namespace il::core;
 namespace il::transform {
 namespace {
 
-/// Find the maximum temp ID used anywhere in a function.
+/// @brief Find the maximum temporary or parameter id used in a function.
+/// @param fn Function whose ABI params, block params, and results are scanned.
+/// @return Largest observed id, or zero for a function without ids.
 unsigned findMaxTempId(const Function &fn) {
     unsigned maxId = 0;
     for (const auto &p : fn.params)
@@ -67,17 +69,24 @@ unsigned findMaxTempId(const Function &fn) {
     return maxId;
 }
 
-/// Check if an opcode is an associative commutative integer add.
+/// @brief Check whether an opcode is a supported associative integer add.
+/// @param op Opcode to classify.
+/// @return `true` for checked or verifier-demoted integer addition.
 bool isAssocAdd(Opcode op) {
     return op == Opcode::IAddOvf || op == Opcode::Add;
 }
 
-/// Check if an opcode is a signed comparison suitable for base case detection.
+/// @brief Check whether an opcode can express the recognized signed base case.
+/// @param op Opcode to classify.
+/// @return `true` for signed less/greater relational comparisons.
 bool isSignedCmp(Opcode op) {
     return op == Opcode::SCmpLE || op == Opcode::SCmpLT || op == Opcode::SCmpGE ||
            op == Opcode::SCmpGT;
 }
 
+/// @brief Restore a checked opcode before moving arithmetic onto a loop-carried path.
+/// @param op Original arithmetic opcode.
+/// @return Checked add/subtract/multiply counterpart, or @p op unchanged.
 Opcode checkedOpcodeForLoopCarriedArithmetic(Opcode op) {
     switch (op) {
         case Opcode::Add:
@@ -91,6 +100,9 @@ Opcode checkedOpcodeForLoopCarriedArithmetic(Opcode op) {
     }
 }
 
+/// @brief Copy an instruction while restoring verifier-stable checked arithmetic.
+/// @param instr Instruction copied from the recursive block.
+/// @return Updated instruction suitable for the transformed loop.
 Instr makeLoopCarriedVerifierStable(Instr instr) {
     instr.op = checkedOpcodeForLoopCarriedArithmetic(instr.op);
     return instr;
@@ -98,15 +110,23 @@ Instr makeLoopCarriedVerifierStable(Instr instr) {
 
 /// Matched pattern information for the sibling recursion transformation.
 struct SiblingPattern {
+    /// Index of the recursive block in `Function::blocks`.
     size_t blockIdx{0}; // Index of the recurse block in fn.blocks
+    /// Instruction index of the first self call.
     size_t call1Idx{0}; // Instruction index of first self-call
+    /// Instruction index of the second self call.
     size_t call2Idx{0}; // Instruction index of second self-call
+    /// Instruction index of the add combining both results.
     size_t addIdx{0};   // Instruction index of the combining add
+    /// Original checked or plain addition opcode.
     Opcode addOp{Opcode::Count}; // The add opcode (IAddOvf or Add)
 
     // Entry/predecessor block base case info
+    /// Signed comparison opcode used by the predecessor's base-case branch.
     Opcode cmpOp{Opcode::Count}; // Base case comparison opcode (e.g., SCmpLE)
+    /// Threshold operand compared with the recursive argument.
     Value cmpThreshold;  // Base case threshold value (e.g., 1)
+    /// Whether the true predecessor edge represents the base case.
     bool baseCaseIsTrue{false}; // True if base case fires on the TRUE branch of CBr
 };
 
@@ -122,6 +142,8 @@ struct SiblingPattern {
 ///   5. The combined result is immediately returned.
 ///   6. Instructions between calls don't use the first call's result.
 ///   7. A predecessor block has a signed comparison + CBr to the recurse block.
+/// @param fn Candidate single-argument recursive function.
+/// @return Instruction indices and base-case metadata, or `std::nullopt`.
 std::optional<SiblingPattern> matchPattern(const Function &fn) {
     // For now, require single-argument functions.
     if (fn.params.size() != 1)
@@ -288,10 +310,12 @@ std::optional<SiblingPattern> matchPattern(const Function &fn) {
 
 } // anonymous namespace
 
+/// @copydoc SiblingRecursion::id()
 std::string_view SiblingRecursion::id() const {
     return "sibling-recursion";
 }
 
+/// @copydoc SiblingRecursion::run()
 PreservedAnalyses SiblingRecursion::run(Function &fn, AnalysisManager &) {
     auto patOpt = matchPattern(fn);
     if (!patOpt)
@@ -441,7 +465,9 @@ PreservedAnalyses SiblingRecursion::run(Function &fn, AnalysisManager &) {
 }
 
 /// @brief Register sibling recursion pass.
+/// @param registry Registry that receives the pass factory.
 void registerSiblingRecursionPass(PassRegistry &registry) {
+    /// Construct a stateless sibling-recursion optimizer for one function.
     registry.registerFunctionPass(
         "sibling-recursion", []() { return std::make_unique<SiblingRecursion>(); }, true);
 }

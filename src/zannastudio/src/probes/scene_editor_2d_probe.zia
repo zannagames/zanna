@@ -1630,7 +1630,7 @@ func main() {
     if sceneDoc.content != canonicalBeforeSave
        or documents.SaveAsBlockReason(documents.activeIndex, wrongPath) == ""
        or documents.SaveAs(saveStem) == false
-       or sceneDoc.filePath != saveStem + ".scene"
+       or sceneDoc.filePath != saveStem + ".scene2d"
        or sceneDoc.kind != file_utils.DOC_KIND_SCENE_2D
        or File.Exists(sceneDoc.filePath) == false {
         removeTempDir(saveDir);

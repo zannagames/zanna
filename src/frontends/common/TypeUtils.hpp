@@ -5,11 +5,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/TypeUtils.hpp
-// Purpose: Helper utilities for IL type checking shared across frontends
-// Key invariants: All functions are constexpr-compatible and stateless
-// Ownership/Lifetime: Non-owning utilities operating on IL types
-// Links: docs/internals/codemap.md, docs/il/il-guide.md
+// File: src/frontends/common/TypeUtils.hpp
+// Purpose: Helper utilities for IL scalar type classification and promotion
+//          shared across language frontends.
+// Key invariants:
+//   * I1 is classified as Boolean, not as a general integer type.
+//   * Mixed integer/F64 operations promote to F64.
+//   * Incompatible common-type queries return Type::Kind::Void.
+// Ownership: Header-only stateless utilities operating on type enum values.
+// References: docs/internals/codemap.md, docs/il/il-guide.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares shared IL scalar type predicates, sizes, and promotion rules.
 //
 //===----------------------------------------------------------------------===//
 

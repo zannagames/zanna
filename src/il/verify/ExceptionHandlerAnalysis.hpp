@@ -19,6 +19,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares classification and signature validation for EH entry blocks.
+/// @details The analysis distinguishes ordinary blocks from well-formed
+///          handlers and malformed handler attempts. It returns parameter IDs
+///          only after validating the canonical `eh.entry` placement, arity,
+///          types, and names.
+
 #pragma once
 
 #include "support/diag_expected.hpp"
@@ -34,14 +41,22 @@ namespace il::verify {
 
 /// @brief Captures the parameter IDs associated with a handler's %err and %tok values.
 struct HandlerSignature {
+    /// @brief Temporary identifier of the `%err:Error` block parameter.
     unsigned errorParam = 0;
+
+    /// @brief Temporary identifier of the `%tok:ResumeTok` block parameter.
     unsigned resumeTokenParam = 0;
 };
 
 /// @brief Inspect @p bb and determine whether it is a handler block with a valid signature.
+/// @details A block beginning with `eh.entry` must declare exactly
+///          `(%err:Error, %tok:ResumeTok)`. An `eh.entry` found later in an
+///          otherwise ordinary block is also diagnosed. Blocks containing no
+///          `eh.entry` are classified as non-handlers.
 /// @param fn Function providing diagnostic context.
 /// @param bb Basic block to analyse.
-/// @return Empty optional when @p bb is not a handler, signature when valid, diagnostic otherwise.
+/// @return Empty optional when @p bb is not a handler, a signature when valid,
+///         or a diagnostic for malformed placement or parameters.
 [[nodiscard]] il::support::Expected<std::optional<HandlerSignature>> analyzeHandlerBlock(
     const il::core::Function &fn, const il::core::BasicBlock &bb);
 

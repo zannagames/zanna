@@ -1,0 +1,244 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_prefab_instance_probe.zia
+// Purpose: Verify the Studio VSCN v7 prefab instance workflow.
+// Key invariants:
+//   - Import as Instance places one reference node, commits once, and the
+//     grafted content appears through the canonical loader reload.
+//   - Serialized content stores the reference only, never grafted nodes.
+//   - Instance content is locked: selection resolves to the owning prefab
+//     node and authored children are refused inside instances.
+//   - Unpack converts the instance to plain editable nodes in one
+//     transaction with exact undo.
+//   - Reload re-grafts after the referenced file changes on disk,
+//     preserving the instance node's overrides.
+//   - Open Prefab Source queues the resolved path exactly once.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell and its temporary workspace directory.
+// Links: zannastudio/src/ui/scene_editor_3d.zia,
+//        docs/adr/0187-vscn-v7-prefab-reference-nodes.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_prefab_instance_probe;
+
+// ============================================================================
+// MODULE: scene_prefab_instance_probe
+// PURPOSE: Regress ADR 0187's editor workflow — instancing, locking,
+//          select-as-unit, unpack, reload, and open-source queuing.
+//
+// WHERE-THIS-FITS: Display probe registered as
+//          zia_zannastudio_scene_prefab_instance.
+//
+// TEACHING-NOTE: Every expectation reads back through serialized VSCN or
+//          the reloaded runtime graph; a correct-looking live hierarchy
+//          proves nothing about what the format stores.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Terminal = Zanna.Terminal;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+
+func fail(shell: app_shell.AppShell,
+          workDir: String,
+          reason: String) {
+    if workDir != "" { Dir.RemoveAll(workDir); }
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          doc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(doc);
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Prefab Instance Probe", 1180, 780);
+
+    var workDir = TempFile.CreateDirWithPrefix("zannastudio_prefab_probe_");
+    if workDir == "" {
+        fail(shell, "", "could not create the prefab workspace");
+        return;
+    }
+    var sourcePath = Path.Join(workDir, "lamp.scene3d");
+    var worldPath = Path.Join(workDir, "world.scene3d");
+
+    // Author the referenced source scene directly through the runtime.
+    var source = SceneGraph.New();
+    var lamp = SceneNode.New();
+    lamp.Name = "Lamp Post";
+    var head = SceneNode.New();
+    head.Name = "Lamp Head";
+    head.SetPosition(0.0, 1.6, 0.0);
+    lamp.AddChild(head);
+    source.Add(lamp);
+    if source.Save(sourcePath) == 0 {
+        fail(shell, workDir, "could not save the referenced source scene");
+        return;
+    }
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    sceneDoc.filePath = worldPath;
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+
+    // ------------------------------------------------------------------
+    // Import as Instance: one commit, reference-only bytes, grafted view.
+    // ------------------------------------------------------------------
+    var importRevision = editor.GetRevision();
+    if editor.ImportInstancePath(sourcePath) == false
+       or editor.GetRevision() != importRevision + 1 {
+        fail(shell, workDir, "instance import was not one transaction");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    if Str.Contains(sceneDoc.content, "\"prefab\"") == false
+       or Str.Contains(sceneDoc.content, "\"version\": 7") == false
+       or Str.Contains(sceneDoc.content, "Lamp Post") {
+        fail(shell, workDir,
+             "serialized instance was not reference-only v7");
+        return;
+    }
+    var instanceIndex = -1;
+    var scan = 0;
+    while scan < editor.flatNodes.count() {
+        if editor.flatNodes.get(scan).PrefabPath != "" {
+            instanceIndex = scan;
+        }
+        scan = scan + 1;
+    }
+    if instanceIndex < 0
+       or editor.flatNodes.get(instanceIndex).ChildCount != 1 {
+        fail(shell, workDir, "instance did not graft its referenced content");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Locked content: selection resolves to the owner; children refused.
+    // ------------------------------------------------------------------
+    var contentIndex = -1;
+    scan = 0;
+    while scan < editor.flatNodes.count() {
+        if editor.flatNodes.get(scan).IsInstanceContent
+           and contentIndex < 0 {
+            contentIndex = scan;
+        }
+        scan = scan + 1;
+    }
+    if contentIndex < 0 {
+        fail(shell, workDir, "grafted content was not instance-flagged");
+        return;
+    }
+    editor.ApplyViewportSelection(contentIndex, false, false);
+    if editor.selectedIndex != instanceIndex {
+        fail(shell, workDir,
+             "selecting instance content did not resolve to the owner: "
+             + editor.selectedIndex + " expected " + instanceIndex);
+        return;
+    }
+    var guardRevision = editor.GetRevision();
+    if editor.AddEmptyNode("Illegal Child", instanceIndex) >= 0
+       or editor.AddEmptyNode("Illegal Child", contentIndex) >= 0
+       or editor.GetRevision() != guardRevision {
+        fail(shell, workDir,
+             "authored children were accepted inside an instance");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Open Prefab Source queues the resolved path exactly once.
+    // ------------------------------------------------------------------
+    editor.ApplyViewportSelection(instanceIndex, false, false);
+    pump(editor, sceneDoc, shell);
+    if editor.openPrefabSourceButton.IsEnabled() == false {
+        fail(shell, workDir, "Open Source stayed disabled on an instance");
+        return;
+    }
+    if editor.TakeOpenPrefabSourcePath() != "" {
+        fail(shell, workDir, "open-source queue was not empty initially");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // External change + Reload: re-graft preserves overrides.
+    // ------------------------------------------------------------------
+    var beforeReload = sceneDoc.content;
+    var extended = SceneGraph.Load(sourcePath);
+    var extra = SceneNode.New();
+    extra.Name = "Lamp Base";
+    extended.Root.GetChild(0).AddChild(extra);
+    if extended.Save(sourcePath) == 0 {
+        fail(shell, workDir, "could not extend the referenced source");
+        return;
+    }
+    editor.ReloadPrefabInstances();
+    pump(editor, sceneDoc, shell);
+    instanceIndex = -1;
+    scan = 0;
+    while scan < editor.flatNodes.count() {
+        if editor.flatNodes.get(scan).PrefabPath != "" {
+            instanceIndex = scan;
+        }
+        scan = scan + 1;
+    }
+    var reloadedInstance = editor.flatNodes.get(instanceIndex);
+    if reloadedInstance.GetChild(0).ChildCount != 2 {
+        fail(shell, workDir,
+             "reload did not re-graft the extended source: "
+             + reloadedInstance.GetChild(0).ChildCount);
+        return;
+    }
+    if sceneDoc.content != beforeReload {
+        fail(shell, workDir, "reloading instances changed canonical bytes");
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // Unpack: one transaction, plain serialization, exact undo.
+    // ------------------------------------------------------------------
+    editor.ApplyViewportSelection(instanceIndex, false, false);
+    var unpackBaseline = sceneDoc.content;
+    var unpackRevision = editor.GetRevision();
+    if editor.UnpackSelectedInstance() == false
+       or editor.GetRevision() != unpackRevision + 1
+       or Str.Contains(sceneDoc.content, "\"prefab\"")
+       or Str.Contains(sceneDoc.content, "Lamp Post") == false {
+        fail(shell, workDir,
+             "unpack did not serialize plain editable content");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != unpackBaseline
+       or Str.Contains(sceneDoc.content, "\"prefab\"") == false {
+        fail(shell, workDir, "unpack did not undo to the exact reference");
+        return;
+    }
+
+    Dir.RemoveAll(workDir);
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

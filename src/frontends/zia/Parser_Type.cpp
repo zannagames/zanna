@@ -8,6 +8,10 @@
 /// @file Parser_Type.cpp
 /// @brief Type parsing implementation for the Zia parser.
 ///
+/// @details Parses qualified named types, List shorthand, generic arguments,
+///          bounded fixed arrays, tuples, function signatures, and recursively
+///          nested optional suffixes while enforcing the type-depth limit.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Parser.hpp"

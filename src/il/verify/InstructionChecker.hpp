@@ -31,6 +31,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares stream-oriented instruction and opcode-signature verification.
+/// @details These compatibility entry points adapt structured instruction
+///          checks to boolean results and formatted diagnostic streams while
+///          updating caller-owned type inference state.
+
 #pragma once
 
 #include "il/core/fwd.hpp"

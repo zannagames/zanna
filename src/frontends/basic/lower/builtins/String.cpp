@@ -5,14 +5,20 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements lowering support for BASIC string builtins.  Specialised lowering
-// delegates to the shared string builtin registry when available and falls back
-// to the rule-driven pipeline otherwise.  Consolidating the logic here keeps the
-// dispatcher agnostic of how each builtin rewrites the call, whether it
-// requires runtime helpers, and which diagnostic guards must be materialised for
-// conversion operations.
+// File: src/frontends/basic/lower/builtins/String.cpp
+// Purpose: Implements VAL's specialized guarded conversion and registers
+//          string builtin callbacks that otherwise use generic lowering rules.
+// Key invariants: VAL distinguishes parse failure, NaN, overflow, and success;
+//                 other string builtins preserve registry-selected semantics.
+// Ownership/Lifetime: Callbacks borrow BuiltinLowerContext and return Lowerer-
+//                     owned IL values.
+// Links: src/frontends/basic/lower/BuiltinCommon.hpp,
+//        src/frontends/basic/builtins/StringBuiltins.cpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Implements BASIC string builtin lowering and registration.
 
 #include "frontends/basic/lower/BuiltinCommon.hpp"
 #include "frontends/basic/lower/builtins/Registrars.hpp"

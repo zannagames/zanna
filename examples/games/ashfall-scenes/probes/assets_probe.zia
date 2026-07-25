@@ -1,0 +1,67 @@
+// =============================================================================
+// probes/assets_probe.zia — downloaded-asset path + fallback-purity probe
+// =============================================================================
+//
+// (a) Forces the asset registry ON, spawns every archetype, cycles every
+//     weapon, and renders frames — exercising GLB template instantiation,
+//     animator crossfades, and the weapon view-model GLB path. Prints
+//     assets=loaded when assets_src/ is present, assets=fallback otherwise;
+//     PASSES either way (the asset-optional contract).
+// (b) Boots a second game with the registry left OFF and repeats the spawn +
+//     render sweep — proving the composite fallback path is complete on its
+//     own (an asset-less checkout stays green).
+// =============================================================================
+module assets_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../game" as game;
+
+func sweep(g: game.Game) {
+    var a = 0;
+    while a < config.EN_TYPE_COUNT {
+        g.devSpawnEnemy(a, 5.0 + (a % 5) * 2.0, -5.0 - (a / 5) * 3.0);
+        a = a + 1;
+    }
+    var t = 0;
+    while t < 60 {
+        g.tickSim(config.FIXED_DT);
+        g.stepPhysics(config.FIXED_DT);
+        t = t + 1;
+    }
+    g.devRenderFrame();
+    // Cycle all weapons with a render each (view-model path per weapon).
+    var w = 0;
+    while w < config.WEAPON_COUNT {
+        g.devGiveWeapon(w);
+        g.devSwitchWeapon(w);
+        g.tickSim(config.FIXED_DT);
+        g.devRenderFrame();
+        w = w + 1;
+    }
+}
+
+func start() {
+    // (a) Registry forced on.
+    var g = new game.Game();
+    g.setHeadless(true);
+    g.initCore(0x5A17F00D);
+    g.boot(true, false);
+    g.devForceAssets(true);
+    sweep(g);
+    if g.devAssetsLoaded() > 0 {
+        Terminal.Say("assets=loaded count=" + g.devAssetsLoaded());
+    } else {
+        Terminal.Say("assets=fallback");
+    }
+
+    // (b) Registry off: composite purity.
+    var g2 = new game.Game();
+    g2.setHeadless(true);
+    g2.initCore(0x5A17F00D);
+    g2.boot(true, false);
+    sweep(g2);
+    Terminal.Say("fallback=ok");
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

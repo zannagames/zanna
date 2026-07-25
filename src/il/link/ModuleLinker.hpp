@@ -19,6 +19,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the consuming IL module-linking interface.
+
 #pragma once
 
 #include "il/core/Module.hpp"
@@ -38,6 +41,7 @@ struct LinkResult {
     std::vector<std::string> errors;
 
     /// @brief Check if linking succeeded.
+    /// @return True exactly when no linking diagnostics were recorded.
     [[nodiscard]] bool succeeded() const {
         return errors.empty();
     }

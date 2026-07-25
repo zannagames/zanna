@@ -4,15 +4,21 @@
 // See LICENSE in the project root for license information.
 //
 // File: src/frontends/basic/Semantic_OOP_Builder.cpp
-//
-// Summary:
-//   Implements the OopIndexBuilder class which constructs the OOP index
-//   from a parsed BASIC program. The builder performs multiple phases:
-//   - Phase 1: Scan classes and interfaces from the AST
-//   - Phase 2: Resolve base classes and implemented interfaces
-//   - Phase 3: Detect inheritance cycles
-//   - Phase 4: Build vtables and validate overrides
-//   - Phase 5: Check interface conformance
+// Purpose: Implements the phased BASIC class, interface, and enum metadata
+//          builder used by semantic analysis and lowering.
+// Key invariants:
+//   - Declarations are indexed before inheritance and interface names resolve.
+//   - Inheritance cycles are cut before recursive virtual-table construction.
+//   - Base virtual tables are complete before derived slots are assigned.
+//   - Invalid relationships emit diagnostics when possible and leave a safe
+//     partial index rather than dangling metadata.
+// Ownership/Lifetime:
+//   - OopIndexBuilder borrows its destination index and optional emitter.
+//   - AST declarations are read synchronously and are never retained by pointer.
+// Links: src/frontends/basic/Semantic_OOP.cpp,
+//        src/frontends/basic/Semantic_OOP_Helpers.cpp,
+//        src/frontends/basic/detail/Semantic_OOP_Internal.hpp,
+//        src/frontends/basic/OopIndex.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,12 +30,19 @@
 #include "frontends/basic/TypeSuffix.hpp"
 #include "frontends/basic/detail/Semantic_OOP_Internal.hpp"
 
+/// @file
+/// @brief Implements phased construction and validation of the BASIC OOP index.
+
 namespace il::frontends::basic::detail {
 
 //===----------------------------------------------------------------------===//
 // OopIndexBuilder Implementation
 //===----------------------------------------------------------------------===//
 
+/// @brief Joins the currently active namespace path.
+/// @details Precomputes the exact output size, then concatenates @ref nsStack_
+///          with period separators without modifying the stack.
+/// @return Dot-qualified namespace prefix, or an empty string at top level.
 std::string OopIndexBuilder::joinNamespace() const {
     if (nsStack_.empty())
         return {};
@@ -48,8 +61,17 @@ std::string OopIndexBuilder::joinNamespace() const {
     return prefix;
 }
 
-/// @brief Process Property Decl.
+/// @brief Validates a property and registers its synthesized accessor methods.
+/// @details Getter and setter visibility may not exceed property visibility.
+///          Present accessors become @c get_ and @c set_ method records carrying
+///          the property's static and type metadata. Static accessor bodies are
+///          scanned for invalid ME expressions.
+/// @param prop Parsed property declaration to inspect.
+/// @param info Mutable class record receiving synthesized methods and locations.
+/// @post Every present accessor has a corresponding entry in @p info even when
+///       a validation diagnostic was emitted.
 void OopIndexBuilder::processPropertyDecl(const PropertyDecl &prop, ClassInfo &info) {
+    /// Maps the two access levels to an ordering used for permissiveness checks.
     auto rank = [](Access a) { return a == Access::Public ? 1 : 0; };
 
     // Validate accessor access levels
@@ -85,7 +107,7 @@ void OopIndexBuilder::processPropertyDecl(const PropertyDecl &prop, ClassInfo &i
         info.methodLocs[mname] = prop.loc;
 
         if (prop.isStatic) {
-            /// @brief Check Me In Static Context.
+            // Static accessors cannot use the implicit instance receiver.
             checkMeInStaticContext(
                 prop.get.body, emitter_, "B2103", "'ME' is not allowed in static method");
         }
@@ -104,13 +126,24 @@ void OopIndexBuilder::processPropertyDecl(const PropertyDecl &prop, ClassInfo &i
         info.methodLocs[mname] = prop.loc;
 
         if (prop.isStatic) {
-            /// @brief Check Me In Static Context.
+            // Static accessors cannot use the implicit instance receiver.
             checkMeInStaticContext(
                 prop.set.body, emitter_, "B2103", "'ME' is not allowed in static method");
         }
     }
 }
 
+/// @brief Records constructor metadata and validates static/instance rules.
+/// @details Static constructors are unique, parameterless, and forbidden from
+///          using ME. Instance constructors replace the stored constructor
+///          parameter signature and are scanned for locals that shadow
+///          instance fields.
+/// @param ctor Constructor declaration to process.
+/// @param info Mutable class metadata receiving constructor flags and signature.
+/// @param classDecl Containing class used by shadowing diagnostics.
+/// @param fieldNames Instance-field names borrowed for the body scan.
+/// @post @p info records the constructor kind even when validation reports an
+///       error.
 void OopIndexBuilder::processConstructorDecl(const ConstructorDecl &ctor,
                                              ClassInfo &info,
                                              const ClassDecl &classDecl,
@@ -133,7 +166,7 @@ void OopIndexBuilder::processConstructorDecl(const ConstructorDecl &ctor,
                            "static constructor cannot have parameters");
         }
 
-        /// @brief Check Me In Static Context.
+        // Static constructors cannot use the implicit instance receiver.
         checkMeInStaticContext(
             ctor.body, emitter_, "B2106", "'ME' is not allowed in static constructor");
     } else {
@@ -150,6 +183,18 @@ void OopIndexBuilder::processConstructorDecl(const ConstructorDecl &ctor,
     }
 }
 
+/// @brief Converts one method declaration into indexed method metadata.
+/// @details Collects parameter types, derives a return type from an explicit
+///          annotation or identifier suffix, preserves an explicit object
+///          return class, validates return coverage and field shadowing, and
+///          records virtual/abstract/final flags with an initially unassigned
+///          slot. Static bodies are scanned for ME.
+/// @param method Method declaration to convert.
+/// @param info Mutable class metadata receiving the method and source location.
+/// @param classDecl Containing class used for diagnostics.
+/// @param fieldNames Instance-field names borrowed for shadow checks.
+/// @post @p info contains the method keyed by its parsed name; an existing
+///       same-key record is replaced.
 void OopIndexBuilder::processMethodDecl(const MethodDecl &method,
                                         ClassInfo &info,
                                         const ClassDecl &classDecl,
@@ -191,12 +236,20 @@ void OopIndexBuilder::processMethodDecl(const MethodDecl &method,
     info.methodLocs[method.name] = method.loc;
 
     if (method.isStatic) {
-        /// @brief Check Me In Static Context.
+        // Static methods cannot use the implicit instance receiver.
         checkMeInStaticContext(
             method.body, emitter_, "B2103", "'ME' is not allowed in static method");
     }
 }
 
+/// @brief Diagnoses case-insensitive field/method name collisions.
+/// @details Compares every indexed method with the supplied instance fields and
+///          emits B2017 at the method location for the first matching field.
+///          Property accessors participate through their synthesized names.
+/// @param info Class metadata containing methods and their source locations.
+/// @param classDecl Containing declaration supplying a fallback location.
+/// @param fieldNames Instance-field names to compare case-insensitively.
+/// @post Emits at most one collision diagnostic per indexed method.
 void OopIndexBuilder::checkFieldMethodCollisions(
     ClassInfo &info,
     const ClassDecl &classDecl,
@@ -223,7 +276,16 @@ void OopIndexBuilder::checkFieldMethodCollisions(
     }
 }
 
-/// @brief Process Class Decl.
+/// @brief Builds and registers one class's declaration-level metadata.
+/// @details Qualifies the class in the current namespace, records its unresolved
+///          base, partitions static and instance fields, processes supported
+///          members, synthesizes a default constructor when needed, checks
+///          collisions, and retains raw implemented-interface names for later
+///          resolution.
+/// @param classDecl Parsed class declaration to index.
+/// @post @ref index_ contains a class entry keyed by its qualified name.
+/// @post Base and interface relationships remain unresolved until
+///       @ref resolveBasesAndImplements.
 void OopIndexBuilder::processClassDecl(const ClassDecl &classDecl) {
     ClassInfo info;
     info.name = classDecl.name;
@@ -282,7 +344,6 @@ void OopIndexBuilder::processClassDecl(const ClassDecl &classDecl) {
                 break;
             }
             case Stmt::Kind::MethodDecl:
-                /// @brief Process Method Decl.
                 processMethodDecl(
                     static_cast<const MethodDecl &>(*member), info, classDecl, classFieldNames);
                 break;
@@ -307,7 +368,12 @@ void OopIndexBuilder::processClassDecl(const ClassDecl &classDecl) {
     index_.classes()[info.qualifiedName] = std::move(info);
 }
 
-/// @brief Scan Declarations.
+/// @brief Recursively registers object-model declarations from a statement list.
+/// @details Namespace declarations extend @ref nsStack_ only while their bodies
+///          are scanned. Class, interface, and enum declarations dispatch to
+///          their dedicated processors; unrelated statements are ignored.
+/// @param stmts Statements in the current lexical namespace.
+/// @post @ref nsStack_ has the same size and contents it had on entry.
 void OopIndexBuilder::scanDeclarations(const std::vector<StmtPtr> &stmts) {
     for (const auto &stmtPtr : stmts) {
         if (!stmtPtr)
@@ -338,7 +404,15 @@ void OopIndexBuilder::scanDeclarations(const std::vector<StmtPtr> &stmts) {
     }
 }
 
-/// @brief Process Interface Decl.
+/// @brief Builds and registers one interface's ordered method slots.
+/// @details Rejects properties and static methods, diagnoses duplicate method
+///          names, derives suffix-based return types when necessary, and
+///          assigns a fresh interface identifier before publication.
+/// @param idecl Parsed interface declaration to index.
+/// @post A non-empty qualified interface name is present in
+///       @ref OopIndex::interfacesByQname.
+/// @note Invalid members are diagnosed and omitted where required, while the
+///       remaining interface is still indexed.
 void OopIndexBuilder::processInterfaceDecl(const InterfaceDecl &idecl) {
     InterfaceInfo ii;
     ii.qualifiedName = joinQualified(idecl.qualifiedName);
@@ -400,7 +474,12 @@ void OopIndexBuilder::processInterfaceDecl(const InterfaceDecl &idecl) {
     index_.interfacesByQname()[ii.qualifiedName] = std::move(ii);
 }
 
-/// @brief Collect Using Directives.
+/// @brief Collects top-level USING imports and aliases for base resolution.
+/// @param stmts Statement list to inspect for direct @ref UsingDecl nodes.
+/// @post Namespace imports are inserted into @ref UsingContext::imports and
+///       aliases are stored by canonical alias name in
+///       @ref UsingContext::aliases.
+/// @note This function does not recurse into namespace bodies.
 void OopIndexBuilder::collectUsingDirectives(const std::vector<StmtPtr> &stmts) {
     for (const auto &stmtPtr : stmts) {
         if (!stmtPtr || stmtPtr->stmtKind() != Stmt::Kind::UsingDecl)
@@ -418,7 +497,13 @@ void OopIndexBuilder::collectUsingDirectives(const std::vector<StmtPtr> &stmts) 
     }
 }
 
-/// @brief Expand Alias.
+/// @brief Expands the leading alias of a dotted qualified name.
+/// @param q Candidate qualified name.
+/// @return @p q unchanged when it has no period or its leading segment is not
+///         a known alias; otherwise the alias target joined to the remaining
+///         segments.
+/// @note A bare alias without a trailing qualified segment is intentionally
+///       not expanded by this helper.
 std::string OopIndexBuilder::expandAlias(const std::string &q) const {
     auto pos = q.find('.');
     if (pos == std::string::npos)
@@ -436,7 +521,13 @@ std::string OopIndexBuilder::expandAlias(const std::string &q) const {
     return itAlias->second + "." + tail;
 }
 
-/// @brief Resolve Base.
+/// @brief Resolves a base-class name without consulting USING imports.
+/// @details Tries an already qualified name, a sibling in @p classQ's namespace,
+///          and finally the raw top-level name, in that order.
+/// @param classQ Qualified name of the derived class providing namespace context.
+/// @param raw Raw or alias-expanded base spelling.
+/// @return Qualified class key from @ref index_, or an empty string when no
+///         candidate exists.
 std::string OopIndexBuilder::resolveBase(const std::string &classQ, const std::string &raw) const {
     if (raw.empty())
         return {};
@@ -461,6 +552,14 @@ std::string OopIndexBuilder::resolveBase(const std::string &classQ, const std::s
     return {};
 }
 
+/// @brief Resolves an implemented-interface name in class-relative scope.
+/// @details Tries an already qualified name, a sibling in @p classQ's namespace,
+///          and the raw top-level name. USING imports and aliases are not
+///          applied on this path.
+/// @param classQ Qualified implementing-class name supplying namespace context.
+/// @param raw Raw interface spelling.
+/// @return Qualified interface key from @ref index_, or an empty string when
+///         unresolved.
 std::string OopIndexBuilder::resolveInterface(const std::string &classQ,
                                               const std::string &raw) const {
     if (raw.find('.') != std::string::npos) {
@@ -480,7 +579,15 @@ std::string OopIndexBuilder::resolveInterface(const std::string &classQ,
     return {};
 }
 
-/// @brief Resolve Bases And Implements.
+/// @brief Resolves deferred base classes and implemented interfaces.
+/// @details Expands leading aliases for base names, then tries lexical and
+///          top-level resolution. Unqualified unresolved bases are additionally
+///          searched across USING imports; one hit resolves, multiple hits
+///          produce the catalogued ambiguity diagnostic, and no hit produces
+///          B2101. Implemented interfaces are mapped to numeric interface IDs
+///          when class-relative resolution succeeds.
+/// @post Every class has a resolved or empty @ref ClassInfo::baseQualified and
+///       a list of all successfully resolved interface IDs.
 void OopIndexBuilder::resolveBasesAndImplements() {
     for (auto &entry : index_.classes()) {
         ClassInfo &ci = entry.second;
@@ -504,7 +611,6 @@ void OopIndexBuilder::resolveBasesAndImplements() {
                     if (hits.size() == 1)
                         resolved = std::move(hits.front());
                     else if (hits.size() > 1 && emitter_) {
-                        /// @brief Emit Ambiguous Type.
                         il::frontends::basic::semutil::emitAmbiguousType(
                             *emitter_, it->second.second, 1, rawMaybeAliased, hits);
                     }
@@ -531,7 +637,12 @@ void OopIndexBuilder::resolveBasesAndImplements() {
     }
 }
 
-/// @brief Detect Inheritance Cycles.
+/// @brief Detects and cuts cycles in resolved class inheritance.
+/// @details Performs a depth-first three-state traversal over qualified class
+///          names. Encountering an edge to a visiting class emits B2102 and
+///          clears the current class's base edge so later recursive phases
+///          terminate safely.
+/// @post No retained base chain contains a cycle encountered by this traversal.
 void OopIndexBuilder::detectInheritanceCycles() {
     enum State : uint8_t {
         kUnvisited = 0,
@@ -542,6 +653,7 @@ void OopIndexBuilder::detectInheritanceCycles() {
     std::unordered_map<std::string, State> state;
     state.reserve(index_.classes().size());
 
+    /// Recursively marks one class and follows its resolved base edge.
     std::function<void(const std::string &)> detectCycle;
     detectCycle = [&](const std::string &name) {
         auto it = state.find(name);
@@ -570,11 +682,19 @@ void OopIndexBuilder::detectInheritanceCycles() {
         detectCycle(entry.first);
 }
 
-/// @brief Build Vtables.
+/// @brief Builds inherited virtual tables and validates override contracts.
+/// @details Processes each base before its derived class, copies inherited slot
+///          names, propagates unimplemented abstract members, then assigns new
+///          slots or reuses inherited slots for virtual methods. Attempts to
+///          override non-virtual or final methods and signature mismatches are
+///          diagnosed while retaining deterministic layout metadata.
+/// @post Every indexed class has a finalized @ref ClassInfo::vtable and each
+///       indexed virtual method has its selected slot when one is available.
 void OopIndexBuilder::buildVtables() {
     std::unordered_map<std::string, bool> processed;
     processed.reserve(index_.classes().size());
 
+    /// Finds the nearest base-class declaration of a named method.
     auto findInBases =
         [&](const std::string &startClass,
             const std::string &methodName) -> std::pair<ClassInfo *, ClassInfo::MethodInfo *> {
@@ -591,6 +711,7 @@ void OopIndexBuilder::buildVtables() {
         return {nullptr, nullptr};
     };
 
+    /// Recursively finalizes one class after ensuring its base is complete.
     std::function<void(const std::string &)> build;
     build = [&](const std::string &name) {
         if (processed[name])
@@ -658,7 +779,6 @@ void OopIndexBuilder::buildVtables() {
                                        "B2103",
                                        ci->methodLocs[mname],
                                        static_cast<uint32_t>(mname.size()),
-                                       /// @brief String.
                                        std::string("override signature mismatch for '") + mname +
                                            "'");
                     }
@@ -681,8 +801,16 @@ void OopIndexBuilder::buildVtables() {
         build(entry.first);
 }
 
-/// @brief Check Interface Conformance.
+/// @brief Verifies class methods against every resolved interface slot.
+/// @details Searches each class and its bases for a name- and signature-matching
+///          method. Missing or incompatible slots make the class abstract and
+///          may emit E_CLASS_MISSES_IFACE_METHOD for a previously concrete
+///          class. Each interface receives an ordered slot-to-method mapping;
+///          missing slots remain empty.
+/// @post @ref ClassInfo::ifaceSlotImpl contains one mapping for every resolved
+///       interface ID found in the reverse lookup.
 void OopIndexBuilder::checkInterfaceConformance() {
+    /// Finds the first matching method in a class or its base chain.
     auto findMethodInClassOrBases = [&](const std::string &classQ,
                                         const std::string &name) -> const ClassInfo::MethodInfo * {
         const ClassInfo *cur = index_.findClass(classQ);
@@ -700,6 +828,7 @@ void OopIndexBuilder::checkInterfaceConformance() {
         return nullptr;
     };
 
+    /// Compares parameter lists and optional return types exactly.
     auto sigsMatch = [](const MethodSig &cls, const IfaceMethodSig &iface) {
         if (cls.paramTypes != iface.paramTypes)
             return false;
@@ -755,30 +884,40 @@ void OopIndexBuilder::checkInterfaceConformance() {
     }
 }
 
-/// @brief Build.
+/// @brief Rebuilds the complete OOP index from @p program.
+/// @details Clears all previous index state and executes the ordered pipeline:
+///          declaration scan, USING collection, relationship resolution, cycle
+///          removal, virtual-table construction, and interface conformance.
+/// @param program Parsed BASIC program whose top-level statements are scanned.
+/// @post @ref index_ contains only metadata derived from @p program.
 void OopIndexBuilder::build(const Program &program) {
     index_.clear();
 
-    // Phase 1: Scan classes and interfaces, collect metadata
+    // Phase 1: scan classes, interfaces, and enums.
     scanDeclarations(program.main);
 
-    // Collect USING directives for resolution
+    // Phase 2: collect top-level USING directives for base resolution.
     collectUsingDirectives(program.main);
 
-    // Phase 2: Resolve bases and implements
+    // Phase 3: resolve bases and implemented interfaces.
     resolveBasesAndImplements();
 
-    // Phase 3: Detect inheritance cycles
+    // Phase 4: detect and cut inheritance cycles.
     detectInheritanceCycles();
 
-    // Phase 4: Build vtables and validate overrides
+    // Phase 5: build virtual tables and validate overrides.
     buildVtables();
 
-    // Phase 5: Check interface conformance
+    // Phase 6: verify interface conformance and record slot mappings.
     checkInterfaceConformance();
 }
 
-/// @brief Process Enum Decl.
+/// @brief Builds and registers one enum's sequential member values.
+/// @details Explicit values reset the running counter; subsequent implicit
+///          values increment from that point. Duplicate exact member names emit
+///          B2120 and are omitted.
+/// @param enumDecl Parsed enum declaration to index.
+/// @post @ref index_ contains an enum keyed by @p enumDecl's unqualified name.
 void OopIndexBuilder::processEnumDecl(const EnumDecl &enumDecl) {
     OopIndex::EnumInfo info;
     info.name = enumDecl.name;

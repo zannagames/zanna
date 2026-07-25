@@ -67,8 +67,10 @@ func DetectLanguage(path: String) -> String {
     if ext == ".txt"  { return "text"; }
     if ext == ".md"   { return "text"; }
     if ext == ".json" { return "text"; }
+    if ext == ".scene2d" { return "scene"; }
     if ext == ".scene" { return "scene"; }
     if ext == ".level" { return "scene"; }
+    if ext == ".scene3d" { return "scene3d"; }
     if ext == ".vscn" { return "scene3d"; }
     return "text";
 }
@@ -85,10 +87,10 @@ func DetectKind(path: String) -> Integer {
     if ext == ".zia" or ext == ".bas" or ext == ".vb" {
         return DOC_KIND_CODE;
     }
-    if ext == ".scene" or ext == ".level" {
+    if ext == ".scene2d" or ext == ".scene" or ext == ".level" {
         return DOC_KIND_SCENE_2D;
     }
-    if ext == ".vscn" {
+    if ext == ".scene3d" or ext == ".vscn" {
         return DOC_KIND_SCENE_3D;
     }
     if ext == ".json" or ext == ".md" or ext == ".txt" or ext == ".il" {
@@ -123,13 +125,47 @@ func IsVisualKind(kind: Integer) -> Boolean {
 }
 
 /// @brief Return the durable default extension for a visual document kind.
+/// @details `.scene2d`/`.scene3d` are canonical (ADR 0182); `.scene`,
+///          `.level`, and `.vscn` remain accepted legacy aliases.
 func DefaultExtensionForKind(kind: Integer) -> String {
-    if kind == DOC_KIND_SCENE_2D { return ".scene"; }
-    if kind == DOC_KIND_SCENE_3D { return ".vscn"; }
+    if kind == DOC_KIND_SCENE_2D { return ".scene2d"; }
+    if kind == DOC_KIND_SCENE_3D { return ".scene3d"; }
     return "";
 }
 
 /// @brief Return the smallest canonical, loadable VSCN scene document.
+/// @brief Map one schema asset kind to its browsable extension list.
+/// @details The vocabulary is fixed by scene-component schema validation
+///          (ADR 0178: image, audio, scene, any). Unknown kinds browse the
+///          complete union so a stale schema never hides assets.
+func AssetKindExtensions(kind: String) -> String {
+    if kind == "image" { return ".png,.jpg,.jpeg,.bmp,.gif"; }
+    if kind == "audio" { return ".wav,.ogg"; }
+    if kind == "scene" {
+        return ".scene2d,.scene,.level,.scene3d,.vscn";
+    }
+    return ".png,.jpg,.jpeg,.bmp,.gif,.wav,.ogg,"
+        + ".scene2d,.scene,.level,.scene3d,.vscn,"
+        + ".gltf,.glb,.fbx,.obj,.stl";
+}
+
+/// @brief Union the extension lists for one schema field's asset kinds.
+func AssetKindListExtensions(kinds: List[String]) -> String {
+    if kinds.count() == 0 {
+        return AssetKindExtensions("any");
+    }
+    var combined = "";
+    var index = 0;
+    while index < kinds.count() {
+        var entry = AssetKindExtensions(kinds.get(index));
+        if entry == AssetKindExtensions("any") { return entry; }
+        if combined == "" { combined = entry; }
+        else { combined = combined + "," + entry; }
+        index = index + 1;
+    }
+    return combined;
+}
+
 func DefaultScene3DContent() -> String {
     return "{\n"
         + "  \"format\": \"vscn\",\n"

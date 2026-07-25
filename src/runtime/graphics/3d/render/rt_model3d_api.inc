@@ -854,6 +854,12 @@ void *rt_model3d_instantiate_scene_at(void *obj, int64_t index) {
     scene = (rt_scene3d *)rt_scene3d_new();
     if (!scene)
         return NULL;
+    /* Scene-scoped root metadata (bake.*, env.* conventions) travels with
+     * every instantiation, matching direct SceneGraph.Load behavior. */
+    if (!model_clone_node_metadata(scene->root, entry->root)) {
+        model_release_local(scene);
+        return NULL;
+    }
     for (int32_t i = 0, child_count = model_node_child_count(entry->root); i < child_count; i++) {
         if (!entry->root->children[i])
             continue;

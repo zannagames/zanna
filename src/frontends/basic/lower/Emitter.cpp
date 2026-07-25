@@ -15,6 +15,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements the BASIC lowerer's centralized IL emission facade.
+
 #include "frontends/basic/lower/Emitter.hpp"
 
 #include "frontends/basic/Lowerer.hpp"
@@ -32,6 +35,10 @@ using namespace il::core;
 namespace il::frontends::basic::lower {
 
 namespace {
+/// @brief Tests a BASIC identifier set using case-insensitive comparison.
+/// @param names Source spellings to search.
+/// @param needle Identifier spelling sought by the caller.
+/// @return True when any entry compares equal under BASIC identifier rules.
 bool containsBasicName(const std::unordered_set<std::string> &names, std::string_view needle) {
     for (const auto &name : names) {
         if (string_utils::iequals(name, needle))
@@ -281,10 +288,18 @@ void Emitter::emitCall(const std::string &callee, const std::vector<Value> &args
     common_.emitCall(callee, args);
 }
 
+/// @brief Emits a value-returning call through a function-pointer value.
+/// @param ty Expected IL result type.
+/// @param callee Function-pointer SSA value to invoke.
+/// @param args Ordered IL argument values.
+/// @return SSA value produced by the indirect call.
 Emitter::Value Emitter::emitCallIndirectRet(Type ty, Value callee, const std::vector<Value> &args) {
     return common_.emitCallIndirectRet(ty, callee, args);
 }
 
+/// @brief Emits a void call through a function-pointer value.
+/// @param callee Function-pointer SSA value to invoke.
+/// @param args Ordered IL argument values.
 void Emitter::emitCallIndirect(Value callee, const std::vector<Value> &args) {
     common_.emitCallIndirect(callee, args);
 }
@@ -310,6 +325,8 @@ Emitter::Value Emitter::emitConstStr(const std::string &globalName) {
 ///
 /// @param slot Pointer to the stack slot storing the array reference.
 /// @param value New array handle to record.
+/// @param elementType BASIC element type selecting the release helper.
+/// @param isObjectArray True when the array contains object handles.
 void Emitter::storeArray(Value slot, Value value, AstType elementType, bool isObjectArray) {
     if (elementType == AstType::Str) {
         // String array: no retain needed (rt_arr_str_alloc returns unretained)
@@ -427,18 +444,33 @@ void Emitter::releaseArrayParams(const std::unordered_set<std::string> &paramNam
     }
 }
 
+/// @brief Schedules a temporary string handle for statement-boundary release.
+/// @param v Temporary SSA value holding the owned runtime string.
+/// @note Non-temporary values are ignored because their ownership is tracked
+///       through variables or other storage.
 void Emitter::deferReleaseStr(Value v) {
     if (v.kind != Value::Kind::Temp)
         return;
     deferredTemps_.push_back(TempRelease{v, /*isString=*/true, {}});
 }
 
+/// @brief Schedules a temporary object handle for conditional destruction.
+/// @param v Temporary SSA value holding the owned runtime object.
+/// @param className Optional canonical class name used to locate a destructor.
+/// @note Non-temporary values are ignored.
 void Emitter::deferReleaseObj(Value v, const std::string &className) {
     if (v.kind != Value::Kind::Temp)
         return;
     deferredTemps_.push_back(TempRelease{v, /*isString=*/false, className});
 }
 
+/// @brief Releases each distinct deferred temporary on the active path.
+/// @details String handles use the maybe-release helper. Object handles branch
+///          through reference-count testing, optional destructor dispatch, and
+///          object deallocation. A terminated block cannot accept cleanup IL,
+///          so its queue is discarded. Duplicate temporary IDs are released
+///          once.
+/// @post @ref deferredTemps_ is empty.
 void Emitter::releaseDeferredTemps() {
     if (deferredTemps_.empty())
         return;
@@ -531,15 +563,11 @@ void Emitter::clearDeferredTemps() {
     deferredTemps_.clear();
 }
 
-/// @brief Emit destructor epilogues for object locals.
-///
-/// @details For each tracked object local not excluded by @p paramNames, the
-///          helper synthesises a conditional branch that queries the runtime to
-///          determine whether destruction is required.  If so, it invokes the
-///          mangled class destructor and releases the handle before storing
-///          @c null back into the slot.
-///
-/// @param paramNames Names of parameters that remain owned by the caller.
+/// @brief Emits conditional destruction and release for one object symbol.
+/// @details Loads the symbol's handle, asks the runtime whether the final
+///          reference was released, invokes an available class destructor on
+///          that path, frees the allocation, and clears the symbol slot.
+/// @param info Mutable symbol metadata containing the slot and class name.
 void Emitter::releaseObjectSlot(SymbolInfo &info) {
     if (!lowerer_.builder || !info.slotId)
         return;
@@ -607,6 +635,12 @@ void Emitter::releaseObjectSlot(SymbolInfo &info) {
     emitStore(Type(Type::Kind::Ptr), slot, Value::null());
 }
 
+/// @brief Releases owned object locals at procedure exit.
+/// @details Visits referenced, non-array object symbols other than ME and
+///          excludes every name listed in @p paramNames. Each eligible symbol
+///          is processed through @ref releaseObjectSlot.
+/// @param paramNames Case-insensitive set of parameter names excluded from
+///        local cleanup.
 void Emitter::releaseObjectLocals(const std::unordered_set<std::string> &paramNames) {
     for (auto &[name, info] : lowerer_.symbols) {
         if (!info.referenced || !info.isObject)

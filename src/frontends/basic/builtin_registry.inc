@@ -1,4 +1,37 @@
-// Auto-generated builtin table. Each row expands via BUILTIN macro defined by includer.
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/frontends/basic/builtin_registry.inc
+// Purpose: Supplies the generated X-macro rows that define BASIC builtin
+//          descriptors, semantic scan rules, and IL lowering rules.
+// Key invariants:
+//   - Each row's NAME matches a BuiltinCallExpr::Builtin enumerator.
+//   - Descriptor arity, scan traversal, and lowering variants describe the
+//     same source-language call shape.
+//   - Runtime features requested during scanning agree with those selected
+//     during lowering.
+// Ownership/Lifetime:
+//   - This include fragment owns no storage and is expanded by each includer.
+//   - Descriptor strings and runtime helper names become part of the
+//     includer's static registry data.
+// Links: src/frontends/basic/BuiltinRegistry.cpp,
+//        src/frontends/basic/BuiltinRegistry.hpp,
+//        docs/adr/0001-builtin-signatures-from-registry.md
+//
+//===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines the generated X-macro table for BASIC builtins.
+/// @details The file intentionally has no include guard because
+///          BuiltinRegistry.cpp includes it repeatedly with different
+///          definitions of `BUILTIN`. Each expansion projects the same rows
+///          into descriptor, lowering-rule, or scan-rule tables.
+
+// Each row expands via the BUILTIN macro defined by the includer.
 // Parameters:
 //   NAME           - Enum suffix from BuiltinCallExpr::Builtin.
 //   DESCRIPTOR     - BuiltinDescriptor expression.

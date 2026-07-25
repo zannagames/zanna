@@ -4,8 +4,23 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/Lowerer.cpp
+// Purpose: Initialize and drive whole-module lowering from semantically checked
+//          Zia AST nodes to owned Zanna IL.
+// Key invariants:
+//   * Per-module transient state is cleared before any declarations are lowered.
+//   * Enum constants, final constants, and type layouts are registered before
+//     declaration bodies consume them.
+//   * Deferred generic instantiations finish before runtime extern declarations
+//     are materialized.
+// Ownership: Lowerer borrows Sema and diagnostics, owns transient builder/module
+//            state during lowering, and returns the completed Module by value.
+// References: docs/languages/zia-reference.md, docs/il/il-guide.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file Lowerer.cpp
+/// @file
 /// @brief Implementation of Zia to IL code generation.
 ///
 /// @details This file implements the Lowerer class which transforms a
@@ -63,6 +78,7 @@ using namespace runtime;
 
 /// @brief Construct a Lowerer with a reference to the semantic analyzer and compiler options.
 /// @param sema The semantic analyzer providing type and symbol resolution.
+/// @param diag Diagnostic engine that receives lowering invariant failures.
 /// @param options Compiler options controlling code generation behaviour.
 Lowerer::Lowerer(Sema &sema, il::support::DiagnosticEngine &diag, CompilerOptions options)
     : sema_(sema), diag_(diag), options_(options) {}

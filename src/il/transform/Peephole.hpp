@@ -265,7 +265,10 @@ inline constexpr std::array<Rule, 61> kRules{{
     // the operation must still trap when x is zero.
 }};
 
-/// \brief Run peephole simplifications over @p m using registered rules.
+/// @brief Run peephole simplifications over @p m using registered rules.
+/// @param m Module whose functions and literal-global table may be rewritten.
+/// @details Applies control-flow folds, the compile-time rule table, power-of-two
+///          strength reduction, and local literal-string concatenation folding.
 void peephole(core::Module &m);
 
 } // namespace il::transform

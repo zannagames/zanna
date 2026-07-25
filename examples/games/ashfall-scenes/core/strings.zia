@@ -1,0 +1,82 @@
+// =============================================================================
+// core/strings.zia — string/number formatting (the "no %f" toolkit)
+// =============================================================================
+//
+// Zia has no printf-style float formatting, so HUD/UI/log numbers are composed
+// from integer parts here. Callers precompute display strings on change events
+// rather than every frame (the landmine rule).
+// =============================================================================
+module strings;
+
+bind Zanna.Core.Convert as Convert;
+bind Zanna.Math;
+bind "./mathutil" as M;
+
+func intStr(i: Integer) -> String {
+    return Convert.ToStringInt(i);
+}
+
+// Round a float to the nearest integer (banker-free, ties away from zero
+// enough for display).
+func roundInt(x: Float) -> Integer {
+    return Convert.NumToInt(Floor(x + 0.5));
+}
+
+// Fixed-decimal float formatting without printf: split into whole and scaled
+// fractional integer parts. `decimals` in 0..3.
+func fixed(x: Float, decimals: Integer) -> String {
+    var neg = x < 0.0;
+    var v = M.absf(x);
+    var scale = 1;
+    var i = 0;
+    while i < decimals {
+        scale = scale * 10;
+        i = i + 1;
+    }
+    var scaled = roundInt(v * (scale + 0.0));
+    var whole = scaled / scale;
+    var frac = scaled % scale;
+    var s = intStr(whole);
+    if decimals > 0 {
+        var fs = intStr(frac);
+        // Left-pad the fractional part to `decimals` digits.
+        while fs.Length < decimals {
+            fs = "0" + fs;
+        }
+        s = s + "." + fs;
+    }
+    if neg { return "-" + s; }
+    return s;
+}
+
+func fixed1(x: Float) -> String { return fixed(x, 1); }
+func fixed2(x: Float) -> String { return fixed(x, 2); }
+
+// Two-digit zero-padded integer (clock display).
+func pad2(i: Integer) -> String {
+    if i < 10 { return "0" + intStr(i); }
+    return intStr(i);
+}
+
+// mm:ss from whole seconds.
+func clock(totalSec: Integer) -> String {
+    var m = totalSec / 60;
+    var s = totalSec % 60;
+    return pad2(m) + ":" + pad2(s);
+}
+
+// mm:ss.cc from a float seconds value (speedrun timer).
+func clockCenti(sec: Float) -> String {
+    var total = roundInt(sec * 100.0);
+    if total < 0 { total = 0; }
+    var centi = total % 100;
+    var whole = total / 100;
+    var m = whole / 60;
+    var s = whole % 60;
+    return pad2(m) + ":" + pad2(s) + "." + pad2(centi);
+}
+
+// A percent string from a 0..1 fraction.
+func percent(frac: Float) -> String {
+    return intStr(roundInt(M.clampf(frac, 0.0, 1.0) * 100.0)) + "%";
+}

@@ -178,10 +178,12 @@ struct ArmInfo {
 
 } // namespace
 
+/// @copydoc IfConvert::id()
 std::string_view IfConvert::id() const {
     return "if-conv";
 }
 
+/// @copydoc IfConvert::run()
 PreservedAnalyses IfConvert::run(Function &function, AnalysisManager & /*analysis*/) {
     if (std::getenv("ZANNA_NO_IF_CONVERT") != nullptr)
         return PreservedAnalyses::all();
@@ -302,6 +304,7 @@ PreservedAnalyses IfConvert::run(Function &function, AnalysisManager & /*analysi
             ArmInfo falseArm{};
             std::string joinLabel;
 
+            /// Return the argument vector for one conditional edge, treating omission as empty.
             const auto edgeArgs = [&](std::size_t edge) -> const std::vector<Value> * {
                 static const std::vector<Value> kEmpty;
                 if (edge < term->brArgs.size())
@@ -374,6 +377,7 @@ PreservedAnalyses IfConvert::run(Function &function, AnalysisManager & /*analysi
             unsigned nextId = zanna::il::nextTempId(function);
 
             std::vector<Instr> hoisted;
+            /// Append the non-terminator instructions from a converted arm in execution order.
             const auto hoistArm = [&](BasicBlock *arm) {
                 if (arm == nullptr)
                     return;
@@ -431,6 +435,7 @@ PreservedAnalyses IfConvert::run(Function &function, AnalysisManager & /*analysi
     return PreservedAnalyses::none();
 }
 
+/// @copydoc registerIfConvertPass()
 void registerIfConvertPass(PassRegistry &registry) {
     registry.registerFunctionPass("if-conv", []() { return std::make_unique<IfConvert>(); }, true);
 }

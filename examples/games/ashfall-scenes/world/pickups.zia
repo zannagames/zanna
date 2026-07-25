@@ -1,0 +1,179 @@
+// =============================================================================
+// world/pickups.zia — pooled world pickups (health / armor / ammo / salvage / cores)
+// =============================================================================
+//
+// A fixed pool of collectible pickups. Levels place them; dead machines drop
+// salvage (drained from the EV_PICKUP rows the AI posts on death). The player
+// collects on proximity, and the effect is applied directly (health/armor to
+// PlayerHealth, ammo to the weapon reserve) or accumulated (salvage/data cores
+// for the economy + collectible tracker to read).
+// =============================================================================
+module pickups;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+bind "../player/health" as health;
+
+class Pickups {
+    hide Game3D.World3D world;
+    hide events.EventBus bus;
+    hide health.PlayerHealth playerHealth;
+    hide List[Integer] kind;
+    hide List[Float] x; hide List[Float] y; hide List[Float] z;
+    hide List[Float] amount;
+    hide List[Integer] alive;
+    hide List[Game3D.Entity3D] node;
+    hide List[G3D.Material3D] mats;   // one per kind
+    hide List[G3D.Mesh3D] meshes;
+    hide Integer cap;
+    hide Integer salvage;
+    hide Integer dataCores;
+    hide Integer collectedCount;
+    hide Float animT;
+
+    expose func init() {
+        kind = []; x = []; y = []; z = []; amount = []; alive = []; node = []; mats = []; meshes = [];
+        cap = 48;
+        salvage = 0;
+        dataCores = 0;
+        collectedCount = 0;
+        animT = 0.0;
+    }
+
+    expose func setup(w: Game3D.World3D, bus0: events.EventBus, ph: health.PlayerHealth) {
+        world = w; bus = bus0; playerHealth = ph;
+        // Per-kind materials.
+        mats.Add(G3D.Material3D.FromColor(0.2, 0.9, 0.3));   // health
+        mats.Add(G3D.Material3D.FromColor(0.3, 0.6, 1.0));   // armor
+        mats.Add(G3D.Material3D.FromColor(0.9, 0.8, 0.2));   // ammo
+        mats.Add(G3D.Material3D.FromColor(0.7, 0.7, 0.75));  // salvage
+        mats.Add(G3D.Material3D.FromColor(0.5, 0.9, 1.0));   // data core
+        var mi = 0;
+        while mi < mats.Count {
+            var mr = 0.2; var mg = 0.9; var mb = 0.3;
+            if mi == 1 { mr = 0.3; mg = 0.6; mb = 1.0; }
+            else if mi == 2 { mr = 0.9; mg = 0.8; mb = 0.2; }
+            else if mi == 3 { mr = 0.7; mg = 0.7; mb = 0.75; }
+            else if mi == 4 { mr = 0.5; mg = 0.9; mb = 1.0; }
+            G3D.Material3D.SetEmissiveColor(mats[mi], mr, mg, mb);
+            mats[mi].EmissiveIntensity = 1.7;
+            mi = mi + 1;
+        }
+        meshes.Add(G3D.Mesh3D.Sphere(0.25, 10));
+        meshes.Add(G3D.Mesh3D.Box(0.34, 0.16, 0.34));
+        meshes.Add(G3D.Mesh3D.Cylinder(0.15, 0.42, 8));
+        meshes.Add(G3D.Mesh3D.Box(0.22, 0.30, 0.18));
+        meshes.Add(G3D.Mesh3D.Cylinder(0.22, 0.38, 10));
+        var i = 0;
+        while i < cap {
+            kind.Add(0); x.Add(0.0); y.Add(0.0); z.Add(0.0); amount.Add(0.0); alive.Add(0);
+            var n = Game3D.Entity3D.New();
+            n.Mesh = meshes[0];
+            n.Material = mats[0];
+            n.SetPosition(0.0, -100.0, 0.0);
+            world.Spawn(n);
+            node.Add(n);
+            i = i + 1;
+        }
+    }
+
+    expose func clear() {
+        var i = 0;
+        while i < cap {
+            if alive[i] == 1 { kill(i); }
+            i = i + 1;
+        }
+    }
+
+    expose func getSalvage() -> Integer { return salvage; }
+    expose func getDataCores() -> Integer { return dataCores; }
+    expose func getCollectedCount() -> Integer { return collectedCount; }
+    expose func spendSalvage(n: Integer) -> Boolean {
+        if salvage < n { return false; }
+        salvage = salvage - n;
+        return true;
+    }
+
+    hide func freeSlot() -> Integer {
+        var i = 0;
+        while i < cap { if alive[i] == 0 { return i; } i = i + 1; }
+        return -1;
+    }
+
+    expose func spawn(k: Integer, sx: Float, sy: Float, sz: Float, amt: Float) {
+        var s = freeSlot();
+        if s < 0 { return; }
+        kind[s] = k; x[s] = sx; y[s] = sy + 0.4; z[s] = sz; amount[s] = amt; alive[s] = 1;
+        var mi = k;
+        if mi < 0 || mi >= mats.Count { mi = 3; }
+        node[s].Material = mats[mi];
+        node[s].Mesh = meshes[mi];
+        node[s].SetPosition(sx, sy + 0.4, sz);
+    }
+
+    hide func kill(s: Integer) {
+        alive[s] = 0;
+        node[s].SetPosition(0.0, -100.0, 0.0);
+    }
+
+    // Drain enemy-drop EV_PICKUP rows (posted with a world position) into pickups.
+    expose func drainDrops() {
+        var n = bus.getCount();
+        var i = 0;
+        while i < n {
+            if bus.kindAt(i) == config.EV_PICKUP && bus.cAt(i) == 0 {
+                // Enemy drop: a=kind, b=amount, f0..2 = pos.
+                spawn(bus.aAt(i), bus.xAt(i), bus.yAt(i), bus.zAt(i), bus.bAt(i) + 0.0);
+            }
+            i = i + 1;
+        }
+    }
+
+    // Collect any pickup the player is standing on.
+    expose func update(dt: Float, px: Float, py: Float, pz: Float) {
+        animT = animT + dt;
+        var i = 0;
+        while i < cap {
+            if alive[i] == 1 {
+                // Readable hover/rotation plus a short pickup magnet keeps the
+                // player moving through combat instead of pixel-hunting drops.
+                var dist = M.distXZ(px, pz, x[i], z[i]);
+                if dist < 3.5 && dist > 0.05 {
+                    var pull = M.minf(8.0, 2.0 + (3.5 - dist) * 2.0) * dt;
+                    x[i] = x[i] + (px - x[i]) / dist * pull;
+                    z[i] = z[i] + (pz - z[i]) / dist * pull;
+                    dist = M.distXZ(px, pz, x[i], z[i]);
+                }
+                var bob = Math.Sin(animT * 3.2 + i * 0.71) * 0.14;
+                node[i].SetPosition(x[i], y[i] + bob, z[i]);
+                node[i].SetRotationEuler(0.0, animT * 75.0 + i * 31.0, 0.0);
+                if dist < 1.4 && M.absf(py - y[i]) < 2.0 {
+                    collect(i);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func collect(s: Integer) {
+        var k = kind[s];
+        if k == config.PK_HEALTH { playerHealth.addHealth(amount[s]); }
+        else if k == config.PK_ARMOR { playerHealth.addArmor(amount[s]); }
+        else if k == config.PK_SALVAGE { salvage = salvage + M.roundi(amount[s]); }
+        else if k == config.PK_DATACORE { dataCores = dataCores + 1; }
+        // Ammo is applied by the weapon system on the collected event.
+        bus.push(config.EV_PICKUP, k, M.roundi(amount[s]), 1, x[s], y[s], z[s]);
+        collectedCount = collectedCount + 1;
+        kill(s);
+    }
+
+    expose func activeCount() -> Integer {
+        var n = 0; var i = 0;
+        while i < cap { n = n + alive[i]; i = i + 1; }
+        return n;
+    }
+}

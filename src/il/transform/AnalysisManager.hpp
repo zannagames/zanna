@@ -20,6 +20,13 @@
 // Links: il/core/fwd.hpp, il/transform/PassRegistry.hpp
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares typed analysis registration, caching, and invalidation.
+/// @details Results are type-erased behind shared ownership but guarded by a
+///          stable type spelling before retrieval. Cache access is synchronized
+///          for concurrent read-heavy pass pipelines.
+
 #pragma once
 
 #include "il/core/fwd.hpp"
@@ -88,13 +95,19 @@ template <typename Result> AnalysisValue makeAnalysisValue(Result result) {
     return value;
 }
 
+/// @brief Type-erased factory and expected result type for a module analysis.
 struct ModuleAnalysisRecord {
+    /// Callable that computes an owning cache value.
     std::function<AnalysisValue(core::Module &)> compute;
+    /// Stable spelling of the concrete result type.
     std::string_view typeName{};
 };
 
+/// @brief Type-erased factory and expected result type for a function analysis.
 struct FunctionAnalysisRecord {
+    /// Callable that computes an owning cache value for one function.
     std::function<AnalysisValue(core::Module &, core::Function &)> compute;
+    /// Stable spelling of the concrete result type.
     std::string_view typeName{};
 };
 
@@ -168,22 +181,32 @@ template <typename Result> Result &castAnalysisValue(const std::string &id, Anal
 }
 } // namespace detail
 
+/// @brief Registry map from module-analysis identifiers to factories.
 using ModuleAnalysisMap = std::unordered_map<std::string, detail::ModuleAnalysisRecord>;
+/// @brief Registry map from function-analysis identifiers to factories.
 using FunctionAnalysisMap = std::unordered_map<std::string, detail::FunctionAnalysisRecord>;
 
+/// @brief Diagnostic counters for cache-miss computations.
 struct AnalysisCounts {
+    /// Number of module analysis results actually computed.
     std::size_t moduleComputations = 0;
+    /// Number of function analysis results actually computed.
     std::size_t functionComputations = 0;
 };
 
+/// @brief Owns the available typed analysis factories.
+/// @details Registration replaces any previous factory with the same identifier.
+///          Managers borrow the exposed maps and therefore require this registry
+///          to outlive them.
 class AnalysisRegistry {
   public:
     /// @brief Register a module-level analysis computation.
-    /// @tparam Result Concrete analysis result type (must be copy-constructible for @c std::any).
+    /// @tparam Result Concrete movable analysis result type.
     /// @param id     Unique string identifier used to look up the analysis later.
     /// @param fn     Callable that computes a fresh @c Result from a @c Module.
     template <typename Result>
     void registerModuleAnalysis(const std::string &id, std::function<Result(core::Module &)> fn) {
+        /// Adapt the typed factory to the type-erased cache representation.
         moduleAnalyses_[id] = detail::ModuleAnalysisRecord{
             [fn = std::move(fn)](core::Module &module) -> detail::AnalysisValue {
                 return detail::makeAnalysisValue<Result>(fn(module));
@@ -192,12 +215,13 @@ class AnalysisRegistry {
     }
 
     /// @brief Register a function-level analysis computation.
-    /// @tparam Result Concrete analysis result type (must be copy-constructible for @c std::any).
+    /// @tparam Result Concrete movable analysis result type.
     /// @param id     Unique string identifier used to look up the analysis later.
     /// @param fn     Callable that computes a fresh @c Result from a @c Module and @c Function.
     template <typename Result>
     void registerFunctionAnalysis(const std::string &id,
                                   std::function<Result(core::Module &, core::Function &)> fn) {
+        /// Adapt the typed factory to the type-erased cache representation.
         functionAnalyses_[id] = detail::FunctionAnalysisRecord{
             [fn = std::move(fn)](core::Module &module,
                                  core::Function &fnRef) -> detail::AnalysisValue {
@@ -206,10 +230,14 @@ class AnalysisRegistry {
             detail::analysisTypeName<Result>()};
     }
 
+    /// @brief Access registered module-analysis factories.
+    /// @return Borrowed map valid for this registry's lifetime.
     const ModuleAnalysisMap &moduleAnalyses() const {
         return moduleAnalyses_;
     }
 
+    /// @brief Access registered function-analysis factories.
+    /// @return Borrowed map valid for this registry's lifetime.
     const FunctionAnalysisMap &functionAnalyses() const {
         return functionAnalyses_;
     }

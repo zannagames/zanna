@@ -5,11 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/sem/RegistryBuilder.hpp
-// Purpose: Build NamespaceRegistry from parsed BASIC program.
-// Key invariants: Registry and UsingContext are cleared before population.
-// Ownership/Lifetime: Does not own registry or usings; caller ensures lifetime.
-// Links: docs/internals/codemap.md, CLAUDE.md
+// File: src/frontends/basic/sem/RegistryBuilder.hpp
+// Purpose: Declare the entry points that seed runtime semantic indexes and
+//          collect namespace/type declarations from a BASIC program.
+// Key invariants:
+//   * Runtime catalog indexes are initialized before source declarations are
+//     consumed by semantic analysis.
+//   * File-scoped USING state is refreshed for each registry build.
+// Ownership: Functions borrow the program and output registries; no references
+//            to caller-owned inputs are retained.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares BASIC semantic registry construction and runtime seeding.
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,6 +52,7 @@ void buildNamespaceRegistry(const Program &program,
 /// @brief Seed runtime class-driven registries in one place.
 /// @details Populates TypeRegistry, RuntimePropertyIndex, RuntimeMethodIndex,
 ///          and seeds NamespaceRegistry with class name prefixes.
+/// @param registry Namespace registry that receives runtime class prefixes.
 void seedRuntimeClassCatalogs(NamespaceRegistry &registry);
 
 } // namespace il::frontends::basic

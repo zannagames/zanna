@@ -115,6 +115,9 @@ static bool isConstEq(const Value &v, long long target) {
 }
 
 /// @brief Recognize positive powers of two and return the shift amount.
+/// @param value Candidate signed integer constant.
+/// @param shift Receives the base-two logarithm on success.
+/// @return `true` when @p value is positive and has exactly one set bit.
 static bool isPositivePowerOfTwo(long long value, unsigned &shift) {
     if (value <= 0)
         return false;
@@ -147,6 +150,9 @@ static unsigned integerBitWidth(Type::Kind kind) {
 }
 
 /// @brief Compare floating constants without losing signed-zero identity.
+/// @param value First floating-point value.
+/// @param target Second floating-point value.
+/// @return `true` for numerically equal nonzero values or zeros with equal signs.
 static bool sameFloatConstant(double value, double target) {
     if (value != target)
         return false;
@@ -249,10 +255,18 @@ static void replaceAll(Function &f, unsigned id, const Value &v) {
         }
 }
 
+/// @brief Test whether a value is a reference to a particular SSA temporary.
+/// @param value Operand or branch argument to inspect.
+/// @param id Temporary id to match.
+/// @return `true` only for a temporary value with id @p id.
 static bool valueUsesTemp(const Value &value, unsigned id) {
     return value.kind == Value::Kind::Temp && value.id == id;
 }
 
+/// @brief Test whether an instruction uses a temporary in any value position.
+/// @param instr Instruction whose operands and branch bundles are scanned.
+/// @param id Temporary id to locate.
+/// @return `true` on the first matching reference.
 static bool instructionUsesTemp(const Instr &instr, unsigned id) {
     for (const auto &op : instr.operands)
         if (valueUsesTemp(op, id))
@@ -270,6 +284,11 @@ static bool instructionUsesTemp(const Instr &instr, unsigned id) {
 ///          defining instruction's operands. Keeping these rewrites local avoids
 ///          introducing cross-edge branch arguments whose replacement value is
 ///          not available on that predecessor edge.
+/// @param f Function containing every possible use.
+/// @param block Block containing the definition.
+/// @param defIdx Instruction index of the definition.
+/// @param id Result id whose uses are checked.
+/// @return `true` when every use is later in the same block.
 static bool allUsesLocalAfter(const Function &f,
                               const BasicBlock &block,
                               size_t defIdx,
@@ -285,6 +304,11 @@ static bool allUsesLocalAfter(const Function &f,
     return true;
 }
 
+/// @brief Replace later uses of a temporary within one block.
+/// @param block Block whose suffix is rewritten.
+/// @param defIdx Index before the first instruction to examine.
+/// @param id Temporary id to replace.
+/// @param v Replacement value known to be available throughout the suffix.
 static void replaceLocalUsesAfter(BasicBlock &block, size_t defIdx, unsigned id, const Value &v) {
     for (size_t idx = defIdx + 1; idx < block.instructions.size(); ++idx) {
         Instr &instr = block.instructions[idx];
@@ -347,7 +371,12 @@ static bool evaluateComparison(Opcode op, long long l, long long r, long long &o
     }
 }
 
-/// @brief Evaluate a float comparison opcode with two constant operands.
+/// @brief Evaluate a floating-point comparison with two literal operands.
+/// @param op Comparison opcode to interpret.
+/// @param l Left operand.
+/// @param r Right operand.
+/// @param out Receives zero or one when @p op is supported.
+/// @return `true` for a recognized ordered comparison opcode.
 static bool evaluateFloatComparison(Opcode op, double l, double r, long long &out) {
     switch (op) {
         case Opcode::FCmpEQ:
@@ -373,12 +402,17 @@ static bool evaluateFloatComparison(Opcode op, double l, double r, long long &ou
     }
 }
 
+/// @brief Query whether peephole rule tracing was requested at process startup.
+/// @return Cached presence of the `ZANNA_PEEPHOLE_TRACE` environment variable.
 static bool traceEnabled() {
     static const bool enabled = std::getenv("ZANNA_PEEPHOLE_TRACE") != nullptr;
     return enabled;
 }
 
 /// @brief Check if a value is a float constant with the expected value.
+/// @param v Candidate literal.
+/// @param target Expected payload, including signed-zero identity.
+/// @return `true` when @p v is the requested floating-point constant.
 static bool isConstFloatEq(const Value &v, double target) {
     if (v.kind == Value::Kind::ConstFloat) {
         return sameFloatConstant(v.f64, target);
@@ -430,6 +464,8 @@ static bool applyRule(const Rule &rule, const Instr &in, Value &out) {
 /// @details Checked variants are safe to rewrite because the matched divisor is
 ///          a non-zero constant. Signed division is deliberately excluded: it
 ///          rounds toward zero, while arithmetic shifts round toward -infinity.
+/// @param in Candidate division or remainder instruction, rewritten in place.
+/// @return `true` when the divisor is a power of two greater than one.
 static bool tryRewriteUnsignedPowerOfTwoDivRem(Instr &in) {
     if (in.operands.size() != 2)
         return false;
@@ -465,6 +501,11 @@ static bool tryRewriteUnsignedPowerOfTwoDivRem(Instr &in) {
 /// The remainder form computes the rounded multiple with a mask to avoid
 /// needing a multiply or left shift. Checked add/sub are used because they are
 /// verifier-legal before range cleanup; the correction is mathematically safe.
+/// @param function Function whose value-name table is extended for fresh ids.
+/// @param block Block containing the instruction to expand.
+/// @param idx Instruction index, advanced to the final replacement instruction.
+/// @param nextId Fresh-id counter updated for all synthesized intermediates.
+/// @return `true` after replacing a supported signed division or remainder.
 static bool tryExpandSignedPowerOfTwoDivRem(Function &function,
                                             BasicBlock &block,
                                             size_t &idx,
@@ -560,6 +601,10 @@ static bool tryExpandSignedPowerOfTwoDivRem(Function &function,
     return true;
 }
 
+/// @brief Look up a string-typed global by name.
+/// @param module Module whose global table is searched.
+/// @param name Exact global identifier.
+/// @return Borrowed matching global, or null for an absent/non-string symbol.
 const Global *findStringGlobal(const Module &module, const std::string &name) {
     for (const auto &global : module.globals)
         if (global.name == name && global.type.kind == Type::Kind::Str)
@@ -567,6 +612,10 @@ const Global *findStringGlobal(const Module &module, const std::string &name) {
     return nullptr;
 }
 
+/// @brief Intern a folded string literal as a module global.
+/// @param module Module searched and possibly extended.
+/// @param value Literal initializer to reuse or add.
+/// @return Name of an existing matching string global or a fresh private-style name.
 std::string findOrCreateStringGlobal(Module &module, const std::string &value) {
     for (const auto &global : module.globals) {
         if (global.type.kind == Type::Kind::Str && global.init == value)
@@ -599,11 +648,19 @@ std::string findOrCreateStringGlobal(Module &module, const std::string &value) {
     return name;
 }
 
+/// @brief Local `const.str` definition and its referenced global.
 struct ConstStrDef {
+    /// Instruction index of the definition.
     size_t index = 0;
+    /// Name supplied by its global-address operand.
     std::string globalName;
 };
 
+/// @brief Find the local constant-string definition of a temporary.
+/// @param block Block searched backward from @p beforeIdx.
+/// @param beforeIdx Exclusive upper instruction index.
+/// @param value Temporary expected to name a `const.str` result.
+/// @return Definition location and global name, or `std::nullopt`.
 std::optional<ConstStrDef> findLocalConstStrDef(const BasicBlock &block,
                                                 size_t beforeIdx,
                                                 const Value &value) {
@@ -623,6 +680,12 @@ std::optional<ConstStrDef> findLocalConstStrDef(const BasicBlock &block,
     return std::nullopt;
 }
 
+/// @brief Fold a two-literal runtime string concatenation into one constant.
+/// @param module Module providing and receiving string globals.
+/// @param block Block containing both literal definitions and the concat call.
+/// @param idx Concat instruction index, adjusted after deleting the definitions.
+/// @param useCounts Function use counts proving both temporary strings are single-use.
+/// @return `true` after replacing the call with `const.str`.
 bool tryFoldLiteralConcat(Module &module,
                           BasicBlock &block,
                           size_t &idx,
@@ -701,11 +764,13 @@ bool tryFoldLiteralConcat(Module &module,
 /// implementation intentionally limits itself to integer comparisons with
 /// literal operands and does not chase values across blocks or through
 /// non-literal arithmetic.
+/// @param m Module whose function bodies and string globals are simplified.
 static void runPeephole(Module &m) {
     const bool trace = traceEnabled();
     for (auto &f : m.functions) {
         unsigned nextId = zanna::il::nextTempId(f);
         UseCountMap useCounts = buildUseCountMap(f);
+        /// Recompute use counts after each local mutation invalidates the snapshot.
         auto refreshUseCounts = [&]() { useCounts = buildUseCountMap(f); };
 
         for (auto &b : f.blocks) {
@@ -883,6 +948,8 @@ static void runPeephole(Module &m) {
     }
 }
 
+/// @brief Run local peephole simplification and refresh identifier ownership.
+/// @param m Module optimized in place.
 void peephole(Module &m) {
     runPeephole(m);
     m.internOwnedIdentifiers();

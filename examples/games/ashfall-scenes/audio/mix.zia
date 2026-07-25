@@ -1,0 +1,376 @@
+// =============================================================================
+// audio/mix.zia — procedural combat audio + adaptive music + spatial mix
+// =============================================================================
+//
+// Ashfall ships without external audio dependencies.  The public Zanna.Audio
+// synthesizer builds a retained bank of distinct weapon, impact, movement and
+// UI cues, while World3D.Sound3D positions gameplay sounds, follows the camera,
+// attenuates by distance, applies geometry occlusion and feeds a mild reverb
+// zone.  Three loopable MusicGen layers crossfade with combat intensity.  Every
+// path remains a safe no-op when audio cannot initialize or a probe is headless.
+// =============================================================================
+module mix;
+
+bind Zanna.Game3D;
+bind Zanna.Graphics3D;
+bind Zanna.Math;
+bind Zanna.Audio;
+bind "../config" as config;
+bind "../core/events" as events;
+bind "../core/mathutil" as M;
+
+var MUS_AMBIENT: Integer = 0;
+var MUS_TENSION: Integer = 1;
+var MUS_COMBAT: Integer = 2;
+var MUS_BOSS: Integer = 3;
+var MUS_VICTORY: Integer = 4;
+var MUS_DEFEAT: Integer = 5;
+
+// Per-frame voice budget: each positional one-shot category is capped per tick
+// so a dense firefight cannot flood the spatial mixer with source churn. The
+// loudest cues win because events are drained in emission order and later
+// duplicates of the same category carry the least information.
+var CAP_GUNSHOT: Integer = 8;
+var CAP_ENEMY_SHOT: Integer = 6;
+var CAP_EXPLOSION: Integer = 3;
+var CAP_IMPACT: Integer = 8;
+var CAP_FOOTSTEP: Integer = 6;
+var CAP_MELEE: Integer = 4;
+
+class Mixer {
+    hide Boolean ready;
+    hide Integer masterVol;
+    hide Integer musicState;
+    hide Float combatIntensity;
+    hide Integer shotsThisFrame;
+    hide Integer enemyShotsThisFrame;
+    hide Integer explosionsThisFrame;
+    hide Integer impactsThisFrame;
+    hide Integer footstepsThisFrame;
+    hide Integer meleesThisFrame;
+    hide Integer mappedCues;
+
+    hide Sound3D spatial;
+    hide Vec3 eventPos;
+    hide List[Sound] gunClip;
+    hide Sound enemyShotClip;
+    hide Sound explosionClip;
+    hide Sound impactClip;
+    hide Sound footstepClip;
+    hide Sound pickupClip;
+    hide Sound killClip;
+    hide Sound hurtClip;
+    hide Sound checkpointClip;
+    hide Sound objectiveClip;
+    hide Sound meleeClip;
+    hide Sound victoryClip;
+    hide Sound defeatClip;
+
+    hide Sound ambientLoop;
+    hide Sound combatLoop;
+    hide Sound bossLoop;
+    hide Integer ambientVoice;
+    hide Integer combatVoice;
+    hide Integer bossVoice;
+    hide Float ambientVol;
+    hide Float combatVol;
+    hide Float bossVol;
+
+    expose func init() {
+        ready = false;
+        masterVol = 80;
+        musicState = MUS_AMBIENT;
+        combatIntensity = 0.0;
+        shotsThisFrame = 0;
+        enemyShotsThisFrame = 0;
+        explosionsThisFrame = 0;
+        impactsThisFrame = 0;
+        footstepsThisFrame = 0;
+        meleesThisFrame = 0;
+        mappedCues = 0;
+        gunClip = [];
+        ambientVoice = 0; combatVoice = 0; bossVoice = 0;
+        ambientVol = 0.0; combatVol = 0.0; bossVol = 0.0;
+    }
+
+    // Audio is preview-capability backed, so setup deliberately keeps the old
+    // graceful fallback: no device means the game remains fully playable.
+    expose func setup(world: World3D, headless: Boolean) {
+        ready = false;
+        if headless { return; }
+        if Mixer.Init() == 0 { return; }
+        spatial = world.Audio;
+        if spatial == null { return; }
+        ready = true;
+        Mixer.SetMasterVolume(masterVol);
+        spatial.Volume = 100;
+        spatial.ListenerFollowCamera(true);
+        spatial.SetAttenuation(2.0, 58.0);
+        spatial.SetOcclusion(true, config.LAYER_WORLD, 0.58);
+        spatial.SetOcclusionBudget(10);
+        spatial.SetReverbBlendSeconds(0.45);
+        spatial.SetReverbRouting(true);
+        var zone = ReverbZone3D.New(new Vec3(-600.0, -20.0, -600.0),
+                                    new Vec3(600.0, 120.0, 600.0));
+        zone.WithReverb(0.48, 0.72, 0.12);
+        zone.Priority = 1;
+        spatial.AddReverbZone(zone);
+        eventPos = new Vec3(0.0, 0.0, 0.0);
+        buildSfx();
+        startMusic();
+    }
+
+    hide func buildSfx() {
+        // One timbre per weapon: switching guns should be readable by ear.
+        gunClip.Add(Synth.Sweep(920, 190, 95, 2));    // Bolt
+        gunClip.Add(Synth.Noise(120, 72));            // Scatter
+        gunClip.Add(Synth.Sweep(1450, 360, 65, 2));   // Cycler
+        gunClip.Add(Synth.Sweep(720, 180, 105, 1));   // Pulse
+        gunClip.Add(Synth.Noise(210, 88));            // Rail
+        gunClip.Add(Synth.Sweep(260, 95, 170, 2));    // Arc
+        gunClip.Add(Synth.Sweep(520, 125, 115, 1));   // Rivet
+        gunClip.Add(Synth.Sweep(1750, 520, 75, 3));   // Shard
+        gunClip.Add(Synth.Sweep(440, 70, 190, 3));    // EMP
+        gunClip.Add(Synth.Tone(980, 110, 2));         // Lance beam tick
+        enemyShotClip = Synth.Sweep(760, 120, 130, 2);
+        explosionClip = Synth.Sfx(3);
+        impactClip = Synth.Sfx(2);
+        footstepClip = Synth.Noise(55, 28);
+        pickupClip = Synth.Sfx(1);
+        killClip = Synth.Sweep(260, 70, 180, 2);
+        hurtClip = Synth.Noise(105, 52);
+        checkpointClip = Synth.Sweep(330, 880, 260, 3);
+        objectiveClip = Synth.Sweep(520, 1240, 380, 0);
+        meleeClip = Synth.Noise(80, 56);
+        victoryClip = Synth.Sweep(330, 1320, 720, 3);
+        defeatClip = Synth.Sweep(520, 82, 620, 2);
+    }
+
+    hide func buildAmbientLoop() -> Sound {
+        var song = MusicGen.New(92);
+        var pad = song.AddChannel(0);
+        var bass = song.AddChannel(3);
+        song.SetEnvelope(pad, 180, 140, 55, 240);
+        song.SetChannelVolume(pad, 20);
+        song.SetDetune(pad, -7);
+        song.SetEnvelope(bass, 18, 90, 58, 140);
+        song.SetChannelVolume(bass, 24);
+        song.AddNote(pad, 0, 45, 400);
+        song.AddNote(pad, 400, 41, 400);
+        song.AddNote(bass, 0, 33, 200);
+        song.AddNote(bass, 400, 29, 200);
+        song.Length = 800;
+        song.SetLoopable(true);
+        return song.Build();
+    }
+
+    hide func buildCombatLoop() -> Sound {
+        var song = MusicGen.New(148);
+        var bass = song.AddChannel(2);
+        var pulse = song.AddChannel(1);
+        var drums = song.AddChannel(4);
+        song.SetSwing(7);
+        song.SetEnvelope(bass, 5, 45, 66, 55);
+        song.SetChannelVolume(bass, 34);
+        song.SetEnvelope(pulse, 4, 36, 30, 42);
+        song.SetDuty(pulse, 24);
+        song.SetChannelVolume(pulse, 25);
+        song.SetEnvelope(drums, 1, 18, 0, 24);
+        song.SetChannelVolume(drums, 42);
+        var beat = 0;
+        while beat < 800 {
+            song.AddNote(bass, beat, 38, 45);
+            song.AddNote(bass, beat + 50, 45, 45);
+            song.AddNote(drums, beat, 5, 20);
+            song.AddNote(drums, beat + 50, 62, 18);
+            song.AddNote(pulse, beat + 25, 62, 24);
+            song.AddNote(pulse, beat + 75, 65, 24);
+            beat = beat + 100;
+        }
+        song.Length = 800;
+        song.SetLoopable(true);
+        return song.Build();
+    }
+
+    hide func buildBossLoop() -> Sound {
+        var song = MusicGen.New(172);
+        var bass = song.AddChannel(2);
+        var alarm = song.AddChannel(1);
+        var drums = song.AddChannel(4);
+        song.SetEnvelope(bass, 3, 34, 78, 42);
+        song.SetChannelVolume(bass, 42);
+        song.SetEnvelope(alarm, 8, 60, 38, 80);
+        song.SetChannelVolume(alarm, 28);
+        song.SetVibrato(alarm, 16, 620);
+        song.SetEnvelope(drums, 1, 20, 0, 30);
+        song.SetChannelVolume(drums, 50);
+        var beat = 0;
+        while beat < 800 {
+            song.AddNote(bass, beat, 31, 75);
+            song.AddNote(bass, beat + 75, 32, 25);
+            song.AddNote(drums, beat, 4, 22);
+            song.AddNote(drums, beat + 50, 78, 15);
+            beat = beat + 100;
+        }
+        song.AddNote(alarm, 0, 58, 200);
+        song.AddNote(alarm, 200, 59, 200);
+        song.AddNote(alarm, 400, 64, 200);
+        song.AddNote(alarm, 600, 59, 200);
+        song.Length = 800;
+        song.SetLoopable(true);
+        return song.Build();
+    }
+
+    hide func startMusic() {
+        ambientLoop = buildAmbientLoop();
+        combatLoop = buildCombatLoop();
+        bossLoop = buildBossLoop();
+        if ambientLoop != null { ambientVoice = ambientLoop.PlayLoop(18, 0); ambientVol = 18.0; }
+        if combatLoop != null { combatVoice = combatLoop.PlayLoop(0, 0); }
+        if bossLoop != null { bossVoice = bossLoop.PlayLoop(0, 0); }
+    }
+
+    expose func isReady() -> Boolean { return ready; }
+    expose func getMappedCueCount() -> Integer { return mappedCues; }
+    expose func setMasterVolume(v: Integer) {
+        masterVol = M.clampi(v, 0, 100);
+        if ready { Mixer.SetMasterVolume(masterVol); }
+    }
+    expose func getMusicState() -> Integer { return musicState; }
+    expose func getCombatIntensity() -> Float { return combatIntensity; }
+
+    // A new mission always starts from a clean adaptive-music state. This also
+    // releases the victory/defeat latch left by the preceding menu.
+    expose func beginLevel() {
+        musicState = MUS_AMBIENT;
+        combatIntensity = 0.0;
+    }
+
+    hide func playAt(clip: Sound, px: Float, py: Float, pz: Float,
+                     volume: Integer, pitch: Float) {
+        mappedCues = mappedCues + 1;
+        if ready == false || clip == null { return; }
+        eventPos.Set(px, py, pz);
+        var source = spatial.PlayAt(clip, eventPos);
+        if source != null {
+            source.Volume = volume;
+            source.Pitch = pitch;
+        }
+    }
+
+    hide func playFlat(clip: Sound, volume: Integer) {
+        mappedCues = mappedCues + 1;
+        if ready && clip != null { clip.Play(volume, 0); }
+    }
+
+    hide func approach(v: Float, target: Float, step: Float) -> Float {
+        if v < target { return M.minf(v + step, target); }
+        if v > target { return M.maxf(v - step, target); }
+        return v;
+    }
+
+    hide func updateMusic(dt: Float) {
+        var ta = 8.0; var tc = 0.0; var tb = 0.0;
+        if musicState == MUS_AMBIENT { ta = 18.0; }
+        else if musicState == MUS_TENSION { ta = 12.0; tc = 12.0; }
+        else if musicState == MUS_COMBAT { ta = 5.0; tc = 28.0; }
+        else if musicState == MUS_BOSS { ta = 3.0; tc = 14.0; tb = 34.0; }
+        else { ta = 0.0; }
+        var step = 32.0 * dt;
+        ambientVol = approach(ambientVol, ta, step);
+        combatVol = approach(combatVol, tc, step);
+        bossVol = approach(bossVol, tb, step);
+        if ready {
+            if ambientVoice > 0 { Voice.SetVolume(ambientVoice, M.roundi(ambientVol)); }
+            if combatVoice > 0 { Voice.SetVolume(combatVoice, M.roundi(combatVol)); }
+            if bossVoice > 0 { Voice.SetVolume(bossVoice, M.roundi(bossVol)); }
+        }
+    }
+
+    // Map the frame event stream to positional/flat cues and crossfade music.
+    expose func update(dt: Float, bus: events.EventBus, bossActive: Boolean, inCombat: Boolean) {
+        shotsThisFrame = 0;
+        enemyShotsThisFrame = 0;
+        explosionsThisFrame = 0;
+        impactsThisFrame = 0;
+        footstepsThisFrame = 0;
+        meleesThisFrame = 0;
+        var n = bus.getCount();
+        var i = 0;
+        while i < n {
+            var k = bus.kindAt(i);
+            if k == config.EV_GUNSHOT {
+                combatIntensity = M.minf(combatIntensity + 0.05, 1.0);
+                if shotsThisFrame < CAP_GUNSHOT {
+                    if gunClip.Count > 0 {
+                        var w = M.clampi(bus.aAt(i), 0, gunClip.Count - 1);
+                        playAt(gunClip[w], bus.xAt(i), bus.yAt(i), bus.zAt(i), 55, 1.0);
+                    } else {
+                        mappedCues = mappedCues + 1;
+                    }
+                    shotsThisFrame = shotsThisFrame + 1;
+                }
+            } else if k == config.EV_ENEMY_SHOT {
+                if enemyShotsThisFrame < CAP_ENEMY_SHOT {
+                    playAt(enemyShotClip, bus.xAt(i), bus.yAt(i), bus.zAt(i), 48, 1.0);
+                    enemyShotsThisFrame = enemyShotsThisFrame + 1;
+                }
+            } else if k == config.EV_EXPLOSION {
+                combatIntensity = M.minf(combatIntensity + 0.16, 1.0);
+                if explosionsThisFrame < CAP_EXPLOSION {
+                    playAt(explosionClip, bus.xAt(i), bus.yAt(i), bus.zAt(i), 76, 1.0);
+                    explosionsThisFrame = explosionsThisFrame + 1;
+                }
+            } else if k == config.EV_IMPACT {
+                if impactsThisFrame < CAP_IMPACT {
+                    playAt(impactClip, bus.xAt(i), bus.yAt(i), bus.zAt(i), 30, 1.0);
+                    impactsThisFrame = impactsThisFrame + 1;
+                }
+            } else if k == config.EV_FOOTSTEP {
+                if footstepsThisFrame < CAP_FOOTSTEP {
+                    playAt(footstepClip, bus.xAt(i), bus.yAt(i), bus.zAt(i), 22,
+                           0.92 + bus.aAt(i) * 0.04);
+                    footstepsThisFrame = footstepsThisFrame + 1;
+                }
+            } else if k == config.EV_MELEE {
+                if meleesThisFrame < CAP_MELEE {
+                    playAt(meleeClip, bus.xAt(i), bus.yAt(i), bus.zAt(i), 48, 1.0);
+                    meleesThisFrame = meleesThisFrame + 1;
+                }
+            } else if k == config.EV_PICKUP && bus.cAt(i) == 1 {
+                playFlat(pickupClip, 48);
+            } else if k == config.EV_KILL {
+                combatIntensity = M.minf(combatIntensity + 0.05, 1.0);
+                playFlat(killClip, 34);
+            } else if k == config.EV_DAMAGE && bus.aAt(i) == config.TGT_PLAYER {
+                combatIntensity = M.minf(combatIntensity + 0.20, 1.0);
+                playFlat(hurtClip, 52);
+            } else if k == config.EV_CHECKPOINT {
+                playFlat(checkpointClip, 52);
+            } else if k == config.EV_OBJECTIVE {
+                playFlat(objectiveClip, 55);
+            }
+            i = i + 1;
+        }
+        combatIntensity = combatIntensity - combatIntensity * M.clampf(0.42 * dt, 0.0, 1.0);
+        var target = MUS_AMBIENT;
+        if inCombat { target = MUS_TENSION; }
+        if combatIntensity > 0.35 { target = MUS_COMBAT; }
+        if bossActive { target = MUS_BOSS; }
+        if musicState != MUS_VICTORY && musicState != MUS_DEFEAT { musicState = target; }
+        updateMusic(dt);
+        if ready { Mixer.Update(); }
+    }
+
+    expose func playVictory() {
+        musicState = MUS_VICTORY;
+        playFlat(victoryClip, 70);
+    }
+
+    expose func playDefeat() {
+        musicState = MUS_DEFEAT;
+        playFlat(defeatClip, 66);
+    }
+
+    expose func setMusic(state: Integer) { musicState = state; }
+}

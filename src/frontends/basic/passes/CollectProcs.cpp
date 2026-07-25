@@ -36,6 +36,8 @@ namespace il::frontends::basic {
 ///          path and a qualified name formed by joining the namespace segments with '.' and
 ///          appending the suffix-stripped, canonicalized procedure name. AST structure is left
 ///          intact; class qualification is handled elsewhere.
+/// @post Every nested FUNCTION/SUB reached through namespace bodies carries
+///       canonical identity annotations.
 void CollectProcedures(Program &prog) {
     std::vector<std::string> nsStack;
 

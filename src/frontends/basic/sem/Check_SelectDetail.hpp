@@ -5,6 +5,23 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/frontends/basic/sem/Check_SelectDetail.hpp
+// Purpose: Define the state and inline validation helpers used to check BASIC
+//          SELECT CASE selectors, labels, ranges, and relational arms.
+// Key invariants:
+//   * Numeric labels are restricted to signed 32-bit values before conversion.
+//   * Exact labels, closed ranges, and relational intervals share collision
+//     tracking so overlapping arms are diagnosed consistently.
+//   * Numeric and string arm labels cannot be mixed, and CASE ELSE can occur at
+//     most once.
+// Ownership: Validation contexts borrow the analyzer's diagnostic sink; arm
+//            labels and interval records are owned by the context for one
+//            SELECT CASE analysis.
+// References: docs/tutorials/basic-tutorial.md#select-case,
+//             docs/internals/codemap/basic.md#semantic-analyzer
+//
+//===----------------------------------------------------------------------===//
+//
 /// @file
 /// @brief Internal helpers for SELECT CASE semantic checking.
 /// @details Defines context objects and routines shared between exported

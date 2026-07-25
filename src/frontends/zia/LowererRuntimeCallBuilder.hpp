@@ -67,6 +67,7 @@ class RuntimeCallBuilder final {
                                                   const il::runtime::RuntimeDescriptor *descriptor);
 
   private:
+    /// Shared lowering context that emits ABI conversion instructions.
     Lowerer &lowerer_;
 };
 

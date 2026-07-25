@@ -35,7 +35,7 @@ namespace il::api::v2 {
 /// diagnostics via @ref il::support::Expected.
 /// @param is Stream supplying UTF-8 IL source text.
 /// @param m Module that receives the parsed representation.
-/// @returns Empty Expected on success; otherwise the parse diagnostics.
+/// @return Empty Expected on success; otherwise an owned parse-diagnostic payload.
 il::support::Expected<void> parse_text_expected(std::istream &is, il::core::Module &m) {
     return il::io::Parser::parse(is, m);
 }
@@ -46,7 +46,7 @@ il::support::Expected<void> parse_text_expected(std::istream &is, il::core::Modu
 /// result mirrors @ref parse_text_expected by forwarding diagnostics through an
 /// Expected payload.
 /// @param m Module to validate.
-/// @returns Empty Expected when verification succeeds; otherwise a populated
+/// @return Empty Expected when verification succeeds; otherwise a populated
 /// diagnostic collection.
 il::support::Expected<void> verify_module_expected(const il::core::Module &m) {
     return il::verify::Verifier::verify(m);

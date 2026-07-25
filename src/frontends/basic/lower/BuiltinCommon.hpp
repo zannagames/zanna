@@ -30,6 +30,10 @@
 #include <string>
 #include <vector>
 
+/// @file
+/// @brief Declares the shared context and operations for registry-driven
+///        BASIC builtin lowering.
+
 namespace il::frontends::basic::lower {
 /// @brief Shared lowering context for BASIC builtin call emission.
 /// @details Wraps a builtin call expression together with its lowering rule,
@@ -239,32 +243,82 @@ class BuiltinLowerContext {
     std::string makeBlockLabel(const char *hint);
 
   private:
+    /// @brief Stores an r-value whose lifetime must extend through this call.
+    /// @param value Synthetic lowering result to move into context storage.
+    /// @return Stable reference to the stored result.
     [[nodiscard]] Lowerer::RVal &appendSynthetic(Lowerer::RVal value);
+
+    /// @brief Selects the source location associated with a rule argument.
+    /// @param spec Argument rule whose explicit index or call fallback is used.
+    /// @return Argument location when present; otherwise the call location.
     [[nodiscard]] il::support::SourceLoc selectArgLoc(
         const BuiltinLoweringRule::Argument &spec) const;
+
+    /// @brief Maps a registry expression type to its concrete IL type.
+    /// @param lowerer Lowerer used for context-dependent type mappings.
+    /// @param type Registry expression type to convert.
+    /// @return Corresponding IL type.
     [[nodiscard]] static il::core::Type typeFromExpr(Lowerer &lowerer, Lowerer::ExprType type);
+
+    /// @brief Resolves a safe result type when rule-driven selection fails.
+    /// @return Fixed, argument-derived, or default I64 result type.
     [[nodiscard]] il::core::Type fallbackResultType() const;
 
+    /// Borrowed lowerer that owns the active IL construction state.
     Lowerer *lowerer_;
+    /// Borrowed builtin-call AST node.
     const BuiltinCallExpr *call_;
+    /// Borrowed registry lowering rule for @ref call_.
     const BuiltinLoweringRule *rule_;
+    /// Borrowed registry metadata for @ref call_.
     const BuiltinInfo *info_;
+    /// Pre-lowering BASIC types indexed by call argument position.
     std::vector<std::optional<Lowerer::ExprType>> originalTypes_;
+    /// Source locations indexed by call argument position.
     std::vector<std::optional<il::support::SourceLoc>> argLocs_;
+    /// Lazily populated lowering results indexed by call argument position.
     std::vector<std::optional<Lowerer::RVal>> loweredArgs_;
+    /// Owned synthesized/default arguments kept stable for the context lifetime.
     std::vector<Lowerer::RVal> syntheticArgs_;
+    /// Shared instruction-emission facade bound to @ref lowerer_.
     lower::common::CommonLowering lowering_;
 };
 
+/// @brief Lowers a registry builtin using its selected generic variant.
+/// @param ctx Active per-call lowering context.
+/// @return Lowered r-value, or the context's zero result when no variant
+///         matches.
 [[nodiscard]] Lowerer::RVal lowerGenericBuiltin(BuiltinLowerContext &ctx);
+
+/// @brief Lowers conversion builtins that require specialized guard logic.
+/// @param ctx Active per-call lowering context.
+/// @return Lowered conversion result or a zero fallback after diagnostics.
 [[nodiscard]] Lowerer::RVal lowerConversionBuiltinImpl(BuiltinLowerContext &ctx);
+
+/// @brief Emits the operation described by one selected lowering variant.
+/// @param ctx Active per-call lowering context.
+/// @param variant Registry variant whose arguments and operation are emitted.
+/// @return Lowered result produced by the variant.
 [[nodiscard]] Lowerer::RVal emitBuiltinVariant(BuiltinLowerContext &ctx,
                                                const BuiltinLoweringRule::Variant &variant);
+
+/// @brief Emits a checked numeric conversion and its continuation/trap CFG.
+/// @param ctx Active per-call lowering context.
+/// @param variant Selected conversion variant.
+/// @param resultType IL type produced on successful conversion.
+/// @param contHint Prefix used for the success block's unique label.
+/// @param trapHint Prefix used for the failure block's unique label.
+/// @return Converted r-value on the continuation path.
 [[nodiscard]] Lowerer::RVal lowerNumericConversion(BuiltinLowerContext &ctx,
                                                    const BuiltinLoweringRule::Variant &variant,
                                                    il::core::Type resultType,
                                                    const char *contHint,
                                                    const char *trapHint);
+
+/// @brief Lowers VAL through its parse-status and numeric-result control flow.
+/// @param ctx Active per-call lowering context.
+/// @param variant Selected VAL lowering variant.
+/// @return Parsed numeric r-value on the continuation path.
 [[nodiscard]] Lowerer::RVal lowerValBuiltin(BuiltinLowerContext &ctx,
                                             const BuiltinLoweringRule::Variant &variant);
 

@@ -37,14 +37,28 @@ namespace {
 using il::support::Expected;
 using il::support::makeError;
 
+/// @brief Parse an IL integer initializer through the shared literal parser.
+/// @param text Initializer text.
+/// @param out Output value set on successful parsing.
+/// @return `true` when the complete literal is a valid signed integer.
 bool parseInteger(std::string_view text, long long &out) {
     return il::io::parseIntegerLiteral(std::string{text}, out);
 }
 
+/// @brief Parse an IL floating-point initializer through the shared literal parser.
+/// @param text Initializer text.
+/// @param out Output value set on successful parsing.
+/// @return `true` when the complete literal is a valid double.
 bool parseFloat(std::string_view text, double &out) {
     return il::io::parseFloatLiteral(std::string{text}, out);
 }
 
+/// @brief Validate one global declaration independently of name uniqueness.
+/// @details Checks identifier syntax, excludes verifier-only types, enforces
+///          import and string-initializer rules, and parses scalar initializers
+///          according to the declared type and range.
+/// @param global Declaration to inspect.
+/// @return Success, or the first name, type, linkage, or initializer diagnostic.
 Expected<void> validateGlobal(const Global &global) {
     if (global.name.empty())
         return Expected<void>{makeError({}, "global has empty name")};
@@ -130,7 +144,9 @@ Expected<void> validateGlobal(const Global &global) {
 /// @details The verifier records raw pointers to the immutable @ref il::core::Global
 ///          instances stored inside the module so downstream passes can perform
 ///          O(1) lookups without rebuilding the index.  The returned reference is
-///          valid for the lifetime of the verifier instance.
+///          valid until the verifier mutates its map; the pointed-to globals
+///          additionally require the source module to remain alive and unmoved.
+/// @return Const reference to the current name index.
 [[nodiscard]] const GlobalVerifier::GlobalMap &GlobalVerifier::globals() const {
     return globals_;
 }
@@ -138,11 +154,11 @@ Expected<void> validateGlobal(const Global &global) {
 /// @brief Populate the lookup map and detect duplicate declarations.
 /// @details Clears any previous state, iterates over every global declared in the
 ///          module, and inserts its address into @ref globals_.  Duplicate names
-///          trigger an error result containing a diagnostic for the caller to
-///          report via the supplied sink.
+///          trigger an error result. The sink parameter is reserved for
+///          interface consistency and is not currently written.
 /// @param module Module whose globals should be indexed.
-/// @param sink Diagnostic sink provided by the caller for reporting duplicates.
-/// @returns Empty result on success or a populated Expected containing the error.
+/// @param sink Reserved diagnostic sink.
+/// @return Empty result on success or a diagnostic for the first invalid global.
 Expected<void> GlobalVerifier::run(const Module &module, [[maybe_unused]] DiagSink &sink) {
     globals_.clear();
 

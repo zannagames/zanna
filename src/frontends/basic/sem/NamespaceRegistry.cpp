@@ -4,14 +4,24 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
 // File: src/frontends/basic/sem/NamespaceRegistry.cpp
-// Purpose: Implements namespace and type registration with case-insensitive lookups.
+// Purpose: Implement namespace and type registration with case-insensitive
+//          lookup and runtime-catalog namespace seeding.
 // Key invariants:
-//   - All internal keys use lowercase for case-insensitive comparison.
-//   - First-seen spellings are preserved in NamespaceInfo::full.
-//   - Repeated namespace registrations are merged.
-// Ownership/Lifetime: Registry is owned by semantic analyzer.
-// Links: docs/internals/codemap.md
+//   * All internal keys use lowercase for case-insensitive comparison.
+//   * First-seen spellings are preserved in NamespaceInfo::full.
+//   * Repeated namespace registrations are merged.
+// Ownership: NamespaceRegistry owns its namespace/type maps; catalog inputs are
+//            borrowed only for the duration of each seeding call.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Case-insensitive BASIC namespace and declared-type registry.
+/// @details Implements explicit registration and derives namespace prefixes
+///          from runtime function and class catalogs.
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,6 +36,10 @@
 namespace il::frontends::basic {
 
 /// @brief Lowercase a string to form the case-insensitive lookup key.
+/// @details Casts each byte to unsigned char before calling std::tolower so
+///          non-ASCII byte values never invoke undefined behavior.
+/// @param str Source spelling to normalize.
+/// @return A lowercase copy suitable for indexing the registry maps.
 std::string NamespaceRegistry::toLower(const std::string &str) {
     std::string result;
     result.reserve(str.size());
@@ -108,18 +122,24 @@ void NamespaceRegistry::registerInterface(const std::string &nsFull, const std::
 }
 
 /// @brief Test whether a namespace is registered (case-insensitive).
+/// @param full Fully qualified namespace spelling to query.
+/// @return True when the normalized namespace key is present.
 bool NamespaceRegistry::namespaceExists(const std::string &full) const {
     std::string key = toLower(full);
     return namespaces_.find(key) != namespaces_.end();
 }
 
 /// @brief Test whether a fully-qualified type is registered (case-insensitive).
+/// @param qualified Fully qualified class or interface name to query.
+/// @return True when the normalized type key is present.
 bool NamespaceRegistry::typeExists(const std::string &qualified) const {
     std::string key = toLower(qualified);
     return types_.find(key) != types_.end();
 }
 
 /// @brief Return the kind (Class/Interface) of a qualified type, or None if unknown.
+/// @param qualified Fully qualified class or interface name to query.
+/// @return The registered type kind, or TypeKind::None when absent.
 NamespaceRegistry::TypeKind NamespaceRegistry::getTypeKind(const std::string &qualified) const {
     std::string key = toLower(qualified);
     auto it = types_.find(key);
@@ -129,6 +149,7 @@ NamespaceRegistry::TypeKind NamespaceRegistry::getTypeKind(const std::string &qu
 }
 
 /// @brief Return the stored info (canonical spelling, classes, interfaces) for a namespace.
+/// @param full Fully qualified namespace spelling to query.
 /// @return Pointer to the NamespaceInfo, or nullptr if the namespace is unknown.
 const NamespaceRegistry::NamespaceInfo *NamespaceRegistry::info(const std::string &full) const {
     std::string key = toLower(full);

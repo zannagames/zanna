@@ -569,12 +569,12 @@ std::string currentImportReport() {
 void printAssetUsage(std::FILE *out) {
     std::fprintf(out,
                  "usage: zanna asset <bake|validate> ...\n"
-                 "  zanna asset bake <input> <output.vscn> [--force-tangents]\n"
+                 "  zanna asset bake <input> <output.scene3d> [--force-tangents]\n"
                  "                   [--eight-influences] [--compress-anims] [--lods N]\n"
                  "                   [--json]\n"
                  "      Load a model through the full import pipeline (glTF/GLB/FBX/\n"
                  "      OBJ/STL, including meshopt/Draco/BasisU decode), optionally\n"
-                 "      generate LOD chains, save the baked .vscn scene, and report\n"
+                 "      generate LOD chains, save the baked .scene3d scene, and report\n"
                  "      source-versus-baked fidelity. --json emits the v1 report.\n"
                  "  zanna asset validate <input>\n"
                  "      Load a model and print the import diagnostics report (JSON).\n");

@@ -184,6 +184,13 @@ std::string toString(const Value &v) {
 // Value Comparison and Hashing
 //===----------------------------------------------------------------------===//
 
+/// @brief Compare IL values by discriminant and semantic payload.
+/// @param a First value.
+/// @param b Second value.
+/// @return True for identical temporary IDs, literal payloads/flags, global
+///         names, or two null values.
+/// @details Floating-point payloads compare by bits, preserving distinctions
+///          such as signed zero and treating identical NaN encodings as equal.
 bool valueEquals(const Value &a, const Value &b) noexcept {
     if (a.kind != b.kind)
         return false;
@@ -212,6 +219,9 @@ bool valueEquals(const Value &a, const Value &b) noexcept {
     return false;
 }
 
+/// @brief Hash an IL value consistently with valueEquals().
+/// @param v Value to hash.
+/// @return Mixed kind-and-payload hash suitable for unordered containers.
 size_t valueHash(const Value &v) noexcept {
     const auto fold64 = [](std::uint64_t value) noexcept -> size_t {
         value ^= value >> 33;

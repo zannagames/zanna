@@ -41,6 +41,10 @@
 #include <string>
 #include <vector>
 
+/// @file
+/// @brief Declares method dispatch resolution and bounds-check emission helpers
+///        used by BASIC OOP lowering.
+
 namespace il::frontends::basic {
 
 class Lowerer;
@@ -182,11 +186,15 @@ class MethodDispatchResolver {
 
   private:
     /// @brief Check access control for a method call.
+    /// @param classInfo Class declaring the candidate method.
+    /// @param methodName Candidate method name.
+    /// @param loc Source location retained for interface symmetry.
     /// @return Error message if access denied, empty string if allowed.
     std::string checkAccessControl(const ClassInfo &classInfo,
                                    const std::string &methodName,
                                    il::support::SourceLoc loc);
 
+    /// Borrowed lowerer supplying OOP metadata and current-class context.
     Lowerer &lowerer_;
 };
 
@@ -242,6 +250,7 @@ class BoundsCheckEmitter {
                                           il::support::SourceLoc loc);
 
   private:
+    /// Borrowed lowerer supplying block construction and runtime helpers.
     Lowerer &lowerer_;
 };
 

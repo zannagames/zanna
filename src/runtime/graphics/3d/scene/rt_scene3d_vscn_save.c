@@ -83,6 +83,7 @@ typedef struct {
     int8_t asset_mode;
     int8_t requires_v5;
     int8_t requires_v6;
+    int8_t requires_v7;
 } vscn_save_context_t;
 
 /// @brief Base64 alphabet table used by the encoder.
@@ -500,6 +501,13 @@ static int vscn_collect_node_assets(rt_scene_node3d *node, vscn_save_context_t *
         rt_material3d *material;
         if (!current)
             continue;
+        if (current->prefab_path) {
+            /* Prefab reference nodes persist identity + reference only
+             * (ADR 0187): grafted content and non-override payloads are
+             * never serialized, so they collect no shared assets. */
+            ctx->requires_v7 = 1;
+            continue;
+        }
         mesh = (rt_mesh3d *)rt_g3d_checked_or_null(current->mesh, RT_G3D_MESH3D_CLASS_ID);
         material =
             (rt_material3d *)rt_g3d_checked_or_null(current->material, RT_G3D_MATERIAL3D_CLASS_ID);
@@ -1090,12 +1098,11 @@ static int vscn_serialize_mesh(
 }
 
 /// @brief Emit exact tagged gameplay metadata while preserving scalar kinds.
-static int vscn_serialize_node_metadata(
+/// @brief Emit one node's sorted tagged-metadata object body ("{...}").
+static int vscn_serialize_metadata_object(
     const rt_scene_node3d *node, char **buf, size_t *len, size_t *cap, const char *indent) {
-    if (!node || node->metadata_count <= 0)
-        return 1;
     if (!node->metadata || node->metadata_count > RT_SCENE_NODE3D_MAX_METADATA_ENTRIES ||
-        !vscn_append(buf, len, cap, ",\n%s  \"metadata\": {\n", indent))
+        !vscn_append(buf, len, cap, "{\n"))
         return 0;
     for (int32_t index = 0; index < node->metadata_count; ++index) {
         const rt_scene3d_metadata_entry *entry = &node->metadata[index];
@@ -1165,6 +1172,29 @@ static int vscn_serialize_node_metadata(
     return vscn_append(buf, len, cap, "%s  }", indent);
 }
 
+static int vscn_serialize_node_metadata(
+    const rt_scene_node3d *node, char **buf, size_t *len, size_t *cap, const char *indent) {
+    if (!node || node->metadata_count <= 0)
+        return 1;
+    if (!vscn_append(buf, len, cap, ",\n%s  \"metadata\": ", indent))
+        return 0;
+    return vscn_serialize_metadata_object(node, buf, len, cap, indent);
+}
+
+/// @brief Emit document-level root metadata ("  \"metadata\": {...},\n").
+/// @details Root metadata carries scene-scoped conventions (bake.*, env.*;
+///          ADR 0188) and shares the v6 tagged format and loader path.
+static int vscn_save_emit_root_metadata(
+    const rt_scene_node3d *root, char **buf, size_t *len, size_t *cap) {
+    if (!root || root->metadata_count <= 0)
+        return 1;
+    if (!vscn_append(buf, len, cap, "  \"metadata\": "))
+        return 0;
+    if (!vscn_serialize_metadata_object(root, buf, len, cap, ""))
+        return 0;
+    return vscn_append(buf, len, cap, ",\n");
+}
+
 /// @brief Emit the fields of one scene node, leaving its JSON object open for children.
 static int vscn_serialize_node_fields(rt_scene_node3d *node,
                                       vscn_save_context_t *ctx,
@@ -1176,6 +1206,57 @@ static int vscn_serialize_node_fields(rt_scene_node3d *node,
         return 1;
     char indent[64];
     vscn_make_indent(indent, sizeof(indent), depth);
+
+    if (node->prefab_path) {
+        /* ADR 0187: identity + reference + metadata only. */
+        const char *prefab_name = node->name ? rt_string_cstr(node->name) : "node";
+        const char *prefab_ref = rt_string_cstr(node->prefab_path);
+        double prefab_rotation[4] = {
+            node->rotation[0], node->rotation[1], node->rotation[2], node->rotation[3]};
+        if (!prefab_name)
+            prefab_name = "node";
+        if (!prefab_ref)
+            return 0;
+        vscn_normalize_quat(prefab_rotation);
+        if (!vscn_append(buf, len, cap, "%s{\n", indent) ||
+            !vscn_append(buf, len, cap, "%s  \"name\": ", indent) ||
+            !vscn_append_json_string(buf, len, cap, prefab_name) ||
+            !vscn_append(buf,
+                         len,
+                         cap,
+                         ",\n%s  \"position\": [%.17g, %.17g, %.17g],\n",
+                         indent,
+                         vscn_clamp_abs_or(node->position[0], 0.0),
+                         vscn_clamp_abs_or(node->position[1], 0.0),
+                         vscn_clamp_abs_or(node->position[2], 0.0)) ||
+            !vscn_append(buf,
+                         len,
+                         cap,
+                         "%s  \"rotation\": [%.17g, %.17g, %.17g, %.17g],\n",
+                         indent,
+                         prefab_rotation[0],
+                         prefab_rotation[1],
+                         prefab_rotation[2],
+                         prefab_rotation[3]) ||
+            !vscn_append(buf,
+                         len,
+                         cap,
+                         "%s  \"scale\": [%.17g, %.17g, %.17g],\n",
+                         indent,
+                         vscn_clamp_abs_or(node->scale_xyz[0], 1.0),
+                         vscn_clamp_abs_or(node->scale_xyz[1], 1.0),
+                         vscn_clamp_abs_or(node->scale_xyz[2], 1.0)) ||
+            !vscn_append(buf,
+                         len,
+                         cap,
+                         "%s  \"visible\": %s,\n",
+                         indent,
+                         node->visible ? "true" : "false") ||
+            !vscn_append(buf, len, cap, "%s  \"prefab\": ", indent) ||
+            !vscn_append_json_string(buf, len, cap, prefab_ref))
+            return 0;
+        return vscn_serialize_node_metadata(node, buf, len, cap, indent);
+    }
 
     rt_mesh3d *mesh = (rt_mesh3d *)rt_g3d_checked_or_null(node->mesh, RT_G3D_MESH3D_CLASS_ID);
     rt_material3d *material =
@@ -1412,8 +1493,8 @@ static int vscn_serialize_node(rt_scene_node3d *node,
     frames = (vscn_serialize_node_frame_t *)calloc(VSCN_MAX_NODE_DEPTH, sizeof(*frames));
     if (!frames)
         return 0;
-    frames[frame_count++] =
-        (vscn_serialize_node_frame_t){node, 0, scene3d_node_child_count(node), 0, depth, 0};
+    frames[frame_count++] = (vscn_serialize_node_frame_t){
+        node, 0, node->prefab_path ? 0 : scene3d_node_child_count(node), 0, depth, 0};
     if (!vscn_serialize_node_fields(node, ctx, buf, len, cap, depth))
         ok = 0;
 
@@ -1453,7 +1534,12 @@ static int vscn_serialize_node(rt_scene_node3d *node,
             break;
         }
         frames[frame_count++] = (vscn_serialize_node_frame_t){
-            child, 0, scene3d_node_child_count(child), 0, frame->depth + 2, 0};
+            child,
+            0,
+            child->prefab_path ? 0 : scene3d_node_child_count(child),
+            0,
+            frame->depth + 2,
+            0};
         if (!vscn_serialize_node_fields(child, ctx, buf, len, cap, frame->depth + 2))
             ok = 0;
     }
@@ -1938,7 +2024,7 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
         vscn_save_free_ctx(&ctx);
         return 0;
     }
-    ctx.output_version = ctx.requires_v6 ? 6 : 5;
+    ctx.output_version = ctx.requires_v7 ? 7 : (ctx.requires_v6 ? 6 : 5);
     if (!vscn_append(&buf, &len, &cap, "{\n") ||
         !vscn_append(&buf, &len, &cap, "  \"format\": \"vscn\",\n") ||
         !vscn_append(&buf, &len, &cap, "  \"version\": %d,\n", ctx.output_version) ||
@@ -1995,6 +2081,8 @@ int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
 
     ctx.animations = scene->baked_animations;
     ctx.animation_count = scene->baked_animation_count;
+    if (scene->root->metadata_count > 0)
+        ctx.requires_v6 = 1;
 
     /* Rig data (skeletons/animations/side streams) promotes the file to v3;
      * plain scenes keep emitting v2 so existing consumers see no change. */
@@ -2006,13 +2094,17 @@ int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
             has_rig = 1;
     }
     version =
-        ctx.requires_v6
-            ? 6
-            : ((ctx.requires_v5 || vscn_save_has_source_texture(&ctx)) ? 5 : (has_rig ? 3 : 2));
+        ctx.requires_v7
+            ? 7
+            : (ctx.requires_v6
+                   ? 6
+                   : ((ctx.requires_v5 || vscn_save_has_source_texture(&ctx)) ? 5
+                                                                              : (has_rig ? 3 : 2)));
     ctx.output_version = version;
     if (!vscn_append(&buf, &len, &cap, "{\n") ||
         !vscn_append(&buf, &len, &cap, "  \"format\": \"vscn\",\n") ||
         !vscn_append(&buf, &len, &cap, "  \"version\": %d,\n", version) ||
+        !vscn_save_emit_root_metadata(scene->root, &buf, &len, &cap) ||
         !vscn_save_emit_textures(&buf, &len, &cap, &ctx) ||
         !vscn_save_emit_cubemaps(&buf, &len, &cap, &ctx) ||
         !vscn_save_emit_materials(&buf, &len, &cap, &ctx) ||

@@ -17,6 +17,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements signature, body, SSA, effect, and ownership verification.
+/// @details Function verification proceeds through definition precollection,
+///          block and instruction checks, effect-attribute validation,
+///          component-aware dominance and release analyses, and alloca-derived
+///          pointer escape checks.
+
 #include "il/verify/FunctionVerifier.hpp"
 
 #include "il/core/BasicBlock.hpp"
@@ -95,6 +102,10 @@ bool isErrAccessOpcode(Opcode op) {
     }
 }
 
+/// @brief Compare two ASCII-oriented symbol fragments without case sensitivity.
+/// @param lhs First character sequence.
+/// @param rhs Second character sequence.
+/// @return `true` when lengths and lowercased bytes match.
 bool equalsIgnoreCase(std::string_view lhs, std::string_view rhs) {
     if (lhs.size() != rhs.size())
         return false;
@@ -107,6 +118,10 @@ bool equalsIgnoreCase(std::string_view lhs, std::string_view rhs) {
     return true;
 }
 
+/// @brief Test whether a symbol ends with a case-insensitive suffix.
+/// @param value Complete symbol name.
+/// @param suffix Candidate trailing fragment.
+/// @return `true` when @p suffix matches the end of @p value ignoring case.
 bool endsWithIgnoreCase(std::string_view value, std::string_view suffix) {
     if (value.size() < suffix.size())
         return false;
@@ -133,6 +148,9 @@ bool isRuntimeExplicitRelease(const Instr &instr) {
            instr.callee == "rt_obj_release_check0" || instr.callee == "rt_obj_release_known_check0";
 }
 
+/// @brief Detect calls whose first operand is retained by runtime ownership metadata.
+/// @param instr Candidate call instruction.
+/// @return `true` for a direct call whose retained-argument mask includes bit zero.
 bool isRuntimeArrayRetain(const Instr &instr) {
     if (instr.op != Opcode::Call)
         return false;
@@ -140,6 +158,9 @@ bool isRuntimeArrayRetain(const Instr &instr) {
     return (ownership.retainedArgMask & 0b1u) != 0;
 }
 
+/// @brief Recognize object destruction and final-free calls.
+/// @param instr Candidate instruction.
+/// @return `true` when @p instr names a known or conventionally named finalizer.
 bool isRuntimeObjectFinalizerCall(const Instr &instr) {
     return instr.op == Opcode::Call &&
            (instr.callee == "rt_obj_free" || instr.callee == "__zia_dtor_dispatch" ||
@@ -147,6 +168,9 @@ bool isRuntimeObjectFinalizerCall(const Instr &instr) {
             endsWithIgnoreCase(instr.callee, ".destroy"));
 }
 
+/// @brief Classify side-effecting terminators permitted in pure functions.
+/// @param op Opcode to inspect.
+/// @return `true` for branch, conditional branch, switch, or return.
 bool isPureControlTerminator(Opcode op) {
     return op == Opcode::Br || op == Opcode::CBr || op == Opcode::SwitchI32 || op == Opcode::Ret;
 }
@@ -191,6 +215,8 @@ Expected<void> verifyResumeTokenValueUses(const Function &fn,
                                           const Instr &instr,
                                           const BlockMap &blockMap,
                                           TypeInference &types) {
+    /// @brief Construct the standard resume-token escape diagnostic.
+    /// @return Failure anchored to @p instr.
     const auto fail = [&]() -> Expected<void> {
         return Expected<void>{makeVerifierError(
             VerifyDiagCode::EhResumeTokenEscape,
@@ -243,6 +269,11 @@ Expected<void> verifyResumeTokenValueUses(const Function &fn,
     return {};
 }
 
+/// @brief Classify built-in opcodes that can throw or trap directly.
+/// @details Direct and indirect calls are checked separately through callee
+///          effect metadata.
+/// @param op Opcode to classify.
+/// @return `true` when executing @p op may produce a language fault or trap.
 bool opcodeMayThrowOrTrap(Opcode op) {
     switch (op) {
         case Opcode::IAddOvf:
@@ -275,6 +306,10 @@ bool opcodeMayThrowOrTrap(Opcode op) {
     }
 }
 
+/// @brief Test whether an opcode is a checked integer binary operation.
+/// @param op Opcode to classify.
+/// @return `true` for overflow-checking arithmetic and zero-checking division
+///         or remainder operations.
 bool isCheckedIntegerBinaryOpcode(Opcode op) {
     switch (op) {
         case Opcode::IAddOvf:
@@ -290,17 +325,37 @@ bool isCheckedIntegerBinaryOpcode(Opcode op) {
     }
 }
 
+/// @brief Test whether an integer kind is supported by checked binary inference.
+/// @param kind Type kind to classify.
+/// @return `true` for i16, i32, or i64.
 bool isSupportedIntegerWidth(Type::Kind kind) {
     return kind == Type::Kind::I16 || kind == Type::Kind::I32 || kind == Type::Kind::I64;
 }
 
+/// @brief Effect guarantees known for a direct callee.
 struct EffectFacts {
+    /// @brief Whether a trustworthy source described the callee.
     bool known = false;
+
+    /// @brief Whether the callee is free of observable side effects.
     bool pure = false;
+
+    /// @brief Whether the callee avoids externally visible memory writes.
     bool readonly = false;
+
+    /// @brief Whether the callee is guaranteed not to throw or trap.
     bool nothrow = false;
 };
 
+/// @brief Resolve direct-call effect guarantees from available symbol metadata.
+/// @details Consults the runtime registry, module functions, explicitly
+///          attributed externs, and helper classification in that order.
+///          Unattributed unknown externs produce unknown facts.
+/// @param callee Direct-call symbol name.
+/// @param functionMap Module function declarations indexed by name.
+/// @param externMap Module extern declarations indexed by name.
+/// @return Resolved effect facts, with `known` false when no authoritative
+///         guarantees are available.
 EffectFacts directCalleeEffects(
     std::string_view callee,
     const std::unordered_map<std::string, const Function *> &functionMap,
@@ -326,16 +381,27 @@ EffectFacts directCalleeEffects(
     return {};
 }
 
+/// @brief Canonical byte location rooted at an `alloca` temporary.
 struct StackLocationKey {
+    /// @brief Temporary identifier produced by the root `alloca`.
     unsigned root = 0;
+
+    /// @brief Constant byte offset accumulated through GEP instructions.
     int64_t offset = 0;
 
+    /// @brief Compare stack locations by root allocation and byte offset.
+    /// @param other Location to compare.
+    /// @return `true` when both components match.
     bool operator==(const StackLocationKey &other) const {
         return root == other.root && offset == other.offset;
     }
 };
 
+/// @brief Hash functor for canonical stack locations.
 struct StackLocationKeyHash {
+    /// @brief Combine hashes of an allocation root and constant offset.
+    /// @param key Stack location to hash.
+    /// @return Hash suitable for `std::unordered_set`.
     std::size_t operator()(const StackLocationKey &key) const {
         std::size_t rootHash = std::hash<unsigned>{}(key.root);
         std::size_t offsetHash = std::hash<int64_t>{}(key.offset);
@@ -343,12 +409,19 @@ struct StackLocationKeyHash {
     }
 };
 
+/// @brief Extract a signed integer literal from a value.
+/// @param value Value to inspect.
+/// @return Literal payload for `ConstInt`, or no value for other kinds.
 std::optional<int64_t> constIntValue(const Value &value) {
     if (value.kind == Value::Kind::ConstInt)
         return value.i64;
     return std::nullopt;
 }
 
+/// @brief Add two signed offsets without invoking overflow.
+/// @param lhs Base offset.
+/// @param rhs Increment.
+/// @return Sum when representable as int64_t; otherwise no value.
 std::optional<int64_t> checkedAdd(int64_t lhs, int64_t rhs) {
     if ((rhs > 0 && lhs > std::numeric_limits<int64_t>::max() - rhs) ||
         (rhs < 0 && lhs < std::numeric_limits<int64_t>::min() - rhs))
@@ -356,6 +429,14 @@ std::optional<int64_t> checkedAdd(int64_t lhs, int64_t rhs) {
     return lhs + rhs;
 }
 
+/// @brief Resolve a pointer to an alloca root and constant GEP offset.
+/// @details Recursively follows temporary definitions through GEP chains and
+///          abandons paths with missing definitions, nonconstant offsets,
+///          signed overflow, or more than 32 links.
+/// @param ptr Pointer value to resolve.
+/// @param defs Instruction definition map for temporary values.
+/// @param depth Current recursion depth used to cap malformed chains.
+/// @return Canonical stack location, or no value when resolution is unsafe.
 std::optional<StackLocationKey> stackLocationKey(
     const Value &ptr, const std::unordered_map<unsigned, const Instr *> &defs, unsigned depth = 0) {
     if (depth > 32 || ptr.kind != Value::Kind::Temp)
@@ -388,6 +469,13 @@ std::optional<StackLocationKey> stackLocationKey(
     return base;
 }
 
+/// @brief Compute the fixed point of temporaries derived from stack allocations.
+/// @details Seeds `alloca` results, propagates through GEP, tracks stack slots
+///          that store derived pointers and pointer loads from those slots, and
+///          forwards derived values into resolved successor block parameters.
+/// @param fn Function whose definitions and uses are scanned.
+/// @param blockMap Resolved labels used to pair branch arguments with params.
+/// @return Set of temporary identifiers that may hold an alloca-derived pointer.
 std::unordered_set<unsigned> computeStackDerivedTemps(const Function &fn,
                                                       const BlockMap &blockMap) {
     std::unordered_map<unsigned, const Instr *> defs;
@@ -454,6 +542,10 @@ std::unordered_set<unsigned> computeStackDerivedTemps(const Function &fn,
     return stackDerived;
 }
 
+/// @brief Determine whether a memory operation touches private stack-derived storage.
+/// @param instr Instruction to classify.
+/// @param stackDerived Known alloca-derived pointer temporaries.
+/// @return `true` for `alloca` and for loads or stores through a derived pointer.
 bool isPrivateStackMemoryAccess(const Instr &instr,
                                 const std::unordered_set<unsigned> &stackDerived) {
     if (instr.op == Opcode::Alloca)
@@ -465,6 +557,10 @@ bool isPrivateStackMemoryAccess(const Instr &instr,
     return false;
 }
 
+/// @brief Validate names, IDs, and types of function parameters.
+/// @param fn Function whose parameter declarations are inspected.
+/// @return Success, or a diagnostic for the first malformed/duplicate name,
+///         duplicate identifier, or void type.
 Expected<void> validateFunctionParams(const Function &fn) {
     std::unordered_set<std::string> paramNames;
     std::unordered_set<unsigned> paramIds;
@@ -488,6 +584,10 @@ Expected<void> validateFunctionParams(const Function &fn) {
     return {};
 }
 
+/// @brief Compare an extern signature with a function declaration.
+/// @param ext Extern declaration.
+/// @param fn Function declaration with the same symbol.
+/// @return `true` when return kind, arity, and parameter kinds match.
 bool signaturesMatch(const Extern &ext, const Function &fn) {
     if (ext.retType.kind != fn.retType.kind || ext.params.size() != fn.params.size())
         return false;
@@ -499,12 +599,19 @@ bool signaturesMatch(const Extern &ext, const Function &fn) {
 
 } // namespace
 
+/// @brief Structured block-parameter validator implemented by the CFG checker.
 Expected<void> validateBlockParams_E(const Function &fn,
                                      const BasicBlock &bb,
                                      TypeInference &types,
                                      std::vector<unsigned> &paramIds);
+
+/// @brief Structured terminator-placement validator implemented by the CFG checker.
 Expected<void> checkBlockTerminators_E(const Function &fn, const BasicBlock &bb);
+
+/// @brief Validate registry-defined operand and result signature constraints.
 Expected<void> verifyOpcodeSignature_E(const VerifyCtx &ctx);
+
+/// @brief Legacy structured instruction checker used by strategy adapters.
 Expected<void> verifyInstruction_E(const Function &fn,
                                    const BasicBlock &bb,
                                    const Instr &instr,
@@ -632,7 +739,6 @@ Expected<void> FunctionVerifier::verifyFunction(const Function &fn, DiagSink &si
                 makeError({}, formatFunctionDiag(fn, "malformed label " + bb.label))};
         if (!labels.insert(bb.label).second)
             return Expected<void>{
-                /// @brief Handles error condition.
                 makeError({}, formatFunctionDiag(fn, "duplicate label " + bb.label))};
         // Use string_view key referencing bb.label; the Function outlives this map.
         blockMap.emplace(std::string_view{bb.label}, &bb);
@@ -647,6 +753,11 @@ Expected<void> FunctionVerifier::verifyFunction(const Function &fn, DiagSink &si
 
     std::unordered_map<unsigned, Type> temps;
     std::unordered_map<unsigned, std::string> tempDefinitions;
+    /// @brief Register one SSA definition while enforcing global ID uniqueness.
+    /// @param id Temporary identifier being defined.
+    /// @param type Type associated with the definition.
+    /// @param description Human-readable origin retained for duplicate errors.
+    /// @return Success when inserted, or a duplicate-definition diagnostic.
     auto defineTemp = [&](unsigned id, Type type, std::string description) -> Expected<void> {
         auto [it, inserted] = tempDefinitions.emplace(id, std::move(description));
         if (!inserted) {
@@ -667,6 +778,11 @@ Expected<void> FunctionVerifier::verifyFunction(const Function &fn, DiagSink &si
             return result;
     }
 
+    /// @brief Recognize an entry block parameter that aliases a function parameter.
+    /// @details The alias is accepted only when ID and type kind match.
+    /// @param bb Block owning @p param.
+    /// @param param Candidate block parameter.
+    /// @return `true` when no second SSA definition should be registered.
     auto isEntryFunctionParamAlias = [&](const BasicBlock &bb, const Param &param) {
         if (&bb != &fn.blocks.front())
             return false;
@@ -686,6 +802,13 @@ Expected<void> FunctionVerifier::verifyFunction(const Function &fn, DiagSink &si
     // We also track which block each definition comes from so that verifyBlock can
     // still detect within-block use-before-def errors.
     std::unordered_map<unsigned, const BasicBlock *> definingBlock;
+    /// @brief Infer the type registered during result precollection.
+    /// @details Checked integer operations lacking an explicit type infer a
+    ///          consistent supported operand width or conservatively use i64.
+    ///          Direct and signature-bearing indirect calls use callee return
+    ///          metadata; all other instructions use their stored result type.
+    /// @param instr Result-producing instruction to inspect.
+    /// @return Type to associate with the precollected result identifier.
     auto precollectedResultType = [&](const Instr &instr) {
         if (!instr.result)
             return instr.type;
@@ -745,9 +868,15 @@ Expected<void> FunctionVerifier::verifyFunction(const Function &fn, DiagSink &si
     // ===== PASS 2: Full verification with complete type info =====
     // Collect EhPush targets and label references during single pass over blocks.
     // This avoids two additional O(blocks × instructions) traversals.
+    /// @brief Deferred validation record for one labelled `eh.push`.
     struct EhPushCheck {
+        /// @brief Block containing the push.
         const BasicBlock *bb{nullptr};
+
+        /// @brief Concrete push instruction.
         const Instr *instr{nullptr};
+
+        /// @brief Referenced handler label.
         std::string target;
     };
 
@@ -793,6 +922,9 @@ Expected<void> FunctionVerifier::verifyFunction(const Function &fn, DiagSink &si
         const auto stackDerived = computeStackDerivedTemps(fn, blockMap);
         for (const auto &bb : fn.blocks) {
             for (const auto &instr : bb.instructions) {
+                /// @brief Construct an effect-attribute diagnostic at @p instr.
+                /// @param message Attribute violation text.
+                /// @return Failure anchored to the current instruction.
                 const auto failAttr = [&](std::string_view message) -> Expected<void> {
                     return Expected<void>{
                         makeError(instr.loc, formatInstrDiag(fn, bb, instr, message))};
@@ -846,6 +978,17 @@ Expected<void> FunctionVerifier::verifyFunction(const Function &fn, DiagSink &si
     return {};
 }
 
+/// @brief Verify cross-block SSA dominance, release lifetime, and stack escapes.
+/// @details Builds component-aware dominator sets so unreachable CFG components
+///          are checked independently, validates managed-handle release ordering
+///          both by dominance and forward data flow, and rejects alloca-derived
+///          pointers returned, stored outside stack storage, or passed through
+///          indirect calls.
+/// @param fn Function whose CFG and value uses are analysed.
+/// @param blockMap Resolved label map used to construct CFG edges.
+/// @param temps Precollected type for every known temporary.
+/// @param definingBlock Defining block for instruction and block-param values.
+/// @return Success when all three analyses pass, or the first diagnostic.
 Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
     const Function &fn,
     const BlockMap &blockMap,
@@ -880,11 +1023,19 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         {
             std::unordered_set<const BasicBlock *> visited;
 
+            /// @brief Explicit DFS frame used to avoid native recursion.
             struct Frame {
+                /// @brief Block whose successors are visited.
                 const BasicBlock *bb;
+
+                /// @brief Whether successor frames have already been pushed.
                 bool childrenPushed;
             };
 
+            /// @brief Traverse one not-yet-visited CFG component in postorder.
+            /// @details Records the component root, uses an explicit DFS stack,
+            ///          and appends that component's reverse postorder to @ref rpo.
+            /// @param root Candidate component root.
             auto visitRoot = [&](const BasicBlock *root) {
                 if (!root || !visited.insert(root).second)
                     return;
@@ -968,6 +1119,8 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         std::vector<std::vector<unsigned char>> dom(blocks.size(),
                                                     std::vector<unsigned char>(blocks.size(), 1));
 
+        /// @brief Initialize one component root to dominate only itself.
+        /// @param index Dense block index of the root.
         auto setRootDom = [&](size_t index) {
             std::fill(dom[index].begin(), dom[index].end(), 0);
             dom[index][index] = 1;
@@ -1010,6 +1163,10 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
             }
         }
 
+        /// @brief Query the converged dense dominance relation.
+        /// @param A Candidate dominating block.
+        /// @param B Candidate dominated block.
+        /// @return `true` when both are indexed and A dominates B.
         auto dominates = [&](const BasicBlock *A, const BasicBlock *B) -> bool {
             auto aIt = blockIndex.find(A);
             auto bIt = blockIndex.find(B);
@@ -1019,6 +1176,12 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         };
 
         const auto stackDerivedForDominance = computeStackDerivedTemps(fn, blockMap);
+        /// @brief Identify an entry-defined stack pointer exempted from CFG checks.
+        /// @details Entry allocation addresses are treated as function-scoped
+        ///          values even when referenced by separately rooted dead CFG
+        ///          components.
+        /// @param op Operand to classify.
+        /// @return `true` for a pointer-typed stack-derived temp defined in entry.
         auto isEntryStackAddress = [&](const Value &op) {
             if (op.kind != Value::Kind::Temp || !stackDerivedForDominance.contains(op.id))
                 return false;
@@ -1031,6 +1194,10 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         // Check every operand use: the defining block must dominate the using block.
         for (const auto &blk : fn.blocks) {
             for (const auto &instr : blk.instructions) {
+                /// @brief Check dominance for one temporary use at @p instr.
+                /// @param op Operand or branch argument to inspect.
+                /// @return Success for non-temporaries, untracked values, and
+                ///         dominated uses; otherwise a diagnostic.
                 auto checkValue = [&](const Value &op) -> Expected<void> {
                     if (op.kind != Value::Kind::Temp)
                         return {};
@@ -1059,24 +1226,48 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
             }
         }
 
+        /// @brief One direct runtime release of a managed temporary.
         struct ReleaseSite {
+            /// @brief Block containing the release.
             const BasicBlock *block;
+
+            /// @brief Release call instruction.
             const Instr *instr;
+
+            /// @brief Instruction index within @ref block.
             size_t index;
+
+            /// @brief Released temporary identifier.
             unsigned id;
         };
 
+        /// @brief One non-finalizer use that may follow a release.
         struct ReleasedUse {
+            /// @brief Block containing the use.
             const BasicBlock *block;
+
+            /// @brief Instruction consuming the value.
             const Instr *instr;
+
+            /// @brief Instruction index within @ref block.
             size_t index;
+
+            /// @brief Consumed temporary identifier.
             unsigned id;
         };
 
+        /// @brief One runtime retain that restores a released handle's lifetime.
         struct RetainSite {
+            /// @brief Block containing the retain.
             const BasicBlock *block;
+
+            /// @brief Retain call instruction.
             const Instr *instr;
+
+            /// @brief Instruction index within @ref block.
             size_t index;
+
+            /// @brief Retained temporary identifier.
             unsigned id;
         };
 
@@ -1099,6 +1290,8 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
                 if (isRuntimeObjectFinalizerCall(instr))
                     continue;
 
+                /// @brief Record one temporary-valued use for release analysis.
+                /// @param value Operand or branch argument to inspect.
                 auto recordUse = [&](const Value &value) {
                     if (value.kind == Value::Kind::Temp)
                         releasedUses.push_back({&blk, &instr, index, value.id});
@@ -1111,6 +1304,12 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
             }
         }
 
+        /// @brief Test whether one instruction site strictly precedes another.
+        /// @param releaseBlock Block containing the earlier candidate.
+        /// @param releaseIndex Index of the earlier candidate.
+        /// @param useBlock Block containing the later candidate.
+        /// @param useIndex Index of the later candidate.
+        /// @return Same-block order or cross-block dominance result.
         auto siteDominates = [&](const BasicBlock *releaseBlock,
                                  size_t releaseIndex,
                                  const BasicBlock *useBlock,
@@ -1119,6 +1318,14 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
                 return releaseIndex < useIndex;
             return dominates(releaseBlock, useBlock);
         };
+        /// @brief Find a retain of @p id between two ordered instruction sites.
+        /// @param id Managed temporary identifier.
+        /// @param releaseBlock Block containing the release.
+        /// @param releaseIndex Release instruction index.
+        /// @param useBlock Block containing the later use or release.
+        /// @param useIndex Later instruction index.
+        /// @return `true` when a retain is dominated by the release and itself
+        ///         dominates the later site.
         auto retainBetween = [&](unsigned id,
                                  const BasicBlock *releaseBlock,
                                  size_t releaseIndex,
@@ -1196,6 +1403,12 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         for (size_t index = 0; index < blocks.size(); ++index)
             worklist.push(index);
 
+        /// @brief Format a managed-handle release diagnostic.
+        /// @param block Block containing @p instr.
+        /// @param instr Instruction at which the invalid action occurs.
+        /// @param id Managed temporary identifier.
+        /// @param action Short action description such as double release.
+        /// @return Structured error anchored to @p instr.
         auto makeReleaseDiag =
             [&](const BasicBlock &block, const Instr &instr, unsigned id, std::string_view action) {
                 std::ostringstream message;
@@ -1203,6 +1416,13 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
                 return makeError(instr.loc, formatInstrDiag(fn, block, instr, message.str()));
             };
 
+        /// @brief Apply one block's ownership operations to an incoming release set.
+        /// @details Releases add IDs, retains remove them, ordinary uses reject
+        ///          released IDs, and result definitions kill loop-carried state
+        ///          for their fresh SSA value.
+        /// @param block Block whose instructions are transferred in order.
+        /// @param released Set of possibly released IDs on block entry.
+        /// @return Updated exit set, or a double-release/use-after-release error.
         auto transferReleases =
             [&](const BasicBlock &block,
                 std::unordered_set<unsigned> released) -> Expected<std::unordered_set<unsigned>> {
@@ -1219,6 +1439,9 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
                            instr.operands[0].kind == Value::Kind::Temp) {
                     released.erase(instr.operands[0].id);
                 } else if (!isRuntimeObjectFinalizerCall(instr)) {
+                    /// @brief Reject one use of a possibly released temporary.
+                    /// @param value Operand or branch argument to inspect.
+                    /// @return Success when live or non-temporary; otherwise an error.
                     auto checkUse = [&](const Value &value) -> Expected<void> {
                         if (value.kind == Value::Kind::Temp && released.contains(value.id))
                             return Expected<void>{
@@ -1249,6 +1472,10 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
             return released;
         };
 
+        /// @brief Union one release-state set into another.
+        /// @param dst Destination set updated in place.
+        /// @param src IDs to merge.
+        /// @return `true` when at least one ID was newly inserted.
         auto mergeReleaseSet = [](std::unordered_set<unsigned> &dst,
                                   const std::unordered_set<unsigned> &src) {
             bool changed = false;
@@ -1290,6 +1517,11 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         if (!stackDerived.empty()) {
             for (const auto &blk : fn.blocks) {
                 for (const auto &instr : blk.instructions) {
+                    /// @brief Diagnose a prohibited escape of one derived pointer.
+                    /// @param op Candidate escaping value.
+                    /// @param action Verb describing the escape operation.
+                    /// @return Success for ordinary values; otherwise an error
+                    ///         when @p op is alloca-derived.
                     auto failEscape = [&](const Value &op,
                                           std::string_view action) -> Expected<void> {
                         if (op.kind != Value::Kind::Temp || !stackDerived.contains(op.id))
@@ -1424,7 +1656,6 @@ Expected<void> FunctionVerifier::verifyBlock(
                     std::ostringstream message;
                     message << "double release of %" << id;
                     return Expected<void>{
-                        /// @brief Handles error condition.
                         makeError(instr.loc, formatInstrDiag(fn, bb, instr, message.str()))};
                 }
             }
@@ -1444,6 +1675,9 @@ Expected<void> FunctionVerifier::verifyBlock(
             // zero; destructor dispatch and rt_obj_free are finalization steps
             // for that same handle and must be allowed after the release check.
         } else {
+            /// @brief Reject one same-block use of a previously released value.
+            /// @param value Operand or branch argument to inspect.
+            /// @return Success when live or non-temporary; otherwise a diagnostic.
             const auto checkValue = [&](const Value &value) -> Expected<void> {
                 if (value.kind != Value::Kind::Temp)
                     return Expected<void>{};
@@ -1453,7 +1687,6 @@ Expected<void> FunctionVerifier::verifyBlock(
                 std::ostringstream message;
                 message << "use after release of %" << id;
                 return Expected<void>{
-                    /// @brief Handles error condition.
                     makeError(instr.loc, formatInstrDiag(fn, bb, instr, message.str()))};
             };
 

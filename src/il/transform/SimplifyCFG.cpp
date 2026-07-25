@@ -41,14 +41,21 @@ namespace {
 // verification was removed because it verifies the entire module (not just the
 // current function), causing O(F × iterations × verify_cost) overhead that
 // makes O1 compilation prohibitively slow for medium-sized modules.
+/// @brief Compatibility hook retained at pass entry; verification is manager-owned.
+/// @param module Parent module pointer, intentionally unused.
 void verifyPreconditions(const il::core::Module *) {}
 
+/// @brief Compatibility hook retained after mutation; verification is manager-owned.
+/// @param module Parent module pointer, intentionally unused.
 void verifyPostconditions(const il::core::Module *) {}
 
+/// @brief Compatibility hook retained between iterations; currently a no-op.
+/// @param module Parent module pointer, intentionally unused.
 void verifyIntermediateState(const il::core::Module *) {}
 
 /// @brief Mark cached CFG/dominator analyses as stale once the pass modifies IR.
 /// @param function Function whose analyses must be invalidated.
+/// @param analysisManager Borrowed manager to invalidate, or null for standalone use.
 void invalidateCFGAndDominators(il::core::Function &function,
                                 il::transform::AnalysisManager *analysisManager) {
     if (!analysisManager)
@@ -67,8 +74,8 @@ namespace il::transform {
 
 /// @brief Execute the SimplifyCFG pass over a single function.
 /// @details Iteratively applies folding and cleanup transforms, running
-/// verification hooks in debug builds and updating pass statistics when changes
-/// occur.
+/// every enabled transform to a fixed point and updating aggregate statistics.
+/// Whole-module verification, when requested, is performed by the pass manager.
 /// @param F Function to simplify.
 /// @param outStats Optional pointer receiving aggregate statistics.
 /// @return @c true when the pass modified the function.

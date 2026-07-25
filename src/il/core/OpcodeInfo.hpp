@@ -232,9 +232,13 @@ inline bool hasMemoryWrite(Opcode op) noexcept {
 std::string opcode_mnemonic(Opcode op);
 
 /// @brief Determine whether @p value denotes a variadic operand upper bound.
+/// @param value Encoded operand-count field.
+/// @return True when @p value equals @ref kVariadicOperandCount.
 bool isVariadicOperandCount(uint8_t value);
 
 /// @brief Determine whether @p value denotes a variadic successor count.
+/// @param value Encoded successor-count field.
+/// @return True when @p value uses the shared variadic-count sentinel.
 bool isVariadicSuccessorCount(uint8_t value);
 
 } // namespace il::core

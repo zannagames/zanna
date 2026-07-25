@@ -6,16 +6,17 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/lowerer/LowererDetailAccess.hpp
+// Purpose: Defines Lowerer's narrow DetailAccess facade for modular expression,
+//          control, OOP, and runtime lowering helpers.
+// Key invariants: Every operation forwards to the same backing Lowerer and
+//                 exposes no independent mutable state.
+// Ownership/Lifetime: DetailAccess borrows a Lowerer that must outlive it.
+// Integration: This fragment is included inside the Lowerer class body and
+//              therefore must not add include guards, namespaces, or includes.
+// Links: src/frontends/basic/Lowerer.hpp,
+//        src/frontends/basic/lower/detail/LowererDetail.hpp
 //
 //===----------------------------------------------------------------------===//
-// =========================================================================
-// File: frontends/basic/lowerer/LowererDetailAccess.hpp
-// Purpose: DetailAccess inner class for Lowerer — provides a narrow public
-//          facade exposing controlled access to Lowerer internals for
-//          modular lowering helpers.
-// Note: This file is #include'd inside the Lowerer class body.
-//       It must NOT have #pragma once, include guards, or namespace blocks.
-// =========================================================================
 
 /// @brief Narrow public facade providing controlled access to Lowerer internals.
 /// @details Modular lowering helpers receive a DetailAccess handle instead of

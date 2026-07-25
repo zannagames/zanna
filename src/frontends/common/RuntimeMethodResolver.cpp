@@ -15,6 +15,11 @@
 //        src/il/runtime/classes/RuntimeClasses.cpp
 //
 //===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Implements shared runtime method lookup and compatibility ranking.
+//
+//===----------------------------------------------------------------------===//
 
 #include "frontends/common/RuntimeMethodResolver.hpp"
 
@@ -135,6 +140,12 @@ std::optional<int> scoreSignature(const std::vector<il::runtime::ILScalarType> &
     return score;
 }
 
+/**
+ * @brief Find a runtime class by qualified name without regard to case.
+ *
+ * @param classQName Qualified class name to search for.
+ * @return Borrowed catalog entry, or nullptr when the class is absent.
+ */
 const il::runtime::RuntimeClass *findRuntimeClass(std::string_view classQName) {
     const auto &catalog = il::runtime::RuntimeRegistry::instance().rawCatalog();
     for (const auto &klass : catalog) {
@@ -144,13 +155,35 @@ const il::runtime::RuntimeClass *findRuntimeClass(std::string_view classQName) {
     return nullptr;
 }
 
+/**
+ * @brief Outcome of type-directed lookup within one runtime class.
+ * @details NotFound means no viable signature, Found identifies one uniquely
+ * best signature, and Ambiguous records a tie at the best score.
+ */
 enum class TypedLookupStatus { NotFound, Found, Ambiguous };
 
+/**
+ * @brief Internal type-directed lookup result with explicit ambiguity state.
+ */
 struct TypedLookupResult {
+    /// @brief Lookup outcome.
     TypedLookupStatus status{TypedLookupStatus::NotFound};
+    /// @brief Selected method when status is Found.
     std::optional<RuntimeMethodInfo> method;
 };
 
+/**
+ * @brief Select the best overload declared directly by one runtime class.
+ *
+ * @details Candidate signatures must have matching arity. Compatible arguments
+ * are scored with scoreSignature(); equal best scores produce Ambiguous rather
+ * than relying on catalog order.
+ *
+ * @param klass Runtime class whose direct methods are examined.
+ * @param method Case-insensitive method name.
+ * @param argTypes Explicit call argument types.
+ * @return Found, NotFound, or Ambiguous result for this class only.
+ */
 TypedLookupResult findTypedInClass(
     const il::runtime::RuntimeClass &klass,
     std::string_view method,
@@ -196,6 +229,11 @@ TypedLookupResult findTypedInClass(
 
 } // namespace
 
+/**
+ * @brief Determine whether a runtime class derives from Zanna.GUI.Widget.
+ * @param classQName Qualified concrete runtime class name.
+ * @return True when the catalog inheritance chain contains the Widget base.
+ */
 bool isGuiWidgetSubclass(std::string_view classQName) {
     const auto *klass = findRuntimeClass(classQName);
     while (klass && klass->baseQName && *klass->baseQName) {
@@ -206,11 +244,24 @@ bool isGuiWidgetSubclass(std::string_view classQName) {
     return false;
 }
 
+/**
+ * @brief Access the process-wide stateless runtime method resolver.
+ * @return Reference to the function-local singleton.
+ */
 const RuntimeMethodResolver &RuntimeMethodResolver::instance() {
     static const RuntimeMethodResolver resolver;
     return resolver;
 }
 
+/**
+ * @brief Find a runtime method by name and explicit argument count.
+ * @details Tries the requested class first, then walks its runtime base-class
+ *          chain until a matching arity is found.
+ * @param classQName Qualified receiver class name.
+ * @param method Case-insensitive method name.
+ * @param arity Number of explicit arguments, excluding any receiver.
+ * @return Adapted runtime method metadata, or std::nullopt when absent.
+ */
 std::optional<RuntimeMethodInfo> RuntimeMethodResolver::find(std::string_view classQName,
                                                              std::string_view method,
                                                              std::size_t arity) const {
@@ -230,6 +281,15 @@ std::optional<RuntimeMethodInfo> RuntimeMethodResolver::find(std::string_view cl
     return std::nullopt;
 }
 
+/**
+ * @brief Find the uniquely best runtime overload for concrete argument types.
+ * @details Resolves direct overloads before searching base classes. Ambiguity
+ *          within any searched class terminates lookup with no result.
+ * @param classQName Qualified receiver class name.
+ * @param method Case-insensitive method name.
+ * @param argTypes Explicit IL scalar argument types.
+ * @return Selected method metadata, or std::nullopt for no match or ambiguity.
+ */
 std::optional<RuntimeMethodInfo> RuntimeMethodResolver::find(
     std::string_view classQName,
     std::string_view method,
@@ -262,6 +322,13 @@ std::optional<RuntimeMethodInfo> RuntimeMethodResolver::find(
     return std::nullopt;
 }
 
+/**
+ * @brief Collect direct and inherited overload descriptions for diagnostics.
+ * @details Preserves registry order while removing duplicate inherited strings.
+ * @param classQName Qualified receiver class name.
+ * @param method Case-insensitive method name.
+ * @return Candidate descriptions from the class and its base chain.
+ */
 std::vector<std::string> RuntimeMethodResolver::candidates(std::string_view classQName,
                                                            std::string_view method) const {
     const auto &registry = il::runtime::RuntimeRegistry::instance();

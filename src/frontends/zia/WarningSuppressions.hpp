@@ -35,6 +35,7 @@ namespace il::frontends::zia {
 class WarningSuppressions {
   public:
     /// @brief Remove all recorded suppressions.
+    /// @details Clears every file and line entry so a subsequent analysis begins independently.
     void clear() {
         suppressions_.clear();
     }
@@ -90,6 +91,11 @@ class WarningSuppressions {
 
   private:
     /// @brief Parse a single line for @suppress directives.
+    /// @param fileSuppressions Mutable per-line suppression map for the source file.
+    /// @param line One physical source line.
+    /// @param lineNum One-based line number recorded for recognized codes.
+    /// @details Only directive text inside an actual line comment is considered; malformed or
+    ///          unknown warning codes are ignored.
     void parseLine(std::unordered_map<uint32_t, std::unordered_set<WarningCode>> &fileSuppressions,
                    std::string_view line,
                    uint32_t lineNum) {

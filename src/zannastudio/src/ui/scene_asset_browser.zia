@@ -311,6 +311,16 @@ class SceneAssetBrowser {
         group.SetVisible(false);
     }
 
+    /// @brief Retarget the accepted extension list for the next discovery.
+    /// @details Schema asset fields carry per-field kind filters (ADR 0178),
+    ///          so one retained browser serves every field by refiltering.
+    expose func SetExtensions(extensions: String) {
+        var next = NormalizeAssetExtensions(extensions);
+        if next == normalizedExtensions { return; }
+        normalizedExtensions = next;
+        ResetRows();
+    }
+
     /// @brief Show and focus the browser without creating document state.
     expose func Open() {
         if group == null { return; }

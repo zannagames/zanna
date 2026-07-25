@@ -1,0 +1,108 @@
+// =============================================================================
+// core/events.zia — fixed-capacity event bus (parallel Lists, no allocation)
+// =============================================================================
+//
+// A frame-local queue of rows (kind, a, b, c, f0, f1, f2). Producers push during
+// the fixed tick; consumers (AI hearing, music, HUD toasts, stats) iterate the
+// frame's slice; the bus clears after drain. Backing storage is preallocated
+// parallel Lists that are reused every frame — count resets to zero rather than
+// reallocating, so there is zero steady-state allocation.
+// =============================================================================
+module events;
+
+bind "./mathutil" as M;
+
+var CAP: Integer = 256;
+
+class EventBus {
+    hide List[Integer] kind;
+    hide List[Integer] a;
+    hide List[Integer] b;
+    hide List[Integer] c;
+    hide List[Float] f0;
+    hide List[Float] f1;
+    hide List[Float] f2;
+    hide Integer count;
+    hide Integer dropped;      // events lost to a full ring this frame (diagnostic)
+
+    expose func init() {
+        kind = [];
+        a = [];
+        b = [];
+        c = [];
+        f0 = [];
+        f1 = [];
+        f2 = [];
+        count = 0;
+        dropped = 0;
+        // Preallocate CAP slots so steady-state pushes never grow the List.
+        var i = 0;
+        while i < CAP {
+            kind.Add(0);
+            a.Add(0);
+            b.Add(0);
+            c.Add(0);
+            f0.Add(0.0);
+            f1.Add(0.0);
+            f2.Add(0.0);
+            i = i + 1;
+        }
+    }
+
+    // Push a full event row. Silently drops (and counts) when the ring is full —
+    // never traps, never allocates.
+    expose func push(k: Integer, ia: Integer, ib: Integer, ic: Integer,
+                     x: Float, y: Float, z: Float) {
+        if count >= CAP {
+            dropped = dropped + 1;
+            return;
+        }
+        kind[count] = k;
+        a[count] = ia;
+        b[count] = ib;
+        c[count] = ic;
+        f0[count] = x;
+        f1[count] = y;
+        f2[count] = z;
+        count = count + 1;
+    }
+
+    // Convenience: a positional noise/gunshot event.
+    expose func pushAt(k: Integer, ia: Integer, loudness: Integer,
+                       x: Float, y: Float, z: Float) {
+        push(k, ia, loudness, 0, x, y, z);
+    }
+
+    // Convenience: a simple tagged event.
+    expose func pushKind(k: Integer, ia: Integer, ib: Integer) {
+        push(k, ia, ib, 0, 0.0, 0.0, 0.0);
+    }
+
+    expose func getCount() -> Integer { return count; }
+    expose func getDropped() -> Integer { return dropped; }
+
+    expose func kindAt(i: Integer) -> Integer { return kind[i]; }
+    expose func aAt(i: Integer) -> Integer { return a[i]; }
+    expose func bAt(i: Integer) -> Integer { return b[i]; }
+    expose func cAt(i: Integer) -> Integer { return c[i]; }
+    expose func xAt(i: Integer) -> Float { return f0[i]; }
+    expose func yAt(i: Integer) -> Float { return f1[i]; }
+    expose func zAt(i: Integer) -> Float { return f2[i]; }
+
+    // Count how many events of a given kind were posted this frame.
+    expose func countKind(k: Integer) -> Integer {
+        var n = 0;
+        var i = 0;
+        while i < count {
+            if kind[i] == k { n = n + 1; }
+            i = i + 1;
+        }
+        return n;
+    }
+
+    // Clear for the next frame. Retains capacity (no allocation).
+    expose func drain() {
+        count = 0;
+        dropped = 0;
+    }
+}

@@ -64,27 +64,33 @@ namespace il::transform {
 PassManager::PassManager() {
     instrumentationStream_ = &std::cerr;
 
+    /// Build a control-flow graph for a requested function.
     analysisRegistry_.registerFunctionAnalysis<CFGInfo>(
         kAnalysisCFG,
         [](core::Module &module, core::Function &fn) { return buildCFG(module, fn); });
+    /// Build dominance information from the module-aware CFG context.
     analysisRegistry_.registerFunctionAnalysis<zanna::analysis::DomTree>(
         kAnalysisDominators, [](core::Module &module, core::Function &fn) {
             zanna::analysis::CFGContext ctx(module, fn);
             return zanna::analysis::computeDominatorTree(ctx, fn);
         });
+    /// Discover natural loops for a requested function.
     analysisRegistry_.registerFunctionAnalysis<LoopInfo>(
         kAnalysisLoopInfo,
         [](core::Module &module, core::Function &fn) { return computeLoopInfo(module, fn); });
+    /// Compute block and value liveness for a requested function.
     analysisRegistry_.registerFunctionAnalysis<LivenessInfo>(
         kAnalysisLiveness,
         [](core::Module &module, core::Function &fn) { return computeLiveness(module, fn); });
     // Basic alias analysis for memory disambiguation (available to DSE/LICM etc.)
+    /// Construct basic alias-analysis state for a requested function.
     analysisRegistry_.registerFunctionAnalysis<zanna::analysis::BasicAA>(
         kAnalysisBasicAA, [](core::Module &module, core::Function &fn) {
             return zanna::analysis::BasicAA(module, fn);
         });
     // MemorySSA: precise def-use chains for memory operations; used by DSE for
     // cross-block dead-store elimination without false read-barriers on calls.
+    /// Compute MemorySSA using a function-local basic alias analysis instance.
     analysisRegistry_.registerFunctionAnalysis<zanna::analysis::MemorySSA>(
         kAnalysisMemorySSA, [](core::Module &module, core::Function &fn) {
             zanna::analysis::BasicAA aa(module, fn);
@@ -92,6 +98,7 @@ PassManager::PassManager() {
         });
     // Integer value ranges: whole-function forward dataflow used by CheckOpt
     // to prove overflow, bounds, and divide-by-zero checks redundant.
+    /// Compute whole-function integer ranges; module state is not required.
     analysisRegistry_.registerFunctionAnalysis<zanna::analysis::IntRangeInfo>(
         kAnalysisIntRanges, [](core::Module &, core::Function &fn) {
             return zanna::analysis::computeIntRanges(fn);
@@ -236,6 +243,7 @@ PassManager::PassManager() {
 ///          invalidated so downstream passes recompute what they need.
 /// @param aggressive Whether to enable aggressive simplifications.
 void PassManager::addSimplifyCFG(bool aggressive) {
+    /// Run configured CFG simplification and report conservative preservation.
     passRegistry_.registerFunctionPass(
         "simplify-cfg",
         [aggressive](core::Function &function, AnalysisManager &analysis) {
@@ -283,22 +291,27 @@ void PassManager::setVerifyBetweenPasses(bool enable) {
     verifyBetweenPasses_ = enable;
 }
 
+/// @copydoc PassManager::setPrintBeforeEach()
 void PassManager::setPrintBeforeEach(bool enable) {
     printBeforeEach_ = enable;
 }
 
+/// @copydoc PassManager::setPrintAfterEach()
 void PassManager::setPrintAfterEach(bool enable) {
     printAfterEach_ = enable;
 }
 
+/// @copydoc PassManager::setInstrumentationStream()
 void PassManager::setInstrumentationStream(std::ostream &os) {
     instrumentationStream_ = &os;
 }
 
+/// @copydoc PassManager::setReportPassStatistics()
 void PassManager::setReportPassStatistics(bool enable) {
     reportPassStatistics_ = enable;
 }
 
+/// @copydoc PassManager::enableParallelFunctionPasses()
 void PassManager::enableParallelFunctionPasses(bool enable) {
     parallelFunctionPasses_ = enable;
 }
@@ -314,6 +327,7 @@ bool PassManager::run(core::Module &module, const Pipeline &pipeline) const {
     PipelineExecutor::Instrumentation instrumentation{};
 
     if (printBeforeEach_ && instrumentationStream_) {
+        /// Serialize the complete module immediately before a pass runs.
         instrumentation.printBefore = [this, &module](std::string_view passId) {
             *instrumentationStream_ << "*** IR before pass '" << passId << "' ***\n";
             il::io::Serializer::write(module, *instrumentationStream_);
@@ -322,6 +336,7 @@ bool PassManager::run(core::Module &module, const Pipeline &pipeline) const {
     }
 
     if (printAfterEach_ && instrumentationStream_) {
+        /// Serialize the complete module immediately after a pass runs.
         instrumentation.printAfter = [this, &module](std::string_view passId) {
             *instrumentationStream_ << "*** IR after pass '" << passId << "' ***\n";
             il::io::Serializer::write(module, *instrumentationStream_);
@@ -330,6 +345,7 @@ bool PassManager::run(core::Module &module, const Pipeline &pipeline) const {
     }
 
     if (verifyBetweenPasses_) {
+        /// Verify the module and report the first diagnostic after each pass.
         instrumentation.verifyEach = [this, &module](std::string_view passId) {
             auto result = il::verify::Verifier::verify(module);
             if (!result) {
@@ -344,6 +360,7 @@ bool PassManager::run(core::Module &module, const Pipeline &pipeline) const {
     }
 
     if (reportPassStatistics_ && instrumentationStream_) {
+        /// Emit compact size, analysis-computation, duration, and verification metrics.
         instrumentation.passMetrics = [this](std::string_view passId,
                                              const PipelineExecutor::PassMetrics &metrics) {
             if (!instrumentationStream_)

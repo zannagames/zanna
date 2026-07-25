@@ -24,6 +24,11 @@
 namespace il::io::detail {
 
 /// @brief Parse a single top-level directive such as extern, global, or func.
+/// @param is Module input stream, used when a function directive owns following lines.
+/// @param line Mutable current top-level line.
+/// @param st Parser state and destination module.
+/// @param err Stream receiving legacy textual diagnostics.
+/// @return True when the directive was accepted.
 bool parseModuleHeader(std::istream &is, std::string &line, ParserState &st, std::ostream &err);
 
 } // namespace il::io::detail

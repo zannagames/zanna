@@ -37,7 +37,7 @@ func fail(reason: String) {
 func ScenePath(num: Integer) -> String {
     var suffix = "" + num;
     if num < 10 { suffix = "0" + num; }
-    return SCENES_ROOT + "/region-" + suffix + ".scene";
+    return SCENES_ROOT + "/region-" + suffix + ".scene2d";
 }
 
 func CheckRegion(num: Integer) -> Boolean {

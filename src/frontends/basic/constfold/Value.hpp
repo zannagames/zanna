@@ -5,7 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Shared literal representation used by the BASIC constant folder.
+// File: src/frontends/basic/constfold/Value.hpp
+// Purpose: Defines tagged numeric values, literal parsing, and promotion
+//          helpers shared by BASIC constant-folding domains.
+// Key invariants:
+//   - valid == false denotes a folding failure rather than a numeric value.
+//   - ValueKind selects the authoritative numeric payload.
+//   - Promotion never mutates caller-owned values.
+// Ownership/Lifetime: All values own their scalar payloads and are returned by
+//                     value; parsing temporarily owns normalized text.
+// Links: src/frontends/basic/constfold/Dispatch.hpp,
+//        src/frontends/basic/constfold/FoldArith.cpp,
+//        src/frontends/basic/constfold/FoldCompare.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -163,7 +174,9 @@ inline ParsedNumber parseNumericLiteral(std::string_view sv) noexcept {
 
 /// @brief Kind tags understood by the constant-folding helpers.
 enum class ValueKind {
+    /// Signed integer representation.
     Int,
+    /// Double-precision floating-point representation.
     Float,
 };
 
@@ -175,42 +188,55 @@ struct Value {
     bool valid = false;              ///< Indicates whether the value is usable.
 
     /// @brief Factory for invalid values used to signal folding failures.
+    /// @return Invalid sentinel with a deterministic zero payload.
     static constexpr Value invalid() noexcept {
         return Value{ValueKind::Int, 0.0, 0, false};
     }
 
     /// @brief Construct an integer literal.
+    /// @param v Signed integer payload.
+    /// @return Valid integer-tagged folding value.
     static constexpr Value fromInt(long long v) noexcept {
         return Value{ValueKind::Int, static_cast<double>(v), v, true};
     }
 
     /// @brief Construct a floating-point literal.
+    /// @param v Floating-point payload; callers ensure conversion to the
+    ///        integer view is defined.
+    /// @return Valid floating-point-tagged folding value.
     static constexpr Value fromFloat(double v) noexcept {
         return Value{ValueKind::Float, v, static_cast<long long>(v), true};
     }
 
     /// @brief Query whether the payload models a float.
+    /// @return True when the value is valid and floating-point tagged.
     [[nodiscard]] constexpr bool isFloat() const noexcept {
         return valid && kind == ValueKind::Float;
     }
 
     /// @brief Query whether the payload models an integer.
+    /// @return True when the value is valid and integer tagged.
     [[nodiscard]] constexpr bool isInt() const noexcept {
         return valid && kind == ValueKind::Int;
     }
 
     /// @brief Obtain the value as a double regardless of representation.
+    /// @return Floating payload, or the integer payload converted to double.
     [[nodiscard]] constexpr double asDouble() const noexcept {
         return kind == ValueKind::Float ? f : static_cast<double>(i);
     }
 };
 
 /// @brief Convert @p numeric into a folding value.
+/// @param numeric Dispatcher numeric representation to copy.
+/// @return Valid folding value preserving @p numeric's representation tag.
 [[nodiscard]] inline Value makeValue(const NumericValue &numeric) noexcept {
     return numeric.isFloat ? Value::fromFloat(numeric.f) : Value::fromInt(numeric.i);
 }
 
 /// @brief Convert @p value back into the dispatcher representation.
+/// @param value Folding value to copy.
+/// @return NumericValue containing coherent integer and floating-point views.
 [[nodiscard]] inline NumericValue toNumericValue(const Value &value) noexcept {
     NumericValue numeric;
     numeric.isFloat = value.isFloat();
@@ -220,6 +246,10 @@ struct Value {
 }
 
 /// @brief Promote @p lhs and @p rhs following BASIC's suffix rules.
+/// @param lhs Left operand copied into the result pair.
+/// @param rhs Right operand copied into the result pair.
+/// @return Invalid pair when either operand is invalid; otherwise operands
+///         promoted to floating point when either input is floating point.
 [[nodiscard]] inline std::pair<Value, Value> promote(Value lhs, Value rhs) noexcept {
     if (!lhs.valid || !rhs.valid)
         return {Value::invalid(), Value::invalid()};

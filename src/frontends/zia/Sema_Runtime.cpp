@@ -98,20 +98,31 @@ namespace il::frontends::zia {
 
 namespace {
 
+/// @brief Generated fallback metadata for one runtime extern.
 struct ZiaRuntimeExternSpec {
+    /// Canonical dotted runtime name.
     std::string_view canonical;
+    /// Generated runtime signature spelling.
     std::string_view signature;
+    /// Newline-delimited parameter names.
     std::string_view paramNames;
+    /// Per-parameter pointer bridge role codes.
     std::string_view bridgeRoles;
 };
 
 #include "il/runtime/ZiaRuntimeExterns.inc"
 
+/// @brief Explicit class refinement for an object-returning runtime function.
 struct RuntimeReturnOverride {
+    /// Canonical runtime function name.
     std::string_view canonical;
+    /// Concrete runtime class returned.
     std::string_view className;
 };
 
+/// @brief Trim ASCII whitespace from both ends of a runtime signature token.
+/// @param value Token view to trim.
+/// @return Subview containing the non-whitespace token.
 static std::string_view trimRuntimeToken(std::string_view value) {
     while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0)
         value.remove_prefix(1);
@@ -120,6 +131,9 @@ static std::string_view trimRuntimeToken(std::string_view value) {
     return value;
 }
 
+/// @brief Extract a runtime token's base name before any generic argument.
+/// @param token Runtime token such as `seq<str>`.
+/// @return Trimmed base token such as `seq`.
 static std::string_view runtimeTokenBase(std::string_view token) {
     token = trimRuntimeToken(token);
     size_t genericStart = token.find('<');
@@ -128,6 +142,9 @@ static std::string_view runtimeTokenBase(std::string_view token) {
     return trimRuntimeToken(token.substr(0, genericStart));
 }
 
+/// @brief Extract the text inside a runtime token's outer angle brackets.
+/// @param token Runtime token such as `seq<str>`.
+/// @return Trimmed inner token, or an empty view when no valid argument exists.
 static std::string_view runtimeTokenTypeArg(std::string_view token) {
     token = trimRuntimeToken(token);
     size_t genericStart = token.find('<');
@@ -138,10 +155,17 @@ static std::string_view runtimeTokenTypeArg(std::string_view token) {
     return trimRuntimeToken(token.substr(genericStart + 1, genericEnd - genericStart - 1));
 }
 
+/// @brief Test a string-view prefix without allocating.
+/// @param value Candidate full value.
+/// @param prefix Prefix to match.
+/// @return True when @p value begins with @p prefix.
 static bool startsWith(std::string_view value, std::string_view prefix) {
     return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
 }
 
+/// @brief Classify generated runtime method names that conventionally create owner instances.
+/// @param method Unqualified method name.
+/// @return True for known factory names and factory-like verb prefixes.
 static bool isGeneratedFactoryMethod(std::string_view method) {
     if (method == "New" || method == "Clone" || method == "Copy" || method == "Zero" ||
         method == "Range")
@@ -152,6 +176,10 @@ static bool isGeneratedFactoryMethod(std::string_view method) {
            startsWith(method, "Decode") || startsWith(method, "Create");
 }
 
+/// @brief Test whether a fully qualified name appears in the runtime class catalog.
+/// @param catalog Runtime class catalog.
+/// @param className Qualified class name.
+/// @return True when a catalog entry has exactly that name.
 static bool isKnownRuntimeClass(const std::vector<il::runtime::RuntimeClass> &catalog,
                                 std::string_view className) {
     for (const auto &cls : catalog) {
@@ -161,6 +189,9 @@ static bool isKnownRuntimeClass(const std::vector<il::runtime::RuntimeClass> &ca
     return false;
 }
 
+/// @brief Look up an explicit concrete class for a generated object-returning extern.
+/// @param canonical Canonical runtime function name.
+/// @return Qualified runtime class override, or an empty view when inference should continue.
 static std::string_view generatedReturnOverride(std::string_view canonical) {
     static constexpr RuntimeReturnOverride kReturnOverrides[] = {
         // Crypto functions returning Zanna.Collections.Bytes
@@ -206,6 +237,9 @@ static std::string_view generatedReturnOverride(std::string_view canonical) {
     return {};
 }
 
+/// @brief Convert a generated runtime parameter token to its Zia surface type.
+/// @param token Runtime token, including optional or container syntax.
+/// @return Corresponding semantic type; unsupported tokens conservatively become Any.
 static TypeRef ziaParamTypeForGeneratedToken(std::string_view token) {
     token = trimRuntimeToken(token);
     if (!token.empty() && token.back() == '?') {
@@ -241,6 +275,9 @@ static TypeRef ziaParamTypeForGeneratedToken(std::string_view token) {
     return types::any();
 }
 
+/// @brief Split the parameter portion of a generated runtime signature.
+/// @param signature Signature spelling containing parentheses.
+/// @return Trimmed parameter token views, respecting commas nested in angle brackets.
 static std::vector<std::string_view> generatedSignatureParamTokens(std::string_view signature) {
     std::vector<std::string_view> tokens;
     size_t open = signature.find('(');
@@ -269,6 +306,9 @@ static std::vector<std::string_view> generatedSignatureParamTokens(std::string_v
     return tokens;
 }
 
+/// @brief Convert every generated extern parameter token to a Zia semantic type.
+/// @param signature Generated runtime signature.
+/// @return Parameter types in ABI order.
 static std::vector<TypeRef> ziaParamTypesForGeneratedExtern(std::string_view signature) {
     std::vector<TypeRef> paramTypes;
     auto tokens = generatedSignatureParamTokens(signature);
@@ -278,6 +318,12 @@ static std::vector<TypeRef> ziaParamTypesForGeneratedExtern(std::string_view sig
     return paramTypes;
 }
 
+/// @brief Refine a generated extern's parsed return type for the Zia surface.
+/// @param canonical Canonical runtime function name.
+/// @param sig Parsed runtime signature.
+/// @param catalog Runtime classes available for owner/factory inference.
+/// @return Concrete container or runtime class when metadata permits, scalar translation for
+///         scalar returns, and Any for an otherwise opaque object.
 static TypeRef ziaReturnTypeForGeneratedExtern(
     std::string_view canonical,
     const il::runtime::ParsedSignature &sig,
@@ -309,6 +355,9 @@ static TypeRef ziaReturnTypeForGeneratedExtern(
     return types::any();
 }
 
+/// @brief Decode newline-delimited generated parameter names.
+/// @param encoded Generated name payload.
+/// @return Parameter names in signature order.
 static std::vector<std::string> splitGeneratedParamNames(std::string_view encoded) {
     std::vector<std::string> names;
     if (encoded.empty())
@@ -327,6 +376,9 @@ static std::vector<std::string> splitGeneratedParamNames(std::string_view encode
     return names;
 }
 
+/// @brief Decode one generated pointer-bridge role code.
+/// @param code `c` for callback, `p` for payload, or any other code for none.
+/// @return Semantic bridge role.
 static Sema::RuntimePointerBridgeRole generatedBridgeRole(char code) {
     if (code == 'c')
         return Sema::RuntimePointerBridgeRole::Callback;
@@ -335,6 +387,10 @@ static Sema::RuntimePointerBridgeRole generatedBridgeRole(char code) {
     return Sema::RuntimePointerBridgeRole::None;
 }
 
+/// @brief Decode per-parameter pointer bridge roles from generated metadata.
+/// @param encoded Compact role-code sequence.
+/// @param paramCount Number of parameters requiring role entries.
+/// @return Role vector padded with None, or an empty vector when no metadata was encoded.
 static std::vector<Sema::RuntimePointerBridgeRole> decodeGeneratedBridgeRoles(
     std::string_view encoded, std::size_t paramCount) {
     if (encoded.empty())
@@ -355,6 +411,8 @@ static std::vector<Sema::RuntimePointerBridgeRole> decodeGeneratedBridgeRoles(
 ///        returning the owner type? Accessor-style names (Get*/Keys/Values/
 ///        Pop/Peek/First/Last/Find/…) return an element instead, so they are
 ///        excluded; everything else infers an owner-typed return.
+/// @param method Runtime method metadata.
+/// @return True when an otherwise opaque object result should be refined to the owner class.
 static bool shouldInferOwnerReturnForPlainObject(const il::runtime::RuntimeMethod &method) {
     if (!method.name)
         return true;
@@ -375,6 +433,9 @@ static bool shouldInferOwnerReturnForPlainObject(const il::runtime::RuntimeMetho
 
 /// @brief True if runtime @p method's target function belongs to runtime
 ///        class @p className (matches the "<class>." prefix on the target).
+/// @param method Runtime method metadata.
+/// @param className Qualified owning class name.
+/// @return True when the target begins with the owner followed by a period.
 static bool methodTargetBelongsToClass(const il::runtime::RuntimeMethod &method,
                                        const char *className) {
     if (!method.target || !className)
@@ -416,10 +477,9 @@ static bool methodTargetBelongsToClass(const il::runtime::RuntimeMethod &method,
 ///
 /// ## Performance
 ///
-/// This function is called once during Sema construction. The cost is O(n*m)
-/// where n is the number of runtime classes and m is the average number of
-/// methods/properties per class. With the current runtime library (~150
-/// classes, ~2000 methods), this takes negligible time.
+/// This function is called once during Sema construction. Work is linear in the
+/// generated extern table plus the runtime catalog's methods and properties,
+/// apart from small catalog lookups used for return-type refinement.
 ///
 void Sema::initRuntimeFunctions() {
     // Access the singleton RuntimeRegistry which contains all parsed signatures

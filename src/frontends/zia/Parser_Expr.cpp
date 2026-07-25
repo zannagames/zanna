@@ -4,19 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Parser_Expr.cpp
-// Purpose: Precedence-climbing expression parsing core for the Zia parser —
-//          assignment, ternary, binary operators, unary, and postfix handling.
-// Key invariants:
-//   - All methods are member functions of Parser declared in Parser.hpp
-//   - Expression nesting depth bounded by kMaxExprDepth (256)
-// Ownership/Lifetime:
-//   - Parser borrows Lexer and DiagnosticEngine references
-// Links: src/frontends/zia/Parser.hpp,
-//        src/frontends/zia/Parser_Expr_Primary.cpp,
-//        src/frontends/zia/Parser_Expr_Pattern.cpp
-//
+///
+/// @file Parser_Expr.cpp
+/// @brief Implements assignment, ternary, range, coalescing, uniform binary,
+///        unary, and postfix expression parsing.
+///
+/// @details Uniform left-associative binary operators use one precedence-
+///          climbing table, while lower-precedence special forms retain
+///          dedicated recursive-descent stages. Postfix parsing extends an
+///          existing primary through calls, indexing, fields, optional
+///          chaining, propagation, casts, and type tests. Expression recursion
+///          is bounded by the parser's depth guard.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Parser.hpp"
@@ -27,19 +26,27 @@ namespace il::frontends::zia {
 // Expression Parsing
 //===----------------------------------------------------------------------===//
 
+/// @brief Parse a complete expression from the lowest-precedence assignment
+///        level.
+/// @return Parsed expression, or null on error.
 ExprPtr Parser::parseExpression() {
     return parseAssignment();
 }
 
+/// @brief Parse an expression in an unambiguous value context that permits
+///        struct literals.
+/// @return Parsed expression, or null on error.
 ExprPtr Parser::parseExpressionAllowingStructLiterals() {
     struct StructLiteralAllowance {
         Parser &parser;
         bool saved;
 
+        /// @brief Enable struct literals while preserving the prior parser flag.
         StructLiteralAllowance(Parser &p) : parser(p), saved(p.allowStructLiterals_) {
             parser.allowStructLiterals_ = true;
         }
 
+        /// @brief Restore the enclosing struct-literal allowance.
         ~StructLiteralAllowance() {
             parser.allowStructLiterals_ = saved;
         }
@@ -50,6 +57,9 @@ ExprPtr Parser::parseExpressionAllowingStructLiterals() {
 }
 
 /// @brief Clone an expression that is safe to duplicate in compound assignment.
+/// @param expr Candidate left-hand expression.
+/// @return Deep clone for pure identifiers/literals/field/index/value
+///         operators, or null when evaluation could have side effects.
 /// @details Calls, allocation, await/try, and other potentially effectful forms
 /// are intentionally rejected so `target += value` does not re-run target effects.
 static ExprPtr clonePureExpr(Expr *expr) {
@@ -162,6 +172,9 @@ constexpr int kComparisonPrec = 8;
 constexpr int kMinBinaryPrec = 2; ///< Lowest uniform level (logical OR).
 
 /// @brief Classify a token as a uniform binary operator.
+/// @param kind Candidate operator token kind.
+/// @param[out] out Receives the semantic operator and precedence.
+/// @return True when @p kind belongs to the uniform precedence table.
 /// @details Covers the operator levels between logical-OR (loosest) and
 /// multiplicative (tightest). The looser special forms — `??`, ranges, ternary,
 /// and assignment — are handled by their own parse routines, not here. This is
@@ -195,6 +208,12 @@ bool binaryOpDesc(TokenKind kind, BinOpDesc &out) {
 
 } // namespace
 
+/// @brief Extend a parsed operand through uniform binary operators.
+/// @param left Already-parsed left operand.
+/// @param minPrec Minimum precedence accepted by this climb.
+/// @return Extended expression, or null on error.
+/// @details Folds tighter operators into the right operand and rejects chained
+///          relational comparisons without an explicit boolean operator.
 ExprPtr Parser::parseBinaryRhs(ExprPtr left, int minPrec) {
     if (!left)
         return nullptr;
@@ -228,6 +247,11 @@ ExprPtr Parser::parseBinaryRhs(ExprPtr left, int minPrec) {
     return left;
 }
 
+/// @brief Parse right-associative simple or compound assignment.
+/// @return Assignment expression or the tighter ternary expression.
+/// @details Compound assignment is desugared to assignment plus a cloned pure
+///          read of the target; effectful targets are rejected to prevent
+///          duplicated evaluation.
 ExprPtr Parser::parseAssignment() {
     ExprPtr expr = parseTernary();
     if (!expr)
@@ -302,6 +326,8 @@ ExprPtr Parser::parseAssignment() {
     return expr;
 }
 
+/// @brief Parse a ternary conditional expression.
+/// @return Parsed ternary or the tighter range expression.
 ExprPtr Parser::parseTernary() {
     ExprPtr expr = parseRange();
     if (!expr)
@@ -333,6 +359,8 @@ ExprPtr Parser::parseTernary() {
     return expr;
 }
 
+/// @brief Parse exclusive `..` or inclusive `..=` range syntax.
+/// @return Parsed range or the tighter coalescing expression.
 ExprPtr Parser::parseRange() {
     ExprPtr expr = parseCoalesce();
     if (!expr)
@@ -362,6 +390,8 @@ ExprPtr Parser::parseRange() {
 /// handled by the shared precedence-climbing routine parseBinaryRhs(); `??`
 /// (right-associative) is layered on top here.
 /// @return The parsed expression, potentially wrapping a CoalesceExpr.
+/// @brief Parse left-associative null-coalescing expressions.
+/// @return Parsed coalescing chain or tighter uniform binary expression.
 ExprPtr Parser::parseCoalesce() {
     ExprPtr left = parseUnary();
     if (!left)
@@ -383,6 +413,10 @@ ExprPtr Parser::parseCoalesce() {
     return expr;
 }
 
+/// @brief Parse prefix unary operators and their operand.
+/// @return Parsed unary expression or postfix expression.
+/// @details Enforces the expression nesting limit and recognizes negation,
+///          logical/bitwise not, and address-of forms.
 ExprPtr Parser::parseUnary() {
     if (++exprDepth_ > kMaxExprDepth) {
         --exprDepth_;
@@ -455,6 +489,10 @@ ExprPtr Parser::parseUnary() {
     return result;
 }
 
+/// @brief Continue parsing postfix and binary operators from an existing
+///        expression.
+/// @param startExpr Initial left operand.
+/// @return Fully extended expression, or null on error.
 ExprPtr Parser::parsePostfixAndBinaryFrom(ExprPtr startExpr) {
     // Parse postfix operators on the starting expression
     ExprPtr expr = parsePostfixFrom(std::move(startExpr));
@@ -471,6 +509,9 @@ ExprPtr Parser::parsePostfixAndBinaryFrom(ExprPtr startExpr) {
 ///          not accept grammar forms rejected by parseAssignment().
 /// @param expr The left-hand expression to extend with binary operators.
 /// @return The extended expression.
+/// @brief Continue uniform binary parsing from an existing left operand.
+/// @param expr Initial left operand.
+/// @return Extended expression, or null on error.
 ExprPtr Parser::parseBinaryFrom(ExprPtr expr) {
     // Fold the uniform binary-operator ladder (multiplicative..logical-or) with
     // the shared precedence-climbing routine, then handle the looser special
@@ -534,6 +575,11 @@ ExprPtr Parser::parseBinaryFrom(ExprPtr expr) {
 ///          and try expressions in a loop until no more postfix operators match.
 /// @param expr The base expression to extend.
 /// @return The expression with all postfix operations applied.
+/// @brief Continue parsing postfix operations from an existing expression.
+/// @param expr Base expression to extend.
+/// @return Expression with all following postfix operations applied.
+/// @details Handles calls, subscripts, member and optional-member access,
+///          postfix propagation/unwrap, and `as`/`is` type operations.
 ExprPtr Parser::parsePostfixFrom(ExprPtr expr) {
     while (true) {
         Token opTok;
@@ -643,6 +689,8 @@ ExprPtr Parser::parsePostfixFrom(ExprPtr expr) {
     return expr;
 }
 
+/// @brief Parse a primary expression followed by every postfix operation.
+/// @return Parsed postfix expression, or null on error.
 ExprPtr Parser::parsePostfix() {
     ExprPtr expr = parsePrimary();
     if (!expr)

@@ -8,8 +8,15 @@
 // File: src/frontends/basic/SemanticDiagnostics.cpp
 // Purpose: Provide convenience wrappers that format and forward BASIC semantic
 //          diagnostics to the shared DiagnosticEmitter.
-// Ownership/Lifetime: Holds a reference to an externally owned emitter.
-// Links: docs/internals/codemap/basic.md
+// Key invariants:
+//   - Catalogued diagnostics preserve the catalog's code and severity.
+//   - Count queries always reflect the shared emitter's current state.
+// Ownership/Lifetime:
+//   - SemanticDiagnostics borrows an externally owned DiagnosticEmitter, which
+//     must outlive the wrapper.
+// Links: src/frontends/basic/SemanticDiagnostics.hpp,
+//        src/frontends/basic/DiagnosticEmitter.hpp,
+//        include/zanna/diag/BasicDiag.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,6 +38,7 @@ namespace il::frontends::basic {
 ///          calls can forward diagnostics without additional wiring.  The
 ///          caller retains ownership of the emitter and must guarantee it
 ///          outlives the helper.
+/// @param emitter Diagnostic sink borrowed for this object's lifetime.
 SemanticDiagnostics::SemanticDiagnostics(DiagnosticEmitter &emitter) : emitter_(emitter) {}
 
 /// @brief Emit a diagnostic by delegating to the shared emitter.
@@ -38,6 +46,12 @@ SemanticDiagnostics::SemanticDiagnostics(DiagnosticEmitter &emitter) : emitter_(
 ///          preserving severity, code, source range, and message formatting.
 ///          The helper exists primarily so callers do not need to include the
 ///          emitter header when only semantic diagnostics are required.
+/// @param sev Severity recorded for the diagnostic.
+/// @param code Stable diagnostic code transferred to the emitter.
+/// @param loc Source location at which the diagnostic begins.
+/// @param length Number of source columns to underline.
+/// @param message Human-readable message transferred to the emitter.
+/// @post The underlying emitter has processed exactly one diagnostic request.
 void SemanticDiagnostics::emit(il::support::Severity sev,
                                std::string code,
                                il::support::SourceLoc loc,
@@ -56,6 +70,8 @@ void SemanticDiagnostics::emit(il::support::Severity sev,
 /// @param loc Source location associated with the diagnostic.
 /// @param length Number of characters to underline.
 /// @param replacements Placeholder substitutions applied to the message.
+/// @post Exactly one diagnostic request is forwarded with catalog-derived
+///       severity and code.
 void SemanticDiagnostics::emit(diag::BasicDiag diag,
                                il::support::SourceLoc loc,
                                uint32_t length,
@@ -69,6 +85,7 @@ void SemanticDiagnostics::emit(diag::BasicDiag diag,
 /// @details Pass-through convenience wrapper over
 ///          `DiagnosticEmitter::errorCount()` that keeps semantic analysis
 ///          consumers decoupled from the emitter API.
+/// @return Current cumulative error count reported by the borrowed emitter.
 size_t SemanticDiagnostics::errorCount() const {
     return emitter_.errorCount();
 }
@@ -76,6 +93,7 @@ size_t SemanticDiagnostics::errorCount() const {
 /// @brief Retrieve the number of warning diagnostics recorded so far.
 /// @details Mirrors @ref errorCount by forwarding to the underlying emitter to
 ///          keep count queries consistent and centralised.
+/// @return Current cumulative warning count reported by the borrowed emitter.
 size_t SemanticDiagnostics::warningCount() const {
     return emitter_.warningCount();
 }
@@ -85,6 +103,10 @@ size_t SemanticDiagnostics::warningCount() const {
 ///          `{type}` and `{expr}` placeholders.  The helper isolates the string
 ///          manipulation steps so diagnostic emission sites remain concise and
 ///          uniform.
+/// @param typeName Inferred BASIC type inserted into the message.
+/// @param exprText Suggested expression text inserted into the message.
+/// @return Newly allocated message with the first occurrence of each template
+///         placeholder replaced.
 std::string SemanticDiagnostics::formatNonBooleanCondition(std::string_view typeName,
                                                            std::string_view exprText) {
     std::string message(NonBooleanConditionMessage);
@@ -104,6 +126,12 @@ std::string SemanticDiagnostics::formatNonBooleanCondition(std::string_view type
 ///          then issues an error severity diagnostic.  The wrapper ensures both
 ///          the formatting and emission logic stay consistent across all call
 ///          sites.
+/// @param code Stable diagnostic code transferred to the emitter.
+/// @param loc Source location at which the condition begins.
+/// @param length Number of source columns to underline.
+/// @param typeName Inferred BASIC type used to format the message.
+/// @param exprText Suggested expression text used to format the message.
+/// @post Exactly one error-severity diagnostic request is forwarded.
 void SemanticDiagnostics::emitNonBooleanCondition(std::string code,
                                                   il::support::SourceLoc loc,
                                                   uint32_t length,
@@ -119,6 +147,8 @@ void SemanticDiagnostics::emitNonBooleanCondition(std::string code,
 /// @brief Access the underlying diagnostic emitter.
 /// @details Provides mutable access for scenarios where clients need more than
 ///          the thin wrappers supplied here (for example, to install listeners).
+/// @return Borrowed mutable reference valid while the emitter and this wrapper
+///         remain alive.
 DiagnosticEmitter &SemanticDiagnostics::emitter() {
     return emitter_;
 }

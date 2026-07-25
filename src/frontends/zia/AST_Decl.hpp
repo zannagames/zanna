@@ -4,8 +4,21 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/AST_Decl.hpp
+// Purpose: Define Zia declaration nodes and their owned signature/member data.
+// Key invariants:
+//   * Decl::kind matches each node's concrete declaration type.
+//   * ModuleDecl is the owning root for file-level declarations.
+//   * Child types, expressions, statements, and declarations use unique
+//     ownership unless explicitly recorded as semantic metadata.
+// Ownership: Parent declarations own child AST nodes through unique_ptr values
+//            and vectors of owning pointer aliases.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file AST_Decl.hpp
+/// @file
 /// @brief Declaration nodes for the Zia AST.
 ///
 /// @details Defines all declaration AST nodes produced by the Zia parser.
@@ -13,11 +26,10 @@
 /// parts of the code. This includes:
 ///
 ///   - ModuleDecl: The top-level container holding all declarations in a file.
-///   - FuncDecl: Function definitions with name, parameters, return type, body.
+///   - FunctionDecl: Function definitions with name, parameters, return type, body.
 ///   - ClassDecl/StructDecl: User-defined types (classes/structs) with fields and methods.
-///   - FieldDecl: Fields within an class declaration.
-///   - ImportDecl: Import (`bind`) statements referencing other modules.
-///   - ExternDecl: External function declarations (FFI).
+///   - FieldDecl: Fields within a class or struct declaration.
+///   - BindDecl: `bind` statements referencing imported modules.
 ///
 /// The parser creates declaration nodes by recognizing top-level keywords
 /// (`func`, `class`, `bind`, `extern`). The semantic analyzer registers
@@ -195,9 +207,12 @@ struct TypeParam {
     std::string constraint;
 
     /// @brief Construct an unconstrained type parameter.
+    /// @param n Type parameter name.
     TypeParam(std::string n) : name(std::move(n)) {}
 
     /// @brief Construct a constrained type parameter.
+    /// @param n Type parameter name.
+    /// @param c Required interface or type constraint.
     TypeParam(std::string n, std::string c) : name(std::move(n)), constraint(std::move(c)) {}
 };
 
@@ -711,6 +726,10 @@ struct TypeAliasDecl : Decl {
     /// @brief Target type the alias resolves to.
     TypePtr targetType;
 
+    /// @brief Construct a compile-time type alias.
+    /// @param l Source location of the alias declaration.
+    /// @param n Alias name.
+    /// @param t Owned target type annotation.
     TypeAliasDecl(SourceLoc l, std::string n, TypePtr t)
         : Decl(DeclKind::TypeAlias, l), name(std::move(n)), targetType(std::move(t)) {}
 };

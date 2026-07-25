@@ -16,6 +16,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares the debug runtime-signature expectation registry.
+
 #pragma once
 
 #include <cstddef>
@@ -74,12 +77,23 @@ bool find_signature_effects(std::string_view name, bool &pure, bool &readonly);
 
 /// @brief Return a monotonically increasing registry version.
 /// @details The version changes only when a new unique signature is appended.
+/// @return Current append-generation counter.
 std::size_t registry_version();
 
 /// @brief Helper to construct a signature from initializer lists.
 /// @param name Runtime symbol name to register.
 /// @param params Ordered parameter kinds.
 /// @param returns Ordered result kinds.
+/// @param nothrow Whether the helper cannot throw or trap.
+/// @param readonly Whether the helper reads but does not write memory.
+/// @param pure Whether the helper has no observable side effects.
+/// @param consumedArgMask Bits for arguments whose ownership is consumed.
+/// @param retainedArgMask Bits for arguments retained by the helper.
+/// @param returnsOwned Whether the result is an owned managed reference.
+/// @param mayAllocate Whether the helper may allocate managed storage.
+/// @param ownedOutArgMask Bits for pointer arguments receiving owned references.
+/// @param returnsKnownObject Whether the result supports object-specific
+///                           reference counting.
 /// @return Materialised @ref Signature for registration.
 inline Signature make_signature(std::string name,
                                 std::initializer_list<SigParam::Kind> params,

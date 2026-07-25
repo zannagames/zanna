@@ -5,11 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/sem/TypeResolver.hpp
-// Purpose: Resolve type names using NamespaceRegistry and UsingContext with ambiguity detection.
-// Key invariants: // Key invariants:
-// Ownership/Lifetime: TypeResolver does not own registry or context; caller ensures lifetime.
-// Links: docs/internals/codemap.md, CLAUDE.md
+// File: src/frontends/basic/sem/TypeResolver.hpp
+// Purpose: Declare namespace- and USING-aware BASIC type-name resolution with
+//          deterministic ambiguity reporting.
+// Key invariants:
+//   * Qualified names do not fall back to unrelated USING imports.
+//   * Simple-name resolution searches enclosing namespaces before imports.
+//   * Ambiguous import matches are reported in stable case-insensitive order.
+// Ownership: TypeResolver borrows its NamespaceRegistry and UsingContext; the
+//            caller guarantees both outlive the resolver.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares compile-time BASIC type-name resolution.
 //
 //===----------------------------------------------------------------------===//
 
@@ -78,23 +88,35 @@ class TypeResolver {
 
   private:
     /// @brief Convert a string to lowercase for case-insensitive comparison.
+    /// @param str Spelling to normalize.
+    /// @return Lowercase copy of @p str.
     [[nodiscard]] static std::string toLower(const std::string &str);
 
     /// @brief Join namespace segments with '.' separator.
+    /// @param segments Ordered path segments.
+    /// @return Dotted path, or an empty string for no segments.
     [[nodiscard]] static std::string joinPath(const std::vector<std::string> &segments);
 
     /// @brief Split a dotted name into segments.
+    /// @param path Qualified path to tokenize.
+    /// @return Ordered non-empty path segments.
     [[nodiscard]] static std::vector<std::string> splitPath(std::string_view path);
 
     /// @brief Try to resolve name in a specific namespace.
+    /// @param ns Namespace prefix, or an empty string for global scope.
+    /// @param typeName Simple type name to append to @p ns.
     /// @return Fully-qualified name if found; empty otherwise.
     [[nodiscard]] std::string tryResolveInNamespace(const std::string &ns,
                                                     std::string_view typeName) const;
 
     /// @brief Convert NamespaceRegistry::TypeKind to TypeResolver::Kind.
+    /// @param nsk Registry type classification.
+    /// @return Equivalent public resolver classification.
     [[nodiscard]] static Kind convertKind(NamespaceRegistry::TypeKind nsk);
 
+    /// @brief Borrowed namespace/type registry.
     const NamespaceRegistry &registry_;
+    /// @brief Borrowed file-scoped import context.
     const UsingContext &using_;
 };
 

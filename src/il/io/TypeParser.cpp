@@ -38,6 +38,7 @@ namespace il::io {
 /// @note When @p ok is null the caller is opting out of explicit success signalling; failure is
 ///       observable via the returned default-constructed Type.
 il::core::Type parseType(const std::string &token, bool *ok) {
+    /// Construct a recognized type and update the optional success flag.
     auto makeType = [ok](il::core::Type::Kind kind) {
         if (ok)
             *ok = true;

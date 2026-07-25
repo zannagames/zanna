@@ -19,6 +19,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares round-trippable escaping helpers for textual IL strings.
+
 #pragma once
 
 #include <cstdio>
@@ -35,6 +38,9 @@ namespace il::io {
 bool decodeEscapedString(std::string_view input, std::string &output, std::string *error = nullptr);
 
 /// @brief Encode control characters in @p input using C-style escape sequences.
+/// @details Printable ASCII bytes are copied unchanged. Control, delete, and
+///          non-ASCII bytes are emitted independently as uppercase `\xNN`
+///          escapes, making the result safe inside a quoted IL literal.
 /// @param input Raw UTF-8 string to encode.
 /// @return Escaped representation safe for inclusion in IL text.
 inline std::string encodeEscapedString(std::string_view input) {

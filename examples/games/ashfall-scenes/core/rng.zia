@@ -1,0 +1,116 @@
+// =============================================================================
+// core/rng.zia — deterministic RNG streams (masked xorshift32)
+// =============================================================================
+//
+// Zia integer arithmetic traps on overflow (IAddOvf/IMulOvf by default), so a
+// wrapping xorshift64* is off the table. Instead each stream is a 32-bit
+// xorshift where every intermediate is masked back to 32 bits: a left shift is
+// not itself a trap, and masking keeps state in [0, 2^32). This is fully
+// reproducible — the whole point of separating streams is that a replay
+// checksum stays stable regardless of how many cosmetic rolls happen.
+//
+// Bit ops go through core/bits so the confusion lints stay localized there.
+//
+// Streams (per the architecture doc): gameplay, spread, ai, cosmetic. Cosmetic
+// is excluded from replay checksums, so purely visual jitter never desyncs a
+// deterministic probe.
+// =============================================================================
+module rng;
+
+bind "./bits" as bits;
+
+class RngStream {
+    hide Integer state;
+
+    expose func init() { state = 2463534242; }
+
+    // Seed with any integer; force non-zero (xorshift dies at zero).
+    expose func seed(s: Integer) {
+        var v = bits.mask32(s);
+        if v == 0 { v = 2463534242; }
+        state = v;
+    }
+
+    expose func getState() -> Integer { return state; }
+    expose func setState(s: Integer) {
+        var v = bits.mask32(s);
+        if v == 0 { v = 2463534242; }
+        state = v;
+    }
+
+    // Next raw 32-bit value.
+    expose func next() -> Integer {
+        var x = state;
+        x = bits.mask32(bits.bxor(x, bits.mask32(bits.shl(x, 13))));
+        x = bits.mask32(bits.bxor(x, bits.shr(x, 17)));
+        x = bits.mask32(bits.bxor(x, bits.mask32(bits.shl(x, 5))));
+        state = x;
+        return x;
+    }
+
+    // Float in [0, 1).
+    expose func nextFloat() -> Float {
+        var v = next();
+        return (v + 0.0) / 4294967296.0;
+    }
+
+    // Float in [lo, hi).
+    expose func range(lo: Float, hi: Float) -> Float {
+        return lo + (hi - lo) * nextFloat();
+    }
+
+    // Integer in [lo, hi] inclusive.
+    expose func rangeInt(lo: Integer, hi: Integer) -> Integer {
+        if hi <= lo { return lo; }
+        var span = hi - lo + 1;
+        return lo + (next() % span);
+    }
+
+    // Symmetric jitter in [-amt, amt).
+    expose func jitter(amt: Float) -> Float {
+        return (nextFloat() * 2.0 - 1.0) * amt;
+    }
+
+    // Bernoulli trial with probability p.
+    expose func chance(p: Float) -> Boolean {
+        return nextFloat() < p;
+    }
+}
+
+// The named streams. `gameplay`, `spread`, and `ai` feed the replay checksum;
+// `cosmetic` does not.
+class RngStreams {
+    hide RngStream gameplay;
+    hide RngStream spread;
+    hide RngStream ai;
+    hide RngStream cosmetic;
+
+    expose func init() {
+        gameplay = new RngStream();
+        spread = new RngStream();
+        ai = new RngStream();
+        cosmetic = new RngStream();
+    }
+
+    // Deterministic per-run seeding from a single master seed.
+    expose func reseed(master: Integer) {
+        gameplay.seed(bits.bxor(master, 0x9E3779B1));
+        spread.seed(bits.bxor(master, 0x85EBCA77));
+        ai.seed(bits.bxor(master, 0xC2B2AE3D));
+        cosmetic.seed(bits.bxor(master, 0x27D4EB2F));
+    }
+
+    expose func getGameplay() -> RngStream { return gameplay; }
+    expose func getSpread() -> RngStream { return spread; }
+    expose func getAi() -> RngStream { return ai; }
+    expose func getCosmetic() -> RngStream { return cosmetic; }
+
+    // A checksum over the determinism-relevant stream states — probes compare
+    // this after N ticks to catch nondeterminism (cosmetic excluded on purpose).
+    expose func checksum() -> Integer {
+        var h = gameplay.getState();
+        h = bits.mask32(bits.bxor(h, bits.mask32(bits.shl(spread.getState(), 1))));
+        h = bits.mask32(bits.bxor(h, bits.mask32(bits.shl(ai.getState(), 2))));
+        return h;
+    }
+}

@@ -46,6 +46,10 @@ using namespace il::core;
 namespace il::transform {
 
 namespace {
+/// @brief Add signed integers while explicitly rejecting overflow.
+/// @param lhs Left addend.
+/// @param rhs Right addend.
+/// @return Sum when representable as `long long`, otherwise `std::nullopt`.
 std::optional<long long> checkedAdd(long long lhs, long long rhs) {
     if ((rhs > 0 && lhs > std::numeric_limits<long long>::max() - rhs) ||
         (rhs < 0 && lhs < std::numeric_limits<long long>::min() - rhs)) {
@@ -54,6 +58,9 @@ std::optional<long long> checkedAdd(long long lhs, long long rhs) {
     return lhs + rhs;
 }
 
+/// @brief Determine whether duplicating an instruction preserves observable behavior.
+/// @param instr Non-terminator loop instruction to classify.
+/// @return `true` only for pure, non-trapping, non-memory instructions without CFG data.
 bool isSafeToCloneForFullUnroll(const Instr &instr) {
     if (zanna::il::isTerminator(instr))
         return false;
@@ -71,6 +78,11 @@ bool isSafeToCloneForFullUnroll(const Instr &instr) {
     return true;
 }
 
+/// @brief Test whether a temporary is defined by a parameter or instruction in a loop.
+/// @param function Function containing the loop blocks.
+/// @param loop Membership description limiting the scan.
+/// @param tempId Temporary id whose definition is sought.
+/// @return `true` when @p tempId originates within @p loop.
 bool tempDefinedInLoop(const Function &function, const Loop &loop, unsigned tempId) {
     for (const auto &block : function.blocks) {
         if (!loop.contains(block.label))
@@ -99,7 +111,13 @@ struct CountedLoop {
     unsigned tripCount = 0;
 };
 
-/// @brief Find the preheader of a loop.
+/// @brief Find the unique predecessor outside a loop.
+/// @param function Function containing the loop; retained for the common helper interface.
+/// @param loop Loop whose header predecessors are filtered.
+/// @param header Header block indexed by @p cfg.
+/// @param cfg CFG snapshot containing predecessor relationships.
+/// @param blockMap Label lookup used to recover mutable block pointers.
+/// @return Unique external predecessor, or null if absent or ambiguous.
 BasicBlock *findPreheader(Function &function,
                           const Loop &loop,
                           BasicBlock &header,
@@ -124,6 +142,9 @@ BasicBlock *findPreheader(Function &function,
 }
 
 /// @brief Get the index of a label in a terminator's labels vector.
+/// @param term Terminator whose successor slots are searched.
+/// @param target Label to locate.
+/// @return Matching successor index, or `std::nullopt`.
 std::optional<size_t> labelIndex(const Instr &term, const std::string &target) {
     for (size_t i = 0; i < term.labels.size(); ++i)
         if (term.labels[i] == target)
@@ -131,7 +152,17 @@ std::optional<size_t> labelIndex(const Instr &term, const std::string &target) {
     return std::nullopt;
 }
 
-/// @brief Analyze a loop to determine if it's a simple counted loop.
+/// @brief Analyze a loop to determine whether it has a statically bounded trip count.
+/// @param function Function containing the candidate loop.
+/// @param loop Loop structure requiring one latch and one header exit.
+/// @param header Header expected to compare an induction parameter with a constant.
+/// @param latch Latch expected to update that parameter by a constant step.
+/// @param preheader Entry predecessor expected to supply a constant initial value.
+/// @param blockMap Function block lookup retained for structural context.
+/// @return Counted-loop description, or `std::nullopt` for an unsupported or
+///         nonterminating pattern.
+/// @details The helper simulates at most 1,000 induction steps with checked
+///          addition, supporting signed relational and equality comparisons.
 std::optional<CountedLoop> analyzeCountedLoop(
     Function &function,
     const Loop &loop,
@@ -412,7 +443,11 @@ std::optional<CountedLoop> analyzeCountedLoop(
     return result;
 }
 
-/// @brief Count instructions in a loop.
+/// @brief Count instructions in all blocks belonging to a loop.
+/// @param loop Loop whose labels define the counted block set.
+/// @param function Function containing the loop; retained for the common helper interface.
+/// @param blockMap Lookup from labels to current block storage.
+/// @return Sum of instruction counts for labels found in @p blockMap.
 size_t countLoopInstructions(const Loop &loop,
                              Function &function,
                              const std::unordered_map<std::string, BasicBlock *> &blockMap) {
@@ -425,7 +460,19 @@ size_t countLoopInstructions(const Loop &loop,
     return count;
 }
 
-/// @brief Fully unroll a simple loop.
+/// @brief Fully unroll a simple loop into its preheader.
+/// @param function Function receiving cloned instructions and block erasures.
+/// @param loop Loop whose blocks are removed after expansion.
+/// @param header Header providing the condition, body, and exit arguments.
+/// @param latch Latch providing body instructions and next-iteration values.
+/// @param preheader Entry block into which cloned instructions are inserted.
+/// @param counted Induction description and exact trip count.
+/// @param blockMap Current label lookup used during validation.
+/// @return `true` after completing the rewrite, otherwise `false`.
+/// @details Only one- or two-block loops containing clonable instructions are
+///          supported. Each iteration receives fresh SSA results; the final
+///          values are substituted into the exit edge before original loop
+///          blocks are erased.
 bool fullyUnrollLoop(Function &function,
                      const Loop &loop,
                      BasicBlock &header,
@@ -623,6 +670,7 @@ bool fullyUnrollLoop(Function &function,
     // Remove original loop blocks from function
     std::unordered_set<std::string> loopBlockLabels(loop.blockLabels.begin(),
                                                     loop.blockLabels.end());
+    /// Remove every block whose label belongs to the now-expanded loop.
     function.blocks.erase(
         std::remove_if(function.blocks.begin(),
                        function.blocks.end(),
@@ -634,10 +682,12 @@ bool fullyUnrollLoop(Function &function,
 
 } // namespace
 
+/// @copydoc LoopUnroll::id()
 std::string_view LoopUnroll::id() const {
     return "loop-unroll";
 }
 
+/// @copydoc LoopUnroll::run()
 PreservedAnalyses LoopUnroll::run(Function &function, AnalysisManager &analysis) {
     bool changed = false;
     for (;;) {
@@ -709,8 +759,10 @@ PreservedAnalyses LoopUnroll::run(Function &function, AnalysisManager &analysis)
     return preserved;
 }
 
+/// @copydoc registerLoopUnrollPass()
 void registerLoopUnrollPass(PassRegistry &registry) {
     // Sequential: rewrites loop CFG and recomputes whole-module loop/CFG snapshots.
+    /// Construct a default-configured loop unroller for the sequential pipeline.
     registry.registerFunctionPass(
         "loop-unroll", []() { return std::make_unique<LoopUnroll>(); }, false);
 }

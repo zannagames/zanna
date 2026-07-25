@@ -21,6 +21,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares verifier diagnostic codes, factories, and sink abstractions.
+/// @details Verifier components use these APIs to attach stable subsystem codes
+///          and a `verify` stage to shared diagnostics while choosing whether
+///          diagnostics are streamed, collected, or handled by another sink.
+
 #pragma once
 
 #include "support/diag_expected.hpp"
@@ -73,6 +79,7 @@ il::support::Diag makeVerifierError(VerifyDiagCode code,
 /// @brief Interface for verifier components to report diagnostics without coupling to storage.
 class DiagSink {
   public:
+    /// @brief Destroy a sink through the polymorphic interface.
     virtual ~DiagSink() = default;
 
     /// @brief Report a diagnostic to the sink.
@@ -95,6 +102,7 @@ class CollectingDiagSink : public DiagSink {
     void clear();
 
   private:
+    /// @brief Diagnostics retained in report order.
     std::vector<il::support::Diag> diags_;
 };
 

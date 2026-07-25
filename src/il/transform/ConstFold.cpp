@@ -85,6 +85,9 @@ static bool getConstFloat(const Value &v, double &out) {
     return false;
 }
 
+/// @brief Return the arithmetic bit width of an IL integer kind.
+/// @param kind Declared IL result type.
+/// @return 16, 32, or 64; non-integer and unsupported kinds conservatively use 64.
 static int integerTypeBits(Type::Kind kind) {
     switch (kind) {
         case Type::Kind::I16:
@@ -129,6 +132,8 @@ static unsigned long long normalizeUnsignedForType(unsigned long long value, Typ
 }
 
 /// @brief Return the signed minimum for the declared IL integer width.
+/// @param kind Declared IL integer type.
+/// @return Minimum two's-complement value representable by @p kind.
 static long long signedMinForType(Type::Kind kind) {
     const int bits = integerTypeBits(kind);
     if (bits >= 64)
@@ -140,6 +145,9 @@ static long long signedMinForType(Type::Kind kind) {
 /// @details Checked overflow opcodes trap on overflow in their declared result
 ///          width, not only on native 64-bit overflow. This range test keeps
 ///          constant folding from hiding sub-64-bit overflow traps.
+/// @param value Full-width signed result.
+/// @param kind Target IL integer type.
+/// @return True when @p value is representable without truncation.
 static bool fitsSignedIntegerType(long long value, Type::Kind kind) {
     const int bits = integerTypeBits(kind);
     if (bits >= 64)
@@ -172,6 +180,10 @@ static double roundHalfEven(double value) {
 
 /// @brief Evaluate a small integral power using only sequenced IEEE
 /// multiplications, avoiding host-libm variation in optimized IL.
+/// @param base Floating-point base.
+/// @param exponent Integral exponent limited to a deterministic range.
+/// @param out Receives the finite result on success.
+/// @return True when exponentiation remains finite and within the supported range.
 static bool deterministicIntegralPower(double base, long long exponent, double &out) {
     if (exponent < -308 || exponent > 308)
         return false;
@@ -197,6 +209,9 @@ static bool deterministicIntegralPower(double base, long long exponent, double &
 }
 
 /// @brief Fold square roots only when integer arithmetic proves an exact root.
+/// @param value Candidate nonnegative exactly represented integer.
+/// @param out Receives the exact floating-point root on success.
+/// @return True when @p value is a perfect square within the exact-integer range.
 static bool exactIntegerSquareRoot(double value, double &out) {
     constexpr double kMaxExactInteger = 9007199254740992.0; // 2^53
     if (!std::isfinite(value) || value < 0.0 || value > kMaxExactInteger ||
@@ -219,6 +234,12 @@ static bool exactIntegerSquareRoot(double value, double &out) {
     return true;
 }
 
+/// @brief Select a deterministic IEEE-style minimum.
+/// @details Returns the non-NaN operand when exactly one is NaN and preserves
+///          negative zero when either equal-zero operand is negative.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @return Deterministic minimum result.
 static double deterministicMin(double lhs, double rhs) {
     if (std::isnan(lhs))
         return rhs;
@@ -229,6 +250,12 @@ static double deterministicMin(double lhs, double rhs) {
     return lhs < rhs ? lhs : rhs;
 }
 
+/// @brief Select a deterministic IEEE-style maximum.
+/// @details Returns the non-NaN operand when exactly one is NaN and returns
+///          negative zero only when both equal-zero operands are negative.
+/// @param lhs Left operand.
+/// @param rhs Right operand.
+/// @return Deterministic maximum result.
 static double deterministicMax(double lhs, double rhs) {
     if (std::isnan(lhs))
         return rhs;
@@ -275,6 +302,11 @@ static std::optional<long long> checkedMul(long long a, long long b) {
     return result;
 }
 
+/// @brief Perform a portable sign-extending right shift.
+/// @param value Signed value represented as a 64-bit two's-complement payload.
+/// @param shift Shift count in the range [0, 63].
+/// @return Arithmetic right-shift result without relying on implementation-defined
+///         signed shifting.
 static long long arithmeticShiftRight(long long value, unsigned shift) {
     if (shift == 0)
         return value;

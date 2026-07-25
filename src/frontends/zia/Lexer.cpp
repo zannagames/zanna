@@ -4,8 +4,23 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/Lexer.cpp
+// Purpose: Tokenize Zia source while tracking locations, interpolation state,
+//          nested comments, literal values, and recoverable lexical errors.
+// Key invariants:
+//   * Source position never advances beyond the owned buffer.
+//   * CR, LF, and CRLF update line/column state consistently.
+//   * Interpolation brace state is balanced with interpolation nesting.
+//   * Numeric separators and base-specific digits are validated before value
+//     conversion.
+// Ownership: Lexer owns its source buffer and token cache while borrowing the
+//            DiagnosticEngine supplied at construction.
+// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file Lexer.cpp
+/// @file
 /// @brief Implementation of the Zia lexical analyzer.
 ///
 /// @details This file implements the Lexer class which tokenizes Zia
@@ -61,6 +76,9 @@ constexpr size_t kMaxBlockCommentDepth = 1024;
 // TokenKind to string conversion
 //===----------------------------------------------------------------------===//
 
+/// @brief Convert a Zia token kind to its diagnostic spelling.
+/// @param kind Token kind to describe.
+/// @return Static null-terminated spelling, or `"?"` for an unhandled value.
 const char *tokenKindToString(TokenKind kind) {
     switch (kind) {
         case TokenKind::Eof:
@@ -291,6 +309,8 @@ const char *tokenKindToString(TokenKind kind) {
     return "?";
 }
 
+/// @brief Determine whether this token belongs to the contiguous keyword range.
+/// @return True for token kinds from KwStruct through KwNot.
 bool Token::isKeyword() const {
     return kind >= TokenKind::KwStruct && kind <= TokenKind::KwNot;
 }
@@ -301,8 +321,11 @@ bool Token::isKeyword() const {
 
 namespace {
 
+/// @brief One sorted source spelling and its lexer token kind.
 struct KeywordEntry {
+    /// @brief Case-sensitive keyword spelling.
     std::string_view key;
+    /// @brief Token emitted when key matches.
     TokenKind kind{TokenKind::Error};
 };
 
@@ -370,23 +393,31 @@ using common::char_utils::isLetter;
 using common::char_utils::isWhitespace;
 
 /// @brief Check if character can start an identifier (letter or underscore).
+/// @param c Source byte to classify.
+/// @return True for an ASCII letter or underscore.
 inline bool isIdentifierStart(char c) {
     return isLetter(c) || c == '_';
 }
 
 /// @brief Check if character can continue an identifier.
+/// @param c Source byte to classify.
+/// @return True for an ASCII letter, digit, or underscore.
 inline bool isIdentifierContinue(char c) {
     return isLetter(c) || isDigit(c) || c == '_';
 }
 
 /// @brief True if @p c is the digit-group separator ('_') allowed in numeric
 ///        literals (e.g. 1_000_000).
+/// @param c Source byte to classify.
+/// @return True when @p c is underscore.
 inline bool isNumericSeparator(char c) {
     return c == '_';
 }
 
 /// @brief Validate '_' placement in a decimal literal: each separator must sit
 ///        between two digits (no leading/trailing/double underscore).
+/// @param text Complete token spelling.
+/// @param start First byte belonging to the numeric payload.
 /// @return true if all separators are well-placed.
 bool validateNumericSeparators(std::string_view text, size_t start = 0) {
     for (size_t i = start; i < text.size(); ++i) {
@@ -402,6 +433,9 @@ bool validateNumericSeparators(std::string_view text, size_t start = 0) {
 
 /// @brief Return @p text (from @p start) with all '_' digit separators
 ///        stripped, yielding the bare numeric string for value parsing.
+/// @param text Complete token spelling.
+/// @param start First byte to copy or filter.
+/// @return Owned substring with underscore separators removed.
 std::string removeNumericSeparators(std::string_view text, size_t start = 0) {
     std::string result;
     result.reserve(text.size() - start);
@@ -413,6 +447,7 @@ std::string removeNumericSeparators(std::string_view text, size_t start = 0) {
 }
 
 /// @brief Validate '_' placement in a based integer literal (0x.., 0b.., 0o..).
+/// @param text Complete token spelling including its base prefix.
 /// @param digitStart      Index of the first digit after the base prefix.
 /// @param isDigitForBase  Predicate identifying a valid digit for the base.
 /// @return true if every separator is between two base-valid digits.
@@ -455,6 +490,11 @@ std::optional<int64_t> parseSignedBasedInteger(std::string_view digits, uint32_t
     return static_cast<int64_t>(value);
 }
 
+/// @brief Select a stable diagnostic code from a lexer error message.
+/// @details More specific unterminated, literal, escape, and identifier cases
+///          are recognized before falling back to the general lexer code.
+/// @param message Human-readable error text.
+/// @return Stable Zia lexer diagnostic identifier.
 std::string classifyLexError(const std::string &message) {
     if (message.find("unterminated block comment") != std::string::npos)
         return "V-ZIA-LEX-UNTERMINATED-COMMENT";

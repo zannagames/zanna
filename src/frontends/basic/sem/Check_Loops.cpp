@@ -36,10 +36,26 @@ namespace il::frontends::basic::sem {
 
 namespace {
 
+/// @brief Determine whether a semantic type is valid in a numeric loop role.
+/// @details Delegates to the analyzer's shared numeric classification so FOR
+///          variables, bounds, and STEP expressions follow the same rules as
+///          other numeric expressions. Unknown is accepted by that classifier
+///          to avoid duplicating an earlier diagnostic.
+/// @param type Semantic type to classify.
+/// @return True when @p type is numeric or intentionally unresolved.
 bool isNumericLoopType(SemanticAnalyzer::Type type) noexcept {
     return semantic_analyzer_detail::isNumericSemanticType(type);
 }
 
+/// @brief Emit the standard type-mismatch diagnostic for a numeric loop field.
+/// @details Builds a context-specific message naming the invalid FOR component
+///          and its inferred type, then reports diagnostic B2001 at the supplied
+///          source span.
+/// @param context Control-flow context that owns the diagnostic sink.
+/// @param loc Location of the invalid loop variable or expression.
+/// @param width Width, in source characters, to highlight.
+/// @param what Human-readable name of the loop component being checked.
+/// @param type Inferred non-numeric semantic type.
 void emitLoopTypeError(ControlCheckContext &context,
                        il::support::SourceLoc loc,
                        uint32_t width,
@@ -51,6 +67,13 @@ void emitLoopTypeError(ControlCheckContext &context,
     context.diagnostics().emit(il::support::Severity::Error, "B2001", loc, width, std::move(msg));
 }
 
+/// @brief Map a supported BASIC array type to its element type.
+/// @details FOR EACH uses the returned scalar type to infer or validate the
+///          iteration variable. Non-array and currently unsupported array kinds
+///          have no mapping.
+/// @param arrayType Semantic type assigned to the iteration source.
+/// @return The scalar element type, or std::nullopt when @p arrayType is not a
+///         supported array type.
 std::optional<SemanticAnalyzer::Type> arrayElementType(SemanticAnalyzer::Type arrayType) {
     using Type = SemanticAnalyzer::Type;
     switch (arrayType) {

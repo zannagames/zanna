@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/basic/lower/MemberArrayResolver.hpp
+// File: src/frontends/basic/lower/MemberArrayResolver.hpp
 // Purpose: Consolidates member array field resolution for the BASIC lowerer.
 //          Previously, the pattern "is this a field? is it an array? is it
 //          object-typed?" was duplicated across RuntimeStatementLowerer_Assign,
@@ -20,6 +20,13 @@
 // Links: docs/bugs/basic_bugs.md (BUG-056, BUG-058, BUG-089, BUG-108)
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Defines the value object returned by member-array resolution.
+/// @details The result distinguishes dotted and implicit field access while
+///          carrying the element type and optional object class required by
+///          array load, store, scan, and ownership paths.
+
 #pragma once
 
 #include "frontends/basic/ast/NodeFwd.hpp"

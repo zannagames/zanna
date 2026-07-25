@@ -37,6 +37,9 @@ using il::verify::detail::kindFromCategory;
 namespace il::verify::detail {
 namespace {
 
+/// @brief Identify opcodes whose strategy owns detailed result validation.
+/// @param op Opcode to classify.
+/// @return `true` when the table checker must defer result-kind validation.
 bool opcodeHasStrategyValidatedResultType(il::core::Opcode op) {
     switch (op) {
         case il::core::Opcode::IAddOvf:
@@ -67,7 +70,7 @@ bool opcodeHasStrategyValidatedResultType(il::core::Opcode op) {
 ///          and, when relevant, the type category those results must inhabit.
 ///
 /// @param ctx Verification context describing the current instruction.
-/// @param info Opcode metadata containing result-type requirements.
+/// @param spec Opcode specification containing result-type requirements.
 ResultTypeChecker::ResultTypeChecker(const VerifyCtx &ctx, const InstructionSpec &spec)
     : ctx_(ctx), spec_(spec) {}
 

@@ -8,6 +8,11 @@
 /// @file Parser_Tokens.cpp
 /// @brief Token buffering and error handling for the Zia parser.
 ///
+/// @details Supplies on-demand multi-token lookahead, bounded speculative
+///          rollback, token consumption and compaction, contextual identifier
+///          classification, syntax disambiguation lookahead, error recovery,
+///          and stable parse diagnostic classification/ranges.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Parser.hpp"
@@ -20,15 +25,24 @@ namespace il::frontends::zia {
 namespace {
 
 /// @brief True if @p text begins with @p prefix.
+/// @param text Text to inspect.
+/// @param prefix Required prefix.
+/// @return True when @p prefix occurs at offset zero.
 bool startsWith(std::string_view text, std::string_view prefix) {
     return text.substr(0, prefix.size()) == prefix;
 }
 
 /// @brief True if @p needle occurs anywhere in @p text.
+/// @param text Text to inspect.
+/// @param needle Substring to locate.
+/// @return True when @p needle occurs in @p text.
 bool contains(std::string_view text, std::string_view needle) {
     return text.find(needle) != std::string_view::npos;
 }
 
+/// @brief Select a stable parse diagnostic code from its message category.
+/// @param message Parser diagnostic text.
+/// @return Specific `V-ZIA-PARSE-*` code, or the general parse code.
 std::string classifyParserDiagnostic(std::string_view message) {
     if (contains(message, "nesting too deep"))
         return "V-ZIA-PARSE-DEPTH";
@@ -59,6 +73,11 @@ std::string classifyParserDiagnostic(std::string_view message) {
     return "V-ZIA-PARSE";
 }
 
+/// @brief Construct the highlighted source range for a parser diagnostic.
+/// @param token Current token used to determine matched text length.
+/// @param loc Requested diagnostic start location.
+/// @return One-character or token-width range, or an invalid range when
+///         @p loc is invalid.
 il::support::SourceRange tokenRange(const Token &token, SourceLoc loc) {
     if (!loc.isValid())
         return {};
@@ -75,6 +94,9 @@ il::support::SourceRange tokenRange(const Token &token, SourceLoc loc) {
 
 } // namespace
 
+/// @brief Construct a parser and seed its lookahead buffer.
+/// @param lexer Borrowed token source.
+/// @param diag Borrowed diagnostic destination.
 Parser::Parser(Lexer &lexer, il::support::DiagnosticEngine &diag) : lexer_(lexer), diag_(diag) {
     tokens_.push_back(lexer_.next());
 }
@@ -83,11 +105,14 @@ Parser::Parser(Lexer &lexer, il::support::DiagnosticEngine &diag) : lexer_(lexer
 // Token Handling
 //===----------------------------------------------------------------------===//
 
+/// @brief Begin a diagnostic-suppressed speculative parse.
+/// @param parser Parser whose position and error state are snapshotted.
 Parser::Speculation::Speculation(Parser &parser)
     : parser_(parser), savedPos_(parser.tokenPos_), savedHasError_(parser.hasError_) {
     ++parser_.suppressionDepth_;
 }
 
+/// @brief End speculation, rolling back unless commit() accepted the parse.
 Parser::Speculation::~Speculation() {
     --parser_.suppressionDepth_;
     if (!committed_) {
@@ -96,6 +121,9 @@ Parser::Speculation::~Speculation() {
     }
 }
 
+/// @brief Inspect a token without consuming it.
+/// @param offset Lookahead distance from the current token.
+/// @return Stable reference into the on-demand token buffer.
 const Token &Parser::peek(size_t offset) {
     while (tokens_.size() <= tokenPos_ + offset) {
         tokens_.push_back(lexer_.next());
@@ -103,6 +131,8 @@ const Token &Parser::peek(size_t offset) {
     return tokens_[tokenPos_ + offset];
 }
 
+/// @brief Consume and return the current token.
+/// @return Token at the old parser position.
 Token Parser::advance() {
     Token cur = peek();
     ++tokenPos_;
@@ -110,10 +140,16 @@ Token Parser::advance() {
     return cur;
 }
 
+/// @brief Test a buffered token kind without consuming it.
+/// @param kind Expected token kind.
+/// @param offset Lookahead distance.
+/// @return True when peek(@p offset) has @p kind.
 bool Parser::check(TokenKind kind, size_t offset) {
     return peek(offset).kind == kind;
 }
 
+/// @brief Test whether the current token may serve as an identifier.
+/// @return True for identifiers and the supported contextual keywords.
 bool Parser::checkIdentifierLike() {
     // Allow identifiers and certain contextual keywords that can be used as names
     if (peek().kind == TokenKind::Identifier)
@@ -129,6 +165,9 @@ bool Parser::checkIdentifierLike() {
     }
 }
 
+/// @brief Classify tokens that can begin a Zia expression.
+/// @param kind Token kind to classify.
+/// @return True when expression parsing can start with @p kind.
 bool Parser::isExpressionStart(TokenKind kind) const {
     switch (kind) {
         case TokenKind::Identifier:
@@ -160,6 +199,9 @@ bool Parser::isExpressionStart(TokenKind kind) const {
     }
 }
 
+/// @brief Speculatively distinguish match syntax from an identifier named
+///        `match`.
+/// @return True when a scrutinee followed by `{` parses after the keyword.
 bool Parser::isMatchExpressionAhead() {
     if (!check(TokenKind::KwMatch))
         return false;
@@ -174,6 +216,9 @@ bool Parser::isMatchExpressionAhead() {
     return check(TokenKind::LBrace);
 }
 
+/// @brief Distinguish a value-producing block from a map/set literal.
+/// @return True when bounded lookahead finds statement syntax or a top-level
+///         semicolon before the closing delimiter.
 bool Parser::looksLikeBlockExpression() {
     if (!check(TokenKind::LBrace))
         return false;
@@ -248,6 +293,10 @@ bool Parser::looksLikeBlockExpression() {
     return false;
 }
 
+/// @brief Consume the current token when it has a requested kind.
+/// @param kind Token kind to match.
+/// @param[out] out Optional destination for the consumed token.
+/// @return True when a token was consumed.
 bool Parser::match(TokenKind kind, Token *out) {
     if (check(kind)) {
         Token tok = advance();
@@ -258,6 +307,11 @@ bool Parser::match(TokenKind kind, Token *out) {
     return false;
 }
 
+/// @brief Require and consume a token kind.
+/// @param kind Required token kind.
+/// @param what Human-readable expectation for diagnostics.
+/// @param[out] out Optional destination for the consumed token.
+/// @return True on match; false after reporting an error.
 bool Parser::expect(TokenKind kind, const char *what, Token *out) {
     if (check(kind)) {
         Token tok = advance();
@@ -269,6 +323,9 @@ bool Parser::expect(TokenKind kind, const char *what, Token *out) {
     return false;
 }
 
+/// @brief Discard consumed lookahead tokens when rollback is impossible.
+/// @details Compaction is suppressed during speculation and occurs only after
+///          the consumed-prefix threshold is reached.
 void Parser::compactBufferedTokens() {
     // Do not compact during speculative parsing; saved token positions are
     // relative to the current buffer.
@@ -283,6 +340,9 @@ void Parser::compactBufferedTokens() {
     tokenPos_ = 0;
 }
 
+/// @brief Advance to a likely declaration or statement boundary after error.
+/// @details Stops at semicolon, closing brace, declaration keyword, EOF, or
+///          the bounded 10,000-token recovery limit.
 void Parser::resyncAfterError() {
     // Bounded token consumption prevents compiler hang on pathological input
     // lacking statement boundaries.
@@ -309,10 +369,16 @@ void Parser::resyncAfterError() {
 // Error Handling
 //===----------------------------------------------------------------------===//
 
+/// @brief Report a parse error at the current token.
+/// @param message Human-readable diagnostic text.
 void Parser::error(const std::string &message) {
     errorAt(peek().loc, message);
 }
 
+/// @brief Report a classified parse error at a specific location.
+/// @param loc Diagnostic start location.
+/// @param message Human-readable diagnostic text.
+/// @details Speculative parses suppress reporting and do not set hasError_.
 void Parser::errorAt(SourceLoc loc, const std::string &message) {
     if (suppressionDepth_ > 0)
         return;

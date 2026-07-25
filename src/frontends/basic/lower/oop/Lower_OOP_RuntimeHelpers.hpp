@@ -26,6 +26,10 @@
 #include <unordered_set>
 #include <vector>
 
+/// @file
+/// @brief Declares reusable OOP emission operations shared by class member
+///        lowering paths.
+
 namespace il::frontends::basic {
 
 class Lowerer;
@@ -131,6 +135,7 @@ class OopEmitHelper {
                                                        std::size_t &maxSlot);
 
   private:
+    /// Borrowed lowering driver receiving symbol and IL mutations.
     Lowerer &lowerer_;
 };
 

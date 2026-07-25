@@ -4,8 +4,22 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/basic/sem/RuntimeMethodIndex.cpp
+// Purpose: Adapt the shared runtime-method resolver to BASIC semantic types and
+//          expose the legacy RuntimeMethodIndex facade.
+// Key invariants:
+//   * Method signatures originate in the shared runtime registry.
+//   * Receiver parameters are not included in RuntimeMethodInfo::args.
+//   * BASIC and IL scalar conversions preserve Unknown as an error-recovery
+//     value instead of inventing a concrete type.
+// Ownership: Lookup results copy strings and type vectors from the shared
+//            resolver; the process-wide index itself owns no mutable catalog.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
 ///
-/// @file RuntimeMethodIndex.cpp
+/// @file
 /// @brief Implementation of runtime method lookup for the BASIC frontend.
 ///
 /// @details This file implements the RuntimeMethodIndex class which provides
@@ -50,6 +64,11 @@ namespace il::frontends::basic {
 
 namespace {
 
+/// @brief Convert a shared frontend method result into the BASIC result shape.
+/// @details Copies target and object metadata, translates return and argument
+///          scalar types, and preserves raw-pointer and receiver flags.
+/// @param resolved Shared runtime-method result to adapt.
+/// @return An independently owned BASIC RuntimeMethodInfo value.
 RuntimeMethodInfo makeRuntimeMethodInfo(const il::frontends::common::RuntimeMethodInfo &resolved) {
     RuntimeMethodInfo info;
 
@@ -67,6 +86,11 @@ RuntimeMethodInfo makeRuntimeMethodInfo(const il::frontends::common::RuntimeMeth
     return info;
 }
 
+/// @brief Convert a BASIC semantic scalar type to the runtime IL type enum.
+/// @details Used only for type-directed overload lookup; unsupported or
+///          unresolved BASIC types map to ILScalarType::Unknown.
+/// @param t BASIC argument type to translate.
+/// @return Corresponding runtime IL scalar type.
 il::runtime::ILScalarType toILScalarType(BasicType t) {
     switch (t) {
         case BasicType::Int:
@@ -110,7 +134,9 @@ il::runtime::ILScalarType toILScalarType(BasicType t) {
 ///
 /// @note The compiler will warn if new ILScalarType values are added
 ///       but not handled here, ensuring the mapping stays complete.
-///
+/// @param t Runtime IL scalar type to translate.
+/// @return Corresponding BASIC type, or BasicType::Unknown for an unknown
+///         runtime type.
 BasicType toBasicType(il::runtime::ILScalarType t) {
     switch (t) {
         case il::runtime::ILScalarType::I64:
@@ -176,7 +202,11 @@ void RuntimeMethodIndex::seed() {
 ///
 /// The arity check is handled by RuntimeRegistry—methods are indexed
 /// by class|method#arity, so only exact arity matches are returned.
-///
+/// @param classQName Fully qualified runtime class name.
+/// @param method Runtime method name.
+/// @param arity Number of explicit arguments, excluding the receiver.
+/// @return Adapted method metadata, or std::nullopt when no matching entry
+///         exists.
 std::optional<RuntimeMethodInfo> RuntimeMethodIndex::find(std::string_view classQName,
                                                           std::string_view method,
                                                           std::size_t arity) const {
@@ -188,6 +218,14 @@ std::optional<RuntimeMethodInfo> RuntimeMethodIndex::find(std::string_view class
     return makeRuntimeMethodInfo(*resolved);
 }
 
+/// @brief Find a runtime method using the inferred BASIC argument types.
+/// @details Converts the argument vector to shared IL scalar types and delegates
+///          overload selection to RuntimeMethodResolver.
+/// @param classQName Fully qualified runtime class name.
+/// @param method Runtime method name.
+/// @param argTypes Explicit BASIC argument types, excluding the receiver.
+/// @return Adapted metadata for the selected overload, or std::nullopt when no
+///         viable overload exists.
 std::optional<RuntimeMethodInfo> RuntimeMethodIndex::find(
     std::string_view classQName,
     std::string_view method,
@@ -210,7 +248,9 @@ std::optional<RuntimeMethodInfo> RuntimeMethodIndex::find(
 /// @details Delegates directly to RuntimeRegistry::methodCandidates().
 /// Used when a method call has the wrong number of arguments to show
 /// the user what arities are available.
-///
+/// @param classQName Fully qualified runtime class name.
+/// @param method Runtime method name.
+/// @return Candidate descriptions supplied by the shared resolver.
 std::vector<std::string> RuntimeMethodIndex::candidates(std::string_view classQName,
                                                         std::string_view method) const {
     return il::frontends::common::RuntimeMethodResolver::instance().candidates(classQName, method);
@@ -229,7 +269,7 @@ std::vector<std::string> RuntimeMethodIndex::candidates(std::string_view classQN
 /// Since RuntimeMethodIndex no longer maintains internal state (it delegates
 /// to RuntimeRegistry), this is essentially just providing a consistent
 /// access point for the API.
-///
+/// @return Reference to the process-wide stateless facade.
 RuntimeMethodIndex &runtimeMethodIndex() {
     static RuntimeMethodIndex idx;
     return idx;

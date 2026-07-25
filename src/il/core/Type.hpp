@@ -13,7 +13,7 @@
 // Key invariants:
 //   - Type is a POD-like struct with value semantics; safe to copy freely.
 //   - No parametric types: pointer and string types are opaque.
-//   - toString()/kindToString() always return valid spec mnemonic strings.
+//   - toString()/kindToString() return an empty string for invalid enum values.
 // Ownership/Lifetime: Value type with no dynamic resources.
 // Links: docs/il/il-guide.md#reference
 //

@@ -45,6 +45,8 @@
 #include <unordered_set>
 
 namespace {
+/// @brief Query whether verbose DCE tracing was enabled at process startup.
+/// @return True when the `ZANNA_DCE_TRACE` environment variable is present.
 static bool traceEnabled() {
     static const bool enabled = std::getenv("ZANNA_DCE_TRACE") != nullptr;
     return enabled;
@@ -55,6 +57,8 @@ static bool traceEnabled() {
 /// @details If both operands are ConstInt and the operation does not overflow,
 ///          the instruction's only "side effect" (trapping) provably cannot
 ///          fire, so removing the instruction is semantics-preserving.
+/// @param instr Candidate checked arithmetic instruction.
+/// @return True when it is dead-result removable without suppressing a trap.
 static bool isDeadOverflowOp(const il::core::Instr &instr) {
     using il::core::Opcode;
     using il::core::Value;
@@ -82,6 +86,10 @@ static bool isDeadOverflowOp(const il::core::Instr &instr) {
     }
 }
 
+/// @brief Classify nontrapping value-only opcodes removable when their result is dead.
+/// @param op Opcode to classify.
+/// @return True for pure arithmetic, comparison, conversion, select, and address
+///         construction operations with no observable effect.
 static bool isUnconditionallyRemovableValueOp(il::core::Opcode op) {
     using il::core::Opcode;
     switch (op) {
@@ -200,6 +208,8 @@ struct UseCounts {
 
 
     /// @brief Remove one use and return the updated count.
+    /// @param id Temporary whose reference is being removed.
+    /// @return Remaining use count, or zero when absent/already unused.
     size_t decrement(unsigned id) {
         if (sparseMode) {
             auto it = sparse.find(id);
@@ -246,6 +256,7 @@ static UseCounts countUses(const Function &F) {
     if (!uses.sparseMode)
         uses.dense.assign(static_cast<size_t>(maxId) + 1, 0);
 
+    /// Record one temporary operand occurrence.
     auto touch = [&](unsigned id) { uses.increment(id); };
 
     for (const auto &B : F.blocks) {
@@ -344,6 +355,7 @@ void dce(Module &M) {
                     }
                 }
 
+            /// Mark every alloca root reachable from an escaping or reading value.
             auto markObservedAllocaRoots = [&](const Value &value, std::string_view reason) {
                 if (value.kind != Value::Kind::Temp)
                     return;
@@ -367,6 +379,7 @@ void dce(Module &M) {
                               << reason << ") in " << F.name << "\n";
             };
 
+            /// Prove that a pointer targets at least one alloca and no observed root.
             auto targetsOnlyUnobservedAllocaRoots = [&](const Value &value) {
                 if (value.kind != Value::Kind::Temp)
                     return false;
@@ -475,9 +488,13 @@ void dce(Module &M) {
             // whole function once per link. Memory-derived decisions remain in
             // the outer fixed point because removing a load can change alloca
             // observability, but ordinary SSA chains collapse in one worklist.
+            /// @brief Stable location of a result-producing instruction.
             struct InstrLocation {
+                /// Owning basic block.
                 BasicBlock *block;
+                /// Instruction index used for deferred compaction.
                 std::size_t index;
+                /// Borrowed instruction pointer valid until compaction.
                 Instr *instr;
             };
             std::unordered_map<unsigned, InstrLocation> definitions;
@@ -488,6 +505,7 @@ void dce(Module &M) {
                         definitions.emplace(*instr.result, InstrLocation{&B, i, &instr});
                 }
             }
+            /// Test whether dropping the final use makes an instruction removable.
             auto newlyDead = [&](Instr &instr) {
                 if (!instr.result || uses[*instr.result] != 0)
                     return false;
@@ -515,6 +533,7 @@ void dce(Module &M) {
             while (!deadWorklist.empty()) {
                 Instr *dead = deadWorklist.front();
                 deadWorklist.pop();
+                /// Decrement an operand and enqueue its newly dead definition.
                 auto releaseOperand = [&](const Value &operand) {
                     if (operand.kind != Value::Kind::Temp || uses.decrement(operand.id) != 0)
                         return;

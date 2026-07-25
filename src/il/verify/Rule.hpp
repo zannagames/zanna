@@ -23,13 +23,16 @@
 //
 // Design Notes:
 // The Rule interface follows the classic strategy pattern with a boolean return
-// convention. Implementations are expected to emit diagnostics through some
-// external mechanism (typically a DiagSink) rather than returning error details,
-// simplifying the interface at the cost of requiring side effects for error
-// reporting. This matches the legacy verifier architecture and may evolve toward
-// Expected<void> returns in future refactoring.
+// convention. It provides no diagnostic channel itself, so callers needing
+// contextual failures should use the verifier's Expected-based strategy APIs.
 //
 //===----------------------------------------------------------------------===//
+
+/// @file
+/// @brief Declares the minimal polymorphic instruction-rule interface.
+/// @details `Rule` is a legacy extension point for boolean predicates over
+///          instructions. The current table-driven verifier uses richer
+///          `Expected`-returning strategies for contextual diagnostics.
 
 #pragma once
 
@@ -40,6 +43,7 @@ namespace il::verify {
 /// @brief Interface implemented by verification rules for specific opcodes.
 class Rule {
   public:
+    /// @brief Destroy a rule through the polymorphic interface.
     virtual ~Rule() = default;
 
     /// @brief Validate the given instruction using the rule context.

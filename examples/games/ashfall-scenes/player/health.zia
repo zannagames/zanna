@@ -1,0 +1,107 @@
+// =============================================================================
+// player/health.zia — player shield / armor / health + regen
+// =============================================================================
+//
+// Damage arrives as EV_DAMAGE(TGT_PLAYER) rows on the event bus (enemies and
+// blasts are the feeders). It is absorbed shield-first, then reduced by armor,
+// then health. Shield regenerates after a no-damage delay; a small health regen
+// keeps the floor survivable. Death is signalled by `isDead()` so the game state
+// machine can transition to DEATH.
+// =============================================================================
+module health;
+
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+
+class PlayerHealth {
+    hide Float health;
+    hide Float armor;
+    hide Float shield;
+    hide Float timeSinceDamage;
+    hide Boolean godMode;
+    hide Float lastDamageDir;    // yaw offset for directional damage HUD
+
+    expose func init() {
+        health = config.PLAYER_HEALTH_MAX;
+        armor = config.PLAYER_ARMOR_MAX;
+        shield = config.PLAYER_SHIELD_MAX;
+        timeSinceDamage = 999.0;
+        godMode = false;
+        lastDamageDir = 0.0;
+    }
+
+    expose func reset() {
+        health = config.PLAYER_HEALTH_MAX;
+        armor = config.PLAYER_ARMOR_MAX;
+        shield = config.PLAYER_SHIELD_MAX;
+        timeSinceDamage = 999.0;
+    }
+
+    expose func getHealth() -> Float { return health; }
+    expose func getArmor() -> Float { return armor; }
+    expose func getShield() -> Float { return shield; }
+    expose func healthFrac() -> Float { return health / config.PLAYER_HEALTH_MAX; }
+    expose func shieldFrac() -> Float { return shield / config.PLAYER_SHIELD_MAX; }
+    expose func armorFrac() -> Float { return armor / config.PLAYER_ARMOR_MAX; }
+    expose func isDead() -> Boolean { return health <= 0.0; }
+    expose func setGod(v: Boolean) { godMode = v; }
+    expose func getLastDamageDir() -> Float { return lastDamageDir; }
+
+    expose func addHealth(amt: Float) {
+        health = M.clampf(health + amt, 0.0, config.PLAYER_HEALTH_MAX);
+    }
+    expose func addArmor(amt: Float) {
+        armor = M.clampf(armor + amt, 0.0, config.PLAYER_ARMOR_MAX);
+    }
+
+    expose func restore(healthNow: Float, shieldNow: Float, armorNow: Float) {
+        health = M.clampf(healthNow, 1.0, config.PLAYER_HEALTH_MAX);
+        shield = M.clampf(shieldNow, 0.0, config.PLAYER_SHIELD_MAX);
+        armor = M.clampf(armorNow, 0.0, config.PLAYER_ARMOR_MAX);
+        timeSinceDamage = 0.0;
+        lastDamageDir = 0.0;
+    }
+
+    // Apply raw incoming damage through the shield/armor/health cascade.
+    expose func applyDamage(amount: Float, dirDeg: Float) {
+        if godMode || amount <= 0.0 { return; }
+        timeSinceDamage = 0.0;
+        lastDamageDir = dirDeg;
+        var remaining = amount;
+        // Shield first.
+        if shield > 0.0 {
+            var absorbed = M.minf(shield, remaining);
+            shield = shield - absorbed;
+            remaining = remaining - absorbed;
+        }
+        if remaining <= 0.0 { return; }
+        // Armor halves the rest and is consumed at half rate.
+        if armor > 0.0 {
+            var reduced = remaining * 0.5;
+            var used = M.minf(armor, reduced);
+            armor = armor - used;
+            remaining = remaining - used;
+        }
+        health = M.clampf(health - remaining, 0.0, config.PLAYER_HEALTH_MAX);
+    }
+
+    // Drain player-directed damage events (scaled by difficulty), then regen.
+    expose func update(dt: Float, bus: events.EventBus, damageScale: Float) {
+        var n = bus.getCount();
+        var i = 0;
+        while i < n {
+            if bus.kindAt(i) == config.EV_DAMAGE && bus.aAt(i) == config.TGT_PLAYER {
+                applyDamage(bus.xAt(i) * damageScale, bus.yAt(i));
+            }
+            i = i + 1;
+        }
+        timeSinceDamage = timeSinceDamage + dt;
+        if timeSinceDamage > config.SHIELD_REGEN_DELAY && shield < config.PLAYER_SHIELD_MAX {
+            shield = M.clampf(shield + config.SHIELD_REGEN_RATE * dt, 0.0, config.PLAYER_SHIELD_MAX);
+        }
+        if timeSinceDamage > config.HEALTH_REGEN_DELAY && health < config.PLAYER_HEALTH_MAX {
+            health = M.clampf(health + config.HEALTH_REGEN_RATE * dt, 0.0, config.PLAYER_HEALTH_MAX);
+        }
+    }
+}

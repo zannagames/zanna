@@ -7,11 +7,10 @@
 //
 // File: il/transform/LoopUnroll.hpp
 // Purpose: Loop Unrolling function pass -- replicates loop bodies to reduce
-//          iteration overhead. Supports full unrolling (small constant trip
-//          count) and optional partial unrolling. Configurable via
-//          LoopUnrollConfig thresholds.
+//          iteration overhead. Supports full unrolling of small constant-trip
+//          loops, configurable via LoopUnrollConfig thresholds.
 // Key invariants:
-//   - Only unrolls single-latch, single-exit loops without nesting.
+//   - Only unrolls innermost, single-latch, single-exit loops.
 //   - Full unrolling limited by fullUnrollThreshold to prevent code bloat.
 //   - Block parameters (SSA phi equivalents) are threaded correctly across
 //     unrolled iterations.
@@ -43,12 +42,18 @@ struct LoopUnrollConfig {
 ///          SSA values appropriately.
 class LoopUnroll : public FunctionPass {
   public:
+    /// @brief Construct the pass with explicit size and trip-count limits.
+    /// @param config Configuration copied into the pass instance.
     explicit LoopUnroll(LoopUnrollConfig config = {}) : config_(config) {}
 
     /// @brief Identifier used when registering the pass.
+    /// @return The stable pass name `"loop-unroll"`.
     std::string_view id() const override;
 
     /// @brief Run loop unrolling over @p function.
+    /// @param function Function whose eligible loops are expanded in place.
+    /// @param analysis Manager used to recompute loop and CFG snapshots after each rewrite.
+    /// @return All analyses when unchanged; otherwise module analyses only are preserved.
     PreservedAnalyses run(core::Function &function, AnalysisManager &analysis) override;
 
   private:
@@ -56,6 +61,7 @@ class LoopUnroll : public FunctionPass {
 };
 
 /// @brief Register the loop unrolling pass with the provided registry.
+/// @param registry Registry that receives the sequential function-pass factory.
 void registerLoopUnrollPass(PassRegistry &registry);
 
 } // namespace il::transform

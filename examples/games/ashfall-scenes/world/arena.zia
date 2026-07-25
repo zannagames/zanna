@@ -1,0 +1,338 @@
+// =============================================================================
+// world/arena.zia — the graybox test arena (movement + perf standing scene)
+// =============================================================================
+//
+// A 40x40 box canyon with a floor, perimeter walls, crates/ramps for movement
+// tuning, and eight target dummies with named hit regions. It never ships in the
+// campaign but is the permanent perf + tuning scene. Geometry is spawned as
+// retained Entity3D nodes (engine draws/culls/shadows them); collision is
+// matching static physics bodies. Three lighting setups cycle for feel checks.
+// =============================================================================
+module arena;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+bind "../weapons/targets" as targets;
+bind "../assets/textures" as textures;
+
+var HALF: Float = 20.0;         // arena half-extent
+var WALL_H: Float = 5.0;
+var DUMMY_COUNT: Integer = 8;
+
+class Arena {
+    hide Game3D.World3D world;
+    hide G3D.Canvas3D canvas;
+    hide G3D.PhysicsWorld3D phys;
+    hide G3D.Material3D matFloor;
+    hide G3D.Material3D matWall;
+    hide G3D.Material3D matCrate;
+    hide G3D.Material3D matDummy;
+    hide G3D.Material3D matDummyHit;
+    // Target dummies (parallel lists).
+    hide List[Float] dummyX;
+    hide List[Float] dummyY;
+    hide List[Float] dummyZ;
+    hide List[Integer] dummyAlive;
+    hide List[Float] dummyFlash;
+    hide List[Integer] dummyHits;
+    hide List[Float] dummyHealth;
+    hide List[Game3D.Entity3D] dummyNode;
+    hide List[Game3D.Entity3D] dummyHeadNode;
+    hide List[G3D.PhysicsBody3D] dummyTorso;
+    hide List[G3D.PhysicsBody3D] dummyHead;
+    hide List[Game3D.Entity3D] ownedNodes;
+    hide List[G3D.PhysicsBody3D] ownedBodies;
+    hide Boolean built;
+    hide Integer lightMode;         // 0 noon / 1 dusk / 2 interior
+    hide Integer killCount;
+
+    expose func init() {
+        dummyX = []; dummyY = []; dummyZ = [];
+        dummyAlive = []; dummyFlash = []; dummyHits = []; dummyHealth = [];
+        dummyNode = []; dummyHeadNode = []; dummyTorso = []; dummyHead = [];
+        ownedNodes = []; ownedBodies = [];
+        built = false;
+        lightMode = 0;
+        killCount = 0;
+    }
+
+    hide textures.TextureLib texLib;
+
+    expose func setup(w: Game3D.World3D, tex: textures.TextureLib) {
+        if built { return; }
+        world = w;
+        canvas = w.Canvas;
+        phys = w.Physics;
+        texLib = tex;
+        ownedNodes = []; ownedBodies = [];
+        dummyX = []; dummyY = []; dummyZ = [];
+        dummyAlive = []; dummyFlash = []; dummyHits = []; dummyHealth = [];
+        dummyNode = []; dummyHeadNode = []; dummyTorso = []; dummyHead = [];
+        killCount = 0;
+        G3D.Canvas3D.ClearLights(canvas);
+        buildMaterials();
+        buildFloorAndWalls();
+        buildProps();
+        buildDummies();
+        applyLighting(0);
+        built = true;
+    }
+
+    hide func buildMaterials() {
+        matFloor = G3D.Material3D.PBR(0.22, 0.23, 0.26);
+        matFloor.Roughness = 0.85;
+        matWall = G3D.Material3D.PBR(0.30, 0.31, 0.34);
+        matWall.Roughness = 0.9;
+        matCrate = G3D.Material3D.PBR(0.45, 0.38, 0.22);
+        matCrate.Roughness = 0.7;
+        if texLib != null {
+            matFloor = texLib.mat(textures.SURF_METAL, 0.40, 0.42, 0.46);
+            matWall = texLib.mat(textures.SURF_METAL, 0.46, 0.48, 0.52);
+            matCrate = texLib.mat(textures.SURF_HULL, 0.5, 0.42, 0.3);
+        }
+        matDummy = G3D.Material3D.FromColor(0.70, 0.24, 0.20);
+        matDummyHit = G3D.Material3D.FromColor(1.0, 0.85, 0.2);
+    }
+
+    // Spawn a visual box node + a matching static collider.
+    hide func box(mat: G3D.Material3D, cx: Float, cy: Float, cz: Float,
+                  hx: Float, hy: Float, hz: Float) -> Game3D.Entity3D {
+        var mesh = G3D.Mesh3D.Box(hx * 2.0, hy * 2.0, hz * 2.0);
+        var e = Game3D.Entity3D.New();
+        e.Mesh = mesh;
+        e.Material = mat;
+        e.SetPosition(cx, cy, cz);
+        world.Spawn(e);
+        ownedNodes.Add(e);
+        var body = G3D.PhysicsBody3D.NewAABB(hx, hy, hz, 0.0);
+        G3D.PhysicsBody3D.SetPosition(body, cx, cy, cz);
+        G3D.PhysicsWorld3D.Add(phys, body);
+        ownedBodies.Add(body);
+        return e;
+    }
+
+    // Visual-only box (no collider) — used for the dummy bodies.
+    hide func visBox(mat: G3D.Material3D, cx: Float, cy: Float, cz: Float,
+                     hx: Float, hy: Float, hz: Float) -> Game3D.Entity3D {
+        var mesh = G3D.Mesh3D.Box(hx * 2.0, hy * 2.0, hz * 2.0);
+        var e = Game3D.Entity3D.New();
+        e.Mesh = mesh;
+        e.Material = mat;
+        e.SetPosition(cx, cy, cz);
+        world.Spawn(e);
+        ownedNodes.Add(e);
+        return e;
+    }
+
+    hide func buildFloorAndWalls() {
+        // Floor: thin slab centered under y=0 so the top surface is y=0.
+        box(matFloor, 0.0, -0.25, 0.0, HALF, 0.25, HALF);
+        // Four perimeter walls.
+        box(matWall, 0.0, WALL_H * 0.5, 0.0 - HALF, HALF, WALL_H * 0.5, 0.4);
+        box(matWall, 0.0, WALL_H * 0.5, HALF, HALF, WALL_H * 0.5, 0.4);
+        box(matWall, 0.0 - HALF, WALL_H * 0.5, 0.0, 0.4, WALL_H * 0.5, HALF);
+        box(matWall, HALF, WALL_H * 0.5, 0.0, 0.4, WALL_H * 0.5, HALF);
+    }
+
+    hide func buildProps() {
+        // A cluster of crates and a ramp for movement tuning.
+        box(matCrate, -6.0, 0.6, -4.0, 0.6, 0.6, 0.6);
+        box(matCrate, -6.0, 0.6, -5.4, 0.6, 0.6, 0.6);
+        box(matCrate, -6.0, 1.8, -4.7, 0.6, 0.6, 0.6);
+        box(matCrate, 5.0, 0.4, 3.0, 1.0, 0.4, 1.0);
+        box(matCrate, 7.2, 0.9, 3.0, 1.0, 0.9, 1.0);
+        box(matCrate, 9.4, 1.5, 3.0, 1.0, 1.5, 1.0);
+        // A catwalk platform.
+        var matWalk = matWall;
+        if texLib != null { matWalk = texLib.mat(textures.SURF_GRATE, 0.42, 0.44, 0.48); }
+        box(matWalk, 0.0, 2.6, 8.0, 4.0, 0.2, 1.5);
+    }
+
+    hide func buildDummies() {
+        var i = 0;
+        while i < DUMMY_COUNT {
+            var ang = (i + 0.0) / (DUMMY_COUNT + 0.0) * 6.2831853;
+            var r = 11.0;
+            var dx = Math.Cos(ang) * r;
+            var dz = Math.Sin(ang) * r;
+            dummyX.Add(dx);
+            dummyY.Add(0.0);
+            dummyZ.Add(dz);
+            dummyAlive.Add(1);
+            dummyFlash.Add(0.0);
+            dummyHits.Add(0);
+            dummyHealth.Add(100.0);
+            // Colored zone pad under each firing lane (alternating hues).
+            var padMat = G3D.Material3D.FromColor(0.2, 0.4, 0.6);
+            if i % 2 == 1 { padMat = G3D.Material3D.FromColor(0.55, 0.35, 0.2); }
+            padMat.EmissiveIntensity = 0.6;
+            visBox(padMat, dx, 0.015, dz, 1.1, 0.015, 1.1);
+            // Visual body + head.
+            var bodyNode = visBox(matDummy, dx, 0.9, dz, 0.35, 0.9, 0.25);
+            var headNode = visBox(matDummy, dx, 2.0, dz, 0.28, 0.28, 0.28);
+            dummyNode.Add(bodyNode);
+            dummyHeadNode.Add(headNode);
+            // Shootable colliders (torso + head), tagged on the DUMMY layer.
+            var torso = G3D.PhysicsBody3D.NewAABB(0.35, 0.9, 0.25, 0.0);
+            G3D.PhysicsBody3D.SetPosition(torso, dx, 0.9, dz);
+            G3D.PhysicsBody3D.set_CollisionLayer(torso, config.LAYER_DUMMY);
+            G3D.PhysicsWorld3D.Add(phys, torso);
+            var head = G3D.PhysicsBody3D.NewAABB(0.28, 0.28, 0.28, 0.0);
+            G3D.PhysicsBody3D.SetPosition(head, dx, 2.0, dz);
+            G3D.PhysicsBody3D.set_CollisionLayer(head, config.LAYER_DUMMY);
+            G3D.PhysicsWorld3D.Add(phys, head);
+            dummyTorso.Add(torso);
+            dummyHead.Add(head);
+            ownedBodies.Add(torso);
+            ownedBodies.Add(head);
+            i = i + 1;
+        }
+    }
+
+    // Remove every retained node/body and all target registrations before a
+    // campaign map is built. Without this teardown the arena floor and walls
+    // remained physically present beneath later missions.
+    expose func unload(reg: targets.TargetRegistry) {
+        if built == false { return; }
+        var i = 0;
+        while i < DUMMY_COUNT {
+            reg.unregisterEntity(config.TGT_DUMMY, i);
+            i = i + 1;
+        }
+        i = 0;
+        while i < ownedNodes.Count {
+            world.Despawn(ownedNodes[i]);
+            i = i + 1;
+        }
+        i = 0;
+        while i < ownedBodies.Count {
+            G3D.PhysicsWorld3D.Remove(phys, ownedBodies[i]);
+            i = i + 1;
+        }
+        ownedNodes = []; ownedBodies = [];
+        dummyX = []; dummyY = []; dummyZ = [];
+        dummyAlive = []; dummyFlash = []; dummyHits = []; dummyHealth = [];
+        dummyNode = []; dummyHeadNode = []; dummyTorso = []; dummyHead = [];
+        killCount = 0;
+        built = false;
+    }
+
+    expose func isBuilt() -> Boolean { return built; }
+
+    // Register dummy colliders with the damage system (call after setup).
+    expose func registerTargets(reg: targets.TargetRegistry) {
+        var i = 0;
+        while i < DUMMY_COUNT {
+            reg.register(dummyTorso[i], config.TGT_DUMMY, i, config.REGION_BODY);
+            reg.register(dummyHead[i], config.TGT_DUMMY, i, config.REGION_HEAD);
+            i = i + 1;
+        }
+    }
+
+    // Drain EV_DAMAGE events aimed at dummies and apply them.
+    expose func applyDamageEvents(bus: events.EventBus, reg: targets.TargetRegistry) {
+        var n = bus.getCount();
+        var i = 0;
+        while i < n {
+            if bus.kindAt(i) == config.EV_DAMAGE && bus.aAt(i) == config.TGT_DUMMY {
+                var idx = bus.bAt(i);
+                var amt = bus.xAt(i);
+                damageDummy(idx, amt, reg);
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func damageDummy(i: Integer, amt: Float, reg: targets.TargetRegistry) {
+        if i < 0 || i >= DUMMY_COUNT { return; }
+        if dummyAlive[i] == 0 { return; }
+        dummyHits[i] = dummyHits[i] + 1;
+        dummyFlash[i] = 0.12;
+        dummyNode[i].Material = matDummyHit;
+        dummyHealth[i] = dummyHealth[i] - amt;
+        if dummyHealth[i] <= 0.0 {
+            dummyAlive[i] = 0;
+            killCount = killCount + 1;
+            reg.unregisterEntity(config.TGT_DUMMY, i);
+            // Sink both visual zones and their query bodies under the floor.
+            dummyNode[i].SetPosition(dummyX[i], -50.0, dummyZ[i]);
+            dummyHeadNode[i].SetPosition(dummyX[i], -50.0, dummyZ[i]);
+            G3D.PhysicsBody3D.SetPosition(dummyTorso[i], dummyX[i], -50.0, dummyZ[i]);
+            G3D.PhysicsBody3D.SetPosition(dummyHead[i], dummyX[i], -50.0, dummyZ[i]);
+        }
+    }
+
+    expose func dummyHitCount(i: Integer) -> Integer {
+        if i < 0 || i >= DUMMY_COUNT { return 0; }
+        return dummyHits[i];
+    }
+    expose func totalDummyHits() -> Integer {
+        var n = 0;
+        var i = 0;
+        while i < DUMMY_COUNT { n = n + dummyHits[i]; i = i + 1; }
+        return n;
+    }
+    expose func killCountTotal() -> Integer { return killCount; }
+    expose func dummyAliveCount() -> Integer {
+        var n = 0;
+        var i = 0;
+        while i < DUMMY_COUNT { n = n + dummyAlive[i]; i = i + 1; }
+        return n;
+    }
+    expose func dummyPosX(i: Integer) -> Float { return dummyX[i]; }
+    expose func dummyPosZ(i: Integer) -> Float { return dummyZ[i]; }
+    expose func dummyHealthAt(i: Integer) -> Float { return dummyHealth[i]; }
+    expose func dummyIsAlive(i: Integer) -> Boolean { return dummyAlive[i] == 1; }
+    expose func dummyCount() -> Integer { return DUMMY_COUNT; }
+
+    expose func update(dt: Float) {
+        var i = 0;
+        while i < DUMMY_COUNT {
+            if dummyFlash[i] > 0.0 {
+                dummyFlash[i] = dummyFlash[i] - dt;
+                if dummyFlash[i] <= 0.0 {
+                    dummyNode[i].Material = matDummy;
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // --- Lighting setups -----------------------------------------------------
+    expose func cycleLighting() { applyLighting((lightMode + 1) % 3); }
+    expose func getLightMode() -> Integer { return lightMode; }
+
+    hide func applyLighting(mode: Integer) {
+        // The environment rig (fx/lighting) owns ambient + key/fill at slots 0-7.
+        // The dev lighting cycle only varies the arena's PRACTICALS at slots 8+.
+        lightMode = mode;
+        var k = 0;
+        while k < 8 {
+            var dark = G3D.Light3D.Point(Math.Vec3.New(0.0, -100.0, 0.0), 0.0, 0.0, 0.0, 8.0);
+            G3D.Canvas3D.SetLight(canvas, 8 + k, dark);
+            k = k + 1;
+        }
+        if mode == 1 {
+            // Dusk accents: two warm corner points.
+            var p0 = G3D.Light3D.Point(Math.Vec3.New(-12.0, 3.0, -12.0), 1.0, 0.55, 0.3, 16.0);
+            G3D.Canvas3D.SetLight(canvas, 8, p0);
+            var p1 = G3D.Light3D.Point(Math.Vec3.New(12.0, 3.0, 12.0), 1.0, 0.55, 0.3, 16.0);
+            G3D.Canvas3D.SetLight(canvas, 9, p1);
+        } else if mode == 2 {
+            // Interior ring of cool points.
+            k = 0;
+            while k < 8 {
+                var ang = (k + 0.0) / 8.0 * 6.2831853;
+                var lx = Math.Cos(ang) * 10.0;
+                var lz = Math.Sin(ang) * 10.0;
+                var pl = G3D.Light3D.Point(Math.Vec3.New(lx, 3.0, lz), 0.6, 0.7, 0.9, 14.0);
+                G3D.Canvas3D.SetLight(canvas, 8 + k, pl);
+                k = k + 1;
+            }
+        }
+    }
+}

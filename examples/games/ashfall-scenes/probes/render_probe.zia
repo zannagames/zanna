@@ -1,0 +1,151 @@
+// =============================================================================
+// probes/render_probe.zia — P5 gate: full render pipeline draws headless
+// =============================================================================
+//
+// The sim probes never render; this one drives real frames on the software
+// backend to prove the whole draw path is trap-free: retained scene geometry,
+// projectiles + particle FX in the scene pass, the post-FX chain, and the 2D
+// HUD overlay. It boots a campaign level and the arena, fires weapons so FX and
+// projectiles are live, and renders a batch of frames.
+// =============================================================================
+module render_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "../config" as config;
+bind "../game" as game;
+bind "../core/mathutil" as M;
+bind "../ui/menu" as menu;
+
+func fail(msg: String) { Terminal.Say("FAIL: " + msg); }
+
+func tick(g: game.Game) {
+    g.tickSim(config.FIXED_DT);
+    g.stepPhysics(config.FIXED_DT);
+}
+
+func start() {
+    // --- Campaign level: scene + HUD + post-FX ------------------------------
+    var g = new game.Game();
+    g.initCore(0xAA01);
+    g.setScripted(true);
+    g.setLevel(config.LV_L1);
+    g.boot(true, false);
+    g.devEnablePostfx();
+    g.devSetGod(true);
+    g.scriptFlashlight(true);
+    tick(g);
+    g.scriptFlashlight(false);
+    if g.devFlashlightActive() == false { fail("retained flashlight spot did not enable"); return; }
+    // Fire the SMG so particles + projectiles + hitmarkers are exercised.
+    g.getWeapons().switchTo(config.W_CYCLER);
+    var i = 0;
+    while i < 24 {
+        g.scriptAimAt(0.0, 1.0, 0.0);
+        g.scriptFire(i % 2 == 0);
+        tick(g);
+        g.devRenderFrame();
+        i = i + 1;
+    }
+
+    // --- Arena: projectiles + blast FX --------------------------------------
+    var a = new game.Game();
+    a.initCore(0xAA02);
+    a.setScripted(true);
+    a.setLevel(config.LV_ARENA);
+    a.boot(true, false);
+    a.devSpawnPlayer(0.0, 0.2, 0.0);
+    a.getWeapons().switchTo(config.W_ARC);   // lobbed grenades -> blast FX
+    var j = 0;
+    while j < 24 {
+        a.scriptAimAt(10.0, 0.5, 0.0);
+        a.scriptFire(j < 8);
+        tick(a);
+        a.devRenderFrame();
+        j = j + 1;
+    }
+
+    // --- Per-level render sweep: every builder + sky + props + terrain draw
+    // one real frame each (trap-net across the whole content set).
+    var lv = config.LV_L1;
+    while lv <= config.LV_HUB {
+        var s = new game.Game();
+        s.initCore(0xAA10 + lv);
+        s.setScripted(true);
+        s.setLevel(lv);
+        s.boot(true, false);
+        tick(s);
+        s.devRenderFrame();
+        lv = lv + 1;
+    }
+
+    // --- Title + Armory + options frames (frontend overlay paths). -----------
+    var t = new game.Game();
+    t.initCore(0xAA30);
+    t.setScripted(true);
+    // Generic headless boot uses SaveManager's in-memory transient backend;
+    // this render-only path needs no disk state and cannot race menu persistence.
+    t.boot(true, false);
+    t.enterTitle();
+    tick(t);
+    t.devRenderFrame();
+    t.devMenuNav(true);
+    t.devMenuNav(true);
+    t.devMenuConfirm();
+    if t.devMenuSub() != menu.SUB_ARMORY { fail("could not open rendered Armory"); return; }
+    t.devRenderFrame();
+    t.devMenuBack();
+    t.devMenuNav(true);
+    t.devMenuNav(true);
+    t.devMenuNav(true);
+    t.devMenuConfirm();
+    if t.devMenuSub() != menu.SUB_OPTIONS { fail("could not open rendered options"); return; }
+    t.devRenderFrame();
+
+    // Completion stats + expanded menu panel.
+    var cm = new game.Game();
+    cm.initCore(0xAA32);
+    cm.setScripted(true);
+    cm.setLevel(config.LV_L1);
+    cm.boot(true, false);
+    cm.requestState(config.ST_LEVEL_COMPLETE);
+    tick(cm);
+    cm.devRenderFrame();
+
+    // --- View-model frame per weapon class (composite fallback path). --------
+    var v = new game.Game();
+    v.initCore(0xAA31);
+    v.setScripted(true);
+    v.setLevel(config.LV_ARENA);
+    v.boot(true, false);
+    v.devSpawnPlayer(0.0, 0.2, 0.0);
+    var w = 0;
+    while w < config.WEAPON_COUNT {
+        v.devGiveWeapon(w);
+        v.devSwitchWeapon(w);
+        tick(v);
+        v.devRenderFrame();
+        w = w + 1;
+    }
+    var minY = 1000.0;
+    var maxY = -1000.0;
+    var b = 0;
+    while b < 90 {
+        v.scriptMove(0.0, 1.0);
+        v.scriptSprint(b > 30);
+        tick(v);
+        var oy = v.devViewOffY();
+        if oy < minY { minY = oy; }
+        if oy > maxY { maxY = oy; }
+        b = b + 1;
+    }
+    v.scriptMove(0.0, 0.0);
+    if maxY - minY < 0.018 {
+        fail("viewmodel bob amplitude too small: " + toString(M.roundi((maxY - minY) * 1000.0)));
+        return;
+    }
+
+    Terminal.Say("renderedFrames=72 levelSweep=ok menus=ok viewmodels=ok bob=" +
+                 toString(M.roundi((maxY - minY) * 1000.0)) + " pipeline=ok");
+    Terminal.Say("RESULT: ok");
+    Terminal.Say("PASS");
+}

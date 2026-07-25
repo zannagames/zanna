@@ -18,6 +18,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Declares conservative redundant exception-region elimination.
+
 #pragma once
 
 #include "il/core/Module.hpp"
@@ -25,6 +28,9 @@
 namespace il::transform {
 
 /// @brief Remove redundant eh.push/eh.pop pairs from all functions.
+/// @details Only same-block pairs with no nested push or potentially trapping
+///          instruction between them are removed; handler cleanup is delegated
+///          to later CFG/DCE passes.
 /// @param module Module to optimize.
 /// @return True if any EH pairs were removed.
 bool ehOpt(il::core::Module &module);

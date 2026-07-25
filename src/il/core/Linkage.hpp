@@ -37,6 +37,8 @@ enum class Linkage {
 };
 
 /// @brief Return a human-readable name for a Linkage value.
+/// @param l Linkage enumerator to format.
+/// @return Static lowercase linkage name, or `unknown` for an invalid value.
 inline const char *linkageName(Linkage l) {
     switch (l) {
         case Linkage::Internal:

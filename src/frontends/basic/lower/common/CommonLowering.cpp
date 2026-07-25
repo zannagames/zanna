@@ -16,6 +16,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+/// @file
+/// @brief Implements reusable primitive IL emission for BASIC lowerers.
+
 #include "frontends/basic/lower/common/CommonLowering.hpp"
 
 #include "frontends/basic/Lowerer.hpp"
@@ -352,6 +355,11 @@ void CommonLowering::emitCall(const std::string &callee, const std::vector<Value
     block->instructions.push_back(in);
 }
 
+/// @brief Emits a value-returning indirect call.
+/// @param ty Result type recorded in the indirect signature.
+/// @param callee Function-pointer SSA value, stored as the first operand.
+/// @param args Ordered call arguments appended after @p callee.
+/// @return Temporary receiving the indirect call result.
 CommonLowering::Value CommonLowering::emitCallIndirectRet(Type ty,
                                                           Value callee,
                                                           const std::vector<Value> &args) {
@@ -372,6 +380,9 @@ CommonLowering::Value CommonLowering::emitCallIndirectRet(Type ty,
     return Value::temp(id);
 }
 
+/// @brief Emits a void indirect call.
+/// @param callee Function-pointer SSA value, stored as the first operand.
+/// @param args Ordered call arguments appended after @p callee.
 void CommonLowering::emitCallIndirect(Value callee, const std::vector<Value> &args) {
     Instr in;
     in.op = Opcode::CallIndirect;

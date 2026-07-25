@@ -1,0 +1,200 @@
+// =============================================================================
+// world/objectives.zia — mission objective tracking
+// =============================================================================
+//
+// A small ordered list of objectives per level. Each has a kind, parameters,
+// and progress; the level completes when every required objective is done.
+// Objectives advance from gameplay signals: the player's position (REACH), the
+// kill counter (KILL/CLEAR), interacts (ACTIVATE), a timer (SURVIVE), or
+// collectibles (COLLECT). Completion posts EV_OBJECTIVE for HUD/audio/stats.
+// =============================================================================
+module objectives;
+
+bind "../config" as config;
+bind "../core/mathutil" as M;
+bind "../core/events" as events;
+
+var OBJ_REACH: Integer = 0;
+var OBJ_KILL: Integer = 1;
+var OBJ_ACTIVATE: Integer = 2;
+var OBJ_SURVIVE: Integer = 3;
+var OBJ_COLLECT: Integer = 4;
+var OBJ_CLEAR: Integer = 5;
+
+class Objectives {
+    hide List[Integer] kind;
+    hide List[Float] tx; hide List[Float] tz; hide List[Float] radius;
+    hide List[Integer] targetCount;
+    hide List[Integer] progress;
+    hide List[Integer] done;
+    hide List[String] text;
+    hide List[String] prompt;
+    hide List[Integer] optional;
+    hide List[Integer] prereq;
+    hide List[Float] timer;
+    hide Integer killBaseline;      // killCount at objective start (for KILL deltas)
+
+    expose func init() {
+        kind = []; tx = []; tz = []; radius = []; targetCount = []; progress = [];
+        done = []; text = []; prompt = []; optional = []; prereq = []; timer = [];
+        killBaseline = 0;
+    }
+
+    expose func clear() {
+        kind = []; tx = []; tz = []; radius = []; targetCount = []; progress = [];
+        done = []; text = []; prompt = []; optional = []; prereq = []; timer = [];
+        killBaseline = 0;
+    }
+
+    /// Add an objective that is active immediately unless it is optional.
+    ///
+    /// Objective order is still the mission spine, but `addAfter` can author a
+    /// dependency when a later objective should be hidden behind a completed
+    /// gate, wave, or console beat.
+    expose func add(k: Integer, x: Float, z: Float, r: Float, count: Integer, txt: String, opt: Boolean) {
+        kind.Add(k); tx.Add(x); tz.Add(z); radius.Add(r); targetCount.Add(count);
+        progress.Add(0); done.Add(0); text.Add(txt);
+        prompt.Add(defaultPrompt(k));
+        if opt { optional.Add(1); } else { optional.Add(0); }
+        prereq.Add(-1);
+        timer.Add(0.0);
+    }
+
+    /// Add an objective that unlocks only after `after` has completed.
+    ///
+    /// This creates explicit objective chains for level scripting. The HUD,
+    /// completion check, update loop, interactions, and collection handling all
+    /// ignore locked objectives so the player sees one clear next step.
+    expose func addAfter(k: Integer, x: Float, z: Float, r: Float, count: Integer,
+                         txt: String, opt: Boolean, after: Integer) {
+        add(k, x, z, r, count, txt, opt);
+        prereq[prereq.Count - 1] = after;
+    }
+
+    /// Return the default HUD prompt for an objective kind.
+    ///
+    /// Level builders can override this text with `setPrompt` when a mission
+    /// needs more specific player-facing direction.
+    hide func defaultPrompt(k: Integer) -> String {
+        if k == OBJ_REACH { return "MOVE TO MARKER"; }
+        if k == OBJ_ACTIVATE { return "FIND THE CONSOLE"; }
+        if k == OBJ_KILL || k == OBJ_CLEAR { return "ELIMINATE HOSTILES"; }
+        if k == OBJ_SURVIVE { return "HOLD POSITION"; }
+        if k == OBJ_COLLECT { return "COLLECT DATACORES"; }
+        return "";
+    }
+
+    /// Override the HUD prompt for a specific objective.
+    expose func setPrompt(i: Integer, txt: String) {
+        if i >= 0 && i < prompt.Count { prompt[i] = txt; }
+    }
+
+    expose func setKillBaseline(k: Integer) { killBaseline = k; }
+    expose func count() -> Integer { return kind.Count; }
+    expose func textOf(i: Integer) -> String { return text[i]; }
+    /// Return the HUD prompt for an objective.
+    expose func promptOf(i: Integer) -> String { return prompt[i]; }
+    expose func isDone(i: Integer) -> Boolean { return done[i] == 1; }
+    expose func progressOf(i: Integer) -> Integer { return progress[i]; }
+    expose func timerOf(i: Integer) -> Float { return timer[i]; }
+    expose func targetOf(i: Integer) -> Integer { return targetCount[i]; }
+    expose func isOptional(i: Integer) -> Boolean { return optional[i] == 1; }
+    /// Return the interaction or reach radius authored for an objective.
+    expose func radiusOf(i: Integer) -> Float { return radius[i]; }
+    /// Return the prerequisite objective index, or -1 when this objective is open.
+    expose func prereqOf(i: Integer) -> Integer { return prereq[i]; }
+    /// Return true when an objective can currently receive progress.
+    expose func isUnlocked(i: Integer) -> Boolean {
+        if i < 0 || i >= kind.Count { return false; }
+        var p = prereq[i];
+        if p < 0 { return true; }
+        if p >= done.Count { return false; }
+        return done[p] == 1;
+    }
+
+    expose func kindOf(i: Integer) -> Integer { return kind[i]; }
+    expose func txAt(i: Integer) -> Float { return tx[i]; }
+    expose func tzAt(i: Integer) -> Float { return tz[i]; }
+
+    // Restore checkpointed objective state after the authored objective table
+    // has been rebuilt for a level.
+    expose func restoreAt(i: Integer, wasDone: Boolean, progressNow: Integer, timerNow: Float) {
+        if i < 0 || i >= kind.Count { return; }
+        if wasDone { done[i] = 1; } else { done[i] = 0; }
+        progress[i] = M.clampi(progressNow, 0, 1000000);
+        timer[i] = M.maxf(0.0, timerNow);
+    }
+
+    // The first not-yet-done required objective, or -1 if all required are done.
+    expose func activeIndex() -> Integer {
+        var i = 0;
+        while i < kind.Count {
+            if optional[i] == 0 && done[i] == 0 && isUnlocked(i) { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    expose func allRequiredDone() -> Boolean { return activeIndex() < 0; }
+
+    /// Complete any unlocked ACTIVATE objective within interaction range.
+    expose func markInteract(x: Float, z: Float, bus: events.EventBus) {
+        var i = 0;
+        while i < kind.Count {
+            if done[i] == 0 && kind[i] == OBJ_ACTIVATE && isUnlocked(i) {
+                if M.distXZ(x, z, tx[i], tz[i]) < radius[i] {
+                    doneNow(i, bus);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    /// Credit one collected objective item to the first unlocked COLLECT objective.
+    expose func addCollect(bus: events.EventBus) {
+        var i = 0;
+        while i < kind.Count {
+            if done[i] == 0 && kind[i] == OBJ_COLLECT && isUnlocked(i) {
+                progress[i] = progress[i] + 1;
+                if progress[i] >= targetCount[i] { doneNow(i, bus); }
+                return;
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func complete(i: Integer) {
+        done[i] = 1;
+    }
+
+    // Advance timed/positional/kill objectives.
+    expose func update(dt: Float, px: Float, pz: Float, totalKills: Integer,
+                       enemiesAlive: Integer, bus: events.EventBus) {
+        var i = 0;
+        while i < kind.Count {
+            if done[i] == 0 && isUnlocked(i) {
+                var k = kind[i];
+                if k == OBJ_REACH {
+                    if M.distXZ(px, pz, tx[i], tz[i]) < radius[i] { doneNow(i, bus); }
+                } else if k == OBJ_KILL {
+                    progress[i] = totalKills - killBaseline;
+                    if progress[i] >= targetCount[i] { doneNow(i, bus); }
+                } else if k == OBJ_CLEAR {
+                    if totalKills > killBaseline && enemiesAlive == 0 { doneNow(i, bus); }
+                } else if k == OBJ_SURVIVE {
+                    // targetCount is authored in seconds; progress is displayed
+                    // as elapsed seconds so a 30s holdout really lasts 30s.
+                    timer[i] = timer[i] + dt;
+                    progress[i] = M.roundi(timer[i]);
+                    if timer[i] >= targetCount[i] + 0.0 { doneNow(i, bus); }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func doneNow(i: Integer, bus: events.EventBus) {
+        done[i] = 1;
+        bus.pushKind(config.EV_OBJECTIVE, i, 1);
+    }
+}

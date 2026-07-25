@@ -4,8 +4,26 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
 // File: src/frontends/basic/sem/OverloadResolution.cpp
-// Purpose: Resolve method overloads (incl. property accessors) on a class.
+// Purpose: Resolve user-class method and property-accessor overloads using
+//          inheritance-aware candidate collection and deterministic conversion
+//          ranking.
+// Key invariants:
+//   * Derived declarations shadow same-named base declarations.
+//   * Only exact matches and INTEGER-to-DOUBLE widening are viable.
+//   * Private candidates are visible only from their declaring class.
+// Ownership: Resolution results borrow class and method metadata from OopIndex;
+//            diagnostic text and returned name strings are owned by the result.
+// References: docs/internals/codemap/basic.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Implements BASIC user-defined method overload resolution.
+/// @details Collects candidates through the inheritance chain, filters them by
+///          access and receiver kind, and ranks viable signatures.
+//
 //===----------------------------------------------------------------------===//
 
 #include "frontends/basic/sem/OverloadResolution.hpp"
@@ -17,6 +35,9 @@ namespace il::frontends::basic::sem {
 
 namespace {
 /// @brief True if an argument type exactly matches the expected parameter type.
+/// @param expect Parameter type declared by the candidate signature.
+/// @param got Argument type inferred at the call site.
+/// @return True when both canonical BASIC types are identical.
 static inline bool isExactMatch(::il::frontends::basic::Type expect,
                                 ::il::frontends::basic::Type got) noexcept {
     return expect == got;
@@ -25,6 +46,9 @@ static inline bool isExactMatch(::il::frontends::basic::Type expect,
 /// @brief True if @p got widens to @p expect via the only allowed numeric promotion (I64→F64).
 /// @details Integer widening is already canonicalized to I64, so the sole widening here is
 ///          passing an INTEGER (I64) argument to a DOUBLE (F64) parameter.
+/// @param expect Parameter type declared by the candidate signature.
+/// @param got Argument type inferred at the call site.
+/// @return True only for the canonical I64-to-F64 widening conversion.
 static inline bool isWideningAllowed(::il::frontends::basic::Type expect,
                                      ::il::frontends::basic::Type got) noexcept {
     // Only numeric widening: int->float64; integer to integer widening already canonicalized to
@@ -34,6 +58,10 @@ static inline bool isWideningAllowed(::il::frontends::basic::Type expect,
 }
 
 /// @brief Format a method signature as `Class.name(TYPE, ...)` for diagnostic messages.
+/// @param qclass Qualified class name to prefix to the signature.
+/// @param name Method or synthesized accessor name.
+/// @param mi Candidate metadata containing the parameter types.
+/// @return A BASIC-oriented signature string suitable for diagnostics.
 static inline std::string signatureText(std::string_view qclass,
                                         std::string_view name,
                                         const ClassInfo::MethodInfo &mi) {

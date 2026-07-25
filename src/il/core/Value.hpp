@@ -100,6 +100,10 @@ struct Value {
     static Value null();
 };
 
+/// @brief Render a value using canonical textual IL spelling.
+/// @param v Value to format.
+/// @return Temporary, literal, global-address, or null representation suitable
+///         for serialization and diagnostics.
 std::string toString(const Value &v);
 
 //===----------------------------------------------------------------------===//

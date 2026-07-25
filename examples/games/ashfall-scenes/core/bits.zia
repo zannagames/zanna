@@ -1,0 +1,42 @@
+// =============================================================================
+// core/bits.zia — the one audited home for bitwise primitives
+// =============================================================================
+//
+// Zia's W017/W018 lints flag every `^` and `&` to catch newcomers who meant
+// exponentiation or string concatenation. That confusion cannot occur here —
+// these are deliberate integer bit ops — so each primitive carries a local
+// `@suppress`. Every other module calls these helpers instead of writing raw
+// `^`/`&`, which keeps the whole codebase warning-clean while localizing the
+// "yes, really bitwise" assertion to this single, reviewed file.
+// =============================================================================
+module bits;
+
+// Mask a value to its low 32 bits.
+func mask32(x: Integer) -> Integer {
+    return x & 4294967295;   // @suppress(W018)
+}
+
+// Bitwise AND.
+func band(a: Integer, b: Integer) -> Integer {
+    return a & b;            // @suppress(W018)
+}
+
+// Bitwise OR (no lint on `|`).
+func bor(a: Integer, b: Integer) -> Integer {
+    return a | b;
+}
+
+// Bitwise XOR.
+func bxor(a: Integer, b: Integer) -> Integer {
+    return a ^ b;            // @suppress(W017)
+}
+
+// Left shift.
+func shl(x: Integer, n: Integer) -> Integer {
+    return x << n;
+}
+
+// Right shift.
+func shr(x: Integer, n: Integer) -> Integer {
+    return x >> n;
+}

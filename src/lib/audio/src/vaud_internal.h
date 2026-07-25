@@ -20,6 +20,9 @@
 
 /// @file
 /// @brief ZannaAUD internal definitions (not public API).
+/// @details Defines shared mixer state, streaming buffers, platform
+///          synchronization types, atomic counter helpers, and internal
+///          contracts used by the core and backend translation units.
 
 #pragma once
 
@@ -56,34 +59,58 @@ typedef struct {
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
+/// @brief Atomically store a 32-bit control value with release semantics.
+/// @param ptr Target control field.
+/// @param value Value to publish.
 static inline void vaud_atomic_store_i32(volatile int *ptr, int value) {
     (void)_InterlockedExchange((volatile long *)ptr, value);
 }
 
+/// @brief Atomically load a 32-bit control value with acquire semantics.
+/// @param ptr Control field to read.
+/// @return Current value.
 static inline int vaud_atomic_load_i32(const volatile int *ptr) {
     return (int)_InterlockedCompareExchange((volatile long *)ptr, 0, 0);
 }
 
+/// @brief Atomically add to a relaxed 64-bit diagnostic counter.
+/// @param ptr Counter to update.
+/// @param value Increment.
 static inline void vaud_atomic_add_u64(volatile uint64_t *ptr, uint64_t value) {
     (void)_InterlockedExchangeAdd64((volatile long long *)ptr, (long long)value);
 }
 
+/// @brief Atomically load a relaxed 64-bit diagnostic counter.
+/// @param ptr Counter to read.
+/// @return Current counter value.
 static inline uint64_t vaud_atomic_load_u64(const volatile uint64_t *ptr) {
     return (uint64_t)_InterlockedCompareExchange64((volatile long long *)ptr, 0, 0);
 }
 #else
+/// @brief Atomically store a 32-bit control value with release semantics.
+/// @param ptr Target control field.
+/// @param value Value to publish.
 static inline void vaud_atomic_store_i32(volatile int *ptr, int value) {
     __atomic_store_n(ptr, value, __ATOMIC_RELEASE);
 }
 
+/// @brief Atomically load a 32-bit control value with acquire semantics.
+/// @param ptr Control field to read.
+/// @return Current value.
 static inline int vaud_atomic_load_i32(const volatile int *ptr) {
     return __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
 }
 
+/// @brief Atomically add to a relaxed 64-bit diagnostic counter.
+/// @param ptr Counter to update.
+/// @param value Increment.
 static inline void vaud_atomic_add_u64(volatile uint64_t *ptr, uint64_t value) {
     __atomic_fetch_add(ptr, value, __ATOMIC_RELAXED);
 }
 
+/// @brief Atomically load a relaxed 64-bit diagnostic counter.
+/// @param ptr Counter to read.
+/// @return Current counter value.
 static inline uint64_t vaud_atomic_load_u64(const volatile uint64_t *ptr) {
     return __atomic_load_n(ptr, __ATOMIC_RELAXED);
 }
@@ -143,6 +170,7 @@ typedef struct {
 /// @brief Reset a voice's DSP state (pitch, fractional cursor, filters) to
 ///        pass-through defaults. Called whenever a voice is (re)started so a
 ///        recycled pool slot never inherits a previous sound's pitch/filter.
+/// @param voice Voice slot whose DSP fields are reinitialized.
 static inline void vaud_voice_reset_dsp(vaud_voice *voice) {
     voice->pitch = 1.0f;
     voice->frac_pos = 0.0;
@@ -326,6 +354,9 @@ void vaud_mixer_render(vaud_context_t ctx, int16_t *output, int32_t frames);
 ///          when ZANNA_AUDIO_SILENT was enabled as the context was created.
 ///          Platform backends must use this function; offline mixer tests should
 ///          continue to call vaud_mixer_render() directly.
+/// @param ctx Audio context.
+/// @param output Device-bound interleaved signed-16 PCM buffer.
+/// @param frames Number of frames to advance and render.
 void vaud_mixer_render_device(vaud_context_t ctx, int16_t *output, int32_t frames);
 
 /// @brief Allocate a voice for playback.
@@ -381,6 +412,7 @@ int vaud_wav_load_mem(const void *data,
 /// @param out_sample_rate Output: sample rate.
 /// @param out_channels Output: channel count.
 /// @param out_bits Output: bits per sample.
+/// @param out_format Output: WAV encoding identifier (PCM or IEEE float).
 /// @return 1 on success, 0 on failure.
 int vaud_wav_open_stream(const char *path,
                          void **out_file,
@@ -393,6 +425,10 @@ int vaud_wav_open_stream(const char *path,
                          int32_t *out_format);
 
 /// @brief Seek a WAV stream using a 64-bit file offset.
+/// @param file File handle returned by vaud_wav_open_stream().
+/// @param offset Signed byte offset interpreted according to @p origin.
+/// @param origin Standard seek origin constant.
+/// @return 1 on success, 0 on invalid input, range failure, or I/O error.
 int vaud_wav_seek_stream(void *file, int64_t offset, int origin);
 
 /// @brief Read frames from a streaming WAV file.
@@ -401,6 +437,7 @@ int vaud_wav_seek_stream(void *file, int64_t offset, int origin);
 /// @param frames Number of frames to read.
 /// @param channels Channel count.
 /// @param bits_per_sample Bits per sample.
+/// @param audio_format WAV encoding identifier.
 /// @return Number of frames actually read.
 int32_t vaud_wav_read_frames(void *file,
                              int16_t *samples,
@@ -412,6 +449,15 @@ int32_t vaud_wav_read_frames(void *file,
 /// @brief Read frames using caller-owned raw byte storage.
 /// @details Same conversion behavior as `vaud_wav_read_frames`, but avoids
 ///          allocating inside the mixer path.
+/// @param file File handle from vaud_wav_open_stream().
+/// @param samples Output interleaved signed-16 sample buffer.
+/// @param frames Maximum frames to read.
+/// @param channels Source channel count.
+/// @param bits_per_sample Source bits per sample.
+/// @param audio_format Source WAV encoding identifier.
+/// @param temp Caller-owned raw byte scratch storage.
+/// @param temp_size Scratch capacity in bytes.
+/// @return Number of complete frames decoded.
 int32_t vaud_wav_read_frames_buffered(void *file,
                                       int16_t *samples,
                                       int32_t frames,
@@ -451,6 +497,9 @@ void vaud_resample(const int16_t *input,
 int64_t vaud_resample_output_frames(int64_t in_frames, int32_t in_rate, int32_t out_rate);
 
 /// @brief Compute the byte size of an interleaved int16 PCM buffer.
+/// @param frames Number of sample frames.
+/// @param channels Interleaved channel count.
+/// @param out_bytes Output byte count set on success.
 /// @return 1 on success, 0 if frames/channels are invalid or overflow size_t.
 int vaud_pcm_s16_buffer_size(int64_t frames, int32_t channels, size_t *out_bytes);
 
@@ -468,11 +517,14 @@ int32_t vaud_music_fill_buffer(struct vaud_music *music, int32_t buf_idx);
 ///          slots or while the caller holds exclusive stream ownership. Loaders
 ///          may call this before publishing a stream to the context because no
 ///          other thread can observe it yet.
+/// @param music Stream whose available buffers are filled.
 void vaud_music_prefill_locked(struct vaud_music *music);
 
 /// @brief Rewind or seek a music stream to the given output frame.
 /// @details Resets format-specific decoder state, primes buffer 0, and leaves
 ///          the stream ready for subsequent playback from the requested frame.
+/// @param music Stream to reposition.
+/// @param target_frame Nonnegative frame index in output-rate coordinates.
 /// @return 1 on success, 0 if the stream could not be rewound or sought.
 int vaud_music_seek_output_frame(struct vaud_music *music, int64_t target_frame);
 
@@ -508,18 +560,24 @@ int64_t vaud_platform_now_ms(void);
 //===----------------------------------------------------------------------===//
 
 /// @brief Initialize a mutex.
+/// @param mutex Mutex storage to initialize.
+/// @return 1 on success, 0 on failure.
 int vaud_mutex_init(vaud_mutex_t *mutex);
 
 /// @brief Destroy a mutex.
+/// @param mutex Initialized mutex storage.
 void vaud_mutex_destroy(vaud_mutex_t *mutex);
 
 /// @brief Lock a mutex.
+/// @param mutex Initialized mutex to acquire.
 void vaud_mutex_lock(vaud_mutex_t *mutex);
 
 /// @brief Unlock a mutex.
+/// @param mutex Held mutex to release.
 void vaud_mutex_unlock(vaud_mutex_t *mutex);
 
 /// @brief Try to lock a mutex without blocking.
+/// @param mutex Initialized mutex to acquire.
 /// @return 1 if the lock was acquired, 0 otherwise.
 int vaud_mutex_trylock(vaud_mutex_t *mutex);
 

@@ -145,6 +145,10 @@ std::vector<Lowerer::Value> CallArgumentLowerer::lowerResolvedArgs(
 }
 
 /// @brief Lower a call expression's arguments using its resolved call binding.
+/// @param expr Call expression whose source arguments are lowered.
+/// @param paramTypes Resolved parameter types in declaration order.
+/// @param params Parameter declarations used for defaults and variadic
+///        metadata, or null when unavailable.
 /// @return Argument values in parameter order (see lowerResolvedArgs()).
 std::vector<Lowerer::Value> CallArgumentLowerer::lowerResolvedCallArgs(
     CallExpr *expr, const std::vector<TypeRef> &paramTypes, const std::vector<Param> *params) {
@@ -152,6 +156,10 @@ std::vector<Lowerer::Value> CallArgumentLowerer::lowerResolvedCallArgs(
 }
 
 /// @brief Lower a `new` expression's constructor arguments using its resolved binding.
+/// @param expr Allocation expression whose constructor arguments are lowered.
+/// @param paramTypes Resolved constructor parameter types.
+/// @param params Constructor parameter declarations used for defaults and
+///        variadic metadata, or null when unavailable.
 /// @return Argument values in parameter order (see lowerResolvedArgs()).
 std::vector<Lowerer::Value> CallArgumentLowerer::lowerResolvedNewArgs(
     NewExpr *expr, const std::vector<TypeRef> &paramTypes, const std::vector<Param> *params) {

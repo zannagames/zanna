@@ -1,0 +1,222 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_material_library_probe.zia
+// Purpose: Verify the project material library (materials.scene3d).
+// Key invariants:
+//   - Listing is fail-closed: naming violations invalidate the library
+//     instead of publishing a partial list.
+//   - Save to Library stages an independent clone, writes atomically, and
+//     refuses external conflicts; overwrites need an explicit second click.
+//   - Apply from Library clones per node in one canonical transaction with
+//     exact undo; the source scene stays self-contained.
+//   - Library operations never touch scene content, history, or dirty state.
+// Ownership/Lifetime:
+//   - The probe owns one AppShell and its temporary workspace directory.
+// Links: zannastudio/src/services/material_library_3d.zia,
+//        docs/adr/0189-project-material-library.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_material_library_probe;
+
+// ============================================================================
+// MODULE: scene_material_library_probe
+// PURPOSE: Regress ADR 0189 — fail-closed listing, atomic conflict-guarded
+//          saves, and batch-clone application semantics.
+//
+// WHERE-THIS-FITS: Display probe registered as
+//          zia_zannastudio_scene_material_library.
+//
+// TEACHING-NOTE: Every expectation reads back through the persisted
+//          materials.scene3d bytes or the committed scene document.
+// ============================================================================
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Terminal = Zanna.Terminal;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+
+func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.001;
+}
+
+func fail(shell: app_shell.AppShell,
+          workDir: String,
+          reason: String) {
+    if workDir != "" { Dir.RemoveAll(workDir); }
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func pump(editor: scene_editor_3d.SceneEditor3D,
+          doc: document.Document,
+          shell: app_shell.AppShell) {
+    editor.Pump(doc);
+    shell.Render();
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Material Library Probe", 1180, 780);
+
+    var workDir =
+        TempFile.CreateDirWithPrefix("zannastudio_matlib_probe_");
+    if workDir == "" {
+        fail(shell, "", "could not create the library workspace");
+        return;
+    }
+    var libraryPath = material_library_3d.PathForRoot(workDir);
+
+    // ------------------------------------------------------------------
+    // Fail-closed listing: duplicate names invalidate the whole library.
+    // ------------------------------------------------------------------
+    var invalid = SceneGraph.New();
+    var first = SceneNode.New();
+    first.Name = "Stone";
+    first.Material = Material3D.New();
+    var second = SceneNode.New();
+    second.Name = "stone";
+    second.Material = Material3D.New();
+    invalid.Add(first);
+    invalid.Add(second);
+    if invalid.Save(libraryPath) == 0 {
+        fail(shell, workDir, "could not stage the invalid library");
+        return;
+    }
+    var loaded = material_library_3d.LoadPath(libraryPath);
+    if loaded.valid or loaded.entries.count() != 0 {
+        fail(shell, workDir,
+             "duplicate names did not fail the library closed");
+        return;
+    }
+    File.Delete(libraryPath);
+
+    // ------------------------------------------------------------------
+    // Editor workflow over a real workspace root.
+    // ------------------------------------------------------------------
+    var project = new project_manager.ProjectManager();
+    project.Setup(null);
+    if project.OpenFolder(workDir) == false {
+        fail(shell, workDir, "could not open the library workspace");
+        return;
+    }
+    var editor = new scene_editor_3d.SceneEditor3D();
+    editor.Setup(shell.workbench.scene3DHost, shell.app);
+    editor.SetWorkspaceContext(project);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    sceneDoc.filePath = Path.Join(workDir, "level.scene3d");
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    pump(editor, sceneDoc, shell);
+
+    if editor.AddEmptyNode("Wall", -1) < 0
+       or editor.AddEmptyNode("Floor", -1) < 0 {
+        fail(shell, workDir, "could not author the library fixture");
+        return;
+    }
+    editor.ApplyViewportSelection(0, false, false);
+    if editor.ApplyNodeMaterial(
+           0, 0.8, 0.2, 0.1, 1.0, 0.9, 0.3, 1.0, 0, false, false)
+       == false {
+        fail(shell, workDir, "could not author the source material");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // Save to Library: creates materials.scene3d without touching the doc.
+    var saveBaseline = sceneDoc.content;
+    var saveRevision = editor.GetRevision();
+    editor.materialLibraryNameInput.SetText("Lava Rock");
+    pump(editor, sceneDoc, shell);
+    if editor.SaveSelectedMaterialToLibrary() == false
+       or File.Exists(libraryPath) == false
+       or sceneDoc.content != saveBaseline
+       or editor.GetRevision() != saveRevision {
+        fail(shell, workDir,
+             "Save to Library did not write atomically or dirtied the "
+             + "scene");
+        return;
+    }
+
+    // Overwrite needs an explicit second confirmation click.
+    if editor.SaveSelectedMaterialToLibrary() {
+        fail(shell, workDir,
+             "overwriting an existing name skipped confirmation");
+        return;
+    }
+    if editor.SaveSelectedMaterialToLibrary() == false {
+        fail(shell, workDir, "confirmed overwrite failed");
+        return;
+    }
+
+    // External conflict: touched bytes refuse the next save until reload.
+    var external = SceneGraph.New();
+    var externalNode = SceneNode.New();
+    externalNode.Name = "External";
+    externalNode.Material = Material3D.New();
+    external.Add(externalNode);
+    if external.Save(libraryPath) == 0 {
+        fail(shell, workDir, "could not simulate the external edit");
+        return;
+    }
+    editor.materialLibraryNameInput.SetText("Conflict Case");
+    pump(editor, sceneDoc, shell);
+    if editor.SaveSelectedMaterialToLibrary() {
+        fail(shell, workDir,
+             "an externally changed library was overwritten blindly");
+        return;
+    }
+    editor.ReloadMaterialLibrary();
+    pump(editor, sceneDoc, shell);
+
+    // Apply from Library: per-node clones, one transaction, exact undo.
+    var applySelection: List[Integer] = [];
+    applySelection.add(0);
+    applySelection.add(1);
+    editor.SelectSceneNodes(applySelection, 0);
+    editor.materialLibraryList.SelectIndex(0);
+    pump(editor, sceneDoc, shell);
+    var applyBaseline = sceneDoc.content;
+    var applyRevision = editor.GetRevision();
+    if editor.ApplyLibraryMaterialToSelection() == false
+       or editor.GetRevision() != applyRevision + 1
+       or editor.flatNodes.get(0).Material == null
+       or editor.flatNodes.get(1).Material == null
+       or editor.flatNodes.get(0).Material
+          == editor.flatNodes.get(1).Material {
+        fail(shell, workDir,
+             "library application was not per-node independent clones "
+             + "in one transaction");
+        return;
+    }
+    if editor.Undo() == false or sceneDoc.content != applyBaseline {
+        fail(shell, workDir, "library application did not undo exactly");
+        return;
+    }
+
+    project.CloseProject();
+    Dir.RemoveAll(workDir);
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

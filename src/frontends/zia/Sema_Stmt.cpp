@@ -7,6 +7,9 @@
 ///
 /// @file Sema_Stmt.cpp
 /// @brief Statement analysis for the Zia semantic analyzer.
+/// @details Dispatches statement kinds, manages lexical and loop/catch context, validates local
+///          declarations and control flow, propagates optional narrowing, tracks definite
+///          initialization, and checks pattern-match coverage.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -20,18 +23,24 @@ namespace {
 
 /// @brief True if @p type may not appear as a statement-level value
 ///        (Void, Never, or Module).
+/// @param type Semantic type to classify.
+/// @return True when the type cannot be stored in a local binding.
 bool isForbiddenValueType(TypeRef type) {
     return type && (type->kind == TypeKindSem::Void || type->kind == TypeKindSem::Never ||
                     type->kind == TypeKindSem::Module);
 }
 
 /// @brief Display name for a forbidden value type, for the diagnostic message.
+/// @param type Semantic type, which may be null.
+/// @return Semantic spelling, or `unknown` for a null type.
 std::string forbiddenValueTypeName(TypeRef type) {
     return type ? type->toString() : "unknown";
 }
 
 /// @brief True if @p type is a typed runtime sequence/collection pointer
 ///        (Seq/Queue/Stack/…) that supports element-typed for-iteration.
+/// @param type Candidate iterable type.
+/// @return True for a supported named runtime container with element metadata.
 bool isTypedRuntimeSequence(TypeRef type) {
     return type && type->kind == TypeKindSem::Ptr && type->elementType() &&
            (type->name == "Zanna.Collections.Seq" || type->name == "Zanna.Collections.Queue" ||
@@ -43,6 +52,8 @@ bool isTypedRuntimeSequence(TypeRef type) {
 /// @brief Return true when @p typeName is a runtime trap/catch type name accepted by Zia.
 /// @details The names mirror the user-facing runtime error names exposed by `rt_error.h`;
 ///          `Error` is the language-level catch-all alias.
+/// @param typeName Catch-clause type spelling.
+/// @return True when the spelling is a supported runtime error kind or catch-all.
 bool isKnownCatchTypeName(const std::string &typeName) {
     static constexpr std::string_view kKnownCatchTypes[] = {
         "DivideByZero",
@@ -72,6 +83,10 @@ bool isKnownCatchTypeName(const std::string &typeName) {
 // Statement Analysis
 //=============================================================================
 
+/// @brief Analyze a statement and dispatch to its kind-specific checker.
+/// @param stmt Statement node; null is ignored for recovery.
+/// @details Handles expression-result warnings, loop-control legality, deferred statements,
+///          catch scopes and ordering, and throw/rethrow context in addition to delegated kinds.
 void Sema::analyzeStmt(Stmt *stmt) {
     if (!stmt)
         return;
@@ -185,6 +200,8 @@ void Sema::analyzeStmt(Stmt *stmt) {
 }
 
 /// @brief Check if a statement unconditionally terminates (return/break/continue/throw).
+/// @param s Statement tree to inspect.
+/// @return True when every reachable path through the recognized construct terminates.
 static bool stmtTerminates(const Stmt *s) {
     if (!s)
         return false;
@@ -218,6 +235,10 @@ static bool stmtTerminates(const Stmt *s) {
     return false;
 }
 
+/// @brief Analyze a lexical statement block.
+/// @param stmt Block statement.
+/// @details Creates a scope, reports unreachable statements, and persists non-null narrowing
+///          implied by terminating `if` or `guard` clauses across later statements in the block.
 void Sema::analyzeBlockStmt(BlockStmt *stmt) {
     pushScope(stmt->loc);
     bool afterTerminator = false;
@@ -284,6 +305,11 @@ void Sema::analyzeBlockStmt(BlockStmt *stmt) {
     popScope(scopeEndForStmt(stmt));
 }
 
+/// @brief Analyze a local variable or tuple-destructuring declaration.
+/// @param stmt Variable statement.
+/// @details Resolves annotations and initializers, supplies target types to lambdas and empty
+///          collections, validates Byte literals and shadowing, defines bindings, and updates
+///          definite initialization and optional narrowing.
 void Sema::analyzeVarStmt(VarStmt *stmt) {
     if (stmt->isTupleDestructure) {
         if (!stmt->initializer) {
@@ -470,6 +496,11 @@ void Sema::analyzeVarStmt(VarStmt *stmt) {
     }
 }
 
+/// @brief Analyze an if statement with branch-sensitive narrowing and initialization state.
+/// @param stmt If statement.
+/// @details Validates the Boolean condition, emits condition/body warnings, narrows null-checked
+///          values in the applicable branch, and intersects definite initialization across a
+///          complete if/else.
 void Sema::analyzeIfStmt(IfStmt *stmt) {
     // W007: Assignment in condition (e.g., `if (x = 5)`)
     if (stmt->condition->kind == ExprKind::Binary) {
@@ -565,6 +596,10 @@ void Sema::analyzeIfStmt(IfStmt *stmt) {
     }
 }
 
+/// @brief Analyze a while loop.
+/// @param stmt While statement.
+/// @details Checks assignment-in-condition and empty-body warnings, requires a Boolean condition,
+///          and establishes loop context for break/continue validation.
 void Sema::analyzeWhileStmt(WhileStmt *stmt) {
     // W007: Assignment in condition
     if (stmt->condition->kind == ExprKind::Binary) {
@@ -595,6 +630,10 @@ void Sema::analyzeWhileStmt(WhileStmt *stmt) {
     loopDepth_--;
 }
 
+/// @brief Analyze a C-style for loop in its own lexical scope.
+/// @param stmt For statement.
+/// @details Processes initializer, optional Boolean condition, body, and update in execution order
+///          while establishing loop context and checking empty-body warnings.
 void Sema::analyzeForStmt(ForStmt *stmt) {
     pushScope(stmt->loc);
     if (stmt->init)
@@ -623,6 +662,10 @@ void Sema::analyzeForStmt(ForStmt *stmt) {
     popScope(stmt->body ? scopeEndForStmt(stmt->body.get()) : stmt->loc);
 }
 
+/// @brief Analyze a for-in loop and infer its iteration binding types.
+/// @param stmt For-in statement.
+/// @details Supports language collections, strings, ranges, typed runtime sequences, map key/value
+///          pairs, index/element tuple binding, and explicitly annotated loop variables.
 void Sema::analyzeForInStmt(ForInStmt *stmt) {
     pushScope(stmt->loc);
 
@@ -721,6 +764,10 @@ void Sema::analyzeForInStmt(ForInStmt *stmt) {
     popScope(stmt->body ? scopeEndForStmt(stmt->body.get()) : stmt->loc);
 }
 
+/// @brief Analyze a return statement against the current callable result type.
+/// @param stmt Return statement.
+/// @details Contextualizes empty Map/Set literals, permits Unit only for void-like returns, and
+///          retains the supported Number-to-Integer return narrowing.
 void Sema::analyzeReturnStmt(ReturnStmt *stmt) {
     if (!expectedReturnType_) {
         if (stmt->value)
@@ -766,6 +813,10 @@ void Sema::analyzeReturnStmt(ReturnStmt *stmt) {
     }
 }
 
+/// @brief Analyze a guard statement.
+/// @param stmt Guard statement containing a condition and else block.
+/// @details Requires a Boolean condition and verifies that every path through the else block exits
+///          the current scope.
 void Sema::analyzeGuardStmt(GuardStmt *stmt) {
     TypeRef condType = analyzeExpr(stmt->condition.get());
     if (condType->kind != TypeKindSem::Boolean) {
@@ -778,6 +829,11 @@ void Sema::analyzeGuardStmt(GuardStmt *stmt) {
     }
 }
 
+/// @brief Analyze a statement-form pattern match.
+/// @param stmt Match statement.
+/// @details Creates arm-local binding scopes, validates Boolean guards, restores initialization
+///          state after each arm, and diagnoses non-exhaustive Boolean, enum, integer, Optional,
+///          and Result matches.
 void Sema::analyzeMatchStmt(MatchStmt *stmt) {
     TypeRef scrutineeType = analyzeExpr(stmt->scrutinee.get());
     scrutineeType = declaredOptionalSurfaceType(stmt->scrutinee.get(), scrutineeType);
@@ -858,6 +914,10 @@ void Sema::analyzeMatchStmt(MatchStmt *stmt) {
     }
 }
 
+/// @brief Determine whether every path through a statement exits the current control-flow region.
+/// @param stmt Statement tree to inspect.
+/// @return True for direct terminators, terminating block tails, complete terminating if/else
+///         statements, or try statements whose required paths terminate.
 bool Sema::stmtAlwaysExits(Stmt *stmt) {
     if (!stmt)
         return false;

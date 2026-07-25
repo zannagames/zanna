@@ -22,7 +22,7 @@
 ///       │
 ///       ▼
 ///  parseAndAnalyze()  ← error-tolerant Zia pipeline (stages 1–4 only)
-///       │             ← one-entry LRU cache keyed by FNV-1a source hash
+///       │             ← one-entry cache keyed by FNV-1a source hash and path
 ///       ▼
 ///  provider dispatch  ← per TriggerKind (MemberAccess / CtrlSpace / etc.)
 ///       │
@@ -123,7 +123,7 @@ std::string serialize(const std::vector<CompletionItem> &items);
 /// file (as a string) and a 1-based line / 0-based column position, and
 /// returns up to `maxResults` ranked suggestions.
 ///
-/// A one-entry LRU cache avoids re-parsing the same file on consecutive
+/// A one-entry cache avoids re-parsing the same file on consecutive
 /// keystrokes.  The cache is keyed by an FNV-1a hash of the source bytes,
 /// so any edit invalidates it.
 ///
@@ -132,7 +132,10 @@ std::string serialize(const std::vector<CompletionItem> &items);
 /// Not thread-safe.  Each IDE connection should have its own engine instance.
 class CompletionEngine {
   public:
+    /// @brief Create an engine with an empty analysis cache and fresh source manager.
     CompletionEngine();
+
+    /// @brief Destroy cached analysis before its source manager and diagnostic dependencies.
     ~CompletionEngine();
 
     /// @brief Compute completions for source at (line, col).
@@ -153,6 +156,11 @@ class CompletionEngine {
     /// resolves it through scope symbols, member types, and runtime classes,
     /// then formats one or more callable signatures. Returns empty when no
     /// callable can be resolved.
+    /// @param source Full source text of the file being edited.
+    /// @param line One-based cursor line.
+    /// @param col Zero-based cursor column.
+    /// @param filePath Virtual source path used during analysis.
+    /// @return Newline-delimited signature descriptions, or an empty string.
     std::string signatureHelp(std::string_view source,
                               int line,
                               int col,
@@ -191,6 +199,10 @@ class CompletionEngine {
     };
 
     /// @brief Extract completion context from source at (line, col).
+    /// @param src Full source buffer.
+    /// @param line One-based cursor line.
+    /// @param col Zero-based cursor column.
+    /// @return Trigger classification, prefix, receiver text, and replacement coordinates.
     Context extractContext(std::string_view src, int line, int col) const;
 
     /// @}
@@ -200,26 +212,58 @@ class CompletionEngine {
     //=========================================================================
 
     /// @brief Completion items for language keywords matching @p prefix.
+    /// @param prefix Typed identifier prefix.
+    /// @return Keyword items after case-insensitive prefix filtering.
     std::vector<CompletionItem> provideKeywords(const std::string &prefix) const;
     /// @brief Completion items for code snippets/templates matching @p prefix.
+    /// @param prefix Typed identifier prefix.
+    /// @return Snippet items after case-insensitive prefix filtering.
     std::vector<CompletionItem> provideSnippets(const std::string &prefix) const;
 
+    /// @brief Completion items for symbols visible at the cursor.
+    /// @param sema Completed semantic analyzer.
+    /// @param prefix Typed identifier prefix.
+    /// @param fileId Cursor file identifier.
+    /// @param line One-based cursor line.
+    /// @param col Zero-based cursor column.
+    /// @return Nearest-scope-first variables, parameters, functions, and other visible symbols.
     std::vector<CompletionItem> provideScopeSymbols(
         const Sema &sema, const std::string &prefix, uint32_t fileId, int line, int col) const;
 
+    /// @brief Resolve a member-access trigger and enumerate the receiver's members.
+    /// @param sema Completed semantic analyzer.
+    /// @param ctx Member-access completion context.
+    /// @return File-module, runtime namespace/class, or semantic receiver members.
     std::vector<CompletionItem> provideMemberCompletions(const Sema &sema,
                                                          const Context &ctx) const;
 
     /// @brief Completion items for known type names matching @p prefix.
+    /// @param sema Completed semantic analyzer.
+    /// @param prefix Typed identifier prefix.
+    /// @return Declared type items after filtering.
     std::vector<CompletionItem> provideTypeNames(const Sema &sema, const std::string &prefix) const;
 
+    /// @brief Completion items exported by a bound file module.
+    /// @param sema Completed semantic analyzer.
+    /// @param moduleAlias Visible file-module root or alias.
+    /// @param prefix Typed member prefix.
+    /// @return Exported module symbols after filtering.
     std::vector<CompletionItem> provideModuleMembers(const Sema &sema,
                                                      const std::string &moduleAlias,
                                                      const std::string &prefix) const;
 
+    /// @brief Completion items for visible bound file-module roots.
+    /// @param sema Completed semantic analyzer.
+    /// @param prefix Typed module prefix.
+    /// @return Module items after filtering.
     std::vector<CompletionItem> provideBoundFileModules(const Sema &sema,
                                                         const std::string &prefix) const;
 
+    /// @brief Completion items for one fully qualified runtime class.
+    /// @param sema Completed semantic analyzer.
+    /// @param fullClassName Qualified runtime class name.
+    /// @param prefix Typed member prefix.
+    /// @return Runtime methods and properties after filtering.
     std::vector<CompletionItem> provideRuntimeMembers(const Sema &sema,
                                                       const std::string &fullClassName,
                                                       const std::string &prefix) const;
@@ -230,6 +274,8 @@ class CompletionEngine {
     ///          a module alias followed by a dot (e.g. "GUI.").
     /// @param nsPrefix  Full dotted namespace path (e.g. "Zanna.GUI").
     /// @param prefix    Typed prefix filter (case-insensitive).
+    /// @param sema Completed semantic analyzer supplying runtime catalog queries.
+    /// @return Immediate runtime class/sub-namespace completion items.
     std::vector<CompletionItem> provideNamespaceMembers(const Sema &sema,
                                                         const std::string &nsPrefix,
                                                         const std::string &prefix) const;
@@ -246,7 +292,12 @@ class CompletionEngine {
     /// available. For example "shell.app" first resolves `shell` from the
     /// innermost visible scope or globals, then looks up field `app` on the
     /// resulting type.
-    /// @return TypeRef (may be unknown if resolution fails).
+    /// @param sema Completed semantic analyzer.
+    /// @param expr Dotted receiver expression.
+    /// @param fileId Cursor file identifier.
+    /// @param line One-based cursor line.
+    /// @param col Zero-based cursor column.
+    /// @return Resolved type, or nullptr/Unknown when resolution fails.
     TypeRef resolveExprType(
         const Sema &sema, const std::string &expr, uint32_t fileId, int line, int col) const;
 
@@ -257,12 +308,17 @@ class CompletionEngine {
     //=========================================================================
 
     /// @brief Drop items whose label does not match @p prefix (case-insensitive).
+    /// @param items Mutable item vector.
+    /// @param prefix Typed identifier prefix.
     void filterByPrefix(std::vector<CompletionItem> &items, const std::string &prefix) const;
 
     /// @brief Sort @p items by relevance to @p prefix (exact/prefix/fuzzy).
+    /// @param items Mutable item vector.
+    /// @param prefix Typed identifier prefix.
     void rank(std::vector<CompletionItem> &items, const std::string &prefix) const;
 
     /// @brief Remove duplicate completion entries (same label/kind).
+    /// @param items Mutable item vector; the first item for each label is retained.
     void deduplicate(std::vector<CompletionItem> &items) const;
 
     /// @}
@@ -271,11 +327,18 @@ class CompletionEngine {
     /// @{
     //=========================================================================
 
-    /// @brief FNV-1a hash of a string (fast, ~1µs for 10 KB).
+    /// @brief Compute the 64-bit FNV-1a hash of a source buffer.
+    /// @param data Source bytes.
+    /// @return Deterministic 64-bit hash used by the one-entry cache.
     static uint64_t fnv1a(std::string_view data);
 
+    /// @brief Return cached semantic analysis or rebuild it for changed input.
+    /// @param source Full source buffer.
+    /// @param filePath Virtual source path forming part of the cache identity.
+    /// @return Borrowed pointer owned by the engine's cache.
     AnalysisResult *analyze(std::string_view source, std::string_view filePath);
 
+    /// @brief One-entry semantic analysis cache.
     struct Cache {
         uint64_t hash{0};
         std::string filePath;

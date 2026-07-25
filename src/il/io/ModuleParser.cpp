@@ -54,6 +54,9 @@ using il::support::makeError;
 using zanna::parse::Cursor;
 using zanna::parse::SourcePos;
 
+/// @brief Test whether a directive tail contains only whitespace or a comment.
+/// @param text Unconsumed directive suffix.
+/// @return True for empty, `//` comment, or semicolon-comment text.
 bool isIgnorableDirectiveTrailing(std::string_view text) {
     std::string trimmed = trim(std::string{text});
     return trimmed.empty() || trimmed.rfind("//", 0) == 0 || trimmed.front() == ';';
@@ -63,14 +66,18 @@ bool isIgnorableDirectiveTrailing(std::string_view text) {
 /// @details The parser uses a single textual symbol namespace for functions,
 ///          externs, and globals. Rejecting collisions at parse time gives a
 ///          direct diagnostic before later verifier passes run.
-/// @param module Module currently being populated.
+/// @param state Parser state containing module-wide declaration indexes.
 /// @param name Symbol name without its leading sigil.
-/// @return True if @p name is already declared anywhere in @p module.
+/// @return True if @p name is already declared anywhere in the destination module.
 bool moduleHasSymbol(const ParserState &state, const std::string &name) {
     return state.functionNames.contains(name) || state.externNames.contains(name) ||
            state.globalNames.contains(name);
 }
 
+/// @brief Parse a bracketed extern effect-attribute suffix.
+/// @param text Trailing text after the extern return type.
+/// @param lineNo Physical source line for diagnostics.
+/// @return Parsed nothrow/readonly/pure flags or an attribute syntax diagnostic.
 Expected<il::core::EffectAttrs> parseEffectAttrsSuffix(std::string_view text, unsigned lineNo) {
     il::core::EffectAttrs attrs;
     std::string trimmedText = trim(std::string{text});
@@ -109,6 +116,9 @@ Expected<il::core::EffectAttrs> parseEffectAttrsSuffix(std::string_view text, un
     return attrs;
 }
 
+/// @brief Extract the first whitespace-delimited module directive keyword.
+/// @param line Normalized top-level line.
+/// @return Directive keyword, or an empty string.
 std::string directiveKeyword(const std::string &line) {
     std::istringstream ls(line);
     std::string kw;
@@ -123,6 +133,9 @@ std::string directiveKeyword(const std::string &line) {
 /// the syntax omits required punctuation such as the `->` arrow, the helper
 /// returns a diagnostic describing the missing token.  Successful parses append
 /// the signature to @c ParserState::m.externs.
+/// @param line Complete extern declaration.
+/// @param st Mutable module parser state.
+/// @return Success or a structured name, punctuation, type, attribute, or collision diagnostic.
 Expected<void> parseExtern_E(const std::string &line, ParserState &st) {
     size_t at = line.find('@');
     if (at == std::string::npos) {
@@ -214,11 +227,13 @@ Expected<void> parseExtern_E(const std::string &line, ParserState &st) {
 
 /// @brief Parse a global binding written as `global [linkage] [const] type @name [= init]`.
 ///
-/// @details Validates that an assignment operator is present, trims the name
-/// token to ignore incidental whitespace, and copies the quoted payload after
-/// decoding escape sequences with @ref il::io::decodeEscapedString.  Missing
-/// delimiters or invalid escapes produce diagnostics; otherwise a UTF-8 string
-/// global is appended to @c ParserState::m.globals.
+/// @details Parses optional linkage, constness, and initializer text, decoding
+/// quoted string escapes with @ref il::io::decodeEscapedString. Missing
+/// delimiters, unsupported qualifiers/types, duplicate names, or invalid
+/// escapes produce diagnostics.
+/// @param line Complete global declaration.
+/// @param st Mutable module parser state.
+/// @return Success after appending the global, or a structured diagnostic.
 Expected<void> parseGlobal_E(const std::string &line, ParserState &st) {
     size_t at = line.find('@');
     if (at == std::string::npos) {
@@ -347,6 +362,10 @@ Expected<void> parseGlobal_E(const std::string &line, ParserState &st) {
 ///          When a directive is malformed or appears out of order, a diagnostic
 ///          containing the current line number is returned so the caller can
 ///          surface precise feedback to the user.
+/// @param is Input stream used when dispatching a function definition.
+/// @param line Current normalized top-level line.
+/// @param st Mutable module parser state.
+/// @return Success or a line-numbered directive diagnostic.
 Expected<void> parseModuleHeader_E(std::istream &is, std::string &line, ParserState &st) {
     const std::string kw0 = directiveKeyword(line);
 

@@ -55,6 +55,8 @@ static_assert(sizeof(kWarningTable) / sizeof(kWarningTable[0]) == kWarningCodeCo
               "kWarningTable must have exactly kWarningCodeCount entries");
 
 /// @brief Look up a WarningInfo by code value. Returns nullptr if out of range.
+/// @param code Warning enumerator.
+/// @return Address of the stable table entry, or nullptr for an invalid numeric value.
 static const WarningInfo *lookupInfo(WarningCode code) {
     auto idx = static_cast<uint16_t>(code);
     if (idx < 1 || idx > kWarningCodeCount)
@@ -62,16 +64,25 @@ static const WarningInfo *lookupInfo(WarningCode code) {
     return &kWarningTable[idx - 1];
 }
 
+/// @brief Return the stable numeric diagnostic spelling for a warning.
+/// @param code Warning enumerator.
+/// @return Static `Wnnn` string, or `W???` for an invalid value.
 const char *warningCodeStr(WarningCode code) {
     const auto *info = lookupInfo(code);
     return info ? info->codeStr : "W???";
 }
 
+/// @brief Return the command-line slug for a warning.
+/// @param code Warning enumerator.
+/// @return Static lowercase slug, or `unknown` for an invalid value.
 const char *warningName(WarningCode code) {
     const auto *info = lookupInfo(code);
     return info ? info->name : "unknown";
 }
 
+/// @brief Parse either a numeric warning code or its slug.
+/// @param name Candidate `Wnnn` or lowercase slug.
+/// @return Matching warning enumerator, or std::nullopt.
 std::optional<WarningCode> parseWarningCode(std::string_view name) {
     // Try matching by code string (e.g., "W001")
     for (const auto &entry : kWarningTable) {
@@ -92,6 +103,10 @@ std::optional<WarningCode> parseWarningCode(std::string_view name) {
 // Warning Policy
 //=============================================================================
 
+/// @brief Determine whether a warning is enabled by this policy.
+/// @param code Warning to query.
+/// @return False when explicitly disabled; otherwise true under `enableAll` or membership in the
+///         conservative default set.
 bool WarningPolicy::isEnabled(WarningCode code) const {
     // Explicitly disabled always wins
     if (disabled.count(code))
@@ -105,6 +120,8 @@ bool WarningPolicy::isEnabled(WarningCode code) const {
     return defaultEnabled().count(code) > 0;
 }
 
+/// @brief Return the conservative process-wide default warning set.
+/// @return Immutable static set enabled without `-Wall`.
 const std::unordered_set<WarningCode> &WarningPolicy::defaultEnabled() {
     // Conservative set — these catch common real bugs without being noisy.
     // W002 (unreachable), W003 (narrowing), W004 (shadowing), W006 (empty loop),

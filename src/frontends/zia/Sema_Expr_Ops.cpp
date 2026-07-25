@@ -8,6 +8,9 @@
 /// @file Sema_Expr_Ops.cpp
 /// @brief Operator expression analysis (binary, unary, ternary) and common
 ///        type computation for the Zia semantic analyzer.
+/// @details Validates assignment targets and mutability, applies short-circuit narrowing,
+///          dispatches operator-family checks, records property setters and definite assignment,
+///          and computes branch/literal common types.
 ///
 //===----------------------------------------------------------------------===//
 
@@ -19,6 +22,8 @@ namespace {
 
 /// @brief True if @p expr is a valid assignment LHS (identifier, field
 ///        access, or index expression).
+/// @param expr Candidate left-hand expression.
+/// @return True for identifier, field, and index nodes.
 bool isAssignableTarget(const Expr *expr) {
     if (!expr)
         return false;
@@ -35,6 +40,9 @@ bool isAssignableTarget(const Expr *expr) {
 
 /// @brief True if @p field is a read-only built-in property of @p baseType
 ///        (e.g. List/Map/Set Length/Count) that may not be assigned to.
+/// @param baseType Receiver type.
+/// @param field Member spelling.
+/// @return True for recognized collection/string count properties.
 bool isReadOnlyBuiltinProperty(TypeRef baseType, const std::string &field) {
     if (!baseType)
         return false;
@@ -48,6 +56,9 @@ bool isReadOnlyBuiltinProperty(TypeRef baseType, const std::string &field) {
     return false;
 }
 
+/// @brief Produce a concise receiver name for built-in-property diagnostics.
+/// @param type Receiver type.
+/// @return Canonical collection/string name, semantic display spelling, or `value` for null.
 std::string builtinTypeName(TypeRef type) {
     if (!type)
         return "value";
@@ -215,6 +226,12 @@ TypeRef Sema::analyzeBinary(BinaryExpr *expr) {
     return types::unknown();
 }
 
+/// @brief Validate arithmetic or concatenation operands and compute their result type.
+/// @param expr Binary expression supplying the operator and diagnostic locations.
+/// @param leftType Analyzed left operand type.
+/// @param rightType Analyzed right operand type.
+/// @return String for concatenation, widened numeric type for arithmetic, or Unknown on error.
+/// @details Literal zero divisors emit W010 before numeric result typing.
 TypeRef Sema::checkArithmeticBinary(BinaryExpr *expr, TypeRef leftType, TypeRef rightType) {
     if (!leftType || !rightType || leftType->kind == TypeKindSem::Unknown ||
         rightType->kind == TypeKindSem::Unknown)
@@ -258,6 +275,13 @@ TypeRef Sema::checkArithmeticBinary(BinaryExpr *expr, TypeRef leftType, TypeRef 
     return types::unknown();
 }
 
+/// @brief Validate equality or relational operands.
+/// @param expr Comparison expression.
+/// @param leftType Analyzed left operand type.
+/// @param rightType Analyzed right operand type.
+/// @return Boolean in all cases so semantic analysis can continue after diagnostics.
+/// @details Emits warning diagnostics for floating equality and redundant Boolean literals, and
+///          accounts for declared optional surfaces when comparing against null.
 TypeRef Sema::checkComparisonBinary(BinaryExpr *expr, TypeRef leftType, TypeRef rightType) {
     if (!leftType || !rightType)
         return types::boolean();
@@ -324,6 +348,11 @@ TypeRef Sema::checkComparisonBinary(BinaryExpr *expr, TypeRef leftType, TypeRef 
     return types::boolean();
 }
 
+/// @brief Require Boolean operands for a logical binary operator.
+/// @param expr Logical expression.
+/// @param leftType Analyzed left operand type.
+/// @param rightType Analyzed right operand type.
+/// @return Boolean, including recovery paths for unknown operands.
 TypeRef Sema::checkLogicalBinary(BinaryExpr *expr, TypeRef leftType, TypeRef rightType) {
     if (!leftType || !rightType)
         return types::boolean();
@@ -334,6 +363,12 @@ TypeRef Sema::checkLogicalBinary(BinaryExpr *expr, TypeRef leftType, TypeRef rig
     return types::boolean();
 }
 
+/// @brief Validate integral operands for shifts and bitwise operators.
+/// @param expr Bitwise expression.
+/// @param leftType Analyzed left operand type.
+/// @param rightType Analyzed right operand type.
+/// @return Byte for two-byte non-shift operations, Integer otherwise, or Unknown for unresolved
+///         operands.
 TypeRef Sema::checkBitwiseBinary(BinaryExpr *expr, TypeRef leftType, TypeRef rightType) {
     if (!leftType || !rightType)
         return types::unknown();
@@ -362,6 +397,14 @@ TypeRef Sema::checkBitwiseBinary(BinaryExpr *expr, TypeRef leftType, TypeRef rig
     return types::integer();
 }
 
+/// @brief Validate an assignment and update semantic write metadata.
+/// @param expr Assignment expression.
+/// @param leftType Initially analyzed target type.
+/// @param rightType Analyzed source type.
+/// @return The target expression type.
+/// @details Enforces final-field and property mutability, records generated/runtime setters,
+///          validates indexed writes, updates definite initialization, and refreshes narrowing
+///          after assigning a known non-null value.
 TypeRef Sema::recordBinaryAssignment(BinaryExpr *expr, TypeRef leftType, TypeRef rightType) {
     // W009: Self-assignment (e.g., `x = x`).
     if (expr->left->kind == ExprKind::Ident && expr->right->kind == ExprKind::Ident) {

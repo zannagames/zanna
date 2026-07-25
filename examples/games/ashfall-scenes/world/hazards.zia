@@ -1,0 +1,142 @@
+// =============================================================================
+// world/hazards.zia — pooled explosive combat props
+// =============================================================================
+//
+// Authored barrel props become real damageable cover instead of inert scenery.
+// Their static bodies block movement and shots, register through the shared
+// target registry, and detonate through Ballistics so cover occlusion, enemy
+// damage, audiovisual events and chain reactions all use the normal pipeline.
+// Nodes and bodies are pooled and parked between level loads.
+// =============================================================================
+module hazards;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics3D as G3D;
+bind "../config" as config;
+bind "../core/events" as events;
+bind "../core/mathutil" as M;
+bind "../weapons/ballistics" as ballistics;
+bind "../weapons/targets" as targets;
+
+var HAZARD_CAP: Integer = 24;
+
+class Hazards {
+    hide Game3D.World3D world;
+    hide G3D.PhysicsWorld3D phys;
+    hide events.EventBus bus;
+    hide ballistics.Ballistics ball;
+    hide targets.TargetRegistry registry;
+    hide List[Game3D.Entity3D] bodyNode;
+    hide List[Game3D.Entity3D] glowNode;
+    hide List[G3D.PhysicsBody3D] body;
+    hide List[Integer] active;
+    hide List[Float] hp;
+    hide List[Float] x; hide List[Float] y; hide List[Float] z;
+    hide Integer liveCount;
+
+    expose func init() {
+        bodyNode = []; glowNode = []; body = []; active = []; hp = [];
+        x = []; y = []; z = [];
+        liveCount = 0;
+    }
+
+    expose func setup(w: Game3D.World3D, p: G3D.PhysicsWorld3D,
+                      b: events.EventBus, bl: ballistics.Ballistics,
+                      reg: targets.TargetRegistry) {
+        world = w; phys = p; bus = b; ball = bl; registry = reg;
+        var barrelMesh = G3D.Mesh3D.Cylinder(0.34, 1.05, 10);
+        var ringMesh = G3D.Mesh3D.Cylinder(0.37, 0.08, 10);
+        var barrelMat = G3D.Material3D.PBR(0.44, 0.11, 0.07);
+        barrelMat.Roughness = 0.42;
+        barrelMat.Metallic = 0.62;
+        var glowMat = G3D.Material3D.FromColor(1.0, 0.28, 0.06);
+        G3D.Material3D.SetEmissiveColor(glowMat, 1.0, 0.18, 0.03);
+        glowMat.EmissiveIntensity = 2.8;
+        var i = 0;
+        while i < HAZARD_CAP {
+            var n = Game3D.Entity3D.New();
+            n.Mesh = barrelMesh; n.Material = barrelMat;
+            n.SetPosition(0.0, -100.0, 0.0); world.Spawn(n);
+            var g = Game3D.Entity3D.New();
+            g.Mesh = ringMesh; g.Material = glowMat;
+            g.SetPosition(0.0, -100.0, 0.0); world.Spawn(g);
+            var pb = G3D.PhysicsBody3D.NewAABB(0.38, 0.55, 0.38, 0.0);
+            G3D.PhysicsBody3D.set_CollisionLayer(pb,
+                config.LAYER_WORLD + config.LAYER_DESTRUCTIBLE);
+            G3D.PhysicsBody3D.SetPosition(pb, 0.0, -100.0, 0.0);
+            G3D.PhysicsWorld3D.Add(phys, pb);
+            bodyNode.Add(n); glowNode.Add(g); body.Add(pb);
+            active.Add(0); hp.Add(0.0); x.Add(0.0); y.Add(0.0); z.Add(0.0);
+            i = i + 1;
+        }
+    }
+
+    expose func clear() {
+        var i = 0;
+        while i < HAZARD_CAP {
+            if active[i] == 1 { park(i); }
+            i = i + 1;
+        }
+        liveCount = 0;
+    }
+
+    hide func freeSlot() -> Integer {
+        var i = 0;
+        while i < HAZARD_CAP { if active[i] == 0 { return i; } i = i + 1; }
+        return -1;
+    }
+
+    expose func spawnBarrel(px: Float, py: Float, pz: Float, scale: Float) {
+        var s = freeSlot();
+        if s < 0 { return; }
+        var sc = M.clampf(scale, 0.65, 1.5);
+        x[s] = px; y[s] = py + 0.53 * sc; z[s] = pz;
+        hp[s] = 45.0;
+        active[s] = 1;
+        liveCount = liveCount + 1;
+        bodyNode[s].SetScaleXYZ(sc, sc, sc);
+        bodyNode[s].SetPosition(x[s], y[s], z[s]);
+        glowNode[s].SetScaleXYZ(sc, sc, sc);
+        glowNode[s].SetPosition(x[s], py + 0.54 * sc, z[s]);
+        G3D.PhysicsBody3D.SetPosition(body[s], x[s], y[s], z[s]);
+        registry.register(body[s], config.TGT_DESTRUCTIBLE, s, config.REGION_BODY);
+    }
+
+    hide func park(s: Integer) {
+        registry.unregisterEntity(config.TGT_DESTRUCTIBLE, s);
+        active[s] = 0;
+        hp[s] = 0.0;
+        bodyNode[s].SetPosition(0.0, -100.0, 0.0);
+        glowNode[s].SetPosition(0.0, -100.0, 0.0);
+        G3D.PhysicsBody3D.SetPosition(body[s], 0.0, -100.0, 0.0);
+    }
+
+    hide func detonate(s: Integer) {
+        var px = x[s]; var py = y[s]; var pz = z[s];
+        park(s);
+        liveCount = liveCount - 1;
+        ball.blast(px, py, pz, 5.4, 95.0, config.DMG_EXPLOSION);
+    }
+
+    // Iterate the growing bus so one barrel's blast can damage and chain a
+    // neighboring barrel during the same simulation tick.
+    expose func applyDamageEvents() {
+        var i = 0;
+        while i < bus.getCount() {
+            if bus.kindAt(i) == config.EV_DAMAGE && bus.aAt(i) == config.TGT_DESTRUCTIBLE {
+                var s = bus.bAt(i);
+                if s >= 0 && s < HAZARD_CAP && active[s] == 1 {
+                    hp[s] = hp[s] - bus.xAt(i);
+                    if hp[s] <= 0.0 { detonate(s); }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    expose func count() -> Integer { return liveCount; }
+    expose func healthAt(i: Integer) -> Float {
+        if i < 0 || i >= HAZARD_CAP || active[i] == 0 { return 0.0; }
+        return hp[i];
+    }
+}

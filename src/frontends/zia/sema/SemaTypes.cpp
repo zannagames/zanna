@@ -26,6 +26,7 @@ namespace il::frontends::zia {
 /// @brief Define a symbol in the current scope.
 /// @param name The symbol name to register.
 /// @param symbol The symbol metadata to associate with the name.
+/// @post Any previous local binding for @p name has been replaced.
 void Scope::define(const std::string &name, Symbol symbol) {
     symbols_[name] = std::move(symbol);
 }
@@ -33,6 +34,9 @@ void Scope::define(const std::string &name, Symbol symbol) {
 /// @brief Look up a symbol by name, walking parent scopes.
 /// @param name The symbol name to search for.
 /// @return Pointer to the symbol if found, nullptr otherwise.
+/// @details Returns the innermost matching binding. The pointer refers to
+///          storage owned by a scope and remains valid until that scope's map
+///          rehashes, erases the entry, or is destroyed.
 Symbol *Scope::lookup(const std::string &name) {
     auto it = symbols_.find(name);
     if (it != symbols_.end())
@@ -45,6 +49,8 @@ Symbol *Scope::lookup(const std::string &name) {
 /// @brief Look up a symbol only in the current scope (no parent walk).
 /// @param name The symbol name to search for.
 /// @return Pointer to the symbol if found in this scope, nullptr otherwise.
+/// @details The returned pointer has the same invalidation rules as the
+///          underlying local symbol map.
 Symbol *Scope::lookupLocal(const std::string &name) {
     auto it = symbols_.find(name);
     return it != symbols_.end() ? &it->second : nullptr;

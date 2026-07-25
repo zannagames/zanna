@@ -42,7 +42,7 @@ struct Module;
 
 /// @brief Attribute container for call-like instructions capturing semantic hints.
 /// @details Stored on every instruction but only meaningful when
-///          @ref Instr::op equals @ref Opcode::Call. Future passes may use these
+///          @ref Instr::op is a direct or indirect call. Future passes may use these
 ///          attributes to reason about exception safety and memory effects
 ///          without re-deriving metadata from callee analysis.
 struct CallAttrs {
@@ -218,24 +218,48 @@ struct Instr {
 };
 
 /// @brief Access the scrutinee operand of a switch instruction.
+/// @param instr Switch instruction with a non-empty operand vector.
+/// @return Reference to the first operand.
+/// @throws std::logic_error when @p instr is not a well-formed switch.
 const Value &switchScrutinee(const Instr &instr);
 
 /// @brief Retrieve the default branch label for a switch instruction.
+/// @param instr Switch instruction with a non-empty label vector.
+/// @return Reference to the first label.
+/// @throws std::logic_error when @p instr is not a well-formed switch.
 const std::string &switchDefaultLabel(const Instr &instr);
 
 /// @brief Retrieve the default branch arguments for a switch instruction.
+/// @param instr Switch instruction whose branch-argument vector is aligned.
+/// @return Reference to the default edge's argument list.
+/// @throws std::logic_error or std::out_of_range for malformed switch metadata.
 const std::vector<Value> &switchDefaultArgs(const Instr &instr);
 
 /// @brief Count the number of explicit case arms in a switch instruction.
+/// @param instr Switch instruction with a default label.
+/// @return Number of labels after the default edge.
+/// @throws std::logic_error when @p instr is not a well-formed switch.
 size_t switchCaseCount(const Instr &instr);
 
 /// @brief Access the value guarding the @p index-th case arm.
+/// @param instr Switch instruction containing case operands.
+/// @param index Zero-based explicit-case index.
+/// @return Reference to the matching case value.
+/// @throws std::logic_error or std::out_of_range for malformed metadata/index.
 const Value &switchCaseValue(const Instr &instr, size_t index);
 
 /// @brief Access the branch label for the @p index-th case arm.
+/// @param instr Switch instruction containing case targets.
+/// @param index Zero-based explicit-case index.
+/// @return Reference to the matching target label.
+/// @throws std::logic_error or std::out_of_range for malformed metadata/index.
 const std::string &switchCaseLabel(const Instr &instr, size_t index);
 
 /// @brief Access the branch arguments for the @p index-th case arm.
+/// @param instr Switch instruction whose branch-argument vector is aligned.
+/// @param index Zero-based explicit-case index.
+/// @return Reference to the matching edge argument list.
+/// @throws std::logic_error or std::out_of_range for malformed metadata/index.
 const std::vector<Value> &switchCaseArgs(const Instr &instr, size_t index);
 
 } // namespace il::core

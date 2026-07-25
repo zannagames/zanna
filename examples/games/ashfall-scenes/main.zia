@@ -1,0 +1,132 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/ashfall/main.zia
+// Purpose: Parse Ashfall launch options and enter its smoke, interactive, or
+//          measured interactive loop.
+// Key invariants:
+//   - Interactive play requires a native build.
+//   - Performance measurement exercises the same boot and frame path as play.
+// Ownership/Lifetime:
+//   - The entry point owns one Game for the process lifetime.
+//   - Game.run/runProfile destroy their World3D before returning.
+// Links: examples/games/ashfall/game.zia, examples/games/ashfall/README.md
+//
+//===----------------------------------------------------------------------===//
+module main;
+
+bind Zanna.System.Environment as Env;
+bind Zanna.Core.Convert as Convert;
+bind Zanna.Terminal as Terminal;
+bind Zanna.String as Str;
+bind "./config" as config;
+bind "./world/levels" as levels;
+bind "./game" as game;
+
+func hasArg(wanted: String) -> Boolean {
+    var n = Env.GetArgumentCount();
+    var i = 0;
+    while i < n {
+        if Env.GetArgument(i) == wanted { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Return the text value following `flag`, or `fallback` if absent/last.
+func argText(flag: String, fallback: String) -> String {
+    var n = Env.GetArgumentCount();
+    var i = 0;
+    while i < n {
+        if Env.GetArgument(i) == flag {
+            if i + 1 < n { return Env.GetArgument(i + 1); }
+            return fallback;
+        }
+        i = i + 1;
+    }
+    return fallback;
+}
+
+// Map an authored scene path to its campaign level id (hub or mission-NN;
+// anything else launches into the mission-1 slot with the override file).
+func levelIdForScenePath(path: String) -> Integer {
+    if Str.Contains(path, "hub") { return config.LV_HUB; }
+    var n = 1;
+    while n <= 9 {
+        if Str.Contains(path, "mission-0" + n) { return config.LV_ARENA + n; }
+        n = n + 1;
+    }
+    return config.LV_L1;
+}
+
+// Return the integer value following `flag`, or `fallback` if absent/last.
+func argValue(flag: String, fallback: Integer) -> Integer {
+    var n = Env.GetArgumentCount();
+    var i = 0;
+    while i < n {
+        if Env.GetArgument(i) == flag {
+            if i + 1 < n {
+                return Convert.ToInt64(Env.GetArgument(i + 1));
+            }
+        }
+        i = i + 1;
+    }
+    return fallback;
+}
+
+func start() {
+    var smoke = hasArg("--smoke");
+    var windowed = hasArg("--windowed");
+
+    // Ashfall's full interactive frame drives a large fixed-step simulation,
+    // physics, and the 3D renderer. The bytecode VM remains useful for bounded
+    // probes, but cannot sustain real-time play for this workload. Fail fast
+    // with the native build command instead of opening an unusably slow window.
+    if smoke == false && Env.IsNative() == false {
+        Terminal.Say("ASHFALL interactive mode requires a native build.");
+        Terminal.Say("Build: zanna build examples/games/ashfall-scenes --build-profile release -o examples/bin/ashfall-scenes");
+        return;
+    }
+
+    var g = new game.Game();
+    game.setGame(g);
+    g.setHeadless(smoke);
+    g.setFullscreen(windowed == false);
+    g.initCore(0x5A17F00D);
+
+    if hasArg("--level") {
+        g.setLevel(config.LV_ARENA + argValue("--level", 0));
+    }
+    if hasArg("--scene") {
+        // Launch straight into one explicit authored scene: the file name's
+        // mission number selects the campaign slot and the override makes
+        // the next build read exactly this file.
+        var scenePath = argText("--scene", "");
+        if scenePath != "" {
+            levels.setSceneOverride(scenePath);
+            g.setLevel(levelIdForScenePath(scenePath));
+        }
+    }
+
+    if smoke {
+        // Headless integration smoke: boot the world software-side and run a
+        // bounded fixed-step simulation, then report.
+        g.boot(true, false);
+        g.runSmoke(300);
+        Terminal.Say("RESULT: ok");
+        Terminal.Say("PASS");
+    } else {
+        g.boot(false, windowed == false);
+        if hasArg("--level") == false { g.enterTitle(); }
+        if hasArg("--profile-frames") {
+            g.devSetGod(true);
+            g.runProfile(argValue("--profile-frames", 600));
+        } else {
+            g.run();
+        }
+    }
+}

@@ -4,18 +4,17 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-//
-// File: src/frontends/zia/Lowerer_Stmt.cpp
-// Purpose: Lower Zia statements, lexical scopes, loops, cleanup, and returns.
-// Key invariants:
-//   - Every emitted control-flow path ends in a valid terminator.
-//   - Lexical and per-iteration managed slots are released on all exits.
-// Ownership/Lifetime:
-//   - Slots created by a lexical scope own their managed contents until exit.
-//   - Return statements transfer exactly one managed reference to the caller.
-// Links: src/frontends/zia/Lowerer.hpp, src/frontends/zia/Lowerer_Emit.cpp,
-//        src/frontends/zia/Lowerer_Expr.cpp
-//
+///
+/// @file Lowerer_Stmt.cpp
+/// @brief Lowers Zia statements, lexical scopes, loops, deferred cleanup, and
+///        returns.
+///
+/// @details Statement control flow is emitted with explicit terminators and
+///          loop targets. Lexical and per-iteration slots own their managed
+///          contents until every normal or abrupt exit releases them. Return
+///          lowering performs cleanup without losing the returned value and
+///          transfers exactly one managed reference to the caller.
+///
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -31,6 +30,8 @@ namespace {
 
 /// @brief True if @p type is stored inline by value (struct, fixed array, or
 ///        tuple) rather than behind a heap pointer — affects copy/load lowering.
+/// @param type Semantic type to classify.
+/// @return True for struct, fixed-array, and tuple values.
 bool isInlineAggregateType(TypeRef type) {
     return type && (type->kind == TypeKindSem::Struct || type->kind == TypeKindSem::FixedArray ||
                     type->kind == TypeKindSem::Tuple);
@@ -38,6 +39,9 @@ bool isInlineAggregateType(TypeRef type) {
 
 /// @brief Runtime "ToSeq" callee name for an iterable collection type used in
 ///        `for` lowering, or nullptr if @p type is not a known collection.
+/// @param type Semantic runtime collection type.
+/// @return Canonical `ToSeq` helper name, or null when the type has no
+///         supported sequence conversion.
 const char *runtimeCollectionToSeqCallee(TypeRef type) {
     if (!type || type->kind != TypeKindSem::Ptr || !type->elementType())
         return nullptr;
@@ -62,6 +66,11 @@ const char *runtimeCollectionToSeqCallee(TypeRef type) {
 // Statement Lowering
 //=============================================================================
 
+/// @brief Dispatch a statement to its kind-specific lowering routine.
+/// @param stmt Statement to lower; null reports an invariant violation.
+/// @details Enforces the shared nesting-depth limit, installs the statement's
+///          diagnostic location, and releases unconsumed deferred temporaries
+///          after the selected statement routine completes.
 void Lowerer::lowerStmt(Stmt *stmt) {
     if (!stmt) {
         reportLoweringInvariant({}, "V-ZIA-LOWER-NULL-STMT", "null statement reached lowering");
@@ -79,6 +88,7 @@ void Lowerer::lowerStmt(Stmt *stmt) {
     struct DepthGuard {
         unsigned &d;
 
+        /// @brief Restore the statement-recursion counter on every exit path.
         ~DepthGuard() {
             --d;
         }
@@ -139,6 +149,10 @@ void Lowerer::lowerStmt(Stmt *stmt) {
     releaseDeferredTemps();
 }
 
+/// @brief Lower a lexical block and restore the enclosing symbol scope.
+/// @param stmt Block containing statements in source order.
+/// @details Runs block-local defers and releases managed slots on normal exit;
+///          cleanup already emitted by an abrupt exit is not repeated.
 void Lowerer::lowerBlockStmt(BlockStmt *stmt) {
     auto localsBackup = locals_;
     auto slotsBackup = slots_;
@@ -166,10 +180,19 @@ void Lowerer::lowerBlockStmt(BlockStmt *stmt) {
     localTypes_ = std::move(localTypesBackup);
 }
 
+/// @brief Lower an expression used only for its side effects.
+/// @param stmt Expression statement to evaluate.
 void Lowerer::lowerExprStmt(ExprStmt *stmt) {
     lowerExpr(stmt->expr.get());
 }
 
+/// @brief Lower a local variable declaration or tuple destructuring binding.
+/// @param stmt Variable statement with optional annotation and initializer.
+/// @details Mutable and managed bindings use owning slots; immutable primitive
+///          bindings may remain SSA values. Initializers are coerced to the
+///          declared type, inline aggregates receive independent storage, and
+///          managed references transfer or mint the slot's ownership
+///          reference. Tuple destructuring applies the same rules per element.
 void Lowerer::lowerVarStmt(VarStmt *stmt) {
     if (stmt->isTupleDestructure) {
         TypeRef initType =
@@ -330,6 +353,11 @@ void Lowerer::lowerVarStmt(VarStmt *stmt) {
     }
 }
 
+/// @brief Lower an `if` statement to then/else/merge blocks.
+/// @param stmt Conditional statement to lower.
+/// @details Condition temporaries are released before branching. When every
+///          branch terminates, the synthetic merge is terminated with a trap
+///          so later emission cannot treat it as reachable.
 void Lowerer::lowerIfStmt(IfStmt *stmt) {
     size_t thenIdx = createBlock("if_then");
     size_t elseIdx = stmt->elseBranch ? createBlock("if_else") : 0;
@@ -378,6 +406,10 @@ void Lowerer::lowerIfStmt(IfStmt *stmt) {
     }
 }
 
+/// @brief Lower a pre-test `while` loop.
+/// @param stmt Loop condition and body.
+/// @details Registers the end and condition blocks as break/continue targets
+///          and releases condition temporaries before each branch.
 void Lowerer::lowerWhileStmt(WhileStmt *stmt) {
     size_t condIdx = createBlock("while_cond");
     size_t bodyIdx = createBlock("while_body");
@@ -408,6 +440,10 @@ void Lowerer::lowerWhileStmt(WhileStmt *stmt) {
     setBlock(endIdx);
 }
 
+/// @brief Lower a C-style `for` loop.
+/// @param stmt Optional initializer, condition, update, and loop body.
+/// @details The loop-scope ownership snapshot is taken after initialization;
+///          `continue` targets the update block and `break` targets the end.
 void Lowerer::lowerForStmt(ForStmt *stmt) {
     size_t condIdx = createBlock("for_cond");
     size_t bodyIdx = createBlock("for_body");
@@ -457,6 +493,12 @@ void Lowerer::lowerForStmt(ForStmt *stmt) {
     setBlock(endIdx);
 }
 
+/// @brief Dispatch a `for ... in` statement by iterable type.
+/// @param stmt For-in statement and binding shape.
+/// @details Supports ranges and modifiers, tuple pairs, lists, strings, maps,
+///          Seq, and runtime collections convertible to Seq. The enclosing
+///          local/slot/type maps are restored after the specialized lowering
+///          routine completes.
 void Lowerer::lowerForInStmt(ForInStmt *stmt) {
     auto localsBackup = locals_;
     auto slotsBackup = slots_;
@@ -503,6 +545,12 @@ void Lowerer::lowerForInStmt(ForInStmt *stmt) {
     localTypes_ = std::move(localTypesBackup);
 }
 
+/// @brief Lower iteration over an integer range.
+/// @param stmt For-in binding and body.
+/// @param rangeExpr Range bounds and inclusivity.
+/// @param rangeInfo Accumulated reverse and positive-step modifiers.
+/// @details Uses cursor/end/step slots, overflow-safe termination, and explicit
+///          break/continue targets; all scratch bindings are removed at exit.
 void Lowerer::lowerForInRange(ForInStmt *stmt,
                               RangeExpr *rangeExpr,
                               const RangeModifierInfo &rangeInfo) {
@@ -622,6 +670,12 @@ void Lowerer::lowerForInRange(ForInStmt *stmt,
     removeSlot(stepVar);
 }
 
+/// @brief Lower tuple-pair destructuring in a for-in statement.
+/// @param stmt Pair bindings and body.
+/// @param iterableType Semantic two-element tuple type.
+/// @details Evaluates the tuple once, binds both elements with managed-slot
+///          ownership as needed, executes the body once, and releases the
+///          binding slots at the end block.
 void Lowerer::lowerForInTuple(ForInStmt *stmt, TypeRef iterableType) {
     const auto &elements = iterableType->tupleElementTypes();
     if (elements.size() != 2)
@@ -693,6 +747,11 @@ void Lowerer::lowerForInTuple(ForInStmt *stmt, TypeRef iterableType) {
     removeSlot(stmt->secondVariable);
 }
 
+/// @brief Lower indexed iteration over a runtime List.
+/// @param stmt Element or index/element bindings and loop body.
+/// @param iterableType Semantic List type supplying the element type.
+/// @details Snapshots the list and count in slots, retrieves and unboxes each
+///          element, and replaces managed element bindings ownership-safely.
 void Lowerer::lowerForInList(ForInStmt *stmt, TypeRef iterableType) {
     TypeRef elemType = iterableType->elementType();
     if (stmt->variableType)
@@ -808,6 +867,11 @@ void Lowerer::lowerForInList(ForInStmt *stmt, TypeRef iterableType) {
     removeSlot(listVar);
 }
 
+/// @brief Lower indexed iteration over a runtime String.
+/// @param stmt Character or index/character bindings and loop body.
+/// @details Each iteration materializes a one-character owned substring and
+///          replaces the character slot while retaining the source string for
+///          the loop's lifetime.
 void Lowerer::lowerForInString(ForInStmt *stmt) {
     // Iterating a String yields one-character Strings (like `str[i]`). For a
     // tuple binding (for i, ch in s) the first variable is the i64 index.
@@ -893,6 +957,12 @@ void Lowerer::lowerForInString(ForInStmt *stmt) {
     removeSlot(strVar);
 }
 
+/// @brief Lower iteration over runtime Map or IntMap entries.
+/// @param stmt Key or key/value bindings and loop body.
+/// @param iterableType Semantic map type supplying key and value types.
+/// @details Iterates the runtime key sequence, looks up values for tuple
+///          bindings, applies Map/IntMap key representation rules, and manages
+///          ownership of keys, values, the sequence, and the receiver.
 void Lowerer::lowerForInMap(ForInStmt *stmt, TypeRef iterableType) {
     const bool integerKeyed = usesIntegerMapRuntime(iterableType);
     TypeRef keyType = iterableType->keyType() ? iterableType->keyType() : types::string();
@@ -1024,6 +1094,16 @@ void Lowerer::lowerForInMap(ForInStmt *stmt, TypeRef iterableType) {
     removeSlot(mapVar);
 }
 
+/// @brief Lower indexed iteration over a runtime Seq.
+/// @param seqValue Lowered sequence handle transferred into loop storage.
+/// @param stmt Element or index/element bindings and loop body.
+/// @param elemType Semantic sequence element type.
+/// @param rawStringElements True when string elements are returned as direct
+///        string handles instead of boxed objects.
+/// @param labelPrefix Prefix used to create distinct loop block labels.
+/// @details Retrieves each element by index, unboxes when required, replaces
+///          managed binding slots safely, and releases the sequence and
+///          bindings on exit.
 void Lowerer::lowerForInSeq(LowerResult seqValue,
                             ForInStmt *stmt,
                             TypeRef elemType,
@@ -1147,6 +1227,13 @@ void Lowerer::lowerForInSeq(LowerResult seqValue,
     removeSlot(seqVar);
 }
 
+/// @brief Lower a return statement with cleanup and ownership transfer.
+/// @param stmt Optional return expression.
+/// @details Coerces the result to the current return type, preserves it across
+///          active deferred cleanups, releases local/deferred ownership, and
+///          ensures managed returns carry exactly one caller-owned reference.
+///          Async workers box payloads and release worker-owned captures before
+///          returning.
 void Lowerer::lowerReturnStmt(ReturnStmt *stmt) {
     if (stmt->value) {
         auto result = lowerExpr(stmt->value.get());
@@ -1266,6 +1353,9 @@ void Lowerer::lowerReturnStmt(ReturnStmt *stmt) {
     }
 }
 
+/// @brief Lower `break` to the current loop's exit target.
+/// @details Emits active defers and releases per-iteration slots first. A
+///          semantically invalid out-of-loop break becomes a defensive trap.
 void Lowerer::lowerBreakStmt(BreakStmt * /*stmt*/) {
     if (!loopStack_.empty()) {
         releaseDeferredTemps(); // Release any pending temps before branch
@@ -1287,6 +1377,10 @@ void Lowerer::lowerBreakStmt(BreakStmt * /*stmt*/) {
     }
 }
 
+/// @brief Lower `continue` to the current loop's continuation target.
+/// @details Emits active defers and releases per-iteration slots first. A
+///          semantically invalid out-of-loop continue becomes a defensive
+///          trap.
 void Lowerer::lowerContinueStmt(ContinueStmt * /*stmt*/) {
     if (!loopStack_.empty()) {
         releaseDeferredTemps(); // Release any pending temps before branch
@@ -1308,11 +1402,17 @@ void Lowerer::lowerContinueStmt(ContinueStmt * /*stmt*/) {
     }
 }
 
+/// @brief Register a deferred action for the current lexical cleanup stack.
+/// @param stmt Defer statement whose action remains AST-owned.
 void Lowerer::lowerDeferStmt(DeferStmt *stmt) {
     if (stmt && stmt->action)
         cleanupStack_.push_back({stmt->action.get(), false});
 }
 
+/// @brief Lower a `guard` statement to failure and continuation blocks.
+/// @param stmt Guard condition and mandatory-exit else block.
+/// @details Condition temporaries are released before branching; successful
+///          evaluation continues after the guard.
 void Lowerer::lowerGuardStmt(GuardStmt *stmt) {
     size_t elseIdx = createBlock("guard_else");
     size_t contIdx = createBlock("guard_cont");
@@ -1334,6 +1434,11 @@ void Lowerer::lowerGuardStmt(GuardStmt *stmt) {
     setBlock(contIdx);
 }
 
+/// @brief Lower a statement-style pattern match.
+/// @param stmt Scrutinee and ordered match arms.
+/// @details Evaluates the scrutinee once, emits chained pattern tests and
+///          optional guards, isolates arm-local bindings, and joins every
+///          non-terminating arm at a shared end block.
 void Lowerer::lowerMatchStmt(MatchStmt *stmt) {
     if (stmt->arms.empty())
         return;

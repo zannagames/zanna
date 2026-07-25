@@ -22,7 +22,7 @@
 /// 4. **Keywords**: Reserved words organized by purpose:
 ///    - Type definitions (struct, class, interface)
 ///    - Modifiers (final, expose, hide, override, weak)
-///    - Declarations (module, import, func, return, var, new)
+///    - Declarations (module, bind, func, return, var, new)
 ///    - Control flow (if, else, match, while, for, guard, etc.)
 ///    - Inheritance (extends, implements, self, super)
 ///    - Literal keywords (true, false, null)

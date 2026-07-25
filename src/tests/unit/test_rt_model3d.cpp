@@ -3804,6 +3804,29 @@ static const char *find_existing_path(std::initializer_list<const char *> candid
     return nullptr;
 }
 
+/// @brief ADR 0182: the canonical .scene3d extension dispatches to the VSCN
+///        importer exactly like the legacy .vscn alias.
+static void test_model3d_accepts_canonical_scene3d_extension() {
+    const char *path = "/tmp/zanna_model3d_fixture_canonical.scene3d";
+    bool wrote_fixture = write_scene_fixture(path);
+    EXPECT_TRUE(wrote_fixture, "Scene fixture can be written to .scene3d");
+    if (!wrote_fixture)
+        return;
+
+    void *model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model != nullptr, "SceneAsset.Load parses canonical .scene3d assets");
+    if (model) {
+        EXPECT_TRUE(rt_model3d_get_node_count(model) == 2,
+                    ".scene3d assets import the same scene nodes as .vscn");
+        EXPECT_TRUE(rt_model3d_get_mesh_count(model) == 1,
+                    ".scene3d assets deduplicate shared meshes like .vscn");
+    }
+    void *model_result = rt_model3d_load_result(rt_const_cstr(path));
+    EXPECT_TRUE(rt_result_is_ok(model_result) == 1,
+                "SceneAsset.LoadResult accepts canonical .scene3d paths");
+    std::remove(path);
+}
+
 static void test_model3d_roundtrips_vscn_assets() {
     const char *path = "/tmp/zanna_model3d_fixture.vscn";
     bool wrote_fixture = write_scene_fixture(path);
@@ -9533,6 +9556,7 @@ int main() {
     test_model3d_binds_first_valid_default_skeletal_animator_for_multiple_skeletons();
     test_model3d_clamps_corrupt_counts_and_child_walks();
     test_model3d_roundtrips_vscn_assets();
+    test_model3d_accepts_canonical_scene3d_extension();
     test_model3d_find_node_rejects_wrong_string_handles();
     test_model3d_adapts_gltf_scene_graphs();
     test_model3d_rejects_gltf_accessor_overrun_of_buffer_view();

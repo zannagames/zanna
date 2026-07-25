@@ -1125,6 +1125,14 @@ hide func DispatchBuildDebugCommands(ctx: command_context.CommandContext,
                                              ctx.appSettings.saveAllBeforeBuild);
         }
     }
+    if ctx.scene3DEditor != null {
+        var prefabSourcePath = ctx.scene3DEditor.TakeOpenPrefabSourcePath();
+        if prefabSourcePath != "" {
+            file_commands.OpenFileAtPath(
+                ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs,
+                prefabSourcePath);
+        }
+    }
     var runSceneTriggered =
         dispatch_helpers.Triggered("runscene", null, null, cpSelected);
     if ctx.scene2DEditor != null

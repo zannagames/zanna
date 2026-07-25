@@ -71,10 +71,16 @@ using il::transform::ValueKeyHash;
 ///          size field is optional because some types may not map to a known
 ///          size; in that case the key still differentiates by pointer+type.
 struct LoadKey {
+    /// Pointer operand read by the load.
     Value ptr;
+    /// Loaded value type.
     Type::Kind type{Type::Kind::Void};
+    /// Access width in bytes when statically known.
     std::optional<unsigned> size;
 
+    /// @brief Compare load identity structurally.
+    /// @param o Candidate key.
+    /// @return True when pointer, type, and optional width match.
     bool operator==(const LoadKey &o) const noexcept {
         ValueEq eq;
         return type == o.type && eq(ptr, o.ptr) && size == o.size;
@@ -85,6 +91,9 @@ struct LoadKey {
 /// @details Combines the pointer hash, type kind, and size (when present) to
 ///          produce a stable hash for unordered maps.
 struct LoadKeyHash {
+    /// @brief Hash a load key.
+    /// @param k Key to hash.
+    /// @return Combined pointer, type, and width hash.
     size_t operator()(const LoadKey &k) const noexcept {
         ValueHash hv;
         size_t h = hv(k.ptr) ^ (static_cast<size_t>(k.type) * 0x9e3779b97f4a7c15ULL);
@@ -100,8 +109,11 @@ struct LoadKeyHash {
 ///          defining block lets the pass reject replacements that would
 ///          introduce a use of a temp before its textual definition.
 struct AvailableValue {
+    /// Dominating SSA value available for replacement.
     Value value;
+    /// Block defining @ref value.
     BasicBlock *block{nullptr};
+    /// Definition index within @ref block.
     std::size_t instrIndex{0};
 };
 
@@ -110,10 +122,19 @@ struct AvailableValue {
 ///          the current dominating path. State is copied when recursing into
 ///          children to preserve path sensitivity.
 struct State {
+    /// Available pure expressions keyed by structural value identity.
     std::unordered_map<ValueKey, std::vector<AvailableValue>, ValueKeyHash> exprs;
+    /// Available non-string loads keyed by address and type.
     std::unordered_map<LoadKey, std::vector<AvailableValue>, LoadKeyHash> loads;
 };
 
+/// @brief Check verifier-compatible textual availability of a dominating value.
+/// @param order Function block-to-textual-index map.
+/// @param avail Candidate reusable definition.
+/// @param useBlock Block containing the replacement site.
+/// @param useInstrIndex Instruction index of the replacement site.
+/// @return True when the definition precedes the use in the same block or its
+///         defining block is not textually later.
 static bool isTextuallyAvailable(const std::unordered_map<const BasicBlock *, std::size_t> &order,
                                  const AvailableValue &avail,
                                  const BasicBlock *useBlock,
@@ -330,6 +351,7 @@ PreservedAnalyses GVN::run(Function &function, AnalysisManager &analysis) {
 void registerGVNPass(PassRegistry &registry) {
     // Sequential: depends on whole-module CFG-backed dominator analysis while deleting
     // instructions.
+    /// Construct a fresh GVN pass for each pipeline request.
     registry.registerFunctionPass("gvn", []() { return std::make_unique<GVN>(); }, false);
 }
 

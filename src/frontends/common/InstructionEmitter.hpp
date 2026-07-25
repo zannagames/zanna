@@ -5,20 +5,26 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/InstructionEmitter.hpp
+// File: src/frontends/common/InstructionEmitter.hpp
 // Purpose: Common instruction emission helpers for all language frontends.
 //
 // This provides the core instruction emission methods shared by all language
 // frontends. Each method constructs an IL instruction and appends it to the
 // current basic block.
 //
-// Key Invariants:
-//   - All emit methods produce valid IL instructions
-//   - Temp IDs are allocated via the builder's reserveTempId()
-//   - Source locations can be optionally attached to instructions
-// Ownership/Lifetime: Non-owning references target the active IR builder and
-//                     its stable function/block storage.
-// Links: src/il/build/IRBuilder.hpp, docs/il/il-guide.md
+// Key invariants:
+//   * Every value-producing instruction reserves its temporary ID through the
+//     bound IRBuilder.
+//   * Emission into a terminated block is rejected.
+//   * Control-flow terminators mark the current block terminated immediately.
+// Ownership: Stores non-owning pointers to the active builder, function, and
+//            caller-managed current-block slot; all must remain valid while used.
+// References: src/il/build/IRBuilder.hpp, docs/il/il-guide.md
+//
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares language-agnostic helpers for appending IL instructions.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -50,6 +56,7 @@ class InstructionEmitter {
     using Function = il::core::Function;
 
     /// @brief Default constructor creates an unbound emitter.
+    /// @post Emission throws until bind() supplies the required context.
     InstructionEmitter() = default;
 
     /// @brief Construct with required context.
@@ -62,6 +69,9 @@ class InstructionEmitter {
         : builder_(builder), currentBlock_(currentBlock), currentFunc_(currentFunc) {}
 
     /// @brief Bind to new context.
+    /// @param builder IR builder used to reserve temporary IDs.
+    /// @param currentBlock Address of the caller's active block pointer.
+    /// @param currentFunc Function that owns branch targets.
     void bind(il::build::IRBuilder *builder, BasicBlock **currentBlock, Function *currentFunc) {
         builder_ = builder;
         currentBlock_ = currentBlock;
@@ -69,11 +79,13 @@ class InstructionEmitter {
     }
 
     /// @brief Set the current source location for emitted instructions.
+    /// @param loc Location copied onto subsequently emitted instructions.
     void setLocation(il::support::SourceLoc loc) {
         currentLoc_ = loc;
     }
 
     /// @brief Get the current source location.
+    /// @return Location currently attached to new instructions.
     [[nodiscard]] il::support::SourceLoc location() const noexcept {
         return currentLoc_;
     }
@@ -172,21 +184,29 @@ class InstructionEmitter {
     // =========================================================================
 
     /// @brief Emit signed integer to floating-point conversion.
+    /// @param intVal Integer operand.
+    /// @return Temporary containing the F64 conversion result.
     [[nodiscard]] Value emitSitofp(Value intVal) {
         return emitUnary(Opcode::Sitofp, Type(Type::Kind::F64), intVal);
     }
 
     /// @brief Emit floating-point to signed integer conversion.
+    /// @param floatVal Floating-point operand.
+    /// @return Temporary containing the I64 conversion result.
     [[nodiscard]] Value emitFptosi(Value floatVal) {
         return emitUnary(Opcode::Fptosi, Type(Type::Kind::I64), floatVal);
     }
 
     /// @brief Emit zero-extend from i1 to i64.
+    /// @param boolVal I1 operand.
+    /// @return Temporary containing the zero-extended I64 value.
     [[nodiscard]] Value emitZext1(Value boolVal) {
         return emitUnary(Opcode::Zext1, Type(Type::Kind::I64), boolVal);
     }
 
     /// @brief Emit truncate from i64 to i1.
+    /// @param intVal I64 operand.
+    /// @return Temporary containing the truncated I1 value.
     [[nodiscard]] Value emitTrunc1(Value intVal) {
         return emitUnary(Opcode::Trunc1, Type(Type::Kind::I1), intVal);
     }
@@ -229,6 +249,12 @@ class InstructionEmitter {
     }
 
     /// @brief Emit an indirect call with return value.
+    /// @param retTy Return type of the indirect signature.
+    /// @param callee Function-pointer operand.
+    /// @param args Explicit call arguments.
+    /// @param paramTypes Optional parameter types for explicit signature metadata.
+    /// @param isVarArg Whether the explicit signature is variadic.
+    /// @return Temporary containing the call result.
     [[nodiscard]] Value emitCallIndirectRet(Type retTy,
                                             Value callee,
                                             const std::vector<Value> &args,
@@ -250,6 +276,10 @@ class InstructionEmitter {
     }
 
     /// @brief Emit a void indirect call.
+    /// @param callee Function-pointer operand.
+    /// @param args Explicit call arguments.
+    /// @param paramTypes Optional parameter types for explicit signature metadata.
+    /// @param isVarArg Whether the explicit signature is variadic.
     void emitCallIndirect(Value callee,
                           const std::vector<Value> &args,
                           std::optional<std::vector<Type>> paramTypes = std::nullopt,
@@ -483,6 +513,8 @@ class InstructionEmitter {
     }
 
     /// @brief Reserve the next temp ID from the builder.
+    /// @return Fresh temporary identifier.
+    /// @throws std::logic_error If no builder is bound.
     [[nodiscard]] unsigned nextTempId() {
         if (!builder_)
             throw std::logic_error("InstructionEmitter requires a bound IR builder");
@@ -491,6 +523,9 @@ class InstructionEmitter {
 
   private:
     /// @brief Get the current block.
+    /// @return Borrowed pointer to the active unterminated block.
+    /// @throws std::logic_error If the block slot is absent, contains null, or
+    ///         points to a terminated block.
     [[nodiscard]] BasicBlock *block() const {
         if (!currentBlock_ || !*currentBlock_)
             throw std::logic_error("InstructionEmitter requires a current basic block");
@@ -499,15 +534,22 @@ class InstructionEmitter {
         return *currentBlock_;
     }
 
+    /// @brief Get the bound function used to resolve indexed branch targets.
+    /// @return Reference to the active function.
+    /// @throws std::logic_error If no function is bound.
     [[nodiscard]] Function &function() const {
         if (!currentFunc_)
             throw std::logic_error("InstructionEmitter requires a current function");
         return *currentFunc_;
     }
 
+    /// @brief Borrowed IR builder for temporary allocation.
     il::build::IRBuilder *builder_{nullptr};
+    /// @brief Borrowed address of the caller-managed active block pointer.
     BasicBlock **currentBlock_{nullptr};
+    /// @brief Borrowed function that owns indexed branch targets.
     Function *currentFunc_{nullptr};
+    /// @brief Source location copied to subsequently emitted instructions.
     il::support::SourceLoc currentLoc_{};
 };
 

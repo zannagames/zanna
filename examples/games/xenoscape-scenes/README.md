@@ -3,7 +3,7 @@
 This is the **scene-driven recreation of Xenoscape**. It plays identically to
 [`examples/games/xenoscape`](../xenoscape/README.md) — same ten regions, same
 abilities, bosses, saves, and probes — but every campaign region is an
-authored `assets/scenes/region-NN.scene` file instead of code. The original
+authored `assets/scenes/region-NN.scene2d` file instead of code. The original
 game's ~3,500 lines of `buildDescent()`-style level builders are replaced by a
 ~120-line loader (`level.zia`), and everything those builders produced now
 lives in canonical scene JSON that Zanna Studio's 2D scene editor opens
@@ -49,11 +49,11 @@ source of truth — edit them in Zanna Studio, not in code.
 
 # Jump straight to one region (also what Zanna Studio's Run Scene sends):
 ./build/src/tools/zanna/zanna run examples/games/xenoscape-scenes -- \
-  --scene assets/scenes/region-03.scene
+  --scene assets/scenes/region-03.scene2d
 ```
 
 Open `examples/games/xenoscape-scenes` as a workspace folder in Zanna Studio
-and open any `assets/scenes/region-NN.scene` to edit tiles, tile behavior,
+and open any `assets/scenes/region-NN.scene2d` to edit tiles, tile behavior,
 spawns, and markers visually; the **Run Scene** toolbar button launches the
 game at that region.
 

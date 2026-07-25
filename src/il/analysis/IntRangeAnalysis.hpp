@@ -54,6 +54,7 @@ struct IntRangeInfo {
     std::unordered_map<std::string, RangeMap> blockEntry;
 
     /// @brief Look up the entry facts for @p label.
+    /// @param label Basic-block label.
     /// @return Pointer to the entry map, or nullptr for unknown/unreachable
     ///         blocks (treat as "no facts").
     const RangeMap *entryFor(const std::string &label) const {

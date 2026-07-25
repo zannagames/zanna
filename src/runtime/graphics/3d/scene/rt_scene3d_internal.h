@@ -285,6 +285,13 @@ typedef struct rt_scene_node3d {
     int32_t metadata_count;
     int32_t metadata_capacity;
 
+    /* VSCN v7 prefab reference (ADR 0187): the portable source path this
+     * node instantiates, or NULL for ordinary nodes. Grafted descendants
+     * carry the transient instance-content flag; the flag itself is never
+     * serialized — reloading re-grafts from the reference. */
+    rt_string prefab_path;
+    int8_t is_instance_content;
+
     float aabb_min[3];
     float aabb_max[3];
     float bsphere_radius;

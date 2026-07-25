@@ -5,14 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: frontends/common/DiagnosticHelpers.hpp
+// File: src/frontends/common/DiagnosticHelpers.hpp
 // Purpose: Common diagnostic formatting utilities for language frontends.
+// Key invariants:
+//   * Type names reflect canonical IL scalar categories.
+//   * Candidate lists preserve input order and cap displayed entries without
+//     mutating caller-owned vectors.
+// Ownership: Header-only utilities; inputs are borrowed and returned strings
+//            own their data.
+// References: src/il/core/Type.hpp,
+//             src/frontends/common/DiagnosticFormatter.hpp
 //
-// This header provides utility functions for formatting diagnostic messages
-// that are shared across multiple language frontends (BASIC, Zia, etc.).
-// Key invariants: Type names reflect the canonical IL type categories.
-// Ownership/Lifetime: Header-only utilities; returned strings own their data.
-// Links: src/il/core/Type.hpp, src/frontends/common/DiagnosticFormatter.hpp
+//===----------------------------------------------------------------------===//
+//
+/// @file
+/// @brief Declares reusable human-readable diagnostic message builders.
 //
 //===----------------------------------------------------------------------===//
 #pragma once
