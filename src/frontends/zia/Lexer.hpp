@@ -12,9 +12,10 @@
 //   * Token lookahead caches at most one token.
 //   * Line and column values remain one-based while byte position is zero-based.
 //   * Interpolation depth and brace-depth state remain synchronized.
-// Ownership: Lexer owns source text, cached tokens, and interpolation vectors;
-//            DiagnosticEngine must outlive the lexer.
-// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+// Ownership/Lifetime:
+//   - Lexer owns source text, cached tokens, and interpolation vectors.
+//   - DiagnosticEngine must outlive the lexer.
+// Links: docs/languages/zia-reference.md, docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 ///
@@ -107,9 +108,12 @@
 
 #include "frontends/zia/Token.hpp"
 #include "support/diagnostics.hpp"
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace il::frontends::zia {
 
@@ -332,7 +336,8 @@ class Lexer {
 
     /// @brief Consume identifier-like characters following a malformed based literal.
     /// @param tok Error token whose source spelling is extended for recovery.
-    void consumeMalformedBasedLiteralTail(Token &tok);
+    /// @return True when the spelling fit within the numeric-token size limit.
+    bool consumeMalformedBasedLiteralTail(Token &tok);
 
     /// @brief Consume a backslash escape sequence into a string token.
     /// @param tok Token receiving source text and decoded string bytes.

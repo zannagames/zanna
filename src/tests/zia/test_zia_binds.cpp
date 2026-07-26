@@ -5,11 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// File: src/tests/zia/test_zia_binds.cpp
+// Purpose: Verify file and namespace bind parsing, resolution, and diagnostics.
+// Key invariants:
+//   - Failed file imports make strict resolution fail after reporting diagnostics.
+//   - Imported declarations retain their source identity and module qualification.
+// Ownership/Lifetime:
+//   - Tests own temporary source trees and compiler inputs.
+//   - Compiler results own all emitted diagnostics and IL modules.
+// Links: src/frontends/zia/ImportResolver.cpp, docs/languages/zia-reference.md
+//
+//===----------------------------------------------------------------------===//
+//
 // Unit tests for Zia bind resolution.
 //
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Compiler.hpp"
+#include "frontends/zia/ImportResolver.hpp"
 #include "support/source_manager.hpp"
 #include "tests/TestHarness.hpp"
 
@@ -116,6 +129,22 @@ func start() {}
         EXPECT_EQ(d.loc.file_id, result.fileId);
     }
     EXPECT_TRUE(foundError);
+}
+
+TEST(ZiaBinds, StrictResolverReturnsFalseForMissingImport) {
+    const fs::path tempRoot = fs::temp_directory_path() / "zia_bind_tests" /
+                              std::to_string(static_cast<unsigned long long>(::getpid()));
+    const fs::path rootPath = tempRoot / "strict_missing" / "main.zia";
+
+    DiagnosticEngine diag;
+    SourceManager sm;
+    const uint32_t rootId = sm.addFile(rootPath.string());
+    ModuleDecl module(SourceLoc{rootId, 1, 1}, "Main");
+    module.binds.emplace_back(SourceLoc{rootId, 2, 1}, "does-not-exist.zia");
+
+    ImportResolver resolver(diag, sm);
+    EXPECT_FALSE(resolver.resolve(module, rootPath.string()));
+    EXPECT_GT(diag.errorCount(), 0u);
 }
 
 TEST(ZiaBinds, LegacyAliasFirstNamespaceBindWorks) {

@@ -4,6 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/ZiaCompletion.cpp
+// Purpose: Provide context-aware Zia completion and signature-help analysis.
+// Key invariants:
+//   - Cursor coordinates are clamped before indexing source buffers.
+//   - Cached semantic analysis is reused only for identical source and path keys.
+// Ownership/Lifetime:
+//   - CompletionEngine owns its analysis cache and source manager.
+//   - Returned completion items own all displayed strings.
+// Links: src/frontends/zia/ZiaCompletion.hpp, docs/tools/zia-server.md
+//
+//===----------------------------------------------------------------------===//
 ///
 /// @file ZiaCompletion.cpp
 /// @brief Implementation of the Zia code-completion engine.
@@ -20,6 +32,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <limits>
 #include <sstream>
 #include <unordered_set>
 
@@ -188,8 +201,8 @@ static size_t offsetForLineCol(std::string_view src, int line, int col) {
     while (lineEnd < src.size() && src[lineEnd] != '\n')
         ++lineEnd;
 
-    size_t offset = lineStart + static_cast<size_t>(col);
-    return offset > lineEnd ? lineEnd : offset;
+    const size_t lineLength = lineEnd - lineStart;
+    return lineStart + std::min(static_cast<size_t>(col), lineLength);
 }
 
 /// @brief Syntactic call context immediately surrounding a signature-help cursor.
@@ -693,13 +706,13 @@ CompletionEngine::Context CompletionEngine::extractContext(std::string_view src,
                                                            int line,
                                                            int col) const {
     Context ctx;
-    ctx.line = line;
-    ctx.col = col;
+    ctx.line = std::max(line, 1);
+    col = std::max(col, 0);
 
     // Find the start of the requested line (1-based).
     size_t lineStart = 0;
     int curLine = 1;
-    for (size_t i = 0; i < src.size() && curLine < line; ++i) {
+    for (size_t i = 0; i < src.size() && curLine < ctx.line; ++i) {
         if (src[i] == '\n') {
             ++curLine;
             lineStart = i + 1;
@@ -711,24 +724,32 @@ CompletionEngine::Context CompletionEngine::extractContext(std::string_view src,
     while (lineEnd < src.size() && src[lineEnd] != '\n')
         ++lineEnd;
 
-    size_t cursorOff = lineStart + static_cast<size_t>(col);
-    if (cursorOff > lineEnd)
-        cursorOff = lineEnd;
+    const size_t lineLength = lineEnd - lineStart;
+    const size_t cursorColumn = std::min(static_cast<size_t>(col), lineLength);
+    const size_t cursorOff = lineStart + cursorColumn;
+    ctx.col = static_cast<int>(
+        std::min(cursorColumn, static_cast<size_t>(std::numeric_limits<int>::max())));
 
     std::string_view lineUpToCursor = src.substr(lineStart, cursorOff - lineStart);
 
     // ── Step 1: collect identifier prefix (chars user has already typed) ────
-    int prefixLen = 0;
-    for (int i = static_cast<int>(lineUpToCursor.size()) - 1;
-         i >= 0 && isIdentChar(lineUpToCursor[i]);
-         --i) {
-        ++prefixLen;
+    size_t prefixLength = 0;
+    for (size_t i = lineUpToCursor.size(); i > 0 && isIdentChar(lineUpToCursor[i - 1]); --i) {
+        if (prefixLength == static_cast<size_t>(std::numeric_limits<int>::max()))
+            break;
+        ++prefixLength;
     }
-    ctx.prefix = std::string(lineUpToCursor.substr(lineUpToCursor.size() - prefixLen));
-    ctx.replaceStart = col - prefixLen;
+    const int prefixLen = static_cast<int>(prefixLength);
+    ctx.prefix = std::string(lineUpToCursor.substr(lineUpToCursor.size() - prefixLength));
+    ctx.replaceStart = ctx.col - prefixLen;
 
     // Position just before the prefix starts.
-    int triggerPos = static_cast<int>(lineUpToCursor.size()) - prefixLen - 1;
+    const size_t triggerOffset = lineUpToCursor.size() - prefixLength;
+    const int triggerPos =
+        triggerOffset == 0
+            ? -1
+            : static_cast<int>(std::min(triggerOffset - 1,
+                                        static_cast<size_t>(std::numeric_limits<int>::max())));
 
     // ── Step 2: detect trigger ───────────────────────────────────────────────
     if (triggerPos >= 0 && lineUpToCursor[triggerPos] == '.') {
@@ -749,7 +770,7 @@ CompletionEngine::Context CompletionEngine::extractContext(std::string_view src,
     } else {
         // Check for keyword triggers by looking at the word just before the prefix.
         // We need at least 4 chars before to match "new " or "return ".
-        std::string_view before = lineUpToCursor.substr(0, lineUpToCursor.size() - prefixLen);
+        std::string_view before = lineUpToCursor.substr(0, lineUpToCursor.size() - prefixLength);
 
         /// @brief Tests whether a view ends with an exact suffix.
         /// @param sv Text to inspect.
@@ -1453,7 +1474,7 @@ std::vector<CompletionItem> CompletionEngine::complete(
         item.isSnippet = item.isSnippet || item.kind == CompletionKind::Snippet;
     }
 
-    if (maxResults > 0 && static_cast<int>(items.size()) > maxResults)
+    if (maxResults > 0 && items.size() > static_cast<size_t>(maxResults))
         items.resize(static_cast<size_t>(maxResults));
 
     return items;

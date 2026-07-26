@@ -4,6 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/zia/test_zia_completion_engine.cpp
+// Purpose: Verify Zia completion context, providers, ranking, and signature help.
+// Key invariants:
+//   - Cursor coordinates never cause out-of-range source access.
+//   - Completion replacement ranges describe the clamped active prefix.
+// Ownership/Lifetime:
+//   - Tests own source buffers and completion engines.
+//   - Returned completion vectors own their item strings.
+// Links: src/frontends/zia/ZiaCompletion.cpp
+//
+//===----------------------------------------------------------------------===//
 ///
 /// @file test_zia_completion_engine.cpp
 /// @brief Unit tests for the Zia CompletionEngine (Phase 2).
@@ -36,6 +48,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -126,6 +139,24 @@ TEST(CompletionEngine, CtrlSpace_ReturnsKeywords) {
     EXPECT_TRUE(hasLabel(items, "var"));
     EXPECT_TRUE(hasLabel(items, "if"));
     EXPECT_TRUE(hasLabel(items, "while"));
+}
+
+TEST(CompletionEngine, InvalidCursorCoordinatesAreClamped) {
+    const std::string source = "module Test;\nfu\n";
+    CompletionEngine engine;
+
+    auto negative = engine.complete(source, -100, -100, "<test>", 0);
+    ASSERT_FALSE(negative.empty());
+    EXPECT_EQ(negative.front().replacementStartLine, 1);
+    EXPECT_EQ(negative.front().replacementStartColumn, 0);
+    EXPECT_EQ(negative.front().replacementEndColumn, 0);
+
+    auto pastEnd = engine.complete(source, 2, std::numeric_limits<int>::max(), "<test>", 0);
+    EXPECT_TRUE(hasLabel(pastEnd, "func"));
+    const CompletionItem *func = findItem(pastEnd, "func");
+    ASSERT_NE(func, nullptr);
+    EXPECT_EQ(func->replacementStartColumn, 0);
+    EXPECT_EQ(func->replacementEndColumn, 2);
 }
 
 TEST(CompletionEngine, PrefixFiltering_NarrowsResults) {

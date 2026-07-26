@@ -13,9 +13,10 @@
 //   * Circular re-entry is skipped while the outer traversal completes.
 //   * Imported source is bounded before allocation and assigned a SourceManager
 //     file ID before lexing.
-// Ownership: Parsed modules and copied source buffers are owned locally until
-//            declarations move into the root AST; shared services are borrowed.
-// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+// Ownership/Lifetime:
+//   - Parsed modules and copied sources are owned until declarations move to the root AST.
+//   - Diagnostics, source management, and provider callbacks are borrowed.
+// Links: docs/languages/zia-reference.md, docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 ///
@@ -150,6 +151,13 @@ std::unique_ptr<ModuleDecl> ImportResolver::parseFile(const std::string &path,
     if (sourceProvider_) {
         if (auto provided = sourceProvider_(normalized)) {
             source = std::move(*provided);
+            if (source.size() > kMaxImportedSourceBytes) {
+                diag_.report({il::support::Severity::Error,
+                              "Imported file is too large: " + path,
+                              importLoc,
+                              "V1000"});
+                return nullptr;
+            }
             cacheHit = true;
         }
     }
@@ -278,25 +286,25 @@ bool ImportResolver::processModule(ModuleDecl &module,
         return false;
     }
 
-    if (processedFiles_.size() + inProgressFiles_.size() > kMaxImportedFiles) {
+    std::string normalizedPath = normalizePath(modulePath);
+    if (processedFiles_.count(normalizedPath) != 0)
+        return true;
+
+    if (inProgressFiles_.count(normalizedPath) != 0)
+        return true;
+
+    if (processedFiles_.size() + inProgressFiles_.size() >= kMaxImportedFiles) {
         diag_.report({il::support::Severity::Error,
-                      "Too many imported files (>" + std::to_string(kMaxImportedFiles) +
+                      "Too many imported files (limit: " + std::to_string(kMaxImportedFiles) +
                           "). Check for import cycles.",
                       viaImportLoc,
                       "V1000"});
         return false;
     }
 
-    std::string normalizedPath = normalizePath(modulePath);
-    if (processedFiles_.count(normalizedPath) != 0)
-        return true;
-
-    if (inProgressFiles_.count(normalizedPath) != 0) {
-        return true;
-    }
-
     inProgressFiles_.insert(normalizedPath);
     importStack_.push_back(normalizedPath);
+    bool allResolved = true;
 
     // Collect all imported declarations first, then prepend them together.
     // This ensures proper dependency order: if A imports B then C, and C also
@@ -392,14 +400,18 @@ bool ImportResolver::processModule(ModuleDecl &module,
         }
 
         auto boundModule = parseFile(bindFilePath, bind.loc);
-        if (!boundModule)
+        if (!boundModule) {
+            allResolved = false;
             continue; // parseFile already reported the error; resolve remaining binds
+        }
 
         bind.resolvedFileId = boundModule->loc.file_id;
         bind.resolvedModuleName = boundModule->name;
 
-        if (!processModule(*boundModule, bindFilePath, bind.loc, depth + 1))
-            return false;
+        if (!processModule(*boundModule, bindFilePath, bind.loc, depth + 1)) {
+            allResolved = false;
+            continue;
+        }
 
         // Propagate transitive binds to the importing module.
         // This ensures semantic analysis can resolve module-qualified names
@@ -456,7 +468,7 @@ bool ImportResolver::processModule(ModuleDecl &module,
     importStack_.pop_back();
     inProgressFiles_.erase(normalizedPath);
     processedFiles_.insert(normalizedPath);
-    return true;
+    return allResolved;
 }
 
 } // namespace il::frontends::zia

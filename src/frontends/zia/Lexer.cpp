@@ -14,9 +14,10 @@
 //   * Interpolation brace state is balanced with interpolation nesting.
 //   * Numeric separators and base-specific digits are validated before value
 //     conversion.
-// Ownership: Lexer owns its source buffer and token cache while borrowing the
-//            DiagnosticEngine supplied at construction.
-// References: docs/languages/zia-reference.md, docs/internals/codemap.md
+// Ownership/Lifetime:
+//   - Lexer owns its source buffer and token cache.
+//   - DiagnosticEngine is borrowed and must outlive the lexer.
+// Links: docs/languages/zia-reference.md, docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 ///
@@ -69,6 +70,9 @@ constexpr size_t kMaxStringLength = 16 * 1024 * 1024;
 
 /// @brief Maximum nested block comment depth accepted by the lexer.
 constexpr size_t kMaxBlockCommentDepth = 1024;
+
+/// @brief Maximum retained spelling for one numeric token.
+constexpr size_t kMaxNumericLiteralLength = 4096;
 
 } // namespace
 
@@ -545,7 +549,7 @@ char Lexer::peekChar() const {
 
 /// @copydoc Lexer::peekChar(size_t) const
 char Lexer::peekChar(size_t offset) const {
-    if (pos_ + offset >= source_.size())
+    if (offset >= source_.size() - pos_)
         return '\0';
     return source_[pos_ + offset];
 }
@@ -741,10 +745,16 @@ bool Lexer::canStartLeadingDotNumber() const {
 }
 
 /// @copydoc Lexer::consumeMalformedBasedLiteralTail()
-void Lexer::consumeMalformedBasedLiteralTail(Token &tok) {
+bool Lexer::consumeMalformedBasedLiteralTail(Token &tok) {
+    bool withinLimit = true;
     while (!eof() && isIdentifierContinue(peekChar())) {
-        tok.text.push_back(getChar());
+        const char c = getChar();
+        if (tok.text.size() < kMaxNumericLiteralLength)
+            tok.text.push_back(c);
+        else
+            withinLimit = false;
     }
+    return withinLimit;
 }
 
 /// @copydoc Lexer::lexNumber()
@@ -752,32 +762,53 @@ Token Lexer::lexNumber() {
     Token tok;
     tok.loc = currentLoc();
     tok.kind = TokenKind::IntegerLiteral;
+    bool withinLengthLimit = true;
+    auto appendCurrent = [&]() {
+        const char c = getChar();
+        if (tok.text.size() < kMaxNumericLiteralLength)
+            tok.text.push_back(c);
+        else
+            withinLengthLimit = false;
+    };
+    auto rejectOversized = [&]() {
+        if (withinLengthLimit)
+            return false;
+        reportErrorRange(tok.loc, currentLoc(), "numeric literal too long (limit: 4096 bytes)");
+        tok.kind = TokenKind::Error;
+        return true;
+    };
 
     // Check for hex (0x), binary (0b), or octal (0o)
     if (peekChar() == '0') {
         char next = peekChar(1);
         if (next == 'x' || next == 'X') {
             // Hex literal
-            tok.text.push_back(getChar()); // '0'
-            tok.text.push_back(getChar()); // 'x'
+            appendCurrent(); // '0'
+            appendCurrent(); // 'x'
 
             if (!isHexDigit(peekChar())) {
-                consumeMalformedBasedLiteralTail(tok);
+                withinLengthLimit = consumeMalformedBasedLiteralTail(tok);
+                if (rejectOversized())
+                    return tok;
                 reportError(tok.loc, "invalid hex literal: expected hex digits after 0x");
                 tok.kind = TokenKind::Error;
                 return tok;
             }
 
             while (!eof() && (isHexDigit(peekChar()) || isNumericSeparator(peekChar()))) {
-                tok.text.push_back(getChar());
+                appendCurrent();
             }
 
             if (!eof() && isIdentifierContinue(peekChar())) {
-                consumeMalformedBasedLiteralTail(tok);
+                withinLengthLimit = consumeMalformedBasedLiteralTail(tok) && withinLengthLimit;
+                if (rejectOversized())
+                    return tok;
                 reportErrorRange(tok.loc, currentLoc(), "invalid hex literal");
                 tok.kind = TokenKind::Error;
                 return tok;
             }
+            if (rejectOversized())
+                return tok;
 
             /// @brief Tests whether a hexadecimal literal character is a digit.
             /// @param ch Character to inspect.
@@ -805,11 +836,13 @@ Token Lexer::lexNumber() {
             return tok;
         } else if (next == 'b' || next == 'B') {
             // Binary literal
-            tok.text.push_back(getChar()); // '0'
-            tok.text.push_back(getChar()); // 'b'
+            appendCurrent(); // '0'
+            appendCurrent(); // 'b'
 
             if (peekChar() != '0' && peekChar() != '1') {
-                consumeMalformedBasedLiteralTail(tok);
+                withinLengthLimit = consumeMalformedBasedLiteralTail(tok);
+                if (rejectOversized())
+                    return tok;
                 reportError(tok.loc, "invalid binary literal: expected binary digits after 0b");
                 tok.kind = TokenKind::Error;
                 return tok;
@@ -817,15 +850,19 @@ Token Lexer::lexNumber() {
 
             while (!eof() &&
                    (peekChar() == '0' || peekChar() == '1' || isNumericSeparator(peekChar()))) {
-                tok.text.push_back(getChar());
+                appendCurrent();
             }
 
             if (!eof() && isIdentifierContinue(peekChar())) {
-                consumeMalformedBasedLiteralTail(tok);
+                withinLengthLimit = consumeMalformedBasedLiteralTail(tok) && withinLengthLimit;
+                if (rejectOversized())
+                    return tok;
                 reportErrorRange(tok.loc, currentLoc(), "invalid binary literal");
                 tok.kind = TokenKind::Error;
                 return tok;
             }
+            if (rejectOversized())
+                return tok;
 
             /// @brief Tests whether a binary literal character is a digit.
             /// @param ch Character to inspect.
@@ -848,30 +885,36 @@ Token Lexer::lexNumber() {
             return tok;
         } else if (next == 'o' || next == 'O') {
             // Octal literal
-            tok.text.push_back(getChar()); // '0'
-            tok.text.push_back(getChar()); // 'o'
+            appendCurrent(); // '0'
+            appendCurrent(); // 'o'
 
             /// @brief Tests whether a character is an octal digit.
             /// @param ch Character to inspect.
             /// @return `true` for `0` through `7`.
             auto isOctalDigit = [](char ch) { return ch >= '0' && ch <= '7'; };
             if (!isOctalDigit(peekChar())) {
-                consumeMalformedBasedLiteralTail(tok);
+                withinLengthLimit = consumeMalformedBasedLiteralTail(tok);
+                if (rejectOversized())
+                    return tok;
                 reportError(tok.loc, "invalid octal literal: expected octal digits after 0o");
                 tok.kind = TokenKind::Error;
                 return tok;
             }
 
             while (!eof() && (isOctalDigit(peekChar()) || isNumericSeparator(peekChar()))) {
-                tok.text.push_back(getChar());
+                appendCurrent();
             }
 
             if (!eof() && isIdentifierContinue(peekChar())) {
-                consumeMalformedBasedLiteralTail(tok);
+                withinLengthLimit = consumeMalformedBasedLiteralTail(tok) && withinLengthLimit;
+                if (rejectOversized())
+                    return tok;
                 reportErrorRange(tok.loc, currentLoc(), "invalid octal literal");
                 tok.kind = TokenKind::Error;
                 return tok;
             }
+            if (rejectOversized())
+                return tok;
 
             if (!validateBasedIntegerSeparators(tok.text, 2, isOctalDigit)) {
                 reportError(tok.loc, "invalid octal literal: '_' must separate digits");
@@ -893,17 +936,17 @@ Token Lexer::lexNumber() {
 
     // Decimal number
     while (!eof() && (isDigit(peekChar()) || isNumericSeparator(peekChar()))) {
-        tok.text.push_back(getChar());
+        appendCurrent();
     }
 
     // Check for decimal point (but not .. range operator)
     if (peekChar() == '.' && peekChar(1) != '.') {
         tok.kind = TokenKind::NumberLiteral;
-        tok.text.push_back(getChar()); // consume '.'
+        appendCurrent(); // consume '.'
 
         // Consume fractional part
         while (!eof() && (isDigit(peekChar()) || isNumericSeparator(peekChar()))) {
-            tok.text.push_back(getChar());
+            appendCurrent();
         }
     }
 
@@ -911,12 +954,12 @@ Token Lexer::lexNumber() {
     char e = peekChar();
     if (e == 'e' || e == 'E') {
         tok.kind = TokenKind::NumberLiteral;
-        tok.text.push_back(getChar()); // consume 'e' or 'E'
+        appendCurrent(); // consume 'e' or 'E'
 
         // Optional sign
         char sign = peekChar();
         if (sign == '+' || sign == '-') {
-            tok.text.push_back(getChar());
+            appendCurrent();
         }
 
         // Exponent digits
@@ -930,7 +973,7 @@ Token Lexer::lexNumber() {
         while (!eof() && (isDigit(peekChar()) || isNumericSeparator(peekChar()))) {
             if (isDigit(peekChar()))
                 ++exponentDigits;
-            tok.text.push_back(getChar());
+            appendCurrent();
         }
         // A binary64 exponent never exceeds 3 digits; cap well above that so the
         // value parser is never handed an absurd magnitude.
@@ -942,12 +985,15 @@ Token Lexer::lexNumber() {
     }
 
     if (!eof() && isIdentifierContinue(peekChar())) {
-        while (!eof() && isIdentifierContinue(peekChar()))
-            tok.text.push_back(getChar());
+        withinLengthLimit = consumeMalformedBasedLiteralTail(tok) && withinLengthLimit;
+        if (rejectOversized())
+            return tok;
         reportErrorRange(tok.loc, currentLoc(), "invalid numeric literal");
         tok.kind = TokenKind::Error;
         return tok;
     }
+    if (rejectOversized())
+        return tok;
 
     if (!validateNumericSeparators(tok.text)) {
         reportError(tok.loc, "invalid numeric literal: '_' must separate digits");

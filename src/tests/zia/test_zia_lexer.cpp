@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/zia/test_zia_lexer.cpp
+// File: src/tests/zia/test_zia_lexer.cpp
 // Purpose: Edge-case unit tests for the Zia lexer.
 //          Tests lexer behavior directly (not through the full compiler)
 //          for number parsing, string handling, comments, operators, and
@@ -14,7 +14,9 @@
 //   - Every token must have correct kind, text, and parsed values.
 //   - Error cases must produce TokenKind::Error and diagnostics.
 //   - Lexer must not crash or hang on any input.
-// Ownership/Lifetime: Test-only; not linked into the compiler.
+// Ownership/Lifetime:
+//   - Tests own source buffers, diagnostics, lexers, and collected tokens.
+//   - Test helpers return owning token vectors.
 // Links: src/frontends/zia/Lexer.cpp, src/frontends/zia/Token.hpp
 //
 //===----------------------------------------------------------------------===//
@@ -220,6 +222,20 @@ TEST(ZiaLexer, DecimalDoesNotConsumeRange) {
     EXPECT_EQ(tokens[1].kind, TokenKind::DotDot);
     EXPECT_EQ(tokens[2].kind, TokenKind::IntegerLiteral);
     EXPECT_EQ(tokens[2].intValue, 10);
+}
+
+TEST(ZiaLexer, OversizedNumericSpellingsAreBoundedErrorTokens) {
+    for (const std::string &source :
+         {std::string(5000, '9'), "0x" + std::string(5000, 'A'),
+          "0b" + std::string(5000, '1'), "0o" + std::string(5000, '7'),
+          "0xG" + std::string(5000, 'G')}) {
+        DiagnosticEngine diag;
+        auto tokens = tokenizeWithDiags(source, diag);
+        ASSERT_EQ(tokens.size(), 1u);
+        EXPECT_EQ(tokens[0].kind, TokenKind::Error);
+        EXPECT_LE(tokens[0].text.size(), 4096u);
+        EXPECT_TRUE(hasErrors(diag));
+    }
 }
 
 //===----------------------------------------------------------------------===//

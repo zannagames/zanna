@@ -4,6 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/zia/test_zia_doc_mirror.cpp
+// Purpose: Verify atomic, strict parsing and application of editor mirror deltas.
+// Key invariants:
+//   - Malformed batches never alter mirror text or revision.
+//   - Valid JSON escapes are decoded to their UTF-8 document representation.
+// Ownership/Lifetime:
+//   - Tests borrow runtime strings for the duration of each bridge call.
+//   - Each test closes every document mirror it creates.
+// Links: src/frontends/zia/rt_zia_completion.cpp
+//
+//===----------------------------------------------------------------------===//
 ///
 /// @file test_zia_doc_mirror.cpp
 /// @brief Unit tests for the Zia document mirror delta path (VDOC-109).
@@ -134,6 +146,83 @@ TEST(ZiaDocMirror, OversizedNumericLiteralRejected) {
         11);
     ASSERT_TRUE(ok == 0);
     ASSERT_TRUE(mirrorText(path) == "abc");
+    rt_zia_doc_close(S(path));
+}
+
+TEST(ZiaDocMirror, MalformedJsonIsRejectedAtomically) {
+    const char *path = "/mirror/atomic.zia";
+    rt_zia_doc_sync_full(S(path), S("abcd"), 10);
+
+    const char *cases[] = {
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"X"}] trailing)",
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"X"},])",
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"X",}])",
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"X","extra":0}])",
+        R"([{"r":11,"r":12,"sl":0,"sc":0,"el":0,"ec":1,"t":"X"}])",
+        R"([{"r":11,"sl":0,"sl":0,"sc":0,"el":0,"ec":1,"t":"X"}])",
+        R"([{"sl":0,"sc":0,"el":0,"ec":1,"t":"X"}])",
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1}])",
+        R"([{"r":11,"sl":-1,"sc":0,"el":0,"ec":1,"t":"X"}])",
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"\q"}])",
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"\uD800"}])",
+        R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"X"},{"r":12}])",
+    };
+    for (const char *json : cases) {
+        EXPECT_EQ(rt_zia_doc_sync_delta(S(path), S(json), 12), 0);
+        EXPECT_EQ(mirrorText(path), "abcd");
+    }
+    rt_zia_doc_close(S(path));
+}
+
+TEST(ZiaDocMirror, RevisionMustReachBatchEnd) {
+    const char *path = "/mirror/revision-end.zia";
+    rt_zia_doc_sync_full(S(path), S("abc"), 10);
+    EXPECT_EQ(rt_zia_doc_sync_delta(
+                  S(path), S(R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"X"}])"), 12),
+              0);
+    EXPECT_EQ(mirrorText(path), "abc");
+    rt_zia_doc_close(S(path));
+}
+
+TEST(ZiaDocMirror, EmptyBatchCannotAdvanceRevision) {
+    const char *path = "/mirror/empty-batch.zia";
+    rt_zia_doc_sync_full(S(path), S("abc"), 10);
+    EXPECT_EQ(rt_zia_doc_sync_delta(S(path), S("[]"), 11), 0);
+    EXPECT_EQ(mirrorText(path), "abc");
+    rt_zia_doc_close(S(path));
+}
+
+TEST(ZiaDocMirror, NegativeFullRevisionIsIgnored) {
+    const char *path = "/mirror/negative-full.zia";
+    rt_zia_doc_sync_full(S(path), S("abc"), 10);
+    rt_zia_doc_sync_full(S(path), S("wrong"), -1);
+    EXPECT_EQ(mirrorText(path), "abc");
+    rt_zia_doc_close(S(path));
+}
+
+TEST(ZiaDocMirror, UnicodeEscapesDecodeAsUtf8) {
+    const char *path = "/mirror/unicode.zia";
+    rt_zia_doc_sync_full(S(path), S("x"), 1);
+    EXPECT_EQ(
+        rt_zia_doc_sync_delta(
+            S(path),
+            S(R"([{"r":2,"sl":0,"sc":0,"el":0,"ec":1,"t":"\u03A9 \uD83D\uDE00"}])"),
+            2),
+        1);
+    EXPECT_EQ(mirrorText(path), "\xCE\xA9 \xF0\x9F\x98\x80");
+    rt_zia_doc_close(S(path));
+}
+
+TEST(ZiaDocMirror, MultiDeltaBatchUsesUpdatedCoordinates) {
+    const char *path = "/mirror/multi.zia";
+    rt_zia_doc_sync_full(S(path), S("abc"), 10);
+    EXPECT_EQ(
+        rt_zia_doc_sync_delta(
+            S(path),
+            S(R"([{"r":11,"sl":0,"sc":0,"el":0,"ec":1,"t":"XY"},{"r":12,"sl":0,"sc":2,"el":0,"ec":3,"t":"Z"}])"),
+            12),
+        1);
+    EXPECT_EQ(mirrorText(path), "XYZc");
     rt_zia_doc_close(S(path));
 }
 

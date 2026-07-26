@@ -4,6 +4,20 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/frontends/zia/rt_zia_completion.cpp
+// Purpose: Bridge Zia editor services to the runtime C ABI and maintain
+//          validated incremental document mirrors.
+// Key invariants:
+//   - Runtime handles are borrowed unless the function documents an owned result.
+//   - Mirror delta batches are validated atomically before becoming visible.
+//   - Shared editor state is accessed only while holding its corresponding mutex.
+// Ownership/Lifetime:
+//   - Process-wide editor caches own their copied strings and analysis jobs.
+//   - Returned runtime objects follow the runtime reference-counting contract.
+// Links: src/frontends/zia/ZiaCompletion.hpp, docs/tools/zia-server.md
+//
+//===----------------------------------------------------------------------===//
 ///
 /// @file rt_zia_completion.cpp
 /// @brief extern "C" bridge between the Zia CompletionEngine and the Zanna
@@ -40,6 +54,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -94,6 +109,10 @@ struct DocumentMirror {
 std::mutex s_mirrorMutex;
 std::unordered_map<std::string, DocumentMirror> s_mirrors;
 
+constexpr size_t kMaxMirrorBytes = 64 * 1024 * 1024;
+constexpr size_t kMaxDeltaJsonBytes = 16 * 1024 * 1024;
+constexpr size_t kMaxDeltasPerBatch = 100000;
+
 /// @brief Compute the clamped byte offset of a zero-based position.
 /// @param s Newline-delimited document buffer.
 /// @param line Zero-based target line.
@@ -122,7 +141,7 @@ size_t mirrorOffsetOf(const std::string &s, int line, int col) {
 /// @param out Receives the validated byte offset on success; must be non-null.
 /// @return True when the position is valid and @p out was populated.
 bool mirrorOffsetOfStrict(const std::string &s, int line, int col, size_t *out) {
-    if (line < 0 || col < 0)
+    if (!out || line < 0 || col < 0)
         return false;
     size_t o = 0;
     int l = 0;
@@ -156,6 +175,10 @@ bool mirrorApplyDeltasJson(std::string &text,
                            const std::string &json,
                            uint64_t base_revision,
                            uint64_t end_revision) {
+    if (json.size() > kMaxDeltaJsonBytes || text.size() > kMaxMirrorBytes)
+        return false;
+
+    std::string updatedText = text;
     size_t i = 0;
     /// @brief Advances the parser cursor across JSON whitespace.
     auto skipWs = [&]() {
@@ -168,30 +191,50 @@ bool mirrorApplyDeltasJson(std::string &text,
         return false;
     i++;
     skipWs();
-    if (i < json.size() && json[i] == ']')
-        return true; // empty array
+    if (i < json.size() && json[i] == ']') {
+        i++;
+        skipWs();
+        return i == json.size() && base_revision == end_revision;
+    }
+    size_t deltaCount = 0;
     while (i < json.size()) {
+        if (++deltaCount > kMaxDeltasPerBatch)
+            return false;
         skipWs();
         if (i >= json.size() || json[i] != '{')
             return false;
         i++;
         int sl = 0, sc = 0, el = 0, ec = 0;
-        long rev = -1;
-        bool haveSl = false, haveSc = false, haveEl = false, haveEc = false;
+        uint64_t rev = 0;
+        bool haveSl = false, haveSc = false, haveEl = false, haveEc = false, haveRev = false,
+             haveText = false;
         std::string t;
+        bool firstField = true;
         while (true) {
             skipWs();
             if (i >= json.size())
                 return false;
             if (json[i] == '}') {
+                if (firstField)
+                    return false;
                 i++;
                 break;
+            }
+            if (!firstField) {
+                if (json[i] != ',')
+                    return false;
+                i++;
+                skipWs();
+                if (i >= json.size() || json[i] == '}')
+                    return false;
             }
             if (json[i] != '"')
                 return false;
             i++;
             std::string key;
             while (i < json.size() && json[i] != '"') {
+                if (json[i] == '\\' || static_cast<unsigned char>(json[i]) < 0x20)
+                    return false;
                 key += json[i];
                 i++;
             }
@@ -204,6 +247,9 @@ bool mirrorApplyDeltasJson(std::string &text,
             i++;
             skipWs();
             if (key == "t") {
+                if (haveText)
+                    return false;
+                haveText = true;
                 if (i >= json.size() || json[i] != '"')
                     return false;
                 i++;
@@ -223,10 +269,16 @@ bool mirrorApplyDeltasJson(std::string &text,
                             t += '"';
                         else if (e == '\\')
                             t += '\\';
+                        else if (e == '/')
+                            t += '/';
+                        else if (e == 'b')
+                            t += '\b';
+                        else if (e == 'f')
+                            t += '\f';
                         else if (e == 'u') {
                             if (i + 4 >= json.size())
                                 return false;
-                            int cp = 0;
+                            uint32_t cp = 0;
                             for (int k = 1; k <= 4; k++) {
                                 char h = json[i + k];
                                 cp <<= 4;
@@ -240,90 +292,138 @@ bool mirrorApplyDeltasJson(std::string &text,
                                     return false;
                             }
                             i += 4;
-                            t += static_cast<char>(cp & 0xFF); // only control chars are \u-escaped
+                            if (cp >= 0xD800 && cp <= 0xDBFF) {
+                                if (i + 6 >= json.size() || json[i + 1] != '\\' ||
+                                    json[i + 2] != 'u')
+                                    return false;
+                                uint32_t low = 0;
+                                for (int k = 3; k <= 6; ++k) {
+                                    const char h = json[i + k];
+                                    low <<= 4;
+                                    if (h >= '0' && h <= '9')
+                                        low += static_cast<uint32_t>(h - '0');
+                                    else if (h >= 'a' && h <= 'f')
+                                        low += static_cast<uint32_t>(h - 'a' + 10);
+                                    else if (h >= 'A' && h <= 'F')
+                                        low += static_cast<uint32_t>(h - 'A' + 10);
+                                    else
+                                        return false;
+                                }
+                                if (low < 0xDC00 || low > 0xDFFF)
+                                    return false;
+                                cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                                i += 6;
+                            } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                                return false;
+                            }
+                            if (cp <= 0x7F) {
+                                t.push_back(static_cast<char>(cp));
+                            } else if (cp <= 0x7FF) {
+                                t.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                                t.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                            } else if (cp <= 0xFFFF) {
+                                t.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                                t.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                                t.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                            } else {
+                                t.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                                t.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                                t.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                                t.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+                            }
                         } else {
-                            t += e;
+                            return false;
                         }
                         i++;
                     } else {
+                        if (static_cast<unsigned char>(json[i]) < 0x20)
+                            return false;
                         t += json[i];
                         i++;
                     }
+                    if (t.size() > kMaxMirrorBytes)
+                        return false;
                 }
                 if (i >= json.size())
                     return false;
                 i++; // closing quote of value
             } else {
-                bool neg = false;
-                if (i < json.size() && json[i] == '-') {
-                    neg = true;
-                    i++;
-                }
-                long v = 0;
+                if (key != "sl" && key != "sc" && key != "el" && key != "ec" && key != "r")
+                    return false;
+                uint64_t v = 0;
                 bool any = false;
-                size_t digits = 0;
                 while (i < json.size() && json[i] >= '0' && json[i] <= '9') {
-                    // Bounded accumulation (VDOC-115): editor coordinates and
-                    // revisions fit comfortably in 10 digits; longer literals
-                    // are malformed input, not values.
-                    if (++digits > 10)
+                    const uint32_t digit = static_cast<uint32_t>(json[i] - '0');
+                    if (v > (std::numeric_limits<uint64_t>::max() - digit) / 10)
                         return false;
-                    v = v * 10 + (json[i] - '0');
+                    v = v * 10 + digit;
                     i++;
                     any = true;
                 }
                 if (!any)
                     return false;
-                if (neg)
-                    v = -v;
                 if (key == "sl") {
+                    if (haveSl || v > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+                        return false;
                     sl = static_cast<int>(v);
                     haveSl = true;
                 } else if (key == "sc") {
+                    if (haveSc || v > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+                        return false;
                     sc = static_cast<int>(v);
                     haveSc = true;
                 } else if (key == "el") {
+                    if (haveEl || v > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+                        return false;
                     el = static_cast<int>(v);
                     haveEl = true;
                 } else if (key == "ec") {
+                    if (haveEc || v > static_cast<uint64_t>(std::numeric_limits<int>::max()))
+                        return false;
                     ec = static_cast<int>(v);
                     haveEc = true;
                 } else if (key == "r") {
+                    if (haveRev)
+                        return false;
                     rev = v;
+                    haveRev = true;
                 }
             }
-            skipWs();
-            if (i < json.size() && json[i] == ',') {
-                i++;
-                continue;
-            }
+            firstField = false;
         }
-        if (!haveSl || !haveSc || !haveEl || !haveEc)
+        if (!haveSl || !haveSc || !haveEl || !haveEc || !haveRev || !haveText)
             return false;
         // Revision enforcement (VDOC-109): each delta must advance strictly
         // past the mirror's stored revision and stay within end_revision, so
         // stale or out-of-order journal entries are rejected.
-        if (rev >= 0) {
-            uint64_t urev = static_cast<uint64_t>(rev);
-            if (urev <= base_revision || urev > end_revision)
-                return false;
-            base_revision = urev;
-        }
+        if (rev <= base_revision || rev > end_revision)
+            return false;
+        base_revision = rev;
         size_t so = 0;
         size_t eo = 0;
-        if (!mirrorOffsetOfStrict(text, sl, sc, &so) || !mirrorOffsetOfStrict(text, el, ec, &eo))
+        if (!mirrorOffsetOfStrict(updatedText, sl, sc, &so) ||
+            !mirrorOffsetOfStrict(updatedText, el, ec, &eo))
             return false;
         if (so > eo)
             return false; // reversed range is corrupt, not an insertion
-        text = text.substr(0, so) + t + text.substr(eo);
+        if (t.size() > kMaxMirrorBytes - (updatedText.size() - (eo - so)))
+            return false;
+        updatedText.replace(so, eo - so, t);
 
         skipWs();
         if (i < json.size() && json[i] == ',') {
             i++;
+            skipWs();
+            if (i >= json.size() || json[i] == ']')
+                return false;
             continue;
         }
         if (i < json.size() && json[i] == ']') {
             i++;
+            skipWs();
+            if (i != json.size() || base_revision != end_revision)
+                return false;
+            text = std::move(updatedText);
             return true;
         }
         return false;
@@ -2769,9 +2869,11 @@ rt_string rt_zia_check_for_file(rt_string source, rt_string file_path) {
 /// @param revision Revision represented by @p text.
 void rt_zia_doc_sync_full(rt_string path, rt_string text, int64_t revision) {
     std::string p = toStdString(path);
-    if (p.empty())
+    if (p.empty() || revision < 0)
         return;
     std::string body = toStdString(text);
+    if (body.size() > kMaxMirrorBytes)
+        return;
     std::lock_guard<std::mutex> lock(s_mirrorMutex);
     DocumentMirror &m = s_mirrors[p];
     m.text = std::move(body);
@@ -2795,13 +2897,11 @@ int8_t rt_zia_doc_sync_delta(rt_string path, rt_string deltas_json, int64_t end_
         return 0;
     // A delta batch must move the mirror forward (VDOC-109); stale or
     // backwards end revisions force the caller's full-sync path.
-    if (end_revision < 0 || static_cast<uint64_t>(end_revision) < it->second.revision)
+    if (end_revision < 0 || static_cast<uint64_t>(end_revision) <= it->second.revision)
         return 0;
-    std::string working = it->second.text;
     if (!mirrorApplyDeltasJson(
-            working, json, it->second.revision, static_cast<uint64_t>(end_revision)))
+            it->second.text, json, it->second.revision, static_cast<uint64_t>(end_revision)))
         return 0;
-    it->second.text = std::move(working);
     it->second.revision = static_cast<uint64_t>(end_revision);
     return 1;
 }
