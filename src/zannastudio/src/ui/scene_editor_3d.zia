@@ -186,6 +186,7 @@ final GIZMO_PLANE_INNER_FRACTION: Number = 0.25;
 final GIZMO_PLANE_OUTER_FRACTION: Number = 0.55;
 final COMPACT_SCENE_3D_WIDTH: Number = 700.0;
 final HIERARCHY_PANE_MIN_WIDTH: Number = 820.0;
+final RESPONSIVE_WIDTH_EPSILON: Number = 0.01;
 final VIEWPORT_CLEAR_RED: Number = 0.08627450980392157;
 final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
 final VIEWPORT_CLEAR_BLUE: Number = 0.13333333333333333;
@@ -2516,7 +2517,9 @@ class SceneEditor3D {
             }
         }
         if width <= 0.0 { return; }
-        var widthChanged = width != lastHostWidth;
+        var widthDelta = width - lastHostWidth;
+        if widthDelta < 0.0 { widthDelta = 0.0 - widthDelta; }
+        var widthChanged = widthDelta > RESPONSIVE_WIDTH_EPSILON;
         lastHostWidth = width;
         var nextCompact = UsesCompactLayout(width);
         if nextCompact != compactLayout {
