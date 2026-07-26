@@ -60,33 +60,39 @@ rt_string rt_restclient_base_url(void *obj);
 /// @details Replacement is case-insensitive. The complete key snapshot and new
 ///          Map entry are allocated before differently cased aliases are
 ///          removed, so a caught allocation trap preserves the prior value.
-/// @param obj RestClient object.
-/// @param name Header name.
-/// @param value Header value.
+///          Names must be nonempty HTTP tokens; values containing NUL, CR, or
+///          LF are rejected. Mutation and request snapshots are synchronized.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param name Nonempty HTTP field-name token.
+/// @param value Field value without NUL or line-breaking bytes.
 void rt_restclient_set_header(void *obj, rt_string name, rt_string value);
 
 /// @brief Remove every case-insensitive spelling of a default header.
-/// @param obj RestClient object.
-/// @param name Header name.
+/// @details Invalid field-name tokens are ignored. Mutation is synchronized
+///          with request snapshot capture.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param name HTTP field-name token to remove.
 void rt_restclient_del_header(void *obj, rt_string name);
 
 /// @brief Transactionally set `Authorization: Bearer <token>`.
 /// @details Native and managed staging is released on validation, allocation,
-///          or Map-update failure; the previous Authorization value is retained.
-/// @param obj RestClient object.
-/// @param token Bearer token.
+///          or Map-update failure; the previous Authorization value is
+///          retained. Embedded NUL, CR, and LF bytes are rejected.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param token Bearer token, with NULL treated as empty.
 void rt_restclient_set_auth_bearer(void *obj, rt_string token);
 
 /// @brief Transactionally set base64-encoded Basic authentication.
 /// @details Username/password are copied as `user:password`, encoded, prefixed,
 ///          and published only after every intermediate allocation succeeds.
-/// @param obj RestClient object.
-/// @param username Username.
-/// @param password Password.
+///          Embedded NUL, CR, and LF bytes are rejected.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param username Username bytes, with NULL treated as empty.
+/// @param password Password bytes, with NULL treated as empty.
 void rt_restclient_set_auth_basic(void *obj, rt_string username, rt_string password);
 
-/// @brief Clear authentication.
-/// @param obj RestClient object.
+/// @brief Remove any default Authorization header.
+/// @param obj RestClient receiver; NULL is a no-op.
 void rt_restclient_clear_auth(void *obj);
 
 /// @brief Set the synchronized default timeout for subsequent requests.
@@ -121,146 +127,182 @@ void rt_restclient_set_pool_size(void *obj, int64_t max_size);
 // HTTP Methods - Raw
 //=============================================================================
 
-/// @brief Perform GET request.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return HttpRes response object.
+/// @brief Send a GET request and return its raw response.
+/// @details Client defaults are copied under the mutex before transport work.
+///          The response is also retained as synchronized diagnostic state.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_get(void *obj, rt_string path);
 
 /// @brief Perform GET request and return a Result-wrapped HttpRes.
 /// @details Transport/setup failures become `Result.ErrStr`; any received HTTP
 ///          response, including 4xx/5xx, is returned as `Result.Ok(HttpRes)`.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return Opaque `Zanna.Result` containing `Ok(HttpRes)` or `Err(String)`.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned `Zanna.Result` containing `Ok(HttpRes)` or
+///         `Err(String)`.
 /// @note NULL and wrong-class receivers produce `Err(String)` without native
 ///       payload access. Result-construction OOM releases all partial values.
 void *rt_restclient_get_result(void *obj, rt_string path);
 
-/// @brief Perform POST request with body.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param body Request body as string.
-/// @return HttpRes response object.
+/// @brief Send a POST request with a String body.
+/// @details This raw helper does not imply a Content-Type; set one through the
+///          default-header API when needed.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_post(void *obj, rt_string path, rt_string body);
 
 /// @brief Perform POST request with body and return a Result-wrapped HttpRes.
 /// @details Transport/setup failures become `Result.ErrStr`; HTTP status stays
 ///          on the response object for explicit caller handling.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param body Request body as string.
-/// @return Opaque `Zanna.Result` containing `Ok(HttpRes)` or `Err(String)`.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned `Zanna.Result` containing `Ok(HttpRes)` or
+///         `Err(String)`.
 void *rt_restclient_post_result(void *obj, rt_string path, rt_string body);
 
-/// @brief Perform PUT request with body.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param body Request body as string.
-/// @return HttpRes response object.
+/// @brief Send a PUT request with a String body.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_put(void *obj, rt_string path, rt_string body);
 
 /// @brief Perform PUT request with body and return a Result-wrapped HttpRes.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param body Request body as string.
-/// @return Opaque `Zanna.Result` containing `Ok(HttpRes)` or `Err(String)`.
+/// @details Setup and transport traps become `Err(String)`; every received HTTP
+///          response remains `Ok(HttpRes)` regardless of status.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned `Zanna.Result` containing `Ok(HttpRes)` or
+///         `Err(String)`.
 void *rt_restclient_put_result(void *obj, rt_string path, rt_string body);
 
-/// @brief Perform PATCH request with body.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param body Request body as string.
-/// @return HttpRes response object.
+/// @brief Send a PATCH request with a String body.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_patch(void *obj, rt_string path, rt_string body);
 
 /// @brief Perform PATCH request with body and return a Result-wrapped HttpRes.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param body Request body as string.
-/// @return Opaque `Zanna.Result` containing `Ok(HttpRes)` or `Err(String)`.
+/// @details Setup and transport traps become `Err(String)`; every received HTTP
+///          response remains `Ok(HttpRes)` regardless of status.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned `Zanna.Result` containing `Ok(HttpRes)` or
+///         `Err(String)`.
 void *rt_restclient_patch_result(void *obj, rt_string path, rt_string body);
 
-/// @brief Perform DELETE request.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return HttpRes response object.
+/// @brief Send a bodyless DELETE request.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_delete(void *obj, rt_string path);
 
 /// @brief Perform DELETE request and return a Result-wrapped HttpRes.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return Opaque `Zanna.Result` containing `Ok(HttpRes)` or `Err(String)`.
+/// @details Setup and transport traps become `Err(String)`; every received HTTP
+///          response remains `Ok(HttpRes)` regardless of status.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned `Zanna.Result` containing `Ok(HttpRes)` or
+///         `Err(String)`.
 void *rt_restclient_delete_result(void *obj, rt_string path);
 
-/// @brief Perform HEAD request.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return HttpRes response object.
+/// @brief Send a HEAD request for response metadata without a body transfer.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_head(void *obj, rt_string path);
 
 /// @brief Perform HEAD request and return a Result-wrapped HttpRes.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return Opaque `Zanna.Result` containing `Ok(HttpRes)` or `Err(String)`.
+/// @details Setup and transport traps become `Err(String)`; every received HTTP
+///          response remains `Ok(HttpRes)` regardless of status.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned `Zanna.Result` containing `Ok(HttpRes)` or
+///         `Err(String)`.
 void *rt_restclient_head_result(void *obj, rt_string path);
 
 //=============================================================================
 // HTTP Methods - JSON Convenience
 //=============================================================================
 
-/// @brief GET request, return parsed JSON.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return Any parsed JSON value, or null for a non-2xx response.
-/// @note Sets Accept: application/json header.
+/// @brief Send a GET accepting JSON and parse a successful response body.
+/// @details Applies `Accept: application/json`. The completed raw response
+///          remains available through the last-response accessors even when
+///          status is non-2xx or its body is empty.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, parse failure, or after a returning trap hook.
 void *rt_restclient_get_json(void *obj, rt_string path);
 
-/// @brief POST JSON request.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param json_body JSON object (Map or Seq) to serialize.
-/// @return Parsed JSON response, or null for non-2xx/empty response.
-/// @note Sets Content-Type: application/json header.
+/// @brief Serialize JSON into a POST and parse a successful JSON response.
+/// @details Applies both `Content-Type: application/json` and
+///          `Accept: application/json`; all request and response temporaries
+///          are released on every trap path.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param json_body Managed JSON value serialized as the request body.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, parse failure, or after a returning trap hook.
 void *rt_restclient_post_json(void *obj, rt_string path, void *json_body);
 
-/// @brief PUT JSON request.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param json_body JSON object (Map or Seq) to serialize.
-/// @return Parsed JSON response, or null for non-2xx/empty response.
+/// @brief Serialize JSON into a PUT and parse a successful JSON response.
+/// @details Applies JSON Content-Type and Accept fields. A completed raw
+///          response remains cached for diagnostic inspection.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param json_body Managed JSON value serialized as the request body.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, parse failure, or after a returning trap hook.
 void *rt_restclient_put_json(void *obj, rt_string path, void *json_body);
 
-/// @brief PATCH JSON request.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @param json_body JSON object (Map or Seq) to serialize.
-/// @return Parsed JSON response, or null for non-2xx/empty response.
+/// @brief Serialize JSON into a PATCH and parse a successful JSON response.
+/// @details Applies JSON Content-Type and Accept fields. A completed raw
+///          response remains cached for diagnostic inspection.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param json_body Managed JSON value serialized as the request body.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, parse failure, or after a returning trap hook.
 void *rt_restclient_patch_json(void *obj, rt_string path, void *json_body);
 
-/// @brief DELETE with JSON response.
-/// @param obj RestClient object.
-/// @param path Path relative to base URL.
-/// @return Parsed JSON response, or null for non-2xx/empty response.
+/// @brief Send a bodyless DELETE and parse a successful JSON response.
+/// @details Applies `Accept: application/json`; no Content-Type or request body
+///          is added.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, parse failure, or after a returning trap hook.
 void *rt_restclient_delete_json(void *obj, rt_string path);
 
 //=============================================================================
 // Error Handling
 //=============================================================================
 
-/// @brief Get last response status code.
-/// @param obj RestClient object.
-/// @return Last HTTP status code, or 0 if no request made.
+/// @brief Read the synchronized status code of the last response.
+/// @param obj RestClient receiver; NULL yields zero.
+/// @return Last HTTP status, or zero before a response or after failure clears
+///         compatibility state.
 int64_t rt_restclient_last_status(void *obj);
 
 /// @brief Get a retained snapshot of the last response object.
-/// @param obj RestClient object.
-/// @return Caller-owned HttpRes reference, or NULL if no response was received.
+/// @details The cached pointer is live-retained while the client mutex is held;
+///          the caller must release the returned independent reference.
+/// @param obj RestClient receiver; NULL yields NULL.
+/// @return Caller-owned HttpRes reference, or NULL if no response is cached.
 void *rt_restclient_last_response(void *obj);
 
-/// @brief Check if last request was successful (2xx status).
-/// @param obj RestClient object.
-/// @return 1 if last status was 200-299, 0 otherwise.
+/// @brief Check whether the synchronized last status is successful.
+/// @param obj RestClient receiver; NULL yields zero.
+/// @return One for a status in the inclusive range 200..299; otherwise zero.
 int8_t rt_restclient_last_ok(void *obj);
 
 #ifdef __cplusplus

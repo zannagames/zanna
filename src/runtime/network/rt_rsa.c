@@ -39,6 +39,8 @@
 /// @details Used to scrub Montgomery scratch, decrypted intermediate
 ///          blocks, and private key material before they fall out of
 ///          scope. The volatile cast defeats dead-store elimination.
+/// @param ptr Writable storage to scrub; valid for @p len bytes.
+/// @param len Number of bytes to overwrite.
 static void rsa_secure_zero(void *ptr, size_t len) {
     volatile uint8_t *p = (volatile uint8_t *)ptr;
     while (len-- > 0)
@@ -49,6 +51,8 @@ static void rsa_secure_zero(void *ptr, size_t len) {
 /// @details The companion `free`-with-scrub for heap allocations that
 ///          held sensitive material (decrypted ciphertext, padded
 ///          plaintext, key schedule extracts).
+/// @param ptr Heap allocation to scrub and release, or NULL.
+/// @param len Allocation length in bytes.
 static void rsa_secure_free(uint8_t *ptr, size_t len) {
     if (ptr) {
         rsa_secure_zero(ptr, len);
@@ -61,6 +65,10 @@ static void rsa_secure_free(uint8_t *ptr, size_t len) {
 ///          the function to infer where the first non-zero byte sits.
 ///          NULL pointer or zero length is treated as "all zero" so the
 ///          caller's "empty field rejected" guard fires consistently.
+/// @param data Big-endian byte span to inspect.
+/// @param len Number of bytes in @p data.
+/// @return One when the span is absent, empty, or entirely zero; otherwise
+///         zero.
 static int rsa_be_is_zero(const uint8_t *data, size_t len) {
     uint8_t acc = 0;
     if (!data || len == 0)
@@ -126,6 +134,7 @@ static int rsa_be_cmp_trimmed(const uint8_t *a, size_t a_len, const uint8_t *b, 
 ///          - Modulus is non-zero and odd.
 ///          - Public exponent has length 1–8 bytes and ≤ modulus length.
 ///          - Public exponent is non-zero, odd, and >= 3.
+/// @param key Parsed key whose public components are inspected.
 /// @return 1 when every check passes, 0 otherwise.
 static int rsa_validate_public_components(const rt_rsa_key_t *key) {
     if (!key || !key->modulus || !key->public_exponent)
@@ -154,6 +163,7 @@ static int rsa_validate_public_components(const rt_rsa_key_t *key) {
 ///          within the modulus byte length. Does not verify that
 ///          `d * e ≡ 1 (mod φ(n))` — that would require the CRT
 ///          factors, which the PKCS#1 / PKCS#8 parsers discard.
+/// @param key Parsed key whose public and private components are inspected.
 /// @return 1 when every check passes, 0 otherwise.
 static int rsa_validate_private_components(const rt_rsa_key_t *key) {
     return rsa_validate_public_components(key) && key->private_exponent &&
@@ -168,11 +178,12 @@ static int rsa_validate_private_components(const rt_rsa_key_t *key) {
 ///          it (GCC/Clang) for a single hardware multiply; falls back to
 ///          four 32x32→64 partials on MSVC and other compilers without
 ///          128-bit integer support.
-/// @param a,b           64-bit operands.
-/// @param addend        Additive term folded into the product (typically the previous limb).
-/// @param carry_in      Carry from the previous column.
-/// @param low_out       Out: low 64 bits of (a*b + addend + carry_in).
-/// @param high_out      Out: high 64 bits (carry to the next column).
+/// @param a First 64-bit multiplicand.
+/// @param b Second 64-bit multiplicand.
+/// @param addend Additive term, typically the previous accumulator limb.
+/// @param carry_in Carry from the previous column.
+/// @param low_out Destination for the low 64 result bits.
+/// @param high_out Destination for the high 64 result bits.
 static void rsa_mul_add_u64(uint64_t a,
                             uint64_t b,
                             uint64_t addend,

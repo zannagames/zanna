@@ -174,6 +174,13 @@ static void *udp_adopt_socket(socket_t sock, char *address, int port, int family
 #define IPV6_DROP_MEMBERSHIP IPV6_LEAVE_GROUP
 #endif
 
+/// @brief Create and configure one native UDP socket.
+/// @details Suppresses SIGPIPE and, for IPv6, explicitly selects dual-stack or
+///          IPv6-only operation when the platform exposes @c IPV6_V6ONLY.
+/// @param family Native @c AF_INET or @c AF_INET6 family.
+/// @param dual_stack Nonzero to accept IPv4-mapped traffic on IPv6.
+/// @return Owned socket, or @c INVALID_SOCK after closing a partially
+///         configured candidate.
 static socket_t udp_create_socket(int family, int dual_stack) {
     socket_t sock = socket(family, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCK)
@@ -192,6 +199,17 @@ static socket_t udp_create_socket(int family, int dual_stack) {
     return sock;
 }
 
+/// @brief Receive one datagram while detecting native truncation.
+/// @details Uses @c WSAEMSGSIZE on Windows and @c recvmsg flags on POSIX so an
+///          oversized datagram is consumed but never silently published as
+///          complete.
+/// @param sock Open native UDP socket.
+/// @param buf Writable receive buffer.
+/// @param recv_len Buffer capacity accepted by the native API.
+/// @param sender_addr Receives the datagram source address.
+/// @param sender_len In/out capacity and actual source-address length.
+/// @param truncated_out Optional flag, cleared first and set on truncation.
+/// @return Received byte count, or @c SOCK_ERROR.
 static int udp_recvfrom_checked(socket_t sock,
                                 uint8_t *buf,
                                 int recv_len,
@@ -235,6 +253,10 @@ static int udp_recvfrom_checked(socket_t sock,
 #endif
 }
 
+/// @brief Convert an IPv4 destination to IPv4-mapped IPv6 socket form.
+/// @param src Source IPv4 address and port.
+/// @param dst Receives the zeroed `::ffff:a.b.c.d` address.
+/// @param dst_len Optional output receiving `sizeof(*dst)`.
 static void udp_make_v4_mapped(const struct sockaddr_in *src,
                                struct sockaddr_in6 *dst,
                                socklen_t *dst_len) {
@@ -248,12 +270,21 @@ static void udp_make_v4_mapped(const struct sockaddr_in *src,
         *dst_len = (socklen_t)sizeof(*dst);
 }
 
+/// @brief Test an IPv6 address for the IPv4-mapped prefix.
+/// @param addr IPv6 address to inspect.
+/// @return One for `::ffff:0:0/96`, otherwise zero.
 static int udp_is_v4_mapped_addr(const struct in6_addr *addr) {
     const unsigned char *bytes = (const unsigned char *)addr->s6_addr;
     static const unsigned char prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF};
     return memcmp(bytes, prefix, sizeof(prefix)) == 0;
 }
 
+/// @brief Record numeric sender metadata after a successful datagram receive.
+/// @details Clears prior metadata first, renders IPv4 and IPv6 numerically, and
+///          presents IPv4-mapped IPv6 sources in ordinary dotted-decimal form.
+/// @param udp UDP payload whose last-sender fields are updated.
+/// @param addr Received source socket address.
+/// @param addr_len Source address length supplied by the socket API.
 static void udp_store_sender_info(rt_udp_t *udp, const struct sockaddr *addr, socklen_t addr_len) {
     (void)addr_len;
     if (!udp || !addr) {
@@ -283,6 +314,15 @@ static void udp_store_sender_info(rt_udp_t *udp, const struct sockaddr *addr, so
     }
 }
 
+/// @brief Resolve a destination compatible with a UDP socket's family.
+/// @details Preserves resolver order, restricts IPv4 sockets to IPv4 records,
+///          and maps IPv4 results into IPv6 form for dual-stack sockets.
+/// @param host Nonempty NUL-terminated destination host.
+/// @param port Destination port.
+/// @param socket_family Socket's @c AF_INET or @c AF_INET6 family.
+/// @param addr_out Receives the selected address.
+/// @param addr_len_out Receives its native length.
+/// @return Zero on success, otherwise -1.
 static int udp_resolve_destination(const char *host,
                                    int port,
                                    int socket_family,
@@ -330,6 +370,13 @@ static int udp_resolve_destination(const char *host,
     return -1;
 }
 
+/// @brief Resolve and bind a managed UDP socket.
+/// @details Tries IPv4/IPv6 candidates in resolver order with @c SO_REUSEADDR,
+///          records the actual OS-selected ephemeral port, copies the chosen
+///          address text, and transfers the native socket to managed ownership.
+/// @param address Optional local address; NULL selects all interfaces.
+/// @param port Local port in [0, 65535], with zero requesting an ephemeral port.
+/// @return Newly owned managed Udp object, or NULL after a returning trap.
 static void *rt_udp_bind_impl(const char *address, int64_t port) {
     struct addrinfo hints;
     struct addrinfo *res = NULL;
@@ -425,6 +472,9 @@ static void *rt_udp_bind_impl(const char *address, int64_t port) {
 }
 
 /// @brief GC finalizer: close the socket if still open and free the bound-address string.
+/// @details Clears bound state, endpoint metadata, and initialization magic
+///          after releasing native resources. NULL is a no-op.
+/// @param obj Udp payload being finalized, or NULL.
 static void rt_udp_finalize(void *obj) {
     if (!obj)
         return;
@@ -449,6 +499,8 @@ static void rt_udp_finalize(void *obj) {
 /// @brief Create an unbound UDP socket. Prefers an IPv6 dual-stack socket when available so the
 /// same handle can send to IPv4 and IPv6 destinations; falls back to IPv4-only when the platform
 /// cannot create a dual-stack datagram socket.
+/// @return Newly owned managed Udp object, or NULL after a returning creation
+///         or allocation trap.
 void *rt_udp_new(void) {
     rt_net_init_wsa();
 
@@ -469,6 +521,8 @@ void *rt_udp_new(void) {
 /// @brief Create a UDP socket and bind it to all interfaces (`0.0.0.0`) on `port`. Pass
 /// `port=0` to let the OS pick a free port (read it back via `rt_udp_port`). Convenience wrapper
 /// over `rt_udp_bind_at` for the common "listen on any address" case.
+/// @param port Local port in [0, 65535].
+/// @return Newly owned bound Udp object, or NULL after a returning trap.
 void *rt_udp_bind(int64_t port) {
     return rt_udp_bind_impl(NULL, port);
 }
@@ -476,6 +530,9 @@ void *rt_udp_bind(int64_t port) {
 /// @brief Create and bind a UDP socket to `(address, port)`. Supports IPv4 literals, IPv6
 /// literals, and hostnames that resolve to a local interface address. When `port==0` the OS
 /// assigns a free port and the actual port is queried back via `getsockname`.
+/// @param address Nonempty managed local address without embedded NUL.
+/// @param port Local port in [0, 65535].
+/// @return Newly owned bound Udp object, or NULL after a returning trap.
 void *rt_udp_bind_at(rt_string address, int64_t port) {
     const char *addr_ptr = NULL;
     size_t addr_len = 0;
@@ -492,6 +549,9 @@ void *rt_udp_bind_at(rt_string address, int64_t port) {
 
 /// @brief Read the bound port (0 for unbound sockets created via `rt_udp_new`). Useful when the
 /// constructor used `port=0` and you need to discover which ephemeral port the OS assigned.
+/// @param obj Required Udp receiver.
+/// @return Recorded bound port, or zero when unbound/closed or after a
+///         returning invalid-handle trap.
 int64_t rt_udp_port(void *obj) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -501,6 +561,8 @@ int64_t rt_udp_port(void *obj) {
 
 /// @brief Read the bound address as an rt_string ("0.0.0.0" if bound to all interfaces). Returns
 /// the empty string for unbound sockets.
+/// @param obj Required Udp receiver.
+/// @return Newly owned address String, or empty when unbound.
 rt_string rt_udp_address(void *obj) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -512,6 +574,8 @@ rt_string rt_udp_address(void *obj) {
 
 /// @brief Returns 1 if the socket was created via `bind()` (i.e. has a fixed local port); 0 if
 /// it was created via `rt_udp_new` and only sends.
+/// @param obj Required Udp receiver.
+/// @return One while explicitly bound, otherwise zero.
 int8_t rt_udp_is_bound(void *obj) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -529,6 +593,11 @@ int8_t rt_udp_is_bound(void *obj) {
 /// through `getaddrinfo`, supporting IPv4, IPv6, and DNS.
 /// Returns the byte count actually sent. Traps with specific kinds for EMSGSIZE, host-not-found,
 /// and generic send errors so callers can distinguish recoverable failures.
+/// @param obj Required open Udp receiver.
+/// @param host Nonempty managed destination host without embedded NUL.
+/// @param port Destination port in [1, 65535].
+/// @param data Required managed Bytes payload.
+/// @return Exact datagram byte count, or -1 after a returning trap.
 int64_t rt_udp_send_to(void *obj, rt_string host, int64_t port, void *data) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -602,6 +671,11 @@ int64_t rt_udp_send_to(void *obj, rt_string host, int64_t port, void *data) {
 
 /// @brief String-payload variant of `rt_udp_send_to`. Sends the rt_string's UTF-8 bytes
 /// (without a NUL terminator) as a single datagram. Same 65507-byte cap and error semantics.
+/// @param obj Required open Udp receiver.
+/// @param host Nonempty managed destination host without embedded NUL.
+/// @param port Destination port in [1, 65535].
+/// @param text Required managed String payload.
+/// @return Exact datagram byte count, or -1 after a returning trap.
 int64_t rt_udp_send_to_str(void *obj, rt_string host, int64_t port, rt_string text) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -679,6 +753,10 @@ int64_t rt_udp_send_to_str(void *obj, rt_string host, int64_t port, rt_string te
 
 /// @brief Convenience alias for `rt_udp_recv_from` — receive a single datagram up to `max_bytes`
 /// long. The sender's address is recorded and accessible via `rt_udp_sender_host` / `_port`.
+/// @param obj Required open Udp receiver.
+/// @param max_bytes Receive-buffer capacity in [0, @c INT_MAX].
+/// @return Newly owned exact-sized Bytes, possibly empty, or NULL after a
+///         returning trap.
 void *rt_udp_recv(void *obj, int64_t max_bytes) {
     return rt_udp_recv_from(obj, max_bytes);
 }
@@ -688,6 +766,10 @@ void *rt_udp_recv(void *obj, int64_t max_bytes) {
 /// boundaries are meaningful in UDP; trailing zeros must NOT be exposed). On socket timeout
 /// (EAGAIN / WSAETIMEDOUT, configured via `set_recv_timeout`), returns an empty Bytes rather
 /// than trapping — lets receive loops poll cheaply.
+/// @param obj Required open Udp receiver.
+/// @param max_bytes Receive-buffer capacity in [0, @c INT_MAX].
+/// @return Newly owned exact-sized Bytes, including empty Bytes on persistent
+///         timeout, or NULL after a returning trap.
 void *rt_udp_recv_from(void *obj, int64_t max_bytes) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -776,6 +858,12 @@ void *rt_udp_recv_from(void *obj, int64_t max_bytes) {
 /// on no-data). Distinct from setting socket-level recv timeout: this is one-shot and returns
 /// NULL on expiry, while `set_recv_timeout` sets a persistent socket option that returns empty
 /// Bytes.
+/// @param obj Required open Udp receiver.
+/// @param max_bytes Receive-buffer capacity in [0, @c INT_MAX].
+/// @param timeout_ms One-shot readiness timeout in [0, @c INT_MAX]
+///        milliseconds; zero skips readiness waiting.
+/// @return Newly owned exact-sized Bytes, or NULL on readiness timeout or after
+///         a returning trap.
 void *rt_udp_recv_for(void *obj, int64_t max_bytes, int64_t timeout_ms) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -824,6 +912,8 @@ void *rt_udp_recv_for(void *obj, int64_t max_bytes, int64_t timeout_ms) {
 
 /// @brief Read the numeric IPv4 or IPv6 source of the most recently received datagram. Empty until
 /// the first successful `recv*`.
+/// @param obj Required Udp receiver.
+/// @return Newly owned numeric sender-address String, or empty before receipt.
 rt_string rt_udp_sender_host(void *obj) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -832,6 +922,8 @@ rt_string rt_udp_sender_host(void *obj) {
 }
 
 /// @brief Read the source port of the most recently received datagram. 0 until the first recv*.
+/// @param obj Required Udp receiver.
+/// @return Last sender port, or zero before a successful receive.
 int64_t rt_udp_sender_port(void *obj) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -845,6 +937,8 @@ int64_t rt_udp_sender_port(void *obj) {
 
 /// @brief Toggle SO_BROADCAST on the socket. Required before sending to 255.255.255.255 or any
 /// directed-broadcast address; without it the kernel returns EACCES.
+/// @param obj Required open Udp receiver.
+/// @param enable Nonzero to enable broadcast, zero to disable it.
 void rt_udp_set_broadcast(void *obj, int8_t enable) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -864,6 +958,9 @@ void rt_udp_set_broadcast(void *obj, int8_t enable) {
 
 /// @brief Subscribe to an IPv4 or IPv6 multicast group. IPv4 uses `IP_ADD_MEMBERSHIP`;
 /// IPv6 uses `IPV6_ADD_MEMBERSHIP`.
+/// @param obj Required open Udp receiver.
+/// @param group_addr Numeric IPv4 address in 224.0.0.0/4 or IPv6 address in
+///        ff00::/8.
 void rt_udp_join_group(void *obj, rt_string group_addr) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -937,6 +1034,8 @@ void rt_udp_join_group(void *obj, rt_string group_addr) {
 
 /// @brief Unsubscribe from an IPv4 or IPv6 multicast group. Tolerant of bad input — silently
 /// no-ops on closed sockets, empty addresses, or malformed IPs.
+/// @param obj Required valid Udp receiver.
+/// @param group_addr Numeric multicast address to leave.
 void rt_udp_leave_group(void *obj, rt_string group_addr) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -978,6 +1077,8 @@ void rt_udp_leave_group(void *obj, rt_string group_addr) {
 /// @brief Set a persistent socket-level recv timeout via SO_RCVTIMEO. Subsequent `recv*` calls
 /// that exceed this duration return empty Bytes (rather than the per-call NULL of `recv_for`).
 /// Pass `0` to clear (block indefinitely).
+/// @param obj Required open Udp receiver.
+/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds.
 void rt_udp_set_recv_timeout(void *obj, int64_t timeout_ms) {
     rt_udp_t *udp = udp_require(obj);
     if (!udp)
@@ -1001,6 +1102,7 @@ void rt_udp_set_recv_timeout(void *obj, int64_t timeout_ms) {
 /// @brief Explicit close — releases the kernel socket immediately rather than waiting for GC.
 /// Idempotent (no-op on already-closed sockets). Bound state and port are cleared while the last
 /// bound address remains available for diagnostics.
+/// @param obj Udp receiver, or NULL for a no-op.
 void rt_udp_close(void *obj) {
     if (!obj)
         return;

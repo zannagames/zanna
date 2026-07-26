@@ -289,6 +289,10 @@ static void rest_client_publish_last_response(rest_client *client, void *respons
     rest_release_temp_object(old_response);
 }
 
+/// @brief Validate a public timeout and narrow it to the HTTP transport type.
+/// @param timeout_ms Timeout in milliseconds; zero disables the timeout.
+/// @param out_timeout_ms Optional destination receiving the validated value.
+/// @return One when @p timeout_ms is in `[0, INT_MAX]`; otherwise zero.
 static int rest_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms) {
     if (timeout_ms < 0 || timeout_ms > INT_MAX)
         return 0;
@@ -297,6 +301,16 @@ static int rest_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms) {
     return 1;
 }
 
+/// @brief Obtain a host-sized borrowed byte view of a runtime String.
+/// @details NULL is treated as an empty String. Invalid storage, an
+///          unrepresentable length, or a forbidden embedded NUL traps with
+///          @p context and returns the empty view if trap recovery returns.
+/// @param text Runtime String to inspect, or NULL for empty input.
+/// @param len_out Optional destination receiving the byte count.
+/// @param context Diagnostic used when validation fails.
+/// @param reject_embedded_nul Nonzero to reject NUL bytes within the span.
+/// @return Borrowed bytes valid for the lifetime of @p text, or a static empty
+///         string for NULL or after a returning trap hook.
 static const char *rest_string_bytes(rt_string text,
                                      size_t *len_out,
                                      const char *context,
@@ -321,6 +335,14 @@ static const char *rest_string_bytes(rt_string text,
     return cstr;
 }
 
+/// @brief Validate a runtime String for safe inclusion in an HTTP field value.
+/// @details Embedded NUL, carriage-return, and line-feed bytes are rejected to
+///          prevent truncation and header-line injection.
+/// @param text Header value to inspect, or NULL for an empty value.
+/// @param len_out Optional destination receiving the validated byte count.
+/// @param context Diagnostic used when validation fails.
+/// @return Borrowed validated bytes, or a static empty string after a
+///         returning trap hook.
 static const char *rest_header_value_bytes(rt_string text, size_t *len_out, const char *context) {
     const char *cstr = rest_string_bytes(text, len_out, context, 1);
     size_t len = len_out ? *len_out : 0;
@@ -333,6 +355,10 @@ static const char *rest_header_value_bytes(rt_string text, size_t *len_out, cons
     return cstr;
 }
 
+/// @brief Check whether a String is a nonempty HTTP field-name token.
+/// @param text Candidate field name.
+/// @return One when every byte is visible ASCII and excludes HTTP separator
+///         characters; otherwise zero.
 static int rest_header_name_is_token(rt_string text) {
     if (!text)
         return 0;
@@ -351,6 +377,10 @@ static int rest_header_name_is_token(rt_string text) {
     return 1;
 }
 
+/// @brief Check whether a String is safe for direct HTTP field-value storage.
+/// @param text Candidate field value.
+/// @return One for valid storage containing no NUL, CR, or LF bytes; otherwise
+///         zero.
 static int rest_header_value_is_safe(rt_string text) {
     if (!text)
         return 0;
@@ -366,8 +396,11 @@ static int rest_header_value_is_safe(rt_string text) {
 // Finalizer
 //=============================================================================
 
-/// @brief GC finalizer: release the base URL string, headers map (which holds string K/V pairs),
-/// and any cached HTTP response.
+/// @brief Release every resource owned by a finalized RestClient.
+/// @details Releases the base URL, default-header Map, cached response,
+///          connection pool, and initialized native mutex. The runtime invokes
+///          this only after the client is no longer reachable.
+/// @param obj RestClient allocation being finalized, or NULL.
 static void rest_client_finalize(void *obj) {
     if (!obj)
         return;
@@ -488,9 +521,13 @@ static int rest_request_snapshot_capture(rest_client *client, rest_request_snaps
     return 1;
 }
 
-/// @brief Concatenate a base URL and a path with a single `/` separator. Strips trailing slashes
-/// from `base` and leading slashes from `path` so callers can mix-and-match conventions without
-/// producing `//` artefacts. Always inserts exactly one separator.
+/// @brief Join a base URL and relative path with exactly one slash.
+/// @details Trailing slashes are removed from @p base and leading slashes from
+///          @p path before construction. Both inputs reject embedded NUL, and
+///          length overflow or allocation failure traps.
+/// @param base Base URL String.
+/// @param path Relative request path.
+/// @return Caller-owned joined String, or NULL after a returning trap hook.
 static rt_string join_url(rt_string base, rt_string path) {
     size_t base_len = 0;
     size_t path_len = 0;
@@ -639,9 +676,15 @@ returned_trap:
     return NULL;
 }
 
-/// @brief Send the HttpReq, cache the resulting HttpRes on the client (releasing any prior cache),
-/// and update `last_status` for ergonomic post-call checks. Releases `req` regardless of outcome.
-/// Returns the HttpRes (a separate retained reference is stored in `client->last_response`).
+/// @brief Consume and send an HttpReq, then publish its response on the client.
+/// @details The request is released on every path. A successful response is
+///          returned with its transport-owned reference while the client
+///          retains a separate synchronized cache reference. Failure clears
+///          prior compatibility state and re-raises the original network trap
+///          category after cleanup.
+/// @param client Valid RestClient receiver.
+/// @param req Caller-owned HttpReq whose ownership is consumed.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 static void *execute_request(rest_client *client, void *req) {
     if (!client) {
         if (req && rt_obj_release_check0(req))
@@ -722,9 +765,14 @@ static void *execute_request_result(rest_client *client, void *req) {
 // Creation and Configuration
 //=============================================================================
 
-/// @brief Construct a REST client targeting `base_url`. Defaults: empty headers map, 30-second
-/// timeout, no auth. The base URL is duplicated so the caller can release the original. Returns
-/// a GC-managed handle wired to `rest_client_finalize`.
+/// @brief Construct a managed REST client for a base URL.
+/// @details Copies @p base_url and initializes an empty default-header Map, a
+///          30-second timeout, enabled keep-alive, and an eight-connection
+///          pool. Construction is transactional: a trap finalizes any partially
+///          initialized managed object before propagating the diagnostic.
+/// @param base_url Base URL copied into client-owned storage.
+/// @return Caller-owned managed RestClient, or NULL after a returning trap
+///         hook.
 void *rt_restclient_new(rt_string base_url) {
     rest_client *volatile client = NULL;
     jmp_buf recovery;
@@ -769,7 +817,10 @@ void *rt_restclient_new(rt_string base_url) {
     return (void *)client;
 }
 
-/// @brief Read the base URL the client is targeting (the same string passed to `_new`).
+/// @brief Copy the base URL targeted by a RestClient.
+/// @param obj RestClient receiver; NULL yields an empty String.
+/// @return Caller-owned String copy, an empty String for NULL, or NULL after a
+///         corrupt-storage trap.
 rt_string rt_restclient_base_url(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -785,10 +836,14 @@ rt_string rt_restclient_base_url(void *obj) {
     return rt_string_from_bytes(bytes, (size_t)length);
 }
 
-/// @brief Set a default header sent on every subsequent request. Repeated calls overwrite,
-/// including differently cased spellings of the same name (HTTP field names are
-/// case-insensitive). Pair with `_del_header` to remove specific entries; map-managed
-/// lifetime handles release.
+/// @brief Set a default header applied to subsequent requests.
+/// @details Field names are matched case-insensitively, so this replaces any
+///          differently cased spelling. Invalid token names and values
+///          containing NUL, CR, or LF are ignored; allocation failure traps.
+///          Mutation is synchronized with request snapshot capture.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param name Nonempty HTTP field-name token.
+/// @param value HTTP field value without line-breaking bytes.
 void rt_restclient_set_header(void *obj, rt_string name, rt_string value) {
     if (!obj)
         return;
@@ -804,8 +859,11 @@ void rt_restclient_set_header(void *obj, rt_string name, rt_string value) {
         rt_trap("RestClient: default header allocation failed");
 }
 
-/// @brief Remove a default header (any case-insensitive spelling) so subsequent requests
-/// don't include it. No-op on missing keys.
+/// @brief Remove a case-insensitively matched default header.
+/// @details Invalid field names and NULL receivers are ignored. Mutation is
+///          synchronized with request snapshot capture.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param name HTTP field-name token to remove.
 void rt_restclient_del_header(void *obj, rt_string name) {
     if (!obj)
         return;
@@ -907,9 +965,14 @@ void rt_restclient_set_auth_bearer(void *obj, rt_string token) {
     free(transaction);
 }
 
-/// @brief Convenience: set `Authorization: Basic <base64(user:pass)>`. Builds the credential
-/// string `user:pass`, base64-encodes it via `rt_codec_base64_enc`, and prepends the `Basic `
-/// scheme. All temporary buffers are freed before returning.
+/// @brief Transactionally set HTTP Basic authentication.
+/// @details Constructs the exact `username:password` byte sequence, Base64
+///          encodes it, prefixes `Basic `, and publishes the Authorization
+///          header only after all staging succeeds. Embedded NUL, CR, and LF
+///          are rejected, and recovery preserves the previous header.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param username Username bytes, with NULL treated as empty.
+/// @param password Password bytes, with NULL treated as empty.
 void rt_restclient_set_auth_basic(void *obj, rt_string username, rt_string password) {
     if (!obj)
         return;
@@ -987,7 +1050,8 @@ void rt_restclient_set_auth_basic(void *obj, rt_string username, rt_string passw
     free(transaction);
 }
 
-/// @brief Remove the `Authorization` header (whether Bearer or Basic was set).
+/// @brief Remove any default Authorization header.
+/// @param obj RestClient receiver; NULL is a no-op.
 void rt_restclient_clear_auth(void *obj) {
     if (!obj)
         return;
@@ -1000,7 +1064,9 @@ void rt_restclient_clear_auth(void *obj) {
     rt_string_unref(name);
 }
 
-/// @brief Configure per-request timeout in milliseconds (default 30000). 0 disables the timeout.
+/// @brief Set the timeout copied into subsequent requests.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param timeout_ms Milliseconds in `[0, INT_MAX]`; zero disables timeout.
 void rt_restclient_set_timeout(void *obj, int64_t timeout_ms) {
     if (!obj)
         return;
@@ -1017,7 +1083,9 @@ void rt_restclient_set_timeout(void *obj, int64_t timeout_ms) {
     rest_client_mutex_unlock(&client->lock);
 }
 
-/// @brief Check whether this RestClient reuses keep-alive connections.
+/// @brief Read whether keep-alive connection reuse is enabled.
+/// @param obj RestClient receiver; NULL yields zero.
+/// @return One when enabled; otherwise zero.
 int8_t rt_restclient_get_keep_alive(void *obj) {
     if (!obj)
         return 0;
@@ -1031,6 +1099,11 @@ int8_t rt_restclient_get_keep_alive(void *obj) {
 }
 
 /// @brief Enable or disable keep-alive connection reuse.
+/// @details Disabling atomically detaches the pool, clears its idle
+///          connections, and releases it. Enabling creates a pool outside the
+///          mutex and retries if a concurrent pool-size update makes it stale.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param keep_alive Nonzero to enable reuse; zero to disable it.
 void rt_restclient_set_keep_alive(void *obj, int8_t keep_alive) {
     if (!obj)
         return;
@@ -1084,7 +1157,13 @@ void rt_restclient_set_keep_alive(void *obj, int8_t keep_alive) {
     }
 }
 
-/// @brief Resize the keep-alive pool. Existing idle connections are dropped.
+/// @brief Replace the configured keep-alive connection pool.
+/// @details Values below one are normalized to one. The replacement is
+///          installed only when keep-alive is enabled; otherwise its size is
+///          remembered for the next enable operation. The prior pool is
+///          released after the synchronized exchange.
+/// @param obj RestClient receiver; NULL is a no-op.
+/// @param max_size Maximum retained connections, normalized to at least one.
 void rt_restclient_set_pool_size(void *obj, int64_t max_size) {
     if (!obj)
         return;
@@ -1150,7 +1229,10 @@ static void *rest_execute_method_result(
     return execute_request_result(client, (void *)req);
 }
 
-/// @brief Send a `GET` to `base_url + path`. Returns the raw HttpRes for caller inspection.
+/// @brief Send a GET request and return its raw response.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_get(void *obj, rt_string path) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1162,12 +1244,22 @@ void *rt_restclient_get(void *obj, rt_string path) {
     return execute_request(client, req);
 }
 
-/// @brief Send a `GET` to `base_url + path` and return `Result<HttpRes>`.
+/// @brief Send a GET request with traps represented as a Result.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned `Result<HttpRes>` containing the response or an error
+///         String.
 void *rt_restclient_get_result(void *obj, rt_string path) {
     return rest_execute_method_result(obj, "GET", path, NULL, 0);
 }
 
-/// @brief Send a `POST` with a string body. Caller sets Content-Type via `_set_header` if needed.
+/// @brief Send a POST request with a String body.
+/// @details No Content-Type is implied; configure one with the default-header
+///          API when required.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_post(void *obj, rt_string path, rt_string body) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1179,12 +1271,21 @@ void *rt_restclient_post(void *obj, rt_string path, rt_string body) {
     return execute_request(client, req);
 }
 
-/// @brief Send a `POST` with a string body and return `Result<HttpRes>`.
+/// @brief Send a POST request with traps represented as a Result.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned `Result<HttpRes>` containing the response or an error
+///         String.
 void *rt_restclient_post_result(void *obj, rt_string path, rt_string body) {
     return rest_execute_method_result(obj, "POST", path, body, 1);
 }
 
-/// @brief Send a `PUT` with a string body.
+/// @brief Send a PUT request with a String body.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_put(void *obj, rt_string path, rt_string body) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1196,12 +1297,21 @@ void *rt_restclient_put(void *obj, rt_string path, rt_string body) {
     return execute_request(client, req);
 }
 
-/// @brief Send a `PUT` with a string body and return `Result<HttpRes>`.
+/// @brief Send a PUT request with traps represented as a Result.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned `Result<HttpRes>` containing the response or an error
+///         String.
 void *rt_restclient_put_result(void *obj, rt_string path, rt_string body) {
     return rest_execute_method_result(obj, "PUT", path, body, 1);
 }
 
-/// @brief Send a `PATCH` with a string body.
+/// @brief Send a PATCH request with a String body.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_patch(void *obj, rt_string path, rt_string body) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1213,12 +1323,20 @@ void *rt_restclient_patch(void *obj, rt_string path, rt_string body) {
     return execute_request(client, req);
 }
 
-/// @brief Send a `PATCH` with a string body and return `Result<HttpRes>`.
+/// @brief Send a PATCH request with traps represented as a Result.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param body String body copied into the request.
+/// @return Caller-owned `Result<HttpRes>` containing the response or an error
+///         String.
 void *rt_restclient_patch_result(void *obj, rt_string path, rt_string body) {
     return rest_execute_method_result(obj, "PATCH", path, body, 1);
 }
 
-/// @brief Send a `DELETE` to `base_url + path` (no body).
+/// @brief Send a bodyless DELETE request.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_delete(void *obj, rt_string path) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1230,12 +1348,19 @@ void *rt_restclient_delete(void *obj, rt_string path) {
     return execute_request(client, req);
 }
 
-/// @brief Send a `DELETE` to `base_url + path` and return `Result<HttpRes>`.
+/// @brief Send a bodyless DELETE request with traps represented as a Result.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned `Result<HttpRes>` containing the response or an error
+///         String.
 void *rt_restclient_delete_result(void *obj, rt_string path) {
     return rest_execute_method_result(obj, "DELETE", path, NULL, 0);
 }
 
-/// @brief Send a `HEAD` request — useful for checking resource existence/headers without body.
+/// @brief Send a HEAD request for response metadata without a body transfer.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned HttpRes, or NULL after a returning trap hook.
 void *rt_restclient_head(void *obj, rt_string path) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1247,7 +1372,11 @@ void *rt_restclient_head(void *obj, rt_string path) {
     return execute_request(client, req);
 }
 
-/// @brief Send a `HEAD` request and return `Result<HttpRes>`.
+/// @brief Send a HEAD request with traps represented as a Result.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned `Result<HttpRes>` containing the response or an error
+///         String.
 void *rt_restclient_head_result(void *obj, rt_string path) {
     return rest_execute_method_result(obj, "HEAD", path, NULL, 0);
 }
@@ -1384,9 +1513,11 @@ static void *rest_execute_json(
     return parsed;
 }
 
-/// @brief Send a `GET` with `Accept: application/json` and parse the response body as JSON.
-/// Returns the parsed JSON value, or NULL if the response is non-2xx (caller can re-inspect via
-/// `_last_response`/`_last_status`). One-call convenience for typical REST-API consumers.
+/// @brief Send a GET accepting JSON and parse a successful response body.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, or after a returning trap hook.
 void *rt_restclient_get_json(void *obj, rt_string path) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1394,9 +1525,12 @@ void *rt_restclient_get_json(void *obj, rt_string path) {
     return rest_execute_json(client, "GET", path, NULL, 0);
 }
 
-/// @brief Send a `POST` with `Content-Type: application/json` carrying `rt_json_format(json_body)`.
-/// Sets `Accept: application/json` for response, parses the response body as JSON. NULL on
-/// non-2xx OR empty response body.
+/// @brief Serialize JSON into a POST and parse a successful JSON response.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param json_body Managed JSON value serialized as the request body.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, or after a returning trap hook.
 void *rt_restclient_post_json(void *obj, rt_string path, void *json_body) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1405,7 +1539,12 @@ void *rt_restclient_post_json(void *obj, rt_string path, void *json_body) {
     return rest_execute_json(client, "POST", path, json_body, 1);
 }
 
-/// @brief `PUT` JSON body and parse response. Same Accept/Content-Type handling as `_post_json`.
+/// @brief Serialize JSON into a PUT and parse a successful JSON response.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param json_body Managed JSON value serialized as the request body.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, or after a returning trap hook.
 void *rt_restclient_put_json(void *obj, rt_string path, void *json_body) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1414,7 +1553,12 @@ void *rt_restclient_put_json(void *obj, rt_string path, void *json_body) {
     return rest_execute_json(client, "PUT", path, json_body, 1);
 }
 
-/// @brief `PATCH` JSON body and parse response. Used for partial-update REST endpoints.
+/// @brief Serialize JSON into a PATCH and parse a successful JSON response.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @param json_body Managed JSON value serialized as the request body.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, or after a returning trap hook.
 void *rt_restclient_patch_json(void *obj, rt_string path, void *json_body) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1423,8 +1567,11 @@ void *rt_restclient_patch_json(void *obj, rt_string path, void *json_body) {
     return rest_execute_json(client, "PATCH", path, json_body, 1);
 }
 
-/// @brief `DELETE` (no body) and parse the response as JSON. Useful when the API returns a
-/// confirmation envelope on successful deletion.
+/// @brief Send a bodyless DELETE and parse a successful JSON response.
+/// @param obj RestClient receiver.
+/// @param path Relative path joined to the snapshotted base URL.
+/// @return Caller-owned parsed JSON value, or NULL for a non-2xx response,
+///         empty body, or after a returning trap hook.
 void *rt_restclient_delete_json(void *obj, rt_string path) {
     rest_client *client = rest_client_checked(obj, "RestClient: null client");
     if (!client)
@@ -1437,7 +1584,10 @@ void *rt_restclient_delete_json(void *obj, rt_string path) {
 // Error Handling
 //=============================================================================
 
-/// @brief Read the HTTP status of the last response. Returns 0 if no request has been issued yet.
+/// @brief Read the synchronized status code of the last response.
+/// @param obj RestClient receiver; NULL yields zero.
+/// @return Last HTTP status, or zero before a response or after failure clears
+///         compatibility state.
 int64_t rt_restclient_last_status(void *obj) {
     if (!obj)
         return 0;
@@ -1450,8 +1600,12 @@ int64_t rt_restclient_last_status(void *obj) {
     return status;
 }
 
-/// @brief Return a retained reference to the last HttpRes (NULL if none yet). Caller must
-/// release. Use to inspect headers / raw body when a typed convenience method returned NULL.
+/// @brief Retain and return the client's last response.
+/// @details The live-retain operation occurs while the client mutex protects
+///          the cached pointer. A corrupt or overflowing reference count traps.
+/// @param obj RestClient receiver; NULL yields NULL.
+/// @return Caller-owned retained HttpRes, or NULL when no response is cached or
+///         after a returning trap hook.
 void *rt_restclient_last_response(void *obj) {
     if (!obj)
         return NULL;
@@ -1470,8 +1624,9 @@ void *rt_restclient_last_response(void *obj) {
     return response;
 }
 
-/// @brief Returns 1 if the last status was 2xx (success). Convenience for the common
-/// `if (!client.lastOk()) handle_error()` pattern.
+/// @brief Check whether the synchronized last status is successful.
+/// @param obj RestClient receiver; NULL yields zero.
+/// @return One for a status in `[200, 299]`; otherwise zero.
 int8_t rt_restclient_last_ok(void *obj) {
     if (!obj)
         return 0;

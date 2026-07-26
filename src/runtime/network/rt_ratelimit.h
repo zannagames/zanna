@@ -32,39 +32,51 @@ extern "C" {
 #define RT_RATELIMIT_CLASS_ID INT64_C(-0x720204)
 
 /// @brief Create a token bucket rate limiter.
-/// @param max_tokens Maximum token capacity.
-/// @param refill_per_sec Tokens refilled per second.
+/// @details The bucket starts full. Nonpositive capacities become one, while a
+///          nonfinite or nonpositive refill rate becomes one token per second.
+///          Whole-token state remains exact across the full signed 64-bit range.
+/// @param max_tokens Requested maximum whole-token capacity.
+/// @param refill_per_sec Requested continuously accrued tokens per second.
 /// @return Owned rate limiter object, or NULL after an allocation trap.
 void *rt_ratelimit_new(int64_t max_tokens, double refill_per_sec);
 
-/// @brief Try to consume 1 token.
-/// @param limiter Rate limiter pointer.
-/// @return 1 if token consumed, 0 if no tokens available.
+/// @brief Try to consume one token without blocking.
+/// @details Applies elapsed monotonic-clock refill before delegating to the
+///          all-or-nothing multi-token acquisition.
+/// @param limiter Managed RateLimiter receiver.
+/// @return One when a token was consumed, otherwise zero.
 int8_t rt_ratelimit_try_acquire(void *limiter);
 
-/// @brief Try to consume N tokens.
-/// @param limiter Rate limiter pointer.
-/// @param n Number of tokens to consume.
-/// @return 1 if tokens consumed, 0 if insufficient tokens.
+/// @brief Try to consume an exact number of tokens without blocking.
+/// @details Refills first and either subtracts the complete request or leaves
+///          the balance unchanged. NULL and nonpositive counts return zero.
+/// @param limiter Managed RateLimiter receiver.
+/// @param n Positive whole-token count.
+/// @return One when all @p n tokens were consumed, otherwise zero.
 int8_t rt_ratelimit_try_acquire_n(void *limiter, int64_t n);
 
-/// @brief Get current available tokens (after refill calculation).
-/// @param limiter Rate limiter pointer.
-/// @return Number of available tokens (truncated to integer).
+/// @brief Get the exact available whole-token balance after refill.
+/// @param limiter Managed RateLimiter receiver.
+/// @return Available whole tokens, or zero for NULL or after a returning
+///         invalid-handle trap.
 int64_t rt_ratelimit_available(void *limiter);
 
 /// @brief Reset the limiter to full capacity.
-/// @param limiter Rate limiter pointer.
+/// @details Clears fractional carry and restarts elapsed refill accounting at
+///          the current monotonic timestamp. NULL is a no-op.
+/// @param limiter Managed RateLimiter receiver.
 void rt_ratelimit_reset(void *limiter);
 
-/// @brief Get maximum token capacity.
-/// @param limiter Rate limiter pointer.
-/// @return Max tokens.
+/// @brief Get the limiter's exact whole-token capacity.
+/// @param limiter Managed RateLimiter receiver.
+/// @return Configured capacity, or zero for NULL or after a returning
+///         invalid-handle trap.
 int64_t rt_ratelimit_get_max(void *limiter);
 
-/// @brief Get refill rate in tokens per second.
-/// @param limiter Rate limiter pointer.
-/// @return Refill rate.
+/// @brief Get the configured refill rate.
+/// @param limiter Managed RateLimiter receiver.
+/// @return Tokens per second, or zero for NULL or after a returning
+///         invalid-handle trap.
 double rt_ratelimit_get_rate(void *limiter);
 
 #ifdef __cplusplus
