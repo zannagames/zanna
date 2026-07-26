@@ -151,6 +151,13 @@ static wchar_t *machine_win32_temp_path(void) {
     }
     return NULL;
 }
+
+/// @brief Clamp an unsigned Win32 byte count to the signed runtime ABI range.
+/// @param value Native unsigned memory-size value.
+/// @return Exact value when representable, otherwise INT64_MAX.
+static int64_t machine_win32_clamp_u64(ULONGLONG value) {
+    return value > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)value;
+}
 #else
 #include <pwd.h>
 #include <sys/stat.h>
@@ -344,8 +351,7 @@ static int64_t linux_read_control_u64(const char *path) {
 /// @param paths Destination structure, cleared before resolution.
 static void linux_active_cgroup_paths(rt_machine_linux_cgroup_paths_t *paths) {
     memset(paths, 0, sizeof(*paths));
-    if (!zanna_machine_linux_resolve_cgroups(
-            "/proc/self/mountinfo", "/proc/self/cgroup", paths)) {
+    if (!zanna_machine_linux_resolve_cgroups("/proc/self/mountinfo", "/proc/self/cgroup", paths)) {
         (void)snprintf(paths->unified, sizeof(paths->unified), "%s", "/sys/fs/cgroup");
         (void)snprintf(paths->cpu, sizeof(paths->cpu), "%s", "/sys/fs/cgroup/cpu");
         (void)snprintf(paths->cpuset, sizeof(paths->cpuset), "%s", "/sys/fs/cgroup/cpuset");
@@ -391,8 +397,8 @@ static int64_t linux_cgroup_memory_value(const char *name, int *found) {
         int64_t value = 0;
         int primary_valid =
             linux_cgroup_control_path(primary, sizeof(primary), unified, "memory.max");
-        int legacy_valid = linux_cgroup_control_path(
-            legacy, sizeof(legacy), memory, "memory.limit_in_bytes");
+        int legacy_valid =
+            linux_cgroup_control_path(legacy, sizeof(legacy), memory, "memory.limit_in_bytes");
         if ((primary_valid && linux_try_read_control_u64(primary, &value)) ||
             (legacy_valid && linux_try_read_control_u64(legacy, &value))) {
             if (found)
@@ -404,8 +410,8 @@ static int64_t linux_cgroup_memory_value(const char *name, int *found) {
         int64_t value = 0;
         int primary_valid =
             linux_cgroup_control_path(primary, sizeof(primary), unified, "memory.current");
-        int legacy_valid = linux_cgroup_control_path(
-            legacy, sizeof(legacy), memory, "memory.usage_in_bytes");
+        int legacy_valid =
+            linux_cgroup_control_path(legacy, sizeof(legacy), memory, "memory.usage_in_bytes");
         if ((primary_valid && linux_try_read_control_u64(primary, &value)) ||
             (legacy_valid && linux_try_read_control_u64(legacy, &value))) {
             if (found)
@@ -432,8 +438,7 @@ static int64_t linux_cgroup_cpu_limit(void) {
     const char *cpuset_base = paths.cpuset[0] ? paths.cpuset : NULL;
     int64_t limit = 0;
     if (linux_cgroup_control_path(path, sizeof(path), unified, "cpu.max") &&
-        linux_read_control_line(path, line, sizeof(line)) &&
-        strncmp(line, "max ", 4) != 0) {
+        linux_read_control_line(path, line, sizeof(line)) && strncmp(line, "max ", 4) != 0) {
         unsigned long long quota = 0, period = 0;
         char *space = strchr(line, ' ');
         if (space) {
@@ -452,8 +457,8 @@ static int64_t linux_cgroup_cpu_limit(void) {
         if (linux_cgroup_control_path(path, sizeof(path), cpu, "cpu.cfs_period_us"))
             period = linux_read_control_u64(path);
         if (quota > 0 && period > 0)
-            limit = rt_machine_linux_cpu_quota(
-                (unsigned long long)quota, (unsigned long long)period);
+            limit =
+                rt_machine_linux_cpu_quota((unsigned long long)quota, (unsigned long long)period);
     }
     if (linux_cgroup_control_path(path, sizeof(path), unified, "cpuset.cpus.effective") &&
         linux_read_control_line(path, line, sizeof(line))) {
@@ -543,7 +548,7 @@ rt_string rt_machine_os(void) {
 /// @brief Return the OS version string in the platform's native format. Per-OS source:
 ///   - **Windows:** `RtlGetVersion` (ntdll) → `"major.minor.build"`, the true OS version
 ///   independent of the executable's compatibility manifest; falls back to the deprecated
-///   `GetVersionExA` only if RtlGetVersion is unavailable.
+///   `GetVersionExW` only if RtlGetVersion is unavailable.
 ///   - **macOS:** `sysctlbyname("kern.osproductversion")` (e.g. "14.5"); falls back to
 ///   `uname.release`.
 ///   - **Linux:** Parses `VERSION_ID=` from `/etc/os-release` (e.g. "22.04"); falls back to
@@ -554,7 +559,7 @@ rt_string rt_machine_os(void) {
 ///         the literal "unknown".
 rt_string rt_machine_os_ver(void) {
 #ifdef _WIN32
-    // Prefer RtlGetVersion (ntdll): unlike GetVersionExA it returns the TRUE OS
+    // Prefer RtlGetVersion (ntdll): unlike GetVersionExW it returns the TRUE OS
     // version regardless of the executable's supported-OS compatibility manifest,
     // so an unmanifested native output or custom embedder does not misreport
     // Windows 10/11 as an older release (VDOC-216). Loaded dynamically because it
@@ -583,13 +588,13 @@ rt_string rt_machine_os_ver(void) {
         }
     }
 
-    // Fallback: GetVersionExA (deprecated; may be manifest-conditioned).
-    OSVERSIONINFOA osvi;
+    // Fallback: GetVersionExW (deprecated; may be manifest-conditioned).
+    OSVERSIONINFOW osvi;
     ZeroMemory(&osvi, sizeof(osvi));
     osvi.dwOSVersionInfoSize = sizeof(osvi);
 #pragma warning(push)
 #pragma warning(disable : 4996)
-    if (GetVersionExA(&osvi)) {
+    if (GetVersionExW(&osvi)) {
         char buf[64];
         snprintf(buf,
                  sizeof(buf),
@@ -883,7 +888,7 @@ int64_t rt_machine_mem_total(void) {
     MEMORYSTATUSEX meminfo;
     meminfo.dwLength = sizeof(meminfo);
     if (GlobalMemoryStatusEx(&meminfo)) {
-        return (int64_t)meminfo.ullTotalPhys;
+        return machine_win32_clamp_u64(meminfo.ullTotalPhys);
     }
     return 0;
 
@@ -936,7 +941,7 @@ int64_t rt_machine_mem_free(void) {
     MEMORYSTATUSEX meminfo;
     meminfo.dwLength = sizeof(meminfo);
     if (GlobalMemoryStatusEx(&meminfo)) {
-        return (int64_t)meminfo.ullAvailPhys;
+        return machine_win32_clamp_u64(meminfo.ullAvailPhys);
     }
     return 0;
 

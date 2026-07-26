@@ -689,6 +689,238 @@ static HRESULT d3d11_required_output_result(HRESULT hr, const void *output) {
     return output ? S_OK : E_POINTER;
 }
 
+/// @brief Confirm that a created texture exactly implements its requested descriptor.
+/// @details A successful factory call is not enough for cache publication: fault-injection
+///   layers and faulty proxy drivers can return an object whose dimensions or binding contract
+///   differs from the request. This helper compares every field that affects allocation, copy,
+///   mapping, or view compatibility.
+/// @param[in] texture Candidate texture returned by the D3D11 device.
+/// @param[in] expected Descriptor supplied to `CreateTexture2D`.
+/// @return One when all descriptor fields match exactly, otherwise zero.
+static int d3d11_texture2d_desc_matches(ID3D11Texture2D *texture,
+                                        const D3D11_TEXTURE2D_DESC *expected) {
+    D3D11_TEXTURE2D_DESC actual;
+
+    if (!texture || !expected)
+        return 0;
+    memset(&actual, 0, sizeof(actual));
+    ID3D11Texture2D_GetDesc(texture, &actual);
+    return actual.Width == expected->Width && actual.Height == expected->Height &&
+           actual.MipLevels == expected->MipLevels && actual.ArraySize == expected->ArraySize &&
+           actual.Format == expected->Format &&
+           actual.SampleDesc.Count == expected->SampleDesc.Count &&
+           actual.SampleDesc.Quality == expected->SampleDesc.Quality &&
+           actual.Usage == expected->Usage && actual.BindFlags == expected->BindFlags &&
+           actual.CPUAccessFlags == expected->CPUAccessFlags &&
+           actual.MiscFlags == expected->MiscFlags;
+}
+
+/// @brief Confirm that a created buffer exactly implements its requested descriptor.
+/// @param[in] buffer Candidate buffer returned by the D3D11 device.
+/// @param[in] expected Descriptor supplied to `CreateBuffer`.
+/// @return One when all descriptor fields match exactly, otherwise zero.
+static int d3d11_buffer_desc_matches(ID3D11Buffer *buffer, const D3D11_BUFFER_DESC *expected) {
+    D3D11_BUFFER_DESC actual;
+
+    if (!buffer || !expected)
+        return 0;
+    memset(&actual, 0, sizeof(actual));
+    ID3D11Buffer_GetDesc(buffer, &actual);
+    return actual.ByteWidth == expected->ByteWidth && actual.Usage == expected->Usage &&
+           actual.BindFlags == expected->BindFlags &&
+           actual.CPUAccessFlags == expected->CPUAccessFlags &&
+           actual.MiscFlags == expected->MiscFlags &&
+           actual.StructureByteStride == expected->StructureByteStride;
+}
+
+/// @brief Confirm that a D3D11 view references the exact expected resource.
+/// @details `GetResource` adds a temporary COM reference, which this helper always releases.
+/// @param[in] view Candidate render-target, depth-stencil, or shader-resource view.
+/// @param[in] expected Expected backing resource.
+/// @return One when the view and resource are non-null and have matching interface identity.
+static int d3d11_view_resource_matches(ID3D11View *view, ID3D11Resource *expected) {
+    ID3D11Resource *actual = NULL;
+    int matches;
+
+    if (!view || !expected)
+        return 0;
+    ID3D11View_GetResource(view, &actual);
+    matches = actual == expected;
+    SAFE_RELEASE(actual);
+    return matches;
+}
+
+/// @brief Validate a single-mip Texture2D render-target view and its backing resource.
+/// @param[in] view Candidate view.
+/// @param[in] texture Expected backing texture.
+/// @param[in] format Required view format.
+/// @return One when resource identity, dimension, format, and mip slice all match.
+static int d3d11_rtv_matches_texture2d(ID3D11RenderTargetView *view,
+                                       ID3D11Texture2D *texture,
+                                       DXGI_FORMAT format) {
+    D3D11_RENDER_TARGET_VIEW_DESC desc;
+
+    if (!view || !texture)
+        return 0;
+    memset(&desc, 0, sizeof(desc));
+    ID3D11RenderTargetView_GetDesc(view, &desc);
+    return d3d11_view_resource_matches((ID3D11View *)view, (ID3D11Resource *)texture) &&
+           desc.Format == format && desc.ViewDimension == D3D11_RTV_DIMENSION_TEXTURE2D &&
+           desc.Texture2D.MipSlice == 0u;
+}
+
+/// @brief Validate a single-mip Texture2D depth-stencil view and its backing resource.
+/// @param[in] view Candidate view.
+/// @param[in] texture Expected backing texture.
+/// @param[in] format Required view format.
+/// @return One when resource identity, dimension, format, flags, and mip slice all match.
+static int d3d11_dsv_matches_texture2d(ID3D11DepthStencilView *view,
+                                       ID3D11Texture2D *texture,
+                                       DXGI_FORMAT format) {
+    D3D11_DEPTH_STENCIL_VIEW_DESC desc;
+
+    if (!view || !texture)
+        return 0;
+    memset(&desc, 0, sizeof(desc));
+    ID3D11DepthStencilView_GetDesc(view, &desc);
+    return d3d11_view_resource_matches((ID3D11View *)view, (ID3D11Resource *)texture) &&
+           desc.Format == format && desc.ViewDimension == D3D11_DSV_DIMENSION_TEXTURE2D &&
+           desc.Flags == 0u && desc.Texture2D.MipSlice == 0u;
+}
+
+/// @brief Validate a full-range Texture2D shader-resource view and its backing resource.
+/// @param[in] view Candidate view.
+/// @param[in] texture Expected backing texture.
+/// @param[in] format Required view format.
+/// @param[in] mip_levels Required number of exposed mips.
+/// @return One when resource identity and the complete view range match.
+static int d3d11_srv_matches_texture2d(ID3D11ShaderResourceView *view,
+                                       ID3D11Texture2D *texture,
+                                       DXGI_FORMAT format,
+                                       UINT mip_levels) {
+    D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+
+    if (!view || !texture || mip_levels == 0u)
+        return 0;
+    memset(&desc, 0, sizeof(desc));
+    ID3D11ShaderResourceView_GetDesc(view, &desc);
+    return d3d11_view_resource_matches((ID3D11View *)view, (ID3D11Resource *)texture) &&
+           desc.Format == format && desc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURE2D &&
+           desc.Texture2D.MostDetailedMip == 0u && desc.Texture2D.MipLevels == mip_levels;
+}
+
+/// @brief Validate a full-range TextureCube shader-resource view and its backing resource.
+/// @param[in] view Candidate view.
+/// @param[in] texture Expected six-slice backing texture.
+/// @param[in] format Required view format.
+/// @param[in] mip_levels Required number of exposed mips.
+/// @return One when resource identity and the complete cube view range match.
+static int d3d11_srv_matches_texturecube(ID3D11ShaderResourceView *view,
+                                         ID3D11Texture2D *texture,
+                                         DXGI_FORMAT format,
+                                         UINT mip_levels) {
+    D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+
+    if (!view || !texture || mip_levels == 0u)
+        return 0;
+    memset(&desc, 0, sizeof(desc));
+    ID3D11ShaderResourceView_GetDesc(view, &desc);
+    return d3d11_view_resource_matches((ID3D11View *)view, (ID3D11Resource *)texture) &&
+           desc.Format == format && desc.ViewDimension == D3D11_SRV_DIMENSION_TEXTURECUBE &&
+           desc.TextureCube.MostDetailedMip == 0u && desc.TextureCube.MipLevels == mip_levels;
+}
+
+/// @brief Confirm that a query object reports the exact requested query type and flags.
+/// @param[in] query Candidate query.
+/// @param[in] query_type Required query type.
+/// @return One for an exact type match with no miscellaneous flags.
+static int d3d11_query_desc_matches(ID3D11Query *query, D3D11_QUERY query_type) {
+    D3D11_QUERY_DESC desc;
+
+    if (!query)
+        return 0;
+    memset(&desc, 0, sizeof(desc));
+    ID3D11Query_GetDesc(query, &desc);
+    return desc.Query == query_type && desc.MiscFlags == 0u;
+}
+
+/// @brief Confirm that a sampler state semantically implements its requested descriptor.
+/// @details D3D11 canonicalizes fields that the selected filter/address modes ignore
+///          (for example, non-anisotropic samplers report `MaxAnisotropy == 0`).
+///          Behavior-bearing fields remain exact while ignored fields are not treated
+///          as creation failure.
+/// @param[in] sampler Candidate sampler state.
+/// @param[in] expected Descriptor supplied to `CreateSamplerState`.
+/// @return One when filtering, addressing, comparison, border, and LOD policy match.
+static int d3d11_sampler_desc_matches(ID3D11SamplerState *sampler,
+                                      const D3D11_SAMPLER_DESC *expected) {
+    D3D11_SAMPLER_DESC actual;
+    int uses_anisotropy;
+    int uses_border;
+    int uses_comparison;
+    int matches;
+
+    if (!sampler || !expected)
+        return 0;
+    memset(&actual, 0, sizeof(actual));
+    ID3D11SamplerState_GetDesc(sampler, &actual);
+    uses_anisotropy = D3D11_DECODE_IS_ANISOTROPIC_FILTER(expected->Filter) ? 1 : 0;
+    uses_comparison = D3D11_DECODE_IS_COMPARISON_FILTER(expected->Filter) ? 1 : 0;
+    uses_border = expected->AddressU == D3D11_TEXTURE_ADDRESS_BORDER ||
+                  expected->AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
+                  expected->AddressW == D3D11_TEXTURE_ADDRESS_BORDER;
+    matches = actual.Filter == expected->Filter && actual.AddressU == expected->AddressU &&
+              actual.AddressV == expected->AddressV && actual.AddressW == expected->AddressW &&
+              actual.MipLODBias == expected->MipLODBias &&
+              (!uses_anisotropy || actual.MaxAnisotropy == expected->MaxAnisotropy) &&
+              (!uses_comparison || actual.ComparisonFunc == expected->ComparisonFunc) &&
+              (!uses_border || (actual.BorderColor[0] == expected->BorderColor[0] &&
+                                actual.BorderColor[1] == expected->BorderColor[1] &&
+                                actual.BorderColor[2] == expected->BorderColor[2] &&
+                                actual.BorderColor[3] == expected->BorderColor[3])) &&
+              actual.MinLOD == expected->MinLOD && actual.MaxLOD == expected->MaxLOD;
+    if (!matches) {
+        char diagnostic[1024];
+        int written = snprintf(diagnostic,
+                               sizeof(diagnostic),
+                               "[vgfx3d_d3d11] sampler descriptor mismatch: "
+                               "filter=%u/%u address=%u,%u,%u/%u,%u,%u bias=%g/%g anisotropy=%u/%u "
+                               "comparison=%u/%u border=%g,%g,%g,%g/%g,%g,%g,%g lod=%g,%g/%g,%g\n",
+                               (unsigned)actual.Filter,
+                               (unsigned)expected->Filter,
+                               (unsigned)actual.AddressU,
+                               (unsigned)actual.AddressV,
+                               (unsigned)actual.AddressW,
+                               (unsigned)expected->AddressU,
+                               (unsigned)expected->AddressV,
+                               (unsigned)expected->AddressW,
+                               (double)actual.MipLODBias,
+                               (double)expected->MipLODBias,
+                               (unsigned)actual.MaxAnisotropy,
+                               (unsigned)expected->MaxAnisotropy,
+                               (unsigned)actual.ComparisonFunc,
+                               (unsigned)expected->ComparisonFunc,
+                               (double)actual.BorderColor[0],
+                               (double)actual.BorderColor[1],
+                               (double)actual.BorderColor[2],
+                               (double)actual.BorderColor[3],
+                               (double)expected->BorderColor[0],
+                               (double)expected->BorderColor[1],
+                               (double)expected->BorderColor[2],
+                               (double)expected->BorderColor[3],
+                               (double)actual.MinLOD,
+                               (double)actual.MaxLOD,
+                               (double)expected->MinLOD,
+                               (double)expected->MaxLOD);
+        if (written > 0) {
+            diagnostic[sizeof(diagnostic) - 1u] = '\0';
+            OutputDebugStringA(diagnostic);
+            fputs(diagnostic, stderr);
+        }
+    }
+    return matches;
+}
+
 #define D3D11_INITIAL_DYNAMIC_VB_SIZE (4u * 1024u * 1024u)
 #define D3D11_INITIAL_DYNAMIC_IB_SIZE (1u * 1024u * 1024u)
 #define D3D11_INITIAL_INSTANCE_BUFFER_SIZE (256u * 1024u)
@@ -944,6 +1176,9 @@ static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
     desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
     hr = ID3D11Device_CreateQuery(ctx->device, &desc, &ctx->frame_time_disjoint_query);
     hr = d3d11_required_output_result(hr, ctx->frame_time_disjoint_query);
+    if (SUCCEEDED(hr) &&
+        !d3d11_query_desc_matches(ctx->frame_time_disjoint_query, D3D11_QUERY_TIMESTAMP_DISJOINT))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateQuery(frame timestamp disjoint)", hr);
         d3d11_log_device_removed_reason(ctx, "CreateQuery(frame timestamp disjoint)", hr);
@@ -953,6 +1188,9 @@ static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
     desc.Query = D3D11_QUERY_TIMESTAMP;
     hr = ID3D11Device_CreateQuery(ctx->device, &desc, &ctx->frame_time_start_query);
     hr = d3d11_required_output_result(hr, ctx->frame_time_start_query);
+    if (SUCCEEDED(hr) &&
+        !d3d11_query_desc_matches(ctx->frame_time_start_query, D3D11_QUERY_TIMESTAMP))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateQuery(frame timestamp start)", hr);
         d3d11_log_device_removed_reason(ctx, "CreateQuery(frame timestamp start)", hr);
@@ -962,6 +1200,9 @@ static void d3d11_create_frame_timing_queries(d3d11_context_t *ctx) {
     }
     hr = ID3D11Device_CreateQuery(ctx->device, &desc, &ctx->frame_time_end_query);
     hr = d3d11_required_output_result(hr, ctx->frame_time_end_query);
+    if (SUCCEEDED(hr) &&
+        !d3d11_query_desc_matches(ctx->frame_time_end_query, D3D11_QUERY_TIMESTAMP))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateQuery(frame timestamp end)", hr);
         d3d11_log_device_removed_reason(ctx, "CreateQuery(frame timestamp end)", hr);
@@ -1402,9 +1643,10 @@ static HRESULT d3d11_create_constant_buffer(d3d11_context_t *ctx,
         return E_OUTOFMEMORY;
     desc.ByteWidth = (UINT)byte_width;
     hr = ID3D11Device_CreateBuffer(ctx->device, &desc, NULL, out_buffer);
-    if (FAILED(hr) || !*out_buffer) {
+    if (FAILED(hr) || !*out_buffer || !d3d11_buffer_desc_matches(*out_buffer, &desc)) {
+        HRESULT failure = FAILED(hr) ? hr : (*out_buffer ? E_FAIL : E_POINTER);
         SAFE_RELEASE(*out_buffer);
-        return FAILED(hr) ? hr : E_POINTER;
+        return failure;
     }
     return S_OK;
 }
@@ -1906,9 +2148,10 @@ static HRESULT d3d11_create_static_buffer(d3d11_context_t *ctx,
     init.pSysMem = data;
     {
         HRESULT hr = ID3D11Device_CreateBuffer(ctx->device, &desc, &init, out_buffer);
-        if (FAILED(hr) || !*out_buffer) {
+        if (FAILED(hr) || !*out_buffer || !d3d11_buffer_desc_matches(*out_buffer, &desc)) {
+            HRESULT failure = FAILED(hr) ? hr : (*out_buffer ? E_FAIL : E_POINTER);
             SAFE_RELEASE(*out_buffer);
-            return FAILED(hr) ? hr : E_POINTER;
+            return failure;
         }
         return S_OK;
     }
@@ -2270,6 +2513,8 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     init_data.SysMemSlicePitch = sizeof(kWhitePixel);
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &new_fallback_white_tex);
     hr = d3d11_required_output_result(hr, new_fallback_white_tex);
+    if (SUCCEEDED(hr) && !d3d11_texture2d_desc_matches(new_fallback_white_tex, &desc))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D(fallbackWhite2D)", hr);
         goto fail;
@@ -2282,6 +2527,9 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     hr = ID3D11Device_CreateShaderResourceView(
         ctx->device, (ID3D11Resource *)new_fallback_white_tex, &srv_desc, &new_fallback_white_srv);
     hr = d3d11_required_output_result(hr, new_fallback_white_srv);
+    if (SUCCEEDED(hr) && !d3d11_srv_matches_texture2d(
+                             new_fallback_white_srv, new_fallback_white_tex, srv_desc.Format, 1u))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateShaderResourceView(fallbackWhite2D)", hr);
         goto fail;
@@ -2294,6 +2542,8 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     }
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, cube_init, &new_fallback_white_cube_tex);
     hr = d3d11_required_output_result(hr, new_fallback_white_cube_tex);
+    if (SUCCEEDED(hr) && !d3d11_texture2d_desc_matches(new_fallback_white_cube_tex, &desc))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D(fallbackWhiteCube)", hr);
         goto fail;
@@ -2308,6 +2558,10 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
                                                &srv_desc,
                                                &new_fallback_white_cube_srv);
     hr = d3d11_required_output_result(hr, new_fallback_white_cube_srv);
+    if (SUCCEEDED(hr) &&
+        !d3d11_srv_matches_texturecube(
+            new_fallback_white_cube_srv, new_fallback_white_cube_tex, srv_desc.Format, 1u))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateShaderResourceView(fallbackWhiteCube)", hr);
         goto fail;
@@ -2329,6 +2583,8 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     init_data.SysMemSlicePitch = 0;
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init_data, &new_brdf_lut_tex);
     hr = d3d11_required_output_result(hr, new_brdf_lut_tex);
+    if (SUCCEEDED(hr) && !d3d11_texture2d_desc_matches(new_brdf_lut_tex, &desc))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D(brdfLut)", hr);
         goto fail;
@@ -2340,6 +2596,9 @@ static HRESULT d3d11_create_white_fallback_resources(d3d11_context_t *ctx) {
     hr = ID3D11Device_CreateShaderResourceView(
         ctx->device, (ID3D11Resource *)new_brdf_lut_tex, &srv_desc, &new_brdf_lut_srv);
     hr = d3d11_required_output_result(hr, new_brdf_lut_srv);
+    if (SUCCEEDED(hr) &&
+        !d3d11_srv_matches_texture2d(new_brdf_lut_srv, new_brdf_lut_tex, srv_desc.Format, 1u))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateShaderResourceView(brdfLut)", hr);
         goto fail;

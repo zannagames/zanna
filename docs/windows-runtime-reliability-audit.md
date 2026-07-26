@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-07-25
+last-verified: 2026-07-26
 ---
 
 # Windows Runtime Reliability Audit
@@ -10,8 +10,8 @@ This audit covers the Direct3D 11 backend and the Windows-specific runtime adapt
 entropy, TLS verification, process/ConPTY launch, paths and assets, locale detection, file watching,
 large-file I/O, environment access, concurrency, stack safety, graphics, audio, native dialogs,
 native builds, UI Automation, installer lifecycle, signing, and demo automation. It is a robustness
-pass only: no IL opcode, grammar, verifier rule, or runtime C ABI changed. ADR 0155 records the one
-native-link cross-layer dependency added for current MSVC object code.
+pass only: no IL opcode, grammar, verifier rule, or runtime C ABI changed. ADRs 0155 and 0196
+record the native-link cross-layer dependencies required by current MSVC object code.
 
 ## Repaired findings
 
@@ -20,7 +20,9 @@ Zanna Studio packaging intentionally receiving the largest share. The 2026-07-24
 WR-451 through WR-502: 52 further Direct3D, native-installer, Windows build, and demo-automation
 repairs aimed at alpha-quality failure behavior. The 2026-07-25 pass adds WR-503 through WR-560:
 58 remaining Unicode-I/O, persistence, synchronization, Direct3D cache, installer, and
-demo-automation repairs.
+demo-automation repairs. The 2026-07-26 pass adds WR-561 through WR-657: 97 Direct3D resource,
+PE/installer, Windows storage, WASAPI, native-dialog, build/publication, and native-link hardening
+repairs.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -584,20 +586,117 @@ demo-automation repairs.
 | WR-558 | demo smoke generation | Smoke runs independently recopied project assets, so the tested generation could differ from the one later published. The runner now copies only the already completed staged directory. |
 | WR-559 | demo smoke resources | A child could emit redirected output without bound, exhausting disk while the driver waited. Separate stdout/stderr limits are enforced during and after execution with a configurable 1 MiB default. |
 | WR-560 | demo cleanup and deadlines | Smoke timeouts used one blocking wait and clean used recursive deletion that could traverse a reparse point. Monotonic polling now bounds output and process-tree termination, while root/child reparse validation removes each owned entry without following indirection. |
+| WR-561 | D3D11 textures | Successful `CreateTexture2D` calls were trusted without proving that the returned native object retained the requested dimensions, mip count, format, usage, bind flags, CPU access, and misc flags. A shared exact descriptor check now gates publication and reuse. |
+| WR-562 | D3D11 views | RTV, DSV, and SRV creation checked only HRESULT and pointer presence, so a faulty proxy could return a view of another resource. Every accepted view now proves backing-resource identity through `GetResource`. |
+| WR-563 | D3D11 color targets | Scene/post-FX color helpers could publish a malformed texture, wrong RTV mip/format, or narrowed SRV. Texture, RTV, and optional SRV descriptors are now validated as one creation transaction. |
+| WR-564 | D3D11 depth targets | Depth allocation did not confirm typeless/typed storage, the D32 view shape, or the optional R32 sampling view. All three native contracts are checked before a depth target can become live. |
+| WR-565 | D3D11 staging | A successful staging allocation could return a texture that was not single-subresource, CPU-readable, or unbound. The exact staging descriptor is now required. |
+| WR-566 | D3D11 readback cache | Width/height/format bookkeeping alone authorized staging reuse even if the COM resource no longer matched that metadata. Cache hits now re-read and validate the native descriptor. |
+| WR-567 | D3D11 swapchain | The backbuffer was released before its new RTV could be checked against that exact resource. It remains retained through view identity/format/mip validation, then releases only after the pair is proven. |
+| WR-568 | D3D11 RGBA uploads | Streamed RGBA texture allocation trusted the created mip-chain texture and full-chain SRV. Both descriptors and their pairing now gate the upload cache entry. |
+| WR-569 | D3D11 native textures | BC-family upload allocation had the same unchecked texture/SRV publication path. Exact compressed format, mip range, usage, and resource identity are now required. |
+| WR-570 | D3D11 cubemaps | Cubemap creation did not confirm six-slice cube storage or a full-range `TEXTURECUBE` view. Both contracts are now checked before upload starts. |
+| WR-571 | D3D11 depth copies | Opaque-depth resolve trusted CPU-tracked target dimensions before `CopyResource`. It now checks the source texture's native extent, subresources, format family, sampling, usage, and CPU-access policy first. |
+| WR-572 | D3D11 opaque-depth cache | Cached opaque-depth texture/SRV reuse trusted width/height fields and non-null pointers. The exact texture descriptor, SRV range, and backing identity are revalidated; a bad pair is replaced transactionally. |
+| WR-573 | D3D11 timing | Timestamp and disjoint query factories could return the wrong query object behind a successful result. `GetDesc` now proves all three query types and zero misc flags before telemetry begins. |
+| WR-574 | D3D11 constant buffers | Constant-buffer creation checked size before the call but not the returned object's native usage/bind/access descriptor. Exact descriptor validation now precedes publication. |
+| WR-575 | D3D11 mesh buffers | Immutable cached vertex/index buffers were accepted without confirming immutable usage, byte width, or bind kind. The returned descriptor must now equal the request. |
+| WR-576 | D3D11 skybox buffer | The standalone skybox buffer bypassed the shared immutable-buffer helper and retained the same unchecked-output risk. Its descriptor is now independently validated and failed resources are released. |
+| WR-577 | D3D11 fixed samplers | Linear-wrap, linear-clamp, and shadow-comparison samplers trusted factory outputs. Filtering, addressing, LOD, and every mode-dependent comparison, border, and anisotropy field are now validated before publication. |
+| WR-578 | D3D11 material samplers | Lazy sampler-cache hits trusted only the derived cache indices, so corrupted or proxy-normalized state could persist. Each hit is checked against the reconstructed descriptor and evicted on mismatch; new state is validated too. |
+| WR-579 | D3D11 fallback resources | White 2D, white cube, and BRDF LUT resources were published after pointer checks alone. All three textures and three SRVs now prove descriptor and backing-resource identity before the fallback set replaces live state. |
+| WR-580 | D3D11 telemetry | `texture_fallback_binds` wrapped to zero after `UINT64_MAX`, making long-running diagnostics non-monotonic. Both 2D and cubemap fallback paths now use saturating addition. |
+| WR-581 | PE validation ownership | Packaging verification and the installer host maintained separate, drifting PE parsers. One zero-dependency `WindowsPEValidation` implementation now owns the native loader-facing policy. |
+| WR-582 | PE header bounds | Earlier parsers performed only shallow `MZ`/`PE` checks and left several widened offset/length relationships implicit. Every DOS, COFF, optional-header, section-table, and field read is now range-checked before access. |
+| WR-583 | PE image kind | A file with an unexpected subsystem, missing executable characteristic, DLL flag, PE32 magic, or unsupported machine could reach later installer logic. Only non-DLL x64/ARM64 PE32+ GUI/console executables are accepted. |
+| WR-584 | PE section inventory | Zero or pathological section counts and a section table not covered by `SizeOfHeaders` were not uniformly rejected. Counts are capped at 96 and both file and header coverage are proven. |
+| WR-585 | PE loader alignment | Section/file alignment was only partially checked. Power-of-two, ordering, sub-page equality, and documented 512–65536 file-alignment rules are now enforced. |
+| WR-586 | PE image extents | Zero, misaligned, or undersized `SizeOfImage`/`SizeOfHeaders` values could survive shallow verification. Header and aligned virtual extents now have to fit their declared loader image. |
+| WR-587 | PE raw sections | Raw section offsets/sizes could be misaligned, overlap headers, or escape the snapshot in some consumers. Each nonempty range is aligned and bounded, while empty sections must use a zero raw offset. |
+| WR-588 | PE raw overlap | One parser compared raw ranges, but others did not and none shared a single policy. Sorted nonempty raw ranges are now proven disjoint everywhere. |
+| WR-589 | PE virtual overlap | Overlapping loader RVAs were not rejected. Mapped ranges use `max(VirtualSize, SizeOfRawData)`, remain within `SizeOfImage`, align safely, and cannot overlap. |
+| WR-590 | PE entry point | A nonzero entry point was considered sufficient even if it fell outside all sections or into data. It must now belong to an executable section. |
+| WR-591 | PE directories | `NumberOfRvaAndSizes` and directory pairs were inconsistently bounded. Counts must fit the optional header, zero address/size pairs must be complete, and every non-security directory must fit one mapped range. |
+| WR-592 | Authenticode | The security directory uses file offsets rather than RVAs and was either treated generically or barely checked. Its offset/size must be 8-byte aligned, in-file, outside headers, and disjoint from raw sections. |
+| WR-593 | package verifier | `verifyPE` retained its weaker local parser after installer-host hardening. It now delegates to the shared validator while preserving package-oriented diagnostics. |
+| WR-594 | installer host | Embedded host and cleanup architecture checks duplicated structural parsing and could drift from package verification. Host extraction now validates the complete shared PE contract with the metadata-required machine. |
+| WR-595 | native installer verifier | Its final machine helper defaulted every unknown architecture string to x64 and reread offsets shallowly. Unsupported metadata is explicit and the shared validator now performs the complete expected-machine check. |
+| WR-596 | script PE snapshots | Automation parsers opened mutable aliases and inspected only a few header fields. The shared PowerShell validator rejects reparse/hard-link aliases and holds one write-denying read handle for its complete bounded inspection. |
+| WR-597 | script PE policy | Demo, Studio, package-wrapper, and lifecycle-validator scripts carried four divergent architecture readers. All four now dot-source the same PowerShell mirror of the native loader policy. |
+| WR-598 | Windows stdio sharing | Runtime read, write, and replacement-temp streams used `_wfopen`, permitting conflicting opens during persistence. `_wsopen_s` now denies writers for read snapshots and denies all sharing for mutable outputs. |
+| WR-599 | Windows stdio errors | `_fdopen` failure closed the descriptor and could overwrite the useful conversion error. Runtime, GUI, audio, and TLS helpers now preserve `errno` across cleanup. |
+| WR-600 | atomic replace errors | Failed `MoveFileExW` calls exposed inconsistent or stale CRT error values. Documented Win32 failures now map deterministically to `errno`. |
+| WR-601 | durable saves | Atomic writers used `fflush` plus `fclose`, which did not request a durable OS flush and sometimes lost the first failure. A shared helper performs flush, `_commit`/`fsync`, and close while preserving the earliest error. |
+| WR-602 | file-mode parsing | `rt_file_mode_to_flags` cleared caller output on invalid mode even though its header promised output preservation. Failure now leaves the caller's prior flags untouched. |
+| WR-603 | persistence writers | Pixels binary/PNG, tile maps, game persistence, light-baker caches, and VSCN scenes each had a nondurable close path. All six now use the durable close helper before atomic replacement. |
+| WR-604 | VSCN save cleanup | Its `fflush(...) != 0 || fclose(...) != 0` expression short-circuited, leaking the stream whenever flush failed. The shared close transaction always attempts every required cleanup step. |
+| WR-605 | TLS custom roots | The Windows custom-CA loader could read a file while another process rewrote it between length and payload checks. It now opens the Unicode path through `_wsopen_s` with write sharing denied. |
+| WR-606 | library file reads | GUI and audio decoders used wide CRT opens without a stable snapshot policy. Their Windows adapters now use non-inheritable descriptors and deny concurrent writers. |
+| WR-607 | WASAPI channel masks | Extensible format negotiation did not require the channel-mask bit count to equal `nChannels`. Cardinality is now validated before accepting the mix format. |
+| WR-608 | WASAPI multichannel | Legacy or maskless formats with more than two channels could be accepted even though routing was undefined. Multichannel output now requires `WAVEFORMATEXTENSIBLE` with a nonzero valid mask. |
+| WR-609 | WASAPI stereo routing | Mixing always wrote channels zero and one, which is wrong when FL/FR occupy other slots in a surround mask. Their exact channel indexes are derived from the mask and used during render. |
+| WR-610 | WASAPI legacy formats | Non-extensible formats above stereo could reach the render loop with an assumed layout. They are now rejected during negotiation. |
+| WR-611 | WASAPI zero-copy | The fast path assumed left/right were the first two interleaved samples. It is enabled only when the validated FL/FR indices are exactly zero and one. |
+| WR-612 | WASAPI initialization | `InitializeCriticalSection` provided no failure result and could terminate the process on allocation failure. `InitializeCriticalSectionEx` is checked and initialization unwinds cleanly. |
+| WR-613 | WASAPI events | Generic `CreateEvent` spellings depended on build-wide character macros. Explicit `CreateEventW` calls now make the Unicode ABI invariant local and testable. |
+| WR-614 | WASAPI clock | Converting the complete long-running QPC counter through MSVC's double-width `long double` lost sub-millisecond precision over time. Whole seconds are split first and only the remainder uses floating-point conversion. |
+| WR-615 | WASAPI self-join | Teardown could wait on its own render thread and deadlock. The captured worker ID is compared against the current thread before any join. |
+| WR-616 | WASAPI join failure | A failed thread-handle wait still allowed platform memory to be released while the worker could be live. Teardown now requests stop and waits for an independently published exit flag before freeing. |
+| WR-617 | WASAPI exit publication | Not every worker return path announced completion. All exits now set the shared `thread_exited` state. |
+| WR-618 | WASAPI shutdown ownership | Non-owner shutdown could mutate COM and synchronization state from the wrong apartment. Shutdown rejects the call before teardown and reports failure. |
+| WR-619 | audio context lifetime | `vaud_destroy` freed the public context even when platform shutdown could not safely complete. It now clears the destroy-in-progress flag and retains ownership for a valid later owner-thread retry. |
+| WR-620 | Win32 window text | Two window-long calls still used `GetWindowLongA`/`SetWindowLongA` inside an otherwise Unicode window adapter. They now use the wide API consistently. |
+| WR-621 | machine memory | `GlobalMemoryStatusEx` unsigned 64-bit byte counts narrowed directly to signed runtime values. Physical and available memory now saturate at `INT64_MAX`. |
+| WR-622 | Windows version fallback | The compatibility fallback used `GetVersionExA` despite carrying no narrow text. It now uses `OSVERSIONINFOW` and `GetVersionExW`. |
+| WR-623 | native file dialogs | UTF-8-to-UTF-16 allocation multiplication and multi-select result count were unbounded. Conversion checks `SIZE_MAX`, and hostile shell extensions cannot request more than 65,536 result pointers. |
+| WR-624 | widget file dialog namespaces | Absolute-path classification accepted incomplete UNC roots and Win32 device namespaces such as `\\.\PhysicalDrive0` or unsupported `\\?\GLOBALROOT`. Only complete drive, UNC, extended-drive, and extended-UNC roots are accepted. |
+| WR-625 | widget home directory | An existing relative `USERPROFILE` value was accepted relative to the process working directory. The environment candidate must now be a recognized absolute Windows path. |
+| WR-626 | widget directory listing | A hostile or enormous directory could grow the dialog entry array until exhaustion. Enumeration now fails closed after a one-million-entry ceiling. |
+| WR-627 | demo confinement | Trimming trailing separators turned drive/UNC roots into malformed bases and broke ancestry checks. Root paths are preserved and prefix construction handles an existing separator. |
+| WR-628 | demo metadata reads | Manifests, CMake cache/system files, and project files were read without byte or line ceilings and with permissive decoding. Bounded strict-UTF-8 readers now reject oversized, unstable, or malformed automation input. |
+| WR-629 | demo asset paths | Asset source/target components could contain rooted forms, control characters, alternate data streams, illegal characters, dot segments, or trailing dots/spaces. One sanitizer rejects every unsafe Windows component before path resolution. |
+| WR-630 | demo reserved names | DOS device aliases such as `CON.txt`, `NUL`, and `COM1` could pass ordinary path confinement. Component validation now rejects reserved base names case-insensitively. |
+| WR-631 | CMake cache reads | Architecture lookup streamed an unbounded cache. The cache must now be a regular bounded UTF-8 file with a single usable value. |
+| WR-632 | CMake generated metadata | Recursive discovery could traverse an enormous build tree and trusted conflicting system descriptions. An iterative, count/size-bounded scan rejects reparse points and conflicting processors. |
+| WR-633 | source-tree indirection | Demo and Studio source validation used recursive enumeration that could follow reparse points. Iterative bounded tree walks reject indirection before compilation. |
+| WR-634 | architecture proof | Empty or unknown CMake processor metadata silently passed, allowing a wrong-architecture tree to be reused. Both drivers now require a recognized, exact target architecture. |
+| WR-635 | CMake generator selection | Explicit fresh build directories omitted `-A`, leaving Visual Studio architecture to ambient defaults. Default and explicitly selected Visual Studio generators now receive x64/ARM64 explicitly. |
+| WR-636 | build revalidation | Architecture was checked only before reuse, not after configure/build could alter the tree or executable. Cache metadata and the complete PE are revalidated after every tool build. |
+| WR-637 | executable provenance | A discovered `zanna.exe` without a corresponding CMake cache was accepted. Both demo and Studio drivers now reject binaries whose build-tree architecture cannot be proven. |
+| WR-638 | demo manifests | Manifest names and project ownership were not fully canonicalized, so case aliases or one project under multiple executable names could collide. Case-insensitive name/output and unique-project ownership are enforced. |
+| WR-639 | demo asset ownership | Assets could case-alias one another or overwrite the newly generated executable. A case-insensitive ownership map reserves the executable destination before staging. |
+| WR-640 | asset snapshot copy | Ordinary copy operations could consume a changing source or overwrite a staged destination. Each source is held with write sharing denied and each destination uses `CreateNew` plus an explicit durable flush. |
+| WR-641 | post-asset executable | Asset staging was trusted not to change the generated PE. The complete architecture/loader validation runs again after every asset is staged. |
+| WR-642 | demo staging names | Random staging paths were assumed absent. Every path is confined, reparse-checked, and required not to exist before use. |
+| WR-643 | demo rollback paths | Publication generated a sibling backup but did not preflight its complete ancestry and no-clobber contract. The private rollback path is confined and validated before moving the live generation. |
+| WR-644 | precommit demo validation | A staged tree could change after smoke but before its directory move. The tree and executable are validated again immediately before publication. |
+| WR-645 | postcommit demo validation | Backup deletion occurred without proving the moved generation survived intact. Published tree/PE validation now completes first, and any failure restores the prior directory. |
+| WR-646 | demo output discovery | Final reporting recursively traversed the entire shared `examples/bin` tree. Output listing is now bounded to the manifest-owned published executable paths. |
+| WR-647 | Studio provenance reads | Version/build/CMake metadata used unbounded default decoding and tolerated unknown generated processors. Strict byte ceilings, UTF-8 decoding, bounded traversal, and exact architecture proof now apply. |
+| WR-648 | Studio buildinfo | Staged metadata used overwrite semantics and no durable flush. A private `CreateNew` stream now writes and flushes the complete provenance record. |
+| WR-649 | Studio publication | Binary/buildinfo publication did not hash the exact staged pair or revalidate the published PE before deleting backups. Staged hashes/architecture are captured, destinations are rechecked byte-for-byte, and failure rolls back both files. |
+| WR-650 | Studio compatibility output | The compatibility copy had weaker staging and rollback guarantees than the primary output. It now uses the same no-clobber staging, architecture, hash, paired publication, and postcommit validation transaction. |
+| WR-651 | native UCRT imports | The stable-snapshot file helpers introduced `_wsopen_s`, but the fixed Windows native-link policy did not map that UCRT export. The planner now maps it to the selected release/debug UCRT and pins its Windows-only scope. |
+| WR-652 | native event imports | Explicit `CreateEventW` removed character-macro ambiguity in WASAPI but was absent from the native Kernel32 inventory. The Unicode export is now mapped and regression-tested. |
+| WR-653 | native window reads | Replacing `GetWindowLongA` with the Unicode API compiled but left native Studio with an unmapped import. `GetWindowLongW` now maps explicitly to User32. |
+| WR-654 | native window writes | `SetWindowLongW` had the matching native-link gap. It now maps explicitly to User32, and the planner suite rejects all four new imports on non-Windows targets. |
+| WR-655 | audio teardown tests | The core audio test double retained the old `void` shutdown contract, so the full warning-as-error build caught a late signature mismatch that focused runtime targets missed. The stub now returns status, and a behavioral regression proves failed destroy retains a retryable context before successful teardown. |
+| WR-656 | D3D11 sampler canonicalization | Real D3D11 hardware reports `MaxAnisotropy == 0` after creating a non-anisotropic sampler even when the valid input descriptor uses one, so byte-for-byte validation rejected working devices. Sampler checks now remain exact for behavior-bearing state but condition anisotropy, comparison, and border equality on the modes that use those fields; bounded mismatch diagnostics preserve debuggability. |
+| WR-657 | Windows CTest reliability | The strict full-tree platform-policy CTest had only a 60-second timeout and flaked while the complete parallel Windows Debug suite saturated process startup and storage, despite passing standalone in 10.55 seconds and again in the wrapper. Its bound now preserves three minutes of contention headroom without weakening the lint or pass expression. |
 
 ## Regression coverage
 
 - `test_rt_windows_runtime` exercises finite wait slicing, concurrent process-lifetime WinSock
   initialization, the CRT-exit-table exclusion, deterministic WinSock error/output contracts,
   entropy argument handling, strict Windows path transcoding, checked directory conversion,
-  Unicode/non-inheritable stdio, failure-atomic save source contracts, signed-minimum atomic
-  subtraction, exact thread-handle joining, ordinal comparison, fail-closed deletion guards,
-  processor-count validity, drive-root temp preservation, long environment-backed home paths,
-  CRT-aware network workers, restricted child handle inheritance, checked capture/wait failures,
-  and the bounded WASAPI
-  thread/format/buffer/control-thread source contracts. `native_run_windows_environment`
-  additionally compiles
-  and runs an ephemeral `TcpServer` through the CRT-less native PE startup path.
+  Unicode/non-inheritable stdio, deny-write snapshot sharing, durable flush/replace behavior,
+  failure-atomic save and custom-TLS-root source contracts, signed-minimum atomic subtraction,
+  exact thread-handle joining, ordinal comparison, fail-closed deletion guards, processor-count
+  validity, drive-root temp preservation, long environment-backed home paths, CRT-aware network
+  workers, restricted child handle inheritance, checked capture/wait failures, and the bounded
+  WASAPI thread/format/routing/buffer/control-thread source contracts.
+  `native_run_windows_environment` additionally compiles and runs an ephemeral `TcpServer` through
+  the CRT-less native PE startup path.
 - `test_rt_file_ext` creates a 3 GiB sparse file and verifies 64-bit seek, stat, visibility, and
   modification-time behavior without allocating the file's logical size.
 - `test_rt_args` races small and 16 KiB environment values across the Win32 size/read boundary.
@@ -620,8 +719,9 @@ demo-automation repairs.
   replacement, BGRA/feature-level device creation, device-health checks after void GPU commands,
   hardware-to-WARP retry cleanup, complete fallback-resource publication, timing-query health
   checks, malformed RTT staging eviction, native dynamic/morph-buffer descriptor validation,
-  exact morph SRV/resource pairing, partial-output cleanup, presented-snapshot validation, and
-  initialized diagnostic formatting;
+  exact texture/buffer/query/sampler descriptors, RTV/DSV/SRV backing-resource identity and
+  subresource ranges, exact morph SRV/resource pairing, partial-output cleanup,
+  presented-snapshot validation, and initialized diagnostic formatting;
   `zia_smoke_d3d11_rtt_readback`,
   `g3d_test_canvas3d_viewmodel_sprite`, `g3d_test_canvas3d_point_shadows_d3d11`, and the Ridgebound
   D3D11 smoke exercise the hardware backend.
@@ -637,16 +737,22 @@ demo-automation repairs.
   demo-output rejection, transactional demo PE publication, quoted asset parsing, reparse
   rejection, architecture proof, whole-generation demo publication and rollback, private smoke
   directories, bounded output, monotonic deadlines, process-tree termination, and checked reap
-  waits. It also launches the logic-free `.cmd` compatibility shim and pins installer-wrapper
-  help, equals-form input detection, required Studio output checks, and the distinct
-  package/product version domains used during lifecycle validation.
+  waits. Behavioral fixtures exercise the shared write-denying PE snapshot against valid,
+  wrong-architecture, and zero-entry-point images. The suite also launches the logic-free `.cmd`
+  compatibility shim and pins installer-wrapper help, equals-form input detection, required
+  Studio output checks, and the distinct package/product version domains used during lifecycle
+  validation.
 - `test_windows_installer_cleanup_policy` covers supported drive/UNC namespaces, root and traversal
   refusal, reserved devices, alternate streams, illegal/trailing characters, and ordinal path
   identity. `test_vg_filedialog_platform_win32` covers root-preserving parent navigation, strict
-  UTF-8 path handling, path joining, and validated home-directory fallback.
+  UTF-8 path handling, path joining, complete extended roots, device-namespace rejection,
+  absolute-only home fallback, and bounded enumeration.
 - `test_packaging_WindowsInstallerMetadata_all` covers strict UTF-8 and bounded collections,
   Windows path aliases/devices, control-entry collisions, payload ownership, URL/key structure,
   shortcut and association grammars, integration consistency, and checked size accounting.
+  `test_packaging_PE_all` and `test_packaging_Verify_PEall` mutate loader alignments, section
+  extents/overlaps, entry-point ownership, data directories, Authenticode storage, and image kind
+  to prove that every native packaging consumer shares the same bounded PE32+ policy.
   `ToolchainWindowsPackageBuilder` coverage rejects partial, stale, wrong-architecture,
   non-executable, and hash-mismatched Studio pairs and proves buildinfo rebinding after nested
   signing.
@@ -683,6 +789,36 @@ The `.cmd` demo shim delegates to that canonical PowerShell implementation under
 remains mandatory for future changes in these adapters.
 
 ## Validation record
+
+Revalidated on Windows x64/MSVC on 2026-07-26:
+
+- A no-skip clean `scripts/build_zanna_win.ps1` run rebuilt the warning-as-error Debug tree from
+  scratch and exited zero in 2,377.9 seconds with an empty stderr log. It passed 1,861/1,861
+  CTests in 513.11 seconds, strict platform-policy lint, the runtime-surface audit, every
+  cross-platform host smoke, and installation. The audit accounted for 7,598 runtime functions,
+  524 classes, and 8,954 header declarations; its eight focused tests passed.
+- The clean pipeline exposed and drove closure of three integration-only defects before that
+  final pass: missing fixed native-import mappings, an outdated audio shutdown test double, and
+  legal D3D11 sampler-state canonicalization on real hardware. Focused import-planner, audio
+  lifetime, shared D3D11, readback, viewmodel-sprite, PE mutation, Win32 runtime, native-dialog,
+  installer-lifecycle, and automation regressions all passed after repair.
+- `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+  scripts/build_demos_win.ps1 --clean --run` rebuilt, structurally PE-validated, privately
+  launch-smoked, and atomically published all nine curated native x64 demos in 305.0 seconds:
+  Ashfall, 3D Bowling, Ridgebound, Xenoscape, Crackman, Chess, Baseball, Paint, and ZannaSQL. The
+  demo gate produced no stderr output.
+- `scripts/build_installer.ps1 --build-dir build --config Release --target windows` completed the
+  real Release package path in 2,614.1 seconds. Its manifest marked the 306,436,348-byte unsigned
+  x64 `zanna-0.2.99-win-x64.exe` payload verified with SHA-256
+  `8fd2206002fe627a79df632a966472531e676571ff6991971106d4886f476f0d`. The non-elevated toolchain
+  and Xenoscape install/uninstall lifecycle CTests then passed in 6.04 and 30.27 seconds. The
+  standalone real-artifact validator also completed its complete install, CMake-consumer build,
+  modify, repair, uninstall, and detached-cleanup checks in 100.1 seconds.
+- `clang-format --dry-run --Werror` passed for all 40 changed native source files. Windows
+  PowerShell parser checks passed for all six changed/new scripts, the source-header audit found
+  zero missing file headers, `scripts/check_docs.sh`, strict full-tree platform lint, and
+  `git diff --check` passed. The documentation auditor's 350 existing undocumented runtime
+  prototypes remain informational debt and were not increased by this pass.
 
 Revalidated on Windows x64/MSVC on 2026-07-25:
 

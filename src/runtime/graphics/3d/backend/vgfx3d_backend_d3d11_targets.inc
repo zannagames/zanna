@@ -71,9 +71,10 @@ static HRESULT d3d11_create_color_target(d3d11_context_t *ctx,
     desc.BindFlags = D3D11_BIND_RENDER_TARGET | (out_srv ? D3D11_BIND_SHADER_RESOURCE : 0);
 
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, NULL, out_tex);
-    if (FAILED(hr) || !*out_tex) {
+    if (FAILED(hr) || !*out_tex || !d3d11_texture2d_desc_matches(*out_tex, &desc)) {
+        HRESULT failure = FAILED(hr) ? hr : (*out_tex ? E_FAIL : E_POINTER);
         SAFE_RELEASE(*out_tex);
-        return FAILED(hr) ? hr : E_POINTER;
+        return failure;
     }
 
     memset(&rtv_desc, 0, sizeof(rtv_desc));
@@ -81,10 +82,12 @@ static HRESULT d3d11_create_color_target(d3d11_context_t *ctx,
     rtv_desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
     hr = ID3D11Device_CreateRenderTargetView(
         ctx->device, (ID3D11Resource *)*out_tex, &rtv_desc, out_rtv);
-    if (FAILED(hr) || !*out_rtv) {
+    if (FAILED(hr) || !*out_rtv ||
+        !d3d11_rtv_matches_texture2d(*out_rtv, *out_tex, rtv_desc.Format)) {
+        HRESULT failure = FAILED(hr) ? hr : (*out_rtv ? E_FAIL : E_POINTER);
         SAFE_RELEASE(*out_rtv);
         SAFE_RELEASE(*out_tex);
-        return FAILED(hr) ? hr : E_POINTER;
+        return failure;
     }
 
     if (out_srv) {
@@ -94,11 +97,13 @@ static HRESULT d3d11_create_color_target(d3d11_context_t *ctx,
         srv_desc.Texture2D.MipLevels = 1;
         hr = ID3D11Device_CreateShaderResourceView(
             ctx->device, (ID3D11Resource *)*out_tex, &srv_desc, out_srv);
-        if (FAILED(hr) || !*out_srv) {
+        if (FAILED(hr) || !*out_srv ||
+            !d3d11_srv_matches_texture2d(*out_srv, *out_tex, srv_desc.Format, 1u)) {
+            HRESULT failure = FAILED(hr) ? hr : (*out_srv ? E_FAIL : E_POINTER);
             SAFE_RELEASE(*out_srv);
             SAFE_RELEASE(*out_rtv);
             SAFE_RELEASE(*out_tex);
-            return FAILED(hr) ? hr : E_POINTER;
+            return failure;
         }
     }
 
@@ -152,9 +157,10 @@ static HRESULT d3d11_create_depth_target(d3d11_context_t *ctx,
         D3D11_BIND_DEPTH_STENCIL | (shader_readable && out_srv ? D3D11_BIND_SHADER_RESOURCE : 0);
 
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, NULL, out_tex);
-    if (FAILED(hr) || !*out_tex) {
+    if (FAILED(hr) || !*out_tex || !d3d11_texture2d_desc_matches(*out_tex, &desc)) {
+        HRESULT failure = FAILED(hr) ? hr : (*out_tex ? E_FAIL : E_POINTER);
         SAFE_RELEASE(*out_tex);
-        return FAILED(hr) ? hr : E_POINTER;
+        return failure;
     }
 
     memset(&dsv_desc, 0, sizeof(dsv_desc));
@@ -162,10 +168,12 @@ static HRESULT d3d11_create_depth_target(d3d11_context_t *ctx,
     dsv_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
     hr = ID3D11Device_CreateDepthStencilView(
         ctx->device, (ID3D11Resource *)*out_tex, &dsv_desc, out_dsv);
-    if (FAILED(hr) || !*out_dsv) {
+    if (FAILED(hr) || !*out_dsv ||
+        !d3d11_dsv_matches_texture2d(*out_dsv, *out_tex, dsv_desc.Format)) {
+        HRESULT failure = FAILED(hr) ? hr : (*out_dsv ? E_FAIL : E_POINTER);
         SAFE_RELEASE(*out_dsv);
         SAFE_RELEASE(*out_tex);
-        return FAILED(hr) ? hr : E_POINTER;
+        return failure;
     }
 
     if (shader_readable && out_srv) {
@@ -175,11 +183,13 @@ static HRESULT d3d11_create_depth_target(d3d11_context_t *ctx,
         srv_desc.Texture2D.MipLevels = 1;
         hr = ID3D11Device_CreateShaderResourceView(
             ctx->device, (ID3D11Resource *)*out_tex, &srv_desc, out_srv);
-        if (FAILED(hr) || !*out_srv) {
+        if (FAILED(hr) || !*out_srv ||
+            !d3d11_srv_matches_texture2d(*out_srv, *out_tex, srv_desc.Format, 1u)) {
+            HRESULT failure = FAILED(hr) ? hr : (*out_srv ? E_FAIL : E_POINTER);
             SAFE_RELEASE(*out_srv);
             SAFE_RELEASE(*out_dsv);
             SAFE_RELEASE(*out_tex);
-            return FAILED(hr) ? hr : E_POINTER;
+            return failure;
         }
     }
 
@@ -221,9 +231,10 @@ static HRESULT d3d11_create_staging_texture(d3d11_context_t *ctx,
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     {
         HRESULT hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, NULL, out_tex);
-        if (FAILED(hr) || !*out_tex) {
+        if (FAILED(hr) || !*out_tex || !d3d11_texture2d_desc_matches(*out_tex, &desc)) {
+            HRESULT failure = FAILED(hr) ? hr : (*out_tex ? E_FAIL : E_POINTER);
             SAFE_RELEASE(*out_tex);
-            return FAILED(hr) ? hr : E_POINTER;
+            return failure;
         }
         return S_OK;
     }
@@ -257,12 +268,26 @@ static HRESULT d3d11_ensure_readback_staging_texture(d3d11_context_t *ctx,
                                                      int32_t width,
                                                      int32_t height,
                                                      DXGI_FORMAT format) {
+    D3D11_TEXTURE2D_DESC expected;
     ID3D11Texture2D *new_staging = NULL;
     HRESULT hr;
-    if (!ctx)
+
+    if (!ctx || !vgfx3d_d3d11_is_valid_texture2d_extent(width, height) ||
+        (format != DXGI_FORMAT_R8G8B8A8_UNORM && format != DXGI_FORMAT_R16G16B16A16_FLOAT &&
+         format != DXGI_FORMAT_R32_TYPELESS))
         return E_INVALIDARG;
+    memset(&expected, 0, sizeof(expected));
+    expected.Width = (UINT)width;
+    expected.Height = (UINT)height;
+    expected.MipLevels = 1u;
+    expected.ArraySize = 1u;
+    expected.Format = format;
+    expected.SampleDesc.Count = 1u;
+    expected.Usage = D3D11_USAGE_STAGING;
+    expected.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     if (ctx->readback_staging && ctx->readback_staging_width == width &&
-        ctx->readback_staging_height == height && ctx->readback_staging_format == format)
+        ctx->readback_staging_height == height && ctx->readback_staging_format == format &&
+        d3d11_texture2d_desc_matches(ctx->readback_staging, &expected))
         return S_OK;
     hr = d3d11_create_staging_texture(ctx, width, height, format, &new_staging);
     if (FAILED(hr) || !new_staging) {

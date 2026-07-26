@@ -488,9 +488,7 @@ int64_t rt_pixels_save_bmp(void *pixels, void *path) {
 
 bmp_save_cleanup:
     free(row_buf);
-    if (fflush(f) != 0)
-        result = 0;
-    if (fclose(f) != 0)
+    if (!rt_file_stdio_flush_sync_close(f))
         result = 0;
     if (result) {
         result = rt_file_stdio_replace_utf8(tmp_path, filepath) ? 1 : 0;

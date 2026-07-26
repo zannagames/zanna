@@ -193,9 +193,69 @@ Assert-True ($signSource.Contains('Signing artifact staging path') -and
              $signSource.Contains('Signed installer backup path')) `
     "The signing script does not preflight every staging and backup destination."
 
+$peValidationScript = Join-Path (Split-Path -Parent $DemoScript) "windows_pe_validation.ps1"
+Assert-True (Test-Path -LiteralPath $peValidationScript -PathType Leaf) `
+    "The shared Windows PE validator is missing."
+. $peValidationScript
+$validPe = Join-Path $root "valid-pe.exe"
+[IO.File]::Copy($env:ComSpec, $validPe, $false)
+$systemPe = Get-ZannaPeImageInfo -Binary $validPe
+Assert-True ($systemPe.Architecture -eq "x64" -or $systemPe.Architecture -eq "arm64") `
+    "The shared PE validator rejected the native command processor architecture."
+Assert-ZannaPeImageArchitecture -Binary $validPe -Architecture $systemPe.Architecture
+$wrongArchitecture = if ($systemPe.Architecture -eq "arm64") { "x64" } else { "arm64" }
+$rejectedWrongArchitecture = $false
+try {
+    Assert-ZannaPeImageArchitecture -Binary $validPe -Architecture $wrongArchitecture
+} catch {
+    $rejectedWrongArchitecture = $true
+}
+Assert-True $rejectedWrongArchitecture `
+    "The shared PE validator accepted a mismatched target architecture."
+
+$invalidEntryPointPe = Join-Path $root "invalid-entrypoint.exe"
+[IO.File]::Copy($validPe, $invalidEntryPointPe, $false)
+$mutationStream = [IO.File]::Open(
+    $invalidEntryPointPe, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+try {
+    $reader = [IO.BinaryReader]::new($mutationStream, [Text.Encoding]::ASCII, $true)
+    $writer = [IO.BinaryWriter]::new($mutationStream, [Text.Encoding]::ASCII, $true)
+    try {
+        $mutationStream.Position = 60
+        $peOffset = [uint64]$reader.ReadUInt32()
+        $mutationStream.Position = [int64]($peOffset + 24 + 16)
+        $writer.Write([uint32]0)
+        $writer.Flush()
+        $mutationStream.Flush($true)
+    } finally {
+        $writer.Dispose()
+        $reader.Dispose()
+    }
+} finally {
+    $mutationStream.Dispose()
+}
+$rejectedInvalidEntryPoint = $false
+try {
+    [void](Get-ZannaPeImageInfo -Binary $invalidEntryPointPe)
+} catch {
+    $rejectedInvalidEntryPoint = $_.Exception.Message.Contains("no entry point")
+}
+Assert-True $rejectedInvalidEntryPoint `
+    "The shared PE validator accepted an image with no entry point."
+
+$peValidationSource = [IO.File]::ReadAllText($peValidationScript)
+Assert-True ($peValidationSource.Contains("FileShare]::Read") -and
+             $peValidationSource.Contains("entry point belongs to a non-executable section") -and
+             $peValidationSource.Contains("overlapping raw storage") -and
+             $peValidationSource.Contains("Authenticode certificate table overlaps") -and
+             $peValidationSource.Contains("data directory is outside mapped image content")) `
+    "The shared script validator lacks stable-snapshot or loader-structure checks."
+
 $status = Invoke-PowerShellScript -Path $DemoScript -Arguments @("--help")
 Assert-True ($status -eq 0) "The Windows demo driver help path failed."
 $demoSource = [IO.File]::ReadAllText($DemoScript)
+Assert-True ($demoSource.Contains("windows_pe_validation.ps1")) `
+    "The demo driver does not use the shared PE validator."
 Assert-True ($demoSource.Contains('src\tools\zanna\zanna.exe')) `
     "The demo driver lacks single-config executable discovery."
 Assert-True ($demoSource.Contains('Assert-CMakeTreeArchitecture')) `
@@ -247,6 +307,23 @@ Assert-True ($demoSource.Contains("cannot prove its target architecture") -and
 Assert-True (-not $demoSource.Contains("Get-DemoBinSnapshot") -and
              -not $demoSource.Contains("Remove-NewDemoArtifacts")) `
     "Demo smoke cleanup can still mutate the shared published output directory."
+Assert-True ($demoSource.Contains("Read-SafeAutomationLines") -and
+             $demoSource.Contains("reserved Windows device name") -and
+             $demoSource.Contains("[IO.FileMode]::CreateNew") -and
+             $demoSource.Contains("<generated demo executable>") -and
+             $demoSource.Contains("Published demo generation")) `
+    "The demo driver lacks bounded metadata, Windows path, no-clobber, or publication checks."
+Assert-True (([regex]::Matches(
+                 $demoSource,
+                 [regex]::Escape(
+                     "Assert-PortableExecutableArchitecture -Binary `$stage " +
+                     "-Architecture `$demoArch"))).Count -ge 2 -and
+             $demoSource.Contains("Demo directory staging tree") -and
+             $demoSource.Contains("Published demo generation")) `
+    "The demo driver does not revalidate executable identity across staging and publication."
+Assert-True (-not $demoSource.Contains(
+                 "Get-ChildItem -LiteralPath `$Root -Force -Recurse")) `
+    "The demo driver still recursively follows an unbounded source-tree enumeration."
 
 $demoCmd = [IO.Path]::ChangeExtension($DemoScript, ".cmd")
 Assert-True (Test-Path -LiteralPath $demoCmd -PathType Leaf) `
@@ -271,6 +348,8 @@ Assert-True (-not $cmdSource.Contains("cmake") -and -not $cmdSource.Contains("za
 $status = Invoke-PowerShellScript -Path $IdeScript -Arguments @("--help")
 Assert-True ($status -eq 0) "The Windows Zanna Studio driver help path failed."
 $ideSource = [IO.File]::ReadAllText($IdeScript)
+Assert-True ($ideSource.Contains("windows_pe_validation.ps1")) `
+    "The Studio driver does not use the shared PE validator."
 Assert-True ($ideSource.Contains("PROCESSOR_ARCHITEW6432") -and
              $ideSource.Contains("Resolve-ZannaExecutable") -and
              $ideSource.Contains("Assert-CMakeTreeArchitecture")) `
@@ -282,10 +361,17 @@ Assert-True ($ideSource.Contains("Assert-PortableExecutableArchitecture") -and
 Assert-True ($ideSource.Contains("Publish-StudioArtifact") -and
              $ideSource.Contains("zanna-backup")) `
     "The Studio driver does not publish the binary/buildinfo pair transactionally."
+Assert-True ($ideSource.Contains("Read-BoundedUtf8Lines") -and
+             $ideSource.Contains("cannot prove its target architecture") -and
+             $ideSource.Contains("Published Studio artifact pair changed") -and
+             $ideSource.Contains("Assert-NoReparseTree")) `
+    "The Studio driver lacks bounded provenance, exact architecture, or publication checks."
 
 $status = Invoke-PowerShellScript -Path $InstallerScript -Arguments @("--help")
 Assert-True ($status -eq 0) "The Windows installer wrapper help path failed."
 $installerSource = [IO.File]::ReadAllText($InstallerScript)
+Assert-True ($installerSource.Contains("windows_pe_validation.ps1")) `
+    "The installer wrapper does not use the shared PE validator."
 Assert-True ($installerSource.Contains('"$inputOption="') -and
              $installerSource.Contains("normalizedArguments") -and
              $installerSource.Contains("Specify at most one of")) `
@@ -313,6 +399,8 @@ Assert-True ($buildSource.Contains(
     "The canonical Windows build cleans an absent or unconfigured build tree."
 
 $validatorSource = [IO.File]::ReadAllText($ValidatorScript)
+Assert-True ($validatorSource.Contains("windows_pe_validation.ps1")) `
+    "The installer lifecycle validator does not use the shared PE validator."
 Assert-True ($validatorSource.Contains("ProcessTimeoutSeconds") -and
              $validatorSource.Contains("MaximumCaptureBytes") -and
              $validatorSource.Contains("MaximumInspectBytes") -and

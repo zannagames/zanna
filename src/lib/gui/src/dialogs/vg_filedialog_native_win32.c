@@ -29,6 +29,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -54,6 +55,11 @@ static const GUID VGFD_IID_IFileSaveDialog = {
 static const GUID VGFD_IID_IShellItem = {
     0x43826D1E, 0xE718, 0x42EE, {0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE}};
 
+enum {
+    /// Defensive ceiling for one multi-select result returned by a shell extension.
+    VGFD_MAX_MULTISELECT_PATHS = 65536,
+};
+
 //=============================================================================
 // UTF conversion helpers
 //=============================================================================
@@ -65,7 +71,7 @@ static wchar_t *vgfd_wide(const char *utf8) {
     if (!utf8 || !*utf8)
         return NULL;
     int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, NULL, 0);
-    if (count <= 0)
+    if (count <= 0 || (size_t)count > SIZE_MAX / sizeof(wchar_t))
         return NULL;
     wchar_t *wide = (wchar_t *)malloc((size_t)count * sizeof(wchar_t));
     if (!wide)
@@ -323,7 +329,8 @@ char **vg_native_open_files(const char *title,
         hr = dialog->lpVtbl->GetResults(dialog, &items);
         if (SUCCEEDED(hr) && items) {
             DWORD count = 0;
-            if (SUCCEEDED(items->lpVtbl->GetCount(items, &count)) && count > 0) {
+            if (SUCCEEDED(items->lpVtbl->GetCount(items, &count)) && count > 0 &&
+                count <= VGFD_MAX_MULTISELECT_PATHS && (size_t)count <= SIZE_MAX / sizeof(char *)) {
                 paths = (char **)calloc(count, sizeof(char *));
                 if (paths) {
                     size_t written = 0;

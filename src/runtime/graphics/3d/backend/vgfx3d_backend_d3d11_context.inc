@@ -315,8 +315,11 @@ static HRESULT d3d11_create_context_sampler_states(d3d11_context_t *ctx) {
     sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
     hr = ID3D11Device_CreateSamplerState(ctx->device, &sampler_desc, &ctx->linear_wrap_sampler);
     hr = d3d11_required_output_result(hr, ctx->linear_wrap_sampler);
+    if (SUCCEEDED(hr) && !d3d11_sampler_desc_matches(ctx->linear_wrap_sampler, &sampler_desc))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateSamplerState(linearWrap)", hr);
+        SAFE_RELEASE(ctx->linear_wrap_sampler);
         return hr;
     }
     sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -324,8 +327,11 @@ static HRESULT d3d11_create_context_sampler_states(d3d11_context_t *ctx) {
     sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     hr = ID3D11Device_CreateSamplerState(ctx->device, &sampler_desc, &ctx->linear_clamp_sampler);
     hr = d3d11_required_output_result(hr, ctx->linear_clamp_sampler);
+    if (SUCCEEDED(hr) && !d3d11_sampler_desc_matches(ctx->linear_clamp_sampler, &sampler_desc))
+        hr = E_FAIL;
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateSamplerState(linearClamp)", hr);
+        SAFE_RELEASE(ctx->linear_clamp_sampler);
         return hr;
     }
     d3d11_init_sampler_desc_defaults(&sampler_desc);
@@ -340,8 +346,12 @@ static HRESULT d3d11_create_context_sampler_states(d3d11_context_t *ctx) {
     sampler_desc.ComparisonFunc = D3D11_COMPARISON_LESS_EQUAL;
     hr = ID3D11Device_CreateSamplerState(ctx->device, &sampler_desc, &ctx->shadow_cmp_sampler);
     hr = d3d11_required_output_result(hr, ctx->shadow_cmp_sampler);
-    if (FAILED(hr))
+    if (SUCCEEDED(hr) && !d3d11_sampler_desc_matches(ctx->shadow_cmp_sampler, &sampler_desc))
+        hr = E_FAIL;
+    if (FAILED(hr)) {
         d3d11_log_hresult("CreateSamplerState(shadowCmp)", hr);
+        SAFE_RELEASE(ctx->shadow_cmp_sampler);
+    }
     return hr;
 }
 
@@ -945,8 +955,12 @@ static HRESULT d3d11_create_context_skybox_buffer(d3d11_context_t *ctx) {
     HRESULT hr =
         ID3D11Device_CreateBuffer(ctx->device, &skybox_desc, &skybox_init, &ctx->skybox_vb);
     hr = d3d11_required_output_result(hr, ctx->skybox_vb);
-    if (FAILED(hr))
+    if (SUCCEEDED(hr) && !d3d11_buffer_desc_matches(ctx->skybox_vb, &skybox_desc))
+        hr = E_FAIL;
+    if (FAILED(hr)) {
         d3d11_log_hresult("CreateBuffer(skyboxVB)", hr);
+        SAFE_RELEASE(ctx->skybox_vb);
+    }
     return hr;
 }
 

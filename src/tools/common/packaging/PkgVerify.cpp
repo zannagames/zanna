@@ -33,6 +33,7 @@
 #include "PkgUtils.hpp"
 #include "PkgZlib.hpp"
 #include "WindowsInstallerMetadata.hpp"
+#include "WindowsPEValidation.hpp"
 #include "ZipReader.hpp"
 
 #include <algorithm>
@@ -2029,115 +2030,13 @@ bool verifyMacOSPkgPayload(const std::vector<uint8_t> &data,
 /// @param err Stream that receives the first structural diagnostic.
 /// @return true for a bounded x86-64 or ARM64 PE32+ image with disjoint sections.
 bool verifyPE(const std::vector<uint8_t> &data, std::ostream &err) {
-    if (data.size() < 64) {
-        err << "PE: file too small (" << data.size() << " bytes)\n";
-        return false;
+    std::string validationError;
+    if (validateWindowsPEImage(
+            data.empty() ? nullptr : data.data(), data.size(), 0U, nullptr, validationError)) {
+        return true;
     }
-
-    // DOS header: "MZ" magic
-    if (data[0] != 'M' || data[1] != 'Z') {
-        err << "PE: missing DOS 'MZ' magic\n";
-        return false;
-    }
-
-    // e_lfanew at offset 60: pointer to PE signature
-    const size_t peOff = static_cast<size_t>(rdLE32(data.data() + 60));
-    if (!hasRange(peOff, 4, data.size())) {
-        err << "PE: e_lfanew (" << peOff << ") points past end of file\n";
-        return false;
-    }
-
-    // PE signature: "PE\0\0"
-    if (data[peOff] != 'P' || data[peOff + 1] != 'E' || data[peOff + 2] != 0 ||
-        data[peOff + 3] != 0) {
-        err << "PE: invalid PE signature at offset " << peOff << "\n";
-        return false;
-    }
-
-    // COFF header at peOff+4
-    const size_t coffOff = peOff + 4;
-    if (!hasRange(coffOff, 20, data.size())) {
-        err << "PE: COFF header truncated\n";
-        return false;
-    }
-
-    uint16_t machine = rdLE16(data.data() + coffOff);
-    if (machine != 0x8664 && machine != 0xAA64) {
-        err << "PE: unexpected machine type 0x" << std::hex << machine << std::dec << "\n";
-        return false;
-    }
-
-    uint16_t numSections = rdLE16(data.data() + coffOff + 2);
-    uint16_t optHdrSize = rdLE16(data.data() + coffOff + 16);
-
-    // Optional header
-    const size_t optOff = coffOff + 20;
-    if (!hasRange(optOff, optHdrSize, data.size())) {
-        err << "PE: optional header truncated\n";
-        return false;
-    }
-    if (optHdrSize < 112) {
-        err << "PE: PE32+ optional header is too small\n";
-        return false;
-    }
-
-    // PE32+ magic = 0x020B
-    uint16_t optMagic = rdLE16(data.data() + optOff);
-    if (optMagic != 0x020B) {
-        err << "PE: expected PE32+ magic 0x020B, got 0x" << std::hex << optMagic << std::dec
-            << "\n";
-        return false;
-    }
-    const uint32_t numberOfRvaAndSizes = rdLE32(data.data() + optOff + 108);
-    if (numberOfRvaAndSizes > 16 ||
-        static_cast<uint64_t>(numberOfRvaAndSizes) * 8u > static_cast<uint64_t>(optHdrSize - 112)) {
-        err << "PE: invalid data directory count in optional header\n";
-        return false;
-    }
-
-    // Verify section headers don't overlap
-    const size_t secTableOff = optOff + static_cast<size_t>(optHdrSize);
-
-    struct SecInfo {
-        uint32_t rawOff;
-        uint32_t rawSize;
-    };
-
-    std::vector<SecInfo> sections;
-
-    for (uint16_t i = 0; i < numSections; ++i) {
-        const size_t hdrOff = secTableOff + static_cast<size_t>(i) * 40u;
-        if (!hasRange(hdrOff, 40, data.size())) {
-            err << "PE: section header " << i << " truncated\n";
-            return false;
-        }
-        uint32_t rawSize = rdLE32(data.data() + hdrOff + 16);
-        uint32_t rawOff = rdLE32(data.data() + hdrOff + 20);
-        if (static_cast<uint64_t>(rawOff) + static_cast<uint64_t>(rawSize) >
-            static_cast<uint64_t>(data.size())) {
-            err << "PE: section raw data extends past end of file\n";
-            return false;
-        }
-        if (rawSize > 0)
-            sections.push_back({rawOff, rawSize});
-    }
-
-    // Check for overlap
-    for (size_t i = 0; i < sections.size(); ++i) {
-        for (size_t j = i + 1; j < sections.size(); ++j) {
-            uint64_t aEnd = static_cast<uint64_t>(sections[i].rawOff) +
-                            static_cast<uint64_t>(sections[i].rawSize);
-            uint64_t bEnd = static_cast<uint64_t>(sections[j].rawOff) +
-                            static_cast<uint64_t>(sections[j].rawSize);
-            bool overlap = (sections[i].rawOff < bEnd && sections[j].rawOff < aEnd);
-            if (overlap) {
-                err << "PE: sections " << i << " and " << j << " overlap\n";
-                return false;
-            }
-        }
-    }
-
-    return true;
+    err << "PE: " << validationError << '\n';
+    return false;
 }
 
 /// @brief Verify a PE32+ image and the ZIP overlay following its sections.
@@ -2266,19 +2165,22 @@ bool windowsPeMatchesArchitecture(const std::vector<uint8_t> &data,
                                   std::string_view architecture,
                                   std::ostream &err,
                                   std::string_view label) {
-    if (data.size() < 64U) {
-        err << "Windows native installer: " << label << " is too small for a PE header\n";
+    uint16_t expected = 0U;
+    if (architecture == "arm64")
+        expected = 0xAA64U;
+    else if (architecture == "x64")
+        expected = 0x8664U;
+    else {
+        err << "Windows native installer: " << label << " metadata architecture is unsupported\n";
         return false;
     }
-    const uint32_t peOffset = rdLE32(data.data() + 60U);
-    if (peOffset > data.size() - 6U) {
-        err << "Windows native installer: " << label << " has an invalid PE header offset\n";
-        return false;
-    }
-    const uint16_t machine = rdLE16(data.data() + peOffset + 4U);
-    const uint16_t expected = architecture == "arm64" ? 0xAA64U : 0x8664U;
-    if (machine != expected) {
-        err << "Windows native installer: " << label << " architecture does not match metadata\n";
+    std::string validationError;
+    if (!validateWindowsPEImage(data.empty() ? nullptr : data.data(),
+                                data.size(),
+                                expected,
+                                nullptr,
+                                validationError)) {
+        err << "Windows native installer: invalid " << label << ": " << validationError << '\n';
         return false;
     }
     return true;

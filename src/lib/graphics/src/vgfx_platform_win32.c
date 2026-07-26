@@ -394,7 +394,7 @@ static int win32_get_window_style(HWND hwnd, int index, LONG *out_value) {
     if (!hwnd || !out_value)
         return 0;
     SetLastError(ERROR_SUCCESS);
-    value = GetWindowLongA(hwnd, index);
+    value = GetWindowLongW(hwnd, index);
     if (value == 0 && GetLastError() != ERROR_SUCCESS)
         return 0;
     *out_value = value;
@@ -411,7 +411,7 @@ static int win32_set_window_style(HWND hwnd, int index, LONG value) {
     if (!hwnd)
         return 0;
     SetLastError(ERROR_SUCCESS);
-    previous = SetWindowLongA(hwnd, index, value);
+    previous = SetWindowLongW(hwnd, index, value);
     return previous != 0 || GetLastError() == ERROR_SUCCESS;
 }
 

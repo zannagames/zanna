@@ -1418,7 +1418,7 @@ int8_t rt_lightprobegrid3d_save(void *obj, rt_string path) {
              fwrite(&grid->nz, sizeof(int32_t), 1, f) == 1 &&
              fwrite(grid->valid, 1, probes, f) == probes &&
              fwrite(grid->sh, sizeof(float), probes * 27, f) == probes * 27;
-    if (fclose(f) != 0)
+    if (!rt_file_stdio_flush_sync_close(f))
         ok = 0;
     if (ok)
         ok = rt_file_stdio_replace_utf8(tmp_path, cpath);

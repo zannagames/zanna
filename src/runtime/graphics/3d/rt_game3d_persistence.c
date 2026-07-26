@@ -738,8 +738,8 @@ int8_t rt_game3d_world_save_state(void *obj, rt_string app_name, rt_string slot)
     FILE *file = rt_file_stdio_open_temp_for_replace_utf8(path, &tmp_path);
     if (file) {
         size_t written = writer.size ? fwrite(writer.data, 1, writer.size, file) : 0;
-        int closed = fclose(file);
-        if (written == writer.size && closed == 0)
+        int closed = rt_file_stdio_flush_sync_close(file);
+        if (written == writer.size && closed)
             ok = rt_file_stdio_replace_utf8(tmp_path, path) ? 1 : 0;
         if (!ok)
             (void)rt_file_stdio_unlink_utf8(tmp_path);

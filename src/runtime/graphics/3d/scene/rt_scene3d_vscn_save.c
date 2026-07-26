@@ -1307,8 +1307,10 @@ static int vscn_serialize_node_metadata(
 /// @param len In/out populated byte length.
 /// @param cap In/out byte capacity.
 /// @return Nonzero on success or absent metadata, otherwise zero.
-static int vscn_save_emit_root_metadata(
-    const rt_scene_node3d *root, char **buf, size_t *len, size_t *cap) {
+static int vscn_save_emit_root_metadata(const rt_scene_node3d *root,
+                                        char **buf,
+                                        size_t *len,
+                                        size_t *cap) {
     if (!root || root->metadata_count <= 0)
         return 1;
     if (!vscn_append(buf, len, cap, "  \"metadata\": "))
@@ -1670,13 +1672,13 @@ static int vscn_serialize_node(rt_scene_node3d *node,
             ok = 0;
             break;
         }
-        frames[frame_count++] = (vscn_serialize_node_frame_t){
-            child,
-            0,
-            child->prefab_path ? 0 : scene3d_node_child_count(child),
-            0,
-            frame->depth + 2,
-            0};
+        frames[frame_count++] =
+            (vscn_serialize_node_frame_t){child,
+                                          0,
+                                          child->prefab_path ? 0 : scene3d_node_child_count(child),
+                                          0,
+                                          frame->depth + 2,
+                                          0};
         if (!vscn_serialize_node_fields(child, ctx, buf, len, cap, frame->depth + 2))
             ok = 0;
     }
@@ -2197,7 +2199,7 @@ static int64_t vscn_write_atomic(const char *filepath, const char *buf, size_t l
         }
         written += chunk;
     }
-    if (fflush(file) != 0 || fclose(file) != 0) {
+    if (!rt_file_stdio_flush_sync_close(file)) {
         (void)rt_file_stdio_unlink_utf8(tmp_path);
         free(tmp_path);
         return 0;
@@ -2291,13 +2293,12 @@ static int scene3d_build_vscn_text(rt_scene3d *scene, char **out_buf, size_t *ou
         if (m->bone_map || m->extra_influences)
             has_rig = 1;
     }
-    version =
-        ctx.requires_v7
-            ? 7
-            : (ctx.requires_v6
-                   ? 6
-                   : ((ctx.requires_v5 || vscn_save_has_source_texture(&ctx)) ? 5
-                                                                              : (has_rig ? 3 : 2)));
+    version = ctx.requires_v7
+                  ? 7
+                  : (ctx.requires_v6 ? 6
+                                     : ((ctx.requires_v5 || vscn_save_has_source_texture(&ctx))
+                                            ? 5
+                                            : (has_rig ? 3 : 2)));
     ctx.output_version = version;
     if (!vscn_append(&buf, &len, &cap, "{\n") ||
         !vscn_append(&buf, &len, &cap, "  \"format\": \"vscn\",\n") ||

@@ -63,7 +63,7 @@ static wchar_t *vg_filedialog_platform_utf8_to_wide(const char *text) {
     if (!text)
         return NULL;
     int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
-    if (needed <= 0)
+    if (needed <= 0 || (size_t)needed > SIZE_MAX / sizeof(wchar_t))
         return NULL;
     wchar_t *wide = (wchar_t *)malloc((size_t)needed * sizeof(wchar_t));
     if (!wide)
@@ -166,6 +166,11 @@ static bool vg_filedialog_platform_append_entry(vg_filedialog_platform_entry_t *
 static INIT_ONCE g_vg_filedialog_root_once = INIT_ONCE_STATIC_INIT;
 static char g_vg_filedialog_root[] = "C:\\";
 
+enum {
+    /// Bound memory use when enumerating an unusually large or hostile directory.
+    VG_FILEDIALOG_WINDOWS_MAX_ENTRIES = 1048576,
+};
+
 /// @brief Initializes the process-wide fallback root from the Windows directory.
 ///
 /// @param once Win32 one-time initialization token; otherwise unused.
@@ -245,13 +250,12 @@ char *vg_filedialog_platform_home_dir(void) {
     wchar_t *userprofile_w = vg_filedialog_platform_environment_wide(L"USERPROFILE");
     if (userprofile_w) {
         DWORD attributes = GetFileAttributesW(userprofile_w);
-        char *userprofile =
-            attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0
-                ? vg_filedialog_platform_wide_to_utf8(userprofile_w)
-                : NULL;
+        char *userprofile = vg_filedialog_platform_wide_to_utf8(userprofile_w);
         free(userprofile_w);
-        if (userprofile)
+        if (userprofile && vg_filedialog_platform_is_absolute_path(userprofile) &&
+            attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
             return userprofile;
+        free(userprofile);
     }
 
     wchar_t *homedrive_w = vg_filedialog_platform_environment_wide(L"HOMEDRIVE");
@@ -314,12 +318,18 @@ static size_t vg_filedialog_platform_root_length(const char *path) {
         !vg_filedialog_platform_is_separator(path[1])) {
         return 0u;
     }
-    cursor = 2u;
-    if (length >= 8u && path[2] == '?' && vg_filedialog_platform_is_separator(path[3]) &&
-        (path[4] == 'U' || path[4] == 'u') && (path[5] == 'N' || path[5] == 'n') &&
-        (path[6] == 'C' || path[6] == 'c') && vg_filedialog_platform_is_separator(path[7])) {
-        cursor = 8u;
-        extended_unc = 1;
+    if ((path[2] == '.' || path[2] == '?') && vg_filedialog_platform_is_separator(path[3])) {
+        if (length >= 8u && path[2] == '?' && vg_filedialog_platform_is_separator(path[3]) &&
+            (path[4] == 'U' || path[4] == 'u') && (path[5] == 'N' || path[5] == 'n') &&
+            (path[6] == 'C' || path[6] == 'c') && vg_filedialog_platform_is_separator(path[7])) {
+            cursor = 8u;
+            extended_unc = 1;
+        } else {
+            /* Reject Win32 device namespaces (\\.\ and unsupported \\?\ forms). */
+            return 0u;
+        }
+    } else {
+        cursor = 2u;
     }
     while (cursor < length && !vg_filedialog_platform_is_separator(path[cursor]))
         cursor++;
@@ -386,13 +396,7 @@ char *vg_filedialog_platform_parent_dir(const char *path) {
 /// @param path Path string to inspect.
 /// @return true for drive-rooted and slash-rooted paths.
 bool vg_filedialog_platform_is_absolute_path(const char *path) {
-    if (!path || !*path)
-        return false;
-    if (strlen(path) >= 3u && isalpha((unsigned char)path[0]) && path[1] == ':' &&
-        vg_filedialog_platform_is_separator(path[2]))
-        return true;
-    return vg_filedialog_platform_is_separator(path[0]) &&
-           vg_filedialog_platform_is_separator(path[1]);
+    return vg_filedialog_platform_root_length(path) != 0u;
 }
 
 /// @brief Test whether a path exists and is a directory.
@@ -448,6 +452,8 @@ bool vg_filedialog_platform_list_directory(const char *path,
     do {
         if (wcscmp(find_data.cFileName, L".") == 0 || wcscmp(find_data.cFileName, L"..") == 0)
             continue;
+        if (count >= VG_FILEDIALOG_WINDOWS_MAX_ENTRIES)
+            goto fail;
 
         char *name = vg_filedialog_platform_wide_to_utf8(find_data.cFileName);
         if (!name)

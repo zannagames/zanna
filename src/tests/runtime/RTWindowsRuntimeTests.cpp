@@ -242,16 +242,59 @@ static void test_utf8_stdio_open_and_inheritance() {
     DWORD flags = HANDLE_FLAG_INHERIT;
     assert(GetHandleInformation(reinterpret_cast<HANDLE>(nativeHandle), &flags));
     assert((flags & HANDLE_FLAG_INHERIT) == 0);
+    HANDLE competingReader = CreateFileW(nativePath.c_str(),
+                                         GENERIC_READ,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                         nullptr,
+                                         OPEN_EXISTING,
+                                         FILE_ATTRIBUTE_NORMAL,
+                                         nullptr);
+    assert(competingReader == INVALID_HANDLE_VALUE);
+    assert(GetLastError() == ERROR_SHARING_VIOLATION);
     static constexpr char payload[] = "utf8-stdio";
     assert(std::fwrite(payload, 1, sizeof(payload), output) == sizeof(payload));
-    assert(std::fclose(output) == 0);
+    assert(rt_file_stdio_flush_sync_close(output));
 
     FILE *input = rt_file_stdio_open_utf8(path, "rb");
     assert(input != nullptr);
+    HANDLE competingWriter = CreateFileW(nativePath.c_str(),
+                                         GENERIC_WRITE,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                         nullptr,
+                                         OPEN_EXISTING,
+                                         FILE_ATTRIBUTE_NORMAL,
+                                         nullptr);
+    assert(competingWriter == INVALID_HANDLE_VALUE);
+    assert(GetLastError() == ERROR_SHARING_VIOLATION);
     char actual[sizeof(payload)]{};
     assert(std::fread(actual, 1, sizeof(actual), input) == sizeof(actual));
     assert(std::memcmp(actual, payload, sizeof(payload)) == 0);
     assert(std::fclose(input) == 0);
+
+    char *temporaryPath = nullptr;
+    FILE *temporary = rt_file_stdio_open_temp_for_replace_utf8(path, &temporaryPath);
+    assert(temporary != nullptr && temporaryPath != nullptr);
+    wchar_t *wideTemporary = rt_file_path_utf8_to_wide(temporaryPath);
+    assert(wideTemporary != nullptr);
+    HANDLE competingTemporary = CreateFileW(wideTemporary,
+                                            GENERIC_READ,
+                                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                            nullptr,
+                                            OPEN_EXISTING,
+                                            FILE_ATTRIBUTE_NORMAL,
+                                            nullptr);
+    assert(competingTemporary == INVALID_HANDLE_VALUE);
+    assert(GetLastError() == ERROR_SHARING_VIOLATION);
+    std::free(wideTemporary);
+    assert(std::fwrite(payload, 1, sizeof(payload), temporary) == sizeof(payload));
+    assert(rt_file_stdio_flush_sync_close(temporary));
+    assert(rt_file_stdio_unlink_utf8(temporaryPath) == 0);
+    std::free(temporaryPath);
+
+    const std::string missingSource = std::string(path) + ".missing";
+    errno = 0;
+    assert(!rt_file_stdio_replace_utf8(missingSource.c_str(), path));
+    assert(errno == ENOENT);
     assert(rt_file_stdio_unlink_utf8(path) == 0);
     rt_str_release_maybe(utf8Path);
 
@@ -346,6 +389,19 @@ static void test_wasapi_backend_source_contracts() {
     assert(source.find("FAILED(hr) && hr != RPC_E_CHANGED_MODE") == std::string::npos);
     assert(source.find("Cannot resume an inactive WASAPI client") != std::string::npos);
     assert(source.find("InterlockedExchange(&plat->paused, 0)") != std::string::npos);
+    assert(source.find("InitializeCriticalSectionEx") != std::string::npos);
+    assert(source.find("vaud_win32_channel_mask_count") != std::string::npos);
+    assert(source.find("SPEAKER_FRONT_LEFT") != std::string::npos);
+    assert(source.find("SPEAKER_FRONT_RIGHT") != std::string::npos);
+    assert(source.find("render_left_channel") != std::string::npos);
+    assert(source.find("render_right_channel") != std::string::npos);
+    assert(source.find("thread_exited") != std::string::npos);
+    assert(source.find("worker_thread_id") != std::string::npos);
+    assert(source.find("shutdown must run on the context owner thread") != std::string::npos);
+    assert(source.find("long double millis") == std::string::npos);
+    assert(source.find("whole_seconds") != std::string::npos);
+    assert(source.find("CreateEventW") != std::string::npos);
+    assert(source.find("CreateEvent(NULL") == std::string::npos);
 }
 
 static std::string read_source(std::initializer_list<const char *> components) {
@@ -405,8 +461,19 @@ static void test_windows_unicode_storage_source_contracts() {
     assert(image.find("fopen(") == std::string::npos);
     const std::string guiFile = read_source({"src", "lib", "gui", "src/vg_file_stdio.h"});
     assert(guiFile.find("_O_NOINHERIT") != std::string::npos);
+    assert(guiFile.find("_wsopen_s") != std::string::npos);
+    assert(guiFile.find("_SH_DENYWR") != std::string::npos);
     const std::string audioFile = read_source({"src", "lib", "audio", "src/vaud_file_stdio.h"});
     assert(audioFile.find("_O_NOINHERIT") != std::string::npos);
+    assert(audioFile.find("_wsopen_s") != std::string::npos);
+    assert(audioFile.find("_SH_DENYWR") != std::string::npos);
+    const std::string tlsVerify = read_source({"src", "runtime", "network", "rt_tls_verify_win.c"});
+    assert(tlsVerify.find("_wsopen_s") != std::string::npos);
+    assert(tlsVerify.find("_SH_DENYWR") != std::string::npos);
+    assert(tlsVerify.find("_wfopen(") == std::string::npos);
+    const std::string fileStdio = read_source({"src", "runtime", "io", "rt_file_stdio.h"});
+    assert(fileStdio.find("rt_file_stdio_flush_sync_close") != std::string::npos);
+    assert(fileStdio.find("_SH_DENYRW") != std::string::npos);
     const std::string persistence =
         read_source({"src", "runtime", "graphics", "3d/rt_game3d_persistence.c"});
     assert(persistence.find("rt_file_stdio_open_temp_for_replace_utf8") != std::string::npos);
@@ -414,6 +481,18 @@ static void test_windows_unicode_storage_source_contracts() {
     const std::string lightBaker =
         read_source({"src", "runtime", "graphics", "3d/render/rt_lightbaker3d.c"});
     assert(lightBaker.find("rt_file_stdio_open_temp_for_replace_utf8") != std::string::npos);
+    constexpr std::array<const char *, 6> atomicSaveFiles = {
+        "src/runtime/graphics/2d/rt_pixels_io.c",
+        "src/runtime/graphics/2d/rt_pixels_png.c",
+        "src/runtime/graphics/2d/rt_tilemap_io.c",
+        "src/runtime/graphics/3d/rt_game3d_persistence.c",
+        "src/runtime/graphics/3d/render/rt_lightbaker3d.c",
+        "src/runtime/graphics/3d/scene/rt_scene3d_vscn_save.c",
+    };
+    for (const char *relativePath : atomicSaveFiles) {
+        const std::string saveSource = read_source({relativePath});
+        assert(saveSource.find("rt_file_stdio_flush_sync_close") != std::string::npos);
+    }
     const std::string ogg = read_source({"src", "runtime", "audio", "rt_ogg.c"});
     assert(ogg.find("rt_atomic_compare_exchange_i32") != std::string::npos);
 }
@@ -430,6 +509,17 @@ static void test_win32_window_source_contracts() {
     assert(source.find("count > (UINT)VGFX_EVENT_QUEUE_SIZE") != std::string::npos);
     assert(source.find("unit_count > (size_t)VGFX_COMPOSITION_TEXT_CAPACITY") != std::string::npos);
     assert(source.find("if (!win32_adjust_window_rect_for_scale") != std::string::npos);
+    assert(source.find("GetWindowLongW(") != std::string::npos);
+    assert(source.find("SetWindowLongW(") != std::string::npos);
+    assert(source.find("GetWindowLongA(") == std::string::npos);
+    assert(source.find("SetWindowLongA(") == std::string::npos);
+}
+
+static void test_windows_machine_source_contracts() {
+    const std::string source = read_source({"src", "runtime", "system", "rt_machine.c"});
+    assert(source.find("machine_win32_clamp_u64") != std::string::npos);
+    assert(source.find("GetVersionExW(") != std::string::npos);
+    assert(source.find("GetVersionExA(") == std::string::npos);
 }
 
 static void test_windows_run_process_source_contracts() {
@@ -461,6 +551,7 @@ int main() {
     test_windows_network_worker_source_contracts();
     test_windows_unicode_storage_source_contracts();
     test_win32_window_source_contracts();
+    test_windows_machine_source_contracts();
     test_windows_run_process_source_contracts();
     std::puts("RTWindowsRuntimeTests passed");
     return 0;

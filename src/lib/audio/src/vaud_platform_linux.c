@@ -421,9 +421,9 @@ int vaud_platform_init(vaud_context_t ctx) {
 }
 
 /// @copydoc vaud_platform_shutdown
-void vaud_platform_shutdown(vaud_context_t ctx) {
+int vaud_platform_shutdown(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
-        return;
+        return 1;
 
     vaud_linux_data *plat = (vaud_linux_data *)ctx->platform_data;
 
@@ -457,6 +457,7 @@ void vaud_platform_shutdown(vaud_context_t ctx) {
     free(plat->mix_buffer);
     free(plat);
     ctx->platform_data = NULL;
+    return 1;
 }
 
 /// @copydoc vaud_platform_pause

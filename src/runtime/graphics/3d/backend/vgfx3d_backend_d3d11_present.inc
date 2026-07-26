@@ -613,15 +613,17 @@ static HRESULT d3d11_recreate_swapchain_main_targets(d3d11_context_t *ctx,
     }
     hr = ID3D11Device_CreateRenderTargetView(
         ctx->device, (ID3D11Resource *)back_buffer, NULL, &new_rtv);
-    SAFE_RELEASE(back_buffer);
-    if (FAILED(hr) || !new_rtv) {
-        HRESULT failure = FAILED(hr) ? hr : E_POINTER;
+    if (FAILED(hr) || !new_rtv ||
+        !d3d11_rtv_matches_texture2d(new_rtv, back_buffer, back_buffer_desc.Format)) {
+        HRESULT failure = FAILED(hr) ? hr : (new_rtv ? E_FAIL : E_POINTER);
         d3d11_log_hresult(log_context ? log_context : "CreateRenderTargetView(backbuffer)",
                           failure);
         d3d11_log_device_removed_reason(ctx, "CreateRenderTargetView(backbuffer)", failure);
         SAFE_RELEASE(new_rtv);
+        SAFE_RELEASE(back_buffer);
         return failure;
     }
+    SAFE_RELEASE(back_buffer);
     hr = d3d11_create_depth_target(ctx, width, height, 0, &new_depth_tex, &new_dsv, NULL);
     if (FAILED(hr) || !new_depth_tex || !new_dsv) {
         HRESULT failure = FAILED(hr) ? hr : E_POINTER;

@@ -56,5 +56,11 @@ int main(void) {
 #endif
     assert((text_flags & O_CREAT) == 0);
 
+    int unchanged_flags = 0x5A5A;
+    assert(!rt_file_mode_to_flags("rx", RT_F_UNSPECIFIED, &unchanged_flags));
+    assert(unchanged_flags == 0x5A5A);
+    assert(!rt_file_mode_to_flags(NULL, RT_F_UNSPECIFIED, &unchanged_flags));
+    assert(unchanged_flags == 0x5A5A);
+
     return 0;
 }

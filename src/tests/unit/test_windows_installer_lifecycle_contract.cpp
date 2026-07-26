@@ -14,10 +14,11 @@
 //   - Windows path ownership decisions use locale-independent ordinal comparison.
 //
 // Ownership/Lifetime:
-//   - The test owns one in-memory copy of the lifecycle implementation source.
+//   - The test owns in-memory copies of the lifecycle and PE validator sources.
 //
 // Links: src/tools/windows_installer/WindowsInstallerLifecycle.cpp,
-//        src/tools/windows_installer/WindowsInstallerHost.cpp
+//        src/tools/windows_installer/WindowsInstallerHost.cpp,
+//        src/tools/common/packaging/WindowsPEValidation.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -87,11 +88,21 @@ std::string readInstallerSource(std::string_view name) {
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+std::string readPeValidationSource() {
+    const std::filesystem::path path = std::filesystem::path(ZANNA_SOURCE_DIR) / "src" / "tools" /
+                                       "common" / "packaging" / "WindowsPEValidation.cpp";
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
 } // namespace
 
 int main() {
     const std::string source = readLifecycleSource();
     const std::string hostSource = readHostSource();
+    const std::string peValidationSource = readPeValidationSource();
     const std::string brandSource = readInstallerSource("WindowsInstallerBrandDialog.cpp");
     const std::string themeSource = readInstallerSource("WindowsInstallerTheme.cpp");
     const std::string wizardSource = readInstallerSource("WindowsInstallerWizard.cpp");
@@ -193,9 +204,13 @@ int main() {
             hostSource.find("/elevated-worker was specified more than once") != std::string::npos &&
             hostSource.find("/uninstall-worker was specified more than once") != std::string::npos,
         "Internal worker options reject duplicate spellings");
-    expect(hostSource.find("readLe16(bytes.data()) != 0x5A4DU") != std::string::npos &&
-               hostSource.find("kPe32PlusMagic") != std::string::npos &&
-               hostSource.find("overlapping PE sections") != std::string::npos,
+    expect(hostSource.find("validateWindowsPEImage") != std::string::npos &&
+               peValidationSource.find("kMaximumSections") != std::string::npos &&
+               peValidationSource.find("overlapping raw storage") != std::string::npos &&
+               peValidationSource.find("entry point belongs to a non-executable section") !=
+                   std::string::npos &&
+               peValidationSource.find("data directory is outside mapped image content") !=
+                   std::string::npos,
            "Embedded executables require bounded, non-overlapping PE32+ images");
     expect(hostSource.find("metadata architecture is unsupported") != std::string::npos &&
                hostSource.find("else if (architecture == \"x64\")") != std::string::npos,

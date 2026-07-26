@@ -107,8 +107,8 @@ TEST(PlatformImportPlanners, LinuxPlannerRejectsUnknownImportsWithoutPartialPlan
 TEST(PlatformImportPlanners, LinuxPlannerReportsUnknownImportsDeterministically) {
     LinuxImportPlan plan;
     std::ostringstream err;
-    EXPECT_FALSE(planLinuxImports(
-        {"zanna_unknown_zeta", "malloc", "zanna_unknown_alpha"}, plan, err));
+    EXPECT_FALSE(
+        planLinuxImports({"zanna_unknown_zeta", "malloc", "zanna_unknown_alpha"}, plan, err));
     EXPECT_TRUE(plan.neededLibs.empty());
     EXPECT_EQ("error: unrecognized Linux dynamic import 'zanna_unknown_alpha'\n", err.str());
 }
@@ -651,6 +651,30 @@ TEST(PlatformImportPlanners, WindowsReliabilityApisResolveToKernel32) {
     ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, syms, false, plan, err));
     for (const auto &sym : syms)
         EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", sym));
+}
+
+TEST(PlatformImportPlanners, WindowsHardenedRuntimeSymbolsResolveToSystemDlls) {
+    const std::unordered_set<std::string> syms = {
+        "_wsopen_s", "CreateEventW", "GetWindowLongW", "SetWindowLongW"};
+
+    for (const auto &sym : syms) {
+        EXPECT_TRUE(isKnownDynamicSymbol(sym, LinkPlatform::Windows));
+        EXPECT_FALSE(isKnownDynamicSymbol(sym, LinkPlatform::Linux));
+        EXPECT_FALSE(isKnownDynamicSymbol(sym, LinkPlatform::macOS));
+    }
+
+    WindowsImportPlan plan;
+    std::ostringstream err;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, syms, false, plan, err));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "ucrtbase.dll", "_wsopen_s"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", "CreateEventW"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "GetWindowLongW"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "SetWindowLongW"));
+
+    WindowsImportPlan debugPlan;
+    std::ostringstream debugErr;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, {"_wsopen_s"}, true, debugPlan, debugErr));
+    EXPECT_TRUE(importPlanDllHasFunction(debugPlan, "ucrtbased.dll", "_wsopen_s"));
 }
 
 int main(int argc, char **argv) {

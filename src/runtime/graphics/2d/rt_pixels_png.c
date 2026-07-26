@@ -1282,9 +1282,7 @@ int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
 save_cleanup:
     free(zlib_data);
     if (out) {
-        if (fflush(out) != 0)
-            result = 0;
-        if (fclose(out) != 0)
+        if (!rt_file_stdio_flush_sync_close(out))
             result = 0;
         if (result) {
             result = rt_file_stdio_replace_utf8(tmp_path, filepath) ? 1 : 0;

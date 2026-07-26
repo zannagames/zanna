@@ -46,6 +46,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $scriptRoot "windows_pe_validation.ps1")
 
 function Quote-ProcessArgument {
     param([AllowNull()][string]$Argument)
@@ -193,49 +195,7 @@ function Write-NewSentinel {
 function Get-PeArchitecture {
     param([Parameter(Mandatory = $true)][string]$Binary)
 
-    $machine = 0
-    $stream = [IO.File]::Open(
-        $Binary, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    try {
-        if ($stream.Length -lt 64) {
-            throw "Installed executable is too small to contain a PE header: $Binary"
-        }
-        $reader = [IO.BinaryReader]::new($stream, [Text.Encoding]::ASCII, $true)
-        try {
-            if ($reader.ReadUInt16() -ne 0x5A4D) {
-                throw "Installed executable has no MZ signature: $Binary"
-            }
-            $stream.Position = 0x3c
-            $peOffset = [uint64]$reader.ReadUInt32()
-            if ($peOffset -gt [uint64]($stream.Length - 26)) {
-                throw "Installed executable has an invalid PE offset: $Binary"
-            }
-            $stream.Position = [int64]$peOffset
-            if ($reader.ReadUInt32() -ne 0x00004550) {
-                throw "Installed executable has no PE signature: $Binary"
-            }
-            $machine = $reader.ReadUInt16()
-            $stream.Position = [int64]($peOffset + 20)
-            $optionalHeaderSize = [uint64]$reader.ReadUInt16()
-            if ($optionalHeaderSize -lt 2 -or
-                $peOffset + 24 + $optionalHeaderSize -gt [uint64]$stream.Length) {
-                throw "Installed executable has an invalid optional header: $Binary"
-            }
-            $stream.Position = [int64]($peOffset + 24)
-            if ($reader.ReadUInt16() -ne 0x020B) {
-                throw "Installed executable is not a PE32+ image: $Binary"
-            }
-        } finally {
-            $reader.Dispose()
-        }
-    } finally {
-        $stream.Dispose()
-    }
-    switch ($machine) {
-        0x8664 { return "x64" }
-        0xAA64 { return "arm64" }
-        default { throw ("Unsupported installed PE machine 0x{0:X4}: {1}" -f $machine, $Binary) }
-    }
+    return Get-ZannaPeImageArchitecture -Binary $Binary
 }
 
 function Assert-ZannaStudioBuildInfo {

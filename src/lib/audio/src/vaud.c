@@ -415,7 +415,7 @@ static int vaud_event_init(vaud_event_t *event) {
     if (!event)
         return 0;
 #if defined(VAUD_PLATFORM_WINDOWS)
-    *event = CreateEventA(NULL, TRUE, TRUE, NULL);
+    *event = CreateEventW(NULL, TRUE, TRUE, NULL);
     return *event != NULL;
 #else
     if (pthread_mutex_init(&event->mutex, NULL) != 0)
@@ -578,7 +578,10 @@ void vaud_destroy(vaud_context_t ctx) {
     vaud_atomic_store_i32(&ctx->running, 0);
 
     /* Shutdown platform (stops audio thread) */
-    vaud_platform_shutdown(ctx);
+    if (!vaud_platform_shutdown(ctx)) {
+        vaud_atomic_store_i32(&ctx->destroying, 0);
+        return;
+    }
 
     /* Detach caller-owned sounds and stop voices that reference them. */
     vaud_mutex_lock(&ctx->mutex);

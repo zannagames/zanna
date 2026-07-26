@@ -95,8 +95,6 @@ const char *rt_file_mode_string(int32_t mode) {
 /// @return `true` when the mode string is valid and the flags were written;
 ///         otherwise `false`.
 int8_t rt_file_mode_to_flags(const char *mode, int32_t basic_mode, int *flags_out) {
-    if (flags_out)
-        *flags_out = 0;
     if (!mode || !mode[0] || !flags_out)
         return 0;
 

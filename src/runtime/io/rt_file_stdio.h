@@ -6,16 +6,20 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/io/rt_file_stdio.h
-// Purpose: Small shared helper for opening UTF-8 file paths as non-inheritable
-//          stdio FILE* handles and committing adjacent temporary replacements.
+// Purpose: Open UTF-8 paths as non-inheritable stdio streams, durably close
+//          them, and atomically commit adjacent temporary replacements.
 //
 // Key invariants:
 //   - Supported stdio modes are the exact binary spellings rb, wb, ab, r+b/rb+, w+b/wb+, and
 //     a+b/ab+.
 //   - Every opened descriptor is marked non-inheritable through the native creation flag or
 //     close-on-exec fallback.
+//   - Windows descriptors use explicit sharing policy: normal opens deny writers and replacement
+//     sidecars deny every concurrent open.
 //   - Replacement sidecars use exclusive creation in the destination's directory, and commit
 //     uses the platform's atomic replace primitive.
+//   - Durable close attempts flush, sync, and close even after an earlier failure and preserves
+//     the first error.
 //   - All filesystem paths are UTF-8; Windows calls strict UTF-8/wide conversion helpers.
 //
 // Ownership/Lifetime:
@@ -23,9 +27,14 @@
 //   - Temporary-path construction returns malloc-owned storage that callers free after commit or
 //     cleanup.
 //   - Path and mode inputs are borrowed only for the duration of each call.
+//   - No native descriptor remains owned after a failed stdio conversion.
 //
 // Links: src/runtime/io/rt_file_path.h (Windows path conversion),
-//        src/runtime/io/rt_file_ext.c (higher-level atomic file operations)
+//        src/runtime/io/rt_file_ext.c (higher-level atomic file operations),
+//        src/runtime/graphics/2d/rt_pixels_io.c,
+//        src/runtime/graphics/3d/scene/rt_scene3d_vscn_save.c
+// Cross-platform touchpoints: Windows uses wide CRT paths and `_commit`;
+//                             POSIX uses close-on-exec descriptors and `fsync`.
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -51,6 +60,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <process.h>
+#include <share.h>
 #include <sys/stat.h>
 #include <wchar.h>
 #ifndef WIN32_LEAN_AND_MEAN
@@ -83,6 +93,40 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
+
+#if RT_PLATFORM_WINDOWS
+/// @brief Map a captured Win32 filesystem failure to deterministic CRT errno.
+/// @param error Error returned by GetLastError immediately after a failed call.
+/// @return Closest portable errno value used by runtime file APIs.
+static inline int rt_file_stdio_win32_error_to_errno(DWORD error) {
+    switch (error) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+            return ENOENT;
+        case ERROR_ACCESS_DENIED:
+        case ERROR_SHARING_VIOLATION:
+        case ERROR_LOCK_VIOLATION:
+            return EACCES;
+        case ERROR_ALREADY_EXISTS:
+        case ERROR_FILE_EXISTS:
+            return EEXIST;
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL:
+            return ENOSPC;
+        case ERROR_NOT_SAME_DEVICE:
+            return EXDEV;
+        case ERROR_FILENAME_EXCED_RANGE:
+            return ENAMETOOLONG;
+        case ERROR_INVALID_NAME:
+        case ERROR_INVALID_PARAMETER:
+            return EINVAL;
+        case ERROR_WRITE_PROTECT:
+            return EROFS;
+        default:
+            return EIO;
+    }
+}
 #endif
 
 /// @brief Return a small process-local identifier for temporary file names.
@@ -149,8 +193,11 @@ static inline int rt_file_stdio_replace_utf8(const char *src_utf8, const char *d
     }
     int ok =
         MoveFileExW(wide_src, wide_dst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    DWORD replace_error = ok ? ERROR_SUCCESS : GetLastError();
     free(wide_src);
     free(wide_dst);
+    if (!ok)
+        errno = rt_file_stdio_win32_error_to_errno(replace_error);
     return ok ? 1 : 0;
 #else
     return rename(src_utf8, dst_utf8) == 0 ? 1 : 0;
@@ -229,8 +276,13 @@ static inline FILE *rt_file_stdio_open_temp_for_replace_utf8(const char *dst_pat
             errno = EINVAL;
             return NULL;
         }
-        int fd = _wopen(wide_path, flags, _S_IREAD | _S_IWRITE);
+        int fd = -1;
+        errno_t open_error = _wsopen_s(&fd, wide_path, flags, _SH_DENYRW, _S_IREAD | _S_IWRITE);
         free(wide_path);
+        if (open_error != 0) {
+            errno = (int)open_error;
+            fd = -1;
+        }
 #else
 #ifdef O_CLOEXEC
         flags |= O_CLOEXEC;
@@ -256,13 +308,15 @@ static inline FILE *rt_file_stdio_open_temp_for_replace_utf8(const char *dst_pat
         FILE *fp = fdopen(fd, "wb");
 #endif
         if (!fp) {
+            int fdopen_error = errno ? errno : EIO;
 #if RT_PLATFORM_WINDOWS
-            _close(fd);
+            (void)_close(fd);
 #else
-            close(fd);
+            (void)close(fd);
 #endif
             (void)rt_file_stdio_unlink_utf8(tmp_path);
             free(tmp_path);
+            errno = fdopen_error;
             return NULL;
         }
         *out_tmp_path = tmp_path;
@@ -346,13 +400,20 @@ static inline FILE *rt_file_stdio_open_utf8(const char *path, const char *mode) 
         errno = EINVAL;
         return NULL;
     }
-    int fd = _wopen(wide_path, flags, pmode);
+    int fd = -1;
+    int share_mode = (flags & (O_WRONLY | O_RDWR)) == 0 ? _SH_DENYWR : _SH_DENYRW;
+    errno_t open_error = _wsopen_s(&fd, wide_path, flags, share_mode, pmode);
     free(wide_path);
-    if (fd < 0)
+    if (open_error != 0) {
+        errno = (int)open_error;
         return NULL;
+    }
     FILE *fp = _fdopen(fd, mode);
-    if (!fp)
-        _close(fd);
+    if (!fp) {
+        int fdopen_error = errno ? errno : EIO;
+        (void)_close(fd);
+        errno = fdopen_error;
+    }
     return fp;
 #else
 #ifdef O_CLOEXEC
@@ -367,10 +428,52 @@ static inline FILE *rt_file_stdio_open_utf8(const char *path, const char *mode) 
         (void)fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC);
 #endif
     FILE *fp = fdopen(fd, mode);
-    if (!fp)
-        close(fd);
+    if (!fp) {
+        int fdopen_error = errno ? errno : EIO;
+        (void)close(fd);
+        errno = fdopen_error;
+    }
     return fp;
 #endif
+}
+
+/// @brief Flush, synchronize, and close a writable stdio stream.
+/// @details Every step is attempted even after an earlier failure. Windows
+///          commits the descriptor with `_commit`; POSIX uses `fsync`. The
+///          first meaningful errno is restored after close so cleanup cannot
+///          hide the authoritative write or durability failure.
+/// @param fp Caller-owned writable stream, consumed on every non-null call.
+/// @return 1 only when flush, durable sync, and close all succeed; otherwise 0.
+static inline int rt_file_stdio_flush_sync_close(FILE *fp) {
+    if (!fp) {
+        errno = EINVAL;
+        return 0;
+    }
+    int first_error = 0;
+#if RT_PLATFORM_WINDOWS
+    int fd = _fileno(fp);
+#else
+    int fd = fileno(fp);
+#endif
+    if (fd < 0)
+        first_error = errno ? errno : EBADF;
+    if (fflush(fp) != 0 && first_error == 0)
+        first_error = errno ? errno : EIO;
+    if (fd >= 0) {
+#if RT_PLATFORM_WINDOWS
+        if (_commit(fd) != 0 && first_error == 0)
+#else
+        if (fsync(fd) != 0 && first_error == 0)
+#endif
+            first_error = errno ? errno : EIO;
+    }
+    if (fclose(fp) != 0 && first_error == 0)
+        first_error = errno ? errno : EIO;
+    if (first_error != 0) {
+        errno = first_error;
+        return 0;
+    }
+    return 1;
 }
 
 /// @brief Seek a stdio stream with a signed 64-bit byte offset.

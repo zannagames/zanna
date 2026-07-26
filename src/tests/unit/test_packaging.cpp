@@ -48,6 +48,7 @@
 #include "TarWriter.hpp"
 #include "ToolchainInstallManifest.hpp"
 #include "WindowsInstallerMetadata.hpp"
+#include "WindowsPEValidation.hpp"
 #include "WindowsPackageBuilder.hpp"
 #include "XarWriter.hpp"
 #include "ZipReader.hpp"
@@ -84,6 +85,11 @@ static uint16_t readLE16(const uint8_t *p) {
 static uint32_t readLE32(const uint8_t *p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+static void writeLE16(uint8_t *p, uint16_t value) {
+    p[0] = static_cast<uint8_t>(value & 0xFF);
+    p[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
 }
 
 static void writeLE32(uint8_t *p, uint32_t value) {
@@ -2619,6 +2625,224 @@ TEST(Verify, PEValid) {
     EXPECT_TRUE(verifyPE(pe, err));
 }
 
+TEST(Verify, PEValidatorReportsValidatedImageMetadata) {
+    PEBuildParams params;
+    params.textSection = {0xC3};
+    auto pe = buildPE(params);
+
+    WindowsPEImageInfo info;
+    std::string error;
+    EXPECT_TRUE(validateWindowsPEImage(pe.data(), pe.size(), 0x8664U, &info, error));
+    EXPECT_EQ(info.machine, static_cast<uint16_t>(0x8664U));
+    EXPECT_EQ(info.subsystem, static_cast<uint16_t>(2U));
+    EXPECT_NE(info.entryPoint, static_cast<uint32_t>(0U));
+    EXPECT_NE(info.sizeOfImage, static_cast<uint32_t>(0U));
+    EXPECT_NE(info.sizeOfHeaders, static_cast<uint32_t>(0U));
+    EXPECT_TRUE(error.empty());
+}
+
+TEST(Verify, PEValidatorRejectsWrongRequiredArchitecture) {
+    PEBuildParams params;
+    params.textSection = {0xC3};
+    auto pe = buildPE(params);
+
+    std::string error;
+    EXPECT_FALSE(validateWindowsPEImage(pe.data(), pe.size(), 0xAA64U, nullptr, error));
+    EXPECT_CONTAINS(error, "required architecture");
+}
+
+TEST(Verify, PEValidatorRejectsInvalidImageAndOptionalHeaders) {
+    PEBuildParams params;
+    params.textSection = {0xC3};
+    const auto valid = buildPE(params);
+    const size_t peOffset = readLE32(valid.data() + 60U);
+    const size_t coffOffset = peOffset + 4U;
+    const size_t optionalOffset = coffOffset + 20U;
+    std::string error;
+
+    auto mutated = valid;
+    writeLE16(mutated.data() + coffOffset + 2U, 0U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "section count");
+
+    mutated = valid;
+    writeLE16(mutated.data() + coffOffset + 18U, 0U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "non-DLL executable");
+
+    mutated = valid;
+    writeLE16(mutated.data() + coffOffset + 18U,
+              static_cast<uint16_t>(readLE16(mutated.data() + coffOffset + 18U) | 0x2000U));
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "non-DLL executable");
+
+    mutated = valid;
+    writeLE16(mutated.data() + coffOffset + 16U, 111U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "optional header");
+
+    mutated = valid;
+    writeLE16(mutated.data() + optionalOffset, 0x010BU);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "PE32+");
+
+    mutated = valid;
+    writeLE32(mutated.data() + optionalOffset + 16U, 0U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "entry point");
+
+    mutated = valid;
+    writeLE16(mutated.data() + optionalOffset + 68U, 1U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "subsystem");
+}
+
+TEST(Verify, PEValidatorRejectsInvalidLoaderAlignment) {
+    PEBuildParams params;
+    params.textSection = {0xC3};
+    const auto valid = buildPE(params);
+    const size_t optionalOffset = readLE32(valid.data() + 60U) + 24U;
+    std::string error;
+
+    auto mutated = valid;
+    writeLE32(mutated.data() + optionalOffset + 32U, 256U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "alignment relationship");
+
+    mutated = valid;
+    writeLE32(mutated.data() + optionalOffset + 36U, 768U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "alignment relationship");
+
+    mutated = valid;
+    writeLE32(mutated.data() + optionalOffset + 56U,
+              readLE32(mutated.data() + optionalOffset + 56U) - 1U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "SizeOfImage");
+
+    mutated = valid;
+    writeLE32(mutated.data() + optionalOffset + 60U,
+              readLE32(mutated.data() + optionalOffset + 60U) - 1U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "SizeOfHeaders");
+
+    mutated = valid;
+    writeLE32(mutated.data() + optionalOffset + 108U, 17U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "data-directory count");
+}
+
+TEST(Verify, PEValidatorRejectsInvalidSectionAndEntryPointRanges) {
+    PEBuildParams params;
+    params.textSection = {0xC3};
+    const auto valid = buildPE(params);
+    const size_t optionalOffset = readLE32(valid.data() + 60U) + 24U;
+    const size_t sectionOffset =
+        optionalOffset + readLE16(valid.data() + readLE32(valid.data() + 60U) + 20U);
+    std::string error;
+
+    auto mutated = valid;
+    writeLE32(mutated.data() + sectionOffset + 12U,
+              readLE32(mutated.data() + sectionOffset + 12U) + 1U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "virtual address");
+
+    mutated = valid;
+    writeLE32(mutated.data() + sectionOffset + 8U, readLE32(mutated.data() + optionalOffset + 56U));
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "virtual range");
+
+    mutated = valid;
+    writeLE32(mutated.data() + sectionOffset + 20U,
+              readLE32(mutated.data() + sectionOffset + 20U) + 1U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "file-aligned");
+
+    mutated = valid;
+    writeLE32(mutated.data() + sectionOffset + 16U,
+              readLE32(mutated.data() + sectionOffset + 16U) - 1U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "file-aligned");
+
+    mutated = valid;
+    writeLE32(mutated.data() + optionalOffset + 16U,
+              readLE32(mutated.data() + optionalOffset + 56U));
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "outside every executable section");
+
+    mutated = valid;
+    writeLE32(mutated.data() + sectionOffset + 36U,
+              readLE32(mutated.data() + sectionOffset + 36U) & ~0x20000000U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "non-executable section");
+}
+
+TEST(Verify, PEValidatorRejectsOverlappingSections) {
+    PEBuildParams params;
+    params.textSection = {0xC3};
+    params.rdataSection = {'Z', 'A', 'N', 'N', 'A'};
+    const auto valid = buildPE(params);
+    const size_t peOffset = readLE32(valid.data() + 60U);
+    const size_t optionalOffset = peOffset + 24U;
+    const size_t sectionOffset = optionalOffset + readLE16(valid.data() + peOffset + 20U);
+    const size_t secondSectionOffset = sectionOffset + 40U;
+    ASSERT_LT(secondSectionOffset + 40U, valid.size());
+    std::string error;
+
+    auto mutated = valid;
+    const uint32_t firstVirtualAddress = readLE32(mutated.data() + sectionOffset + 12U);
+    const uint32_t secondVirtualAddress = readLE32(mutated.data() + secondSectionOffset + 12U);
+    writeLE32(mutated.data() + sectionOffset + 8U, secondVirtualAddress - firstVirtualAddress + 1U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "overlapping virtual");
+
+    mutated = valid;
+    writeLE32(mutated.data() + secondSectionOffset + 20U,
+              readLE32(mutated.data() + sectionOffset + 20U));
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "overlapping raw");
+}
+
+TEST(Verify, PEValidatorRejectsInvalidDataDirectories) {
+    PEBuildParams params;
+    params.textSection = {0xC3};
+    const auto valid = buildPE(params);
+    const size_t optionalOffset = readLE32(valid.data() + 60U) + 24U;
+    const size_t firstDirectoryOffset = optionalOffset + 112U;
+    const size_t securityDirectoryOffset = firstDirectoryOffset + 4U * 8U;
+    std::string error;
+
+    auto mutated = valid;
+    writeLE32(mutated.data() + firstDirectoryOffset,
+              readLE32(mutated.data() + optionalOffset + 16U));
+    writeLE32(mutated.data() + firstDirectoryOffset + 4U, 0U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "partial zero");
+
+    mutated = valid;
+    writeLE32(mutated.data() + firstDirectoryOffset,
+              readLE32(mutated.data() + optionalOffset + 56U));
+    writeLE32(mutated.data() + firstDirectoryOffset + 4U, 8U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "outside mapped");
+
+    mutated = valid;
+    writeLE32(mutated.data() + securityDirectoryOffset, 1U);
+    writeLE32(mutated.data() + securityDirectoryOffset + 4U, 8U);
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "certificate table");
+
+    mutated = valid;
+    const size_t sectionOffset =
+        optionalOffset + readLE16(valid.data() + readLE32(valid.data() + 60U) + 20U);
+    writeLE32(mutated.data() + securityDirectoryOffset,
+              readLE32(mutated.data() + sectionOffset + 20U));
+    writeLE32(mutated.data() + securityDirectoryOffset + 4U,
+              readLE32(mutated.data() + sectionOffset + 16U));
+    EXPECT_FALSE(validateWindowsPEImage(mutated.data(), mutated.size(), 0U, nullptr, error));
+    EXPECT_CONTAINS(error, "overlaps PE section");
+}
+
 TEST(Verify, PEInvalidMagic) {
     std::vector<uint8_t> data(200, 0);
     data[0] = 'X'; // Not "MZ"
@@ -2655,13 +2879,19 @@ TEST(Verify, PEZipOverlayValid) {
 }
 
 TEST(Verify, PEZipOverlayIgnoresAuthenticodeCertificateTable) {
-    ZipWriter zip;
-    zip.addFileString("hello.txt", "Hello");
-
-    PEBuildParams params;
-    params.textSection = {0xC3};
-    params.overlay = zip.finishToVector();
-    auto pe = buildPE(params);
+    std::vector<uint8_t> pe;
+    for (size_t padding = 0; padding < 8U; ++padding) {
+        ZipWriter zip;
+        zip.addFileString("hello.txt", "Hello");
+        zip.addFileString("alignment-padding.bin", std::string(padding, '\0'));
+        PEBuildParams params;
+        params.textSection = {0xC3};
+        params.overlay = zip.finishToVector();
+        pe = buildPE(params);
+        if ((pe.size() & 7U) == 0U)
+            break;
+    }
+    ASSERT_EQ(pe.size() & 7U, static_cast<size_t>(0U));
 
     const uint32_t certOff = static_cast<uint32_t>(pe.size());
     const uint32_t certSize = 8;

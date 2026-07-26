@@ -150,8 +150,13 @@ int vaud_platform_init(vaud_context_t ctx) {
     return 1;
 }
 
-void vaud_platform_shutdown(vaud_context_t ctx) {
+static int g_platform_shutdown_result = 1;
+static int g_platform_shutdown_calls = 0;
+
+int vaud_platform_shutdown(vaud_context_t ctx) {
     (void)ctx;
+    g_platform_shutdown_calls++;
+    return g_platform_shutdown_result;
 }
 
 void vaud_platform_pause(vaud_context_t ctx) {
@@ -176,6 +181,23 @@ static int tests_failed = 0;
             return;                                                                                \
         }                                                                                          \
     } while (0)
+
+static void test_destroy_retries_after_platform_shutdown_failure(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    if (!ctx)
+        return;
+
+    g_platform_shutdown_calls = 0;
+    g_platform_shutdown_result = 0;
+    vaud_destroy(ctx);
+    EXPECT_TRUE(g_platform_shutdown_calls == 1);
+    EXPECT_TRUE(ctx->destroying == 0);
+
+    g_platform_shutdown_result = 1;
+    vaud_destroy(ctx);
+    EXPECT_TRUE(g_platform_shutdown_calls == 2);
+}
 
 static void write_u16_le(FILE *f, uint16_t v) {
     fputc((int)(v & 0xFFu), f);
@@ -1048,6 +1070,7 @@ static void test_group_ducking_engages_and_releases(void) {
 
 int main(void) {
     srand(1);
+    test_destroy_retries_after_platform_shutdown_failure();
     test_destroy_detaches_loaded_sounds();
     test_music_seek_rejects_nan_without_touching_position();
     test_music_seek_failure_stops_stream_and_clears_buffers();

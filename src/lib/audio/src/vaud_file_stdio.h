@@ -33,6 +33,7 @@
 #if defined(VAUD_PLATFORM_WINDOWS)
 #include <fcntl.h>
 #include <io.h>
+#include <share.h>
 #include <windows.h>
 #endif
 
@@ -62,13 +63,20 @@ static inline FILE *vaud_file_open_read_utf8(const char *path) {
         errno = EINVAL;
         return NULL;
     }
-    const int fd = _wopen(wide_path, _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+    int fd = -1;
+    const errno_t open_error =
+        _wsopen_s(&fd, wide_path, _O_RDONLY | _O_BINARY | _O_NOINHERIT, _SH_DENYWR, 0);
     free(wide_path);
-    if (fd < 0)
+    if (open_error != 0) {
+        errno = (int)open_error;
         return NULL;
+    }
     FILE *file = _fdopen(fd, "rb");
-    if (!file)
-        _close(fd);
+    if (!file) {
+        const int fdopen_error = errno ? errno : EIO;
+        (void)_close(fd);
+        errno = fdopen_error;
+    }
     return file;
 #else
     return fopen(path, "rb");

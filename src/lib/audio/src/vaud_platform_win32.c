@@ -33,6 +33,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define COBJMACROS
 #include <audioclient.h>
+#include <limits.h>
 #include <mmdeviceapi.h>
 #include <mmreg.h>
 #include <process.h>
@@ -89,24 +90,28 @@ typedef enum {
 
 /// @brief Windows WASAPI platform data.
 typedef struct {
-    IMMDevice *device;          ///< Audio endpoint device
-    IAudioClient *client;       ///< Audio client interface
-    IAudioRenderClient *render; ///< Render client for buffer access
-    HANDLE thread;              ///< Audio thread handle
-    HANDLE event;               ///< Buffer event
-    HANDLE stop_event;          ///< Stop signal event
-    HANDLE ready_event;         ///< Worker COM-initialization handshake
-    WAVEFORMATEX *format;       ///< Negotiated WASAPI render format
-    int16_t *mix_buffer;        ///< Internal stereo mix buffer for format conversion
-    UINT32 buffer_frames;       ///< Total buffer size in frames
-    UINT32 render_channels;     ///< Channels in negotiated format
-    UINT32 render_sample_rate;  ///< Sample rate in negotiated format
-    UINT32 render_block_align;  ///< Bytes per rendered frame
-    UINT32 render_bytes_sample; ///< Bytes per channel sample
+    IMMDevice *device;           ///< Audio endpoint device
+    IAudioClient *client;        ///< Audio client interface
+    IAudioRenderClient *render;  ///< Render client for buffer access
+    HANDLE thread;               ///< Audio thread handle
+    HANDLE event;                ///< Buffer event
+    HANDLE stop_event;           ///< Stop signal event
+    HANDLE ready_event;          ///< Worker COM-initialization handshake
+    WAVEFORMATEX *format;        ///< Negotiated WASAPI render format
+    int16_t *mix_buffer;         ///< Internal stereo mix buffer for format conversion
+    UINT32 buffer_frames;        ///< Total buffer size in frames
+    UINT32 render_channels;      ///< Channels in negotiated format
+    UINT32 render_sample_rate;   ///< Sample rate in negotiated format
+    UINT32 render_block_align;   ///< Bytes per rendered frame
+    UINT32 render_bytes_sample;  ///< Bytes per channel sample
+    UINT32 render_left_channel;  ///< Endpoint slot carrying front-left audio
+    UINT32 render_right_channel; ///< Endpoint slot carrying front-right audio
     vaud_win32_sample_format render_sample_format; ///< Sample representation
     volatile LONG running;                         ///< Thread running flag
     volatile LONG paused;                          ///< Pause state
     volatile LONG thread_start_status;             ///< -1 failed, 0 pending, 1 ready
+    volatile LONG thread_exited;                   ///< Worker finished all state and COM access
+    unsigned worker_thread_id;                     ///< `_beginthreadex` worker identity
     int com_initialized;                           ///< This backend owns a COM apartment reference.
     DWORD owner_thread_id;                         ///< Thread that owns COM control operations.
     CRITICAL_SECTION pause_cs;                     ///< Protects pause state
@@ -118,6 +123,32 @@ typedef struct {
 /// @return 1 when both pointers are non-null and values match; otherwise 0.
 static int vaud_win32_guid_equal(const GUID *a, const GUID *b) {
     return a && b && memcmp(a, b, sizeof(GUID)) == 0;
+}
+
+/// @brief Count set channel-mask bits without compiler-specific intrinsics.
+/// @param mask WAVEFORMATEXTENSIBLE speaker mask.
+/// @return Number of declared speaker positions.
+static UINT32 vaud_win32_channel_mask_count(DWORD mask) {
+    UINT32 count = 0;
+    while (mask != 0) {
+        mask &= mask - 1u;
+        count++;
+    }
+    return count;
+}
+
+/// @brief Resolve one speaker bit to its interleaved channel slot.
+/// @details WAVEFORMATEXTENSIBLE orders channels by ascending set-bit position.
+/// @param mask Validated endpoint speaker mask.
+/// @param speaker Single speaker bit to locate.
+/// @param out_index Receives the zero-based interleaved slot.
+/// @return 1 when the speaker is present; otherwise 0.
+static int vaud_win32_channel_mask_index(DWORD mask, DWORD speaker, UINT32 *out_index) {
+    if (!out_index || speaker == 0 || (speaker & (speaker - 1u)) != 0 || (mask & speaker) == 0) {
+        return 0;
+    }
+    *out_index = vaud_win32_channel_mask_count(mask & (speaker - 1u));
+    return 1;
 }
 
 /// @brief Resolve the effective sample subtype and valid precision of a wave format.
@@ -208,10 +239,30 @@ static int vaud_win32_configure_render_format(vaud_win32_data *plat, const WAVEF
         return 0;
     }
 
+    UINT32 left_channel = 0;
+    UINT32 right_channel = fmt->nChannels > 1 ? 1u : 0u;
+    if (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+        const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)fmt;
+        const DWORD mask = ext->dwChannelMask;
+        if (mask != 0 && vaud_win32_channel_mask_count(mask) != fmt->nChannels)
+            return 0;
+        if (fmt->nChannels > 2 && mask == 0)
+            return 0;
+        if (fmt->nChannels > 1 && mask != 0 &&
+            (!vaud_win32_channel_mask_index(mask, SPEAKER_FRONT_LEFT, &left_channel) ||
+             !vaud_win32_channel_mask_index(mask, SPEAKER_FRONT_RIGHT, &right_channel))) {
+            return 0;
+        }
+    } else if (fmt->nChannels > 2) {
+        return 0;
+    }
+
     plat->render_channels = fmt->nChannels;
     plat->render_sample_rate = fmt->nSamplesPerSec;
     plat->render_block_align = fmt->nBlockAlign;
     plat->render_bytes_sample = bytes_per_sample;
+    plat->render_left_channel = left_channel;
+    plat->render_right_channel = right_channel;
     plat->render_sample_format = sample_format;
     return 1;
 }
@@ -371,8 +422,8 @@ static void vaud_win32_store_sample(vaud_win32_data *plat, BYTE *dst, int32_t sa
 /// @brief Render and convert one acquired WASAPI endpoint buffer.
 /// @details Uses a zero-copy mixer call for the native stereo signed-16 format.
 ///          Other formats render to the preallocated internal bus, resample
-///          linearly, downmix stereo to mono when needed, preserve left/right in
-///          the first two multichannel slots, and leave remaining channels silent.
+///          linearly, downmix stereo to mono when needed, route left/right to
+///          the negotiated front-speaker slots, and leave other channels silent.
 /// @param ctx Audio context to advance.
 /// @param plat Backend state describing the negotiated format.
 /// @param buffer Acquired WASAPI destination buffer.
@@ -390,7 +441,8 @@ static int vaud_win32_render_to_buffer(vaud_context_t ctx,
         return 0;
 
     if (plat->render_channels == VAUD_CHANNELS && plat->render_sample_rate == VAUD_SAMPLE_RATE &&
-        plat->render_sample_format == VAUD_WIN32_SAMPLE_S16 && plat->render_block_align == 4) {
+        plat->render_sample_format == VAUD_WIN32_SAMPLE_S16 && plat->render_block_align == 4 &&
+        plat->render_left_channel == 0 && plat->render_right_channel == 1) {
         vaud_mixer_render_device(ctx, (int16_t *)buffer, (int32_t)frames);
         return 1;
     }
@@ -420,9 +472,9 @@ static int vaud_win32_render_to_buffer(vaud_context_t ctx,
             int32_t sample = 0;
             if (plat->render_channels == 1)
                 sample = (left + right) / 2;
-            else if (ch == 0)
+            else if (ch == plat->render_left_channel)
                 sample = left;
-            else if (ch == 1)
+            else if (ch == plat->render_right_channel)
                 sample = right;
 
             BYTE *dst = buffer + (size_t)i * plat->render_block_align +
@@ -446,14 +498,26 @@ static void vaud_win32_free_render_buffers(vaud_win32_data *plat) {
 
 /// @brief Join the WASAPI worker thread before backend resources are released.
 /// @details A finite first wait makes hung shutdowns visible through the error
-///          channel.  The final wait still completes before memory is freed so
-///          the worker cannot continue running on a released context.
+///          channel. Published contexts retain ownership after a bounded retry
+///          fails; unpublished initialization failures must prove completion
+///          before their otherwise unreachable context can be released.
 /// @param ctx Audio context used for diagnostics.
 /// @param plat Win32 backend state containing the thread handle.
 /// @param timeout_ms First wait timeout in milliseconds.
-static void vaud_win32_join_thread(vaud_context_t ctx, vaud_win32_data *plat, DWORD timeout_ms) {
+/// @param must_complete Nonzero during unpublished initialization failure, where
+///        no caller can retain the context for a later cleanup retry.
+/// @return 1 after worker exit is proven; 0 on self-join or a bounded shutdown failure.
+static int vaud_win32_join_thread(vaud_context_t ctx,
+                                  vaud_win32_data *plat,
+                                  DWORD timeout_ms,
+                                  int must_complete) {
     if (!plat || !plat->thread)
-        return;
+        return 1;
+    if (plat->worker_thread_id != 0 && plat->worker_thread_id == GetCurrentThreadId()) {
+        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+        vaud_set_error(VAUD_ERR_PLATFORM, "WASAPI audio thread cannot join itself");
+        return 0;
+    }
     DWORD wait_rc = WaitForSingleObject(plat->thread, timeout_ms);
     if (wait_rc == WAIT_TIMEOUT) {
         vaud_stats_add(&ctx->stats.backend_write_failures, 1);
@@ -462,17 +526,33 @@ static void vaud_win32_join_thread(vaud_context_t ctx, vaud_win32_data *plat, DW
             (void)IAudioClient_Stop(plat->client);
         if (plat->stop_event)
             (void)SetEvent(plat->stop_event);
-        wait_rc = WaitForSingleObject(plat->thread, INFINITE);
+        wait_rc = WaitForSingleObject(plat->thread, must_complete ? INFINITE : timeout_ms);
     }
     if (wait_rc != WAIT_OBJECT_0) {
+        ULONGLONG deadline = GetTickCount64();
         vaud_stats_add(&ctx->stats.backend_write_failures, 1);
         vaud_set_error(VAUD_ERR_PLATFORM, "Failed waiting for WASAPI audio thread");
+        if (plat->client)
+            (void)IAudioClient_Stop(plat->client);
+        if (plat->stop_event)
+            (void)SetEvent(plat->stop_event);
+        if (deadline <= ULLONG_MAX - timeout_ms)
+            deadline += timeout_ms;
+        else
+            deadline = ULLONG_MAX;
+        while (!InterlockedCompareExchange(&plat->thread_exited, 0, 0)) {
+            if (!must_complete && GetTickCount64() >= deadline)
+                return 0;
+            Sleep(1);
+        }
     }
     if (!CloseHandle(plat->thread)) {
         vaud_stats_add(&ctx->stats.backend_write_failures, 1);
         vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close WASAPI audio thread handle");
     }
     plat->thread = NULL;
+    plat->worker_thread_id = 0;
+    return 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -498,6 +578,7 @@ static unsigned __stdcall audio_thread_func(void *arg) {
         vaud_stats_add(&ctx->stats.backend_write_failures, 1);
         vaud_set_error(VAUD_ERR_PLATFORM, "Failed to initialize COM on WASAPI audio thread");
         (void)SetEvent(plat->ready_event);
+        InterlockedExchange(&plat->thread_exited, 1);
         return 0;
     }
     InterlockedExchange(&plat->thread_start_status, 1);
@@ -508,6 +589,7 @@ static unsigned __stdcall audio_thread_func(void *arg) {
         vaud_set_error(VAUD_ERR_PLATFORM, "Failed to signal WASAPI audio thread readiness");
         if (com_initialized)
             CoUninitialize();
+        InterlockedExchange(&plat->thread_exited, 1);
         return 0;
     }
 
@@ -624,6 +706,7 @@ static unsigned __stdcall audio_thread_func(void *arg) {
     InterlockedExchange(&plat->running, 0);
     if (com_initialized)
         CoUninitialize();
+    InterlockedExchange(&plat->thread_exited, 1);
     return 0;
 }
 
@@ -650,8 +733,14 @@ int vaud_platform_init(vaud_context_t ctx) {
     InterlockedExchange(&plat->running, 0);
     InterlockedExchange(&plat->paused, 0);
     InterlockedExchange(&plat->thread_start_status, 0);
+    InterlockedExchange(&plat->thread_exited, 0);
 
-    InitializeCriticalSection(&plat->pause_cs);
+    if (!InitializeCriticalSectionEx(&plat->pause_cs, 4000, 0)) {
+        free(plat);
+        ctx->platform_data = NULL;
+        vaud_set_error(VAUD_ERR_ALLOC, "Failed to initialize WASAPI synchronization");
+        return 0;
+    }
 
     /* Initialize COM */
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
@@ -788,9 +877,9 @@ int vaud_platform_init(vaud_context_t ctx) {
     }
 
     /* Create events */
-    plat->event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    plat->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
-    plat->ready_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    plat->event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    plat->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    plat->ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
 
     if (!plat->event || !plat->stop_event || !plat->ready_event) {
         if (plat->event)
@@ -853,7 +942,8 @@ int vaud_platform_init(vaud_context_t ctx) {
 
     /* Start audio thread */
     InterlockedExchange(&plat->running, 1);
-    uintptr_t thread_handle = _beginthreadex(NULL, 0, audio_thread_func, ctx, 0, NULL);
+    uintptr_t thread_handle =
+        _beginthreadex(NULL, 0, audio_thread_func, ctx, 0, &plat->worker_thread_id);
     plat->thread = thread_handle ? (HANDLE)thread_handle : NULL;
 
     if (!plat->thread) {
@@ -879,7 +969,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     if (ready_wait != WAIT_OBJECT_0 || start_status != 1) {
         InterlockedExchange(&plat->running, 0);
         (void)SetEvent(plat->stop_event);
-        vaud_win32_join_thread(ctx, plat, 5000);
+        vaud_win32_join_thread(ctx, plat, 5000, 1);
         IAudioRenderClient_Release(plat->render);
         CloseHandle(plat->event);
         CloseHandle(plat->stop_event);
@@ -903,7 +993,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     if (FAILED(hr)) {
         InterlockedExchange(&plat->running, 0);
         SetEvent(plat->stop_event);
-        vaud_win32_join_thread(ctx, plat, 5000);
+        vaud_win32_join_thread(ctx, plat, 5000, 1);
         IAudioRenderClient_Release(plat->render);
         CloseHandle(plat->event);
         CloseHandle(plat->stop_event);
@@ -923,18 +1013,24 @@ int vaud_platform_init(vaud_context_t ctx) {
 }
 
 /// @copydoc vaud_platform_shutdown
-void vaud_platform_shutdown(vaud_context_t ctx) {
+int vaud_platform_shutdown(vaud_context_t ctx) {
     if (!ctx || !ctx->platform_data)
-        return;
+        return 1;
 
     vaud_win32_data *plat = (vaud_win32_data *)ctx->platform_data;
+    if (plat->owner_thread_id != GetCurrentThreadId()) {
+        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+        vaud_set_error(VAUD_ERR_PLATFORM, "WASAPI shutdown must run on the context owner thread");
+        return 0;
+    }
 
     /* Signal thread to stop */
     InterlockedExchange(&plat->running, 0);
     SetEvent(plat->stop_event);
 
     /* Wait for thread */
-    vaud_win32_join_thread(ctx, plat, 5000);
+    if (!vaud_win32_join_thread(ctx, plat, 5000, 0))
+        return 0;
 
     /* Stop audio client */
     if (plat->client) {
@@ -958,18 +1054,14 @@ void vaud_platform_shutdown(vaud_context_t ctx) {
         CloseHandle(plat->ready_event);
 
     int com_initialized = plat->com_initialized;
-    int owns_current_com_apartment = plat->owner_thread_id == GetCurrentThreadId();
     vaud_win32_free_render_buffers(plat);
     DeleteCriticalSection(&plat->pause_cs);
     free(plat);
     ctx->platform_data = NULL;
 
-    if (com_initialized && owns_current_com_apartment)
+    if (com_initialized)
         CoUninitialize();
-    else if (com_initialized) {
-        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-        vaud_set_error(VAUD_ERR_PLATFORM, "WASAPI context was destroyed from a non-owner thread");
-    }
+    return 1;
 }
 
 /// @copydoc vaud_platform_pause
@@ -1070,11 +1162,15 @@ int64_t vaud_platform_now_ms(void) {
     if (!QueryPerformanceCounter(&counter))
         return (int64_t)GetTickCount64();
 
-    long double millis =
-        ((long double)counter.QuadPart * 1000.0L) / (long double)g_vaud_qpc_frequency.QuadPart;
-    if (millis > (long double)INT64_MAX)
+    if (counter.QuadPart < 0)
+        return (int64_t)GetTickCount64();
+    const int64_t whole_seconds = counter.QuadPart / g_vaud_qpc_frequency.QuadPart;
+    const int64_t remainder = counter.QuadPart % g_vaud_qpc_frequency.QuadPart;
+    if (whole_seconds > INT64_MAX / 1000)
         return INT64_MAX;
-    return (int64_t)millis;
+    const int64_t remainder_ms =
+        (int64_t)(((double)remainder * 1000.0) / (double)g_vaud_qpc_frequency.QuadPart);
+    return whole_seconds * 1000 + remainder_ms;
 }
 
 #endif /* _WIN32 */

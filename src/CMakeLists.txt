@@ -330,6 +330,7 @@ add_library(zanna_packaging STATIC
         tools/common/packaging/LnkWriter.cpp
         tools/common/packaging/WindowsPackageBuilder.cpp
         tools/common/packaging/WindowsInstallerMetadata.cpp
+        tools/common/packaging/WindowsPEValidation.cpp
         tools/common/packaging/PkgVerify.cpp
         tools/common/packaging/ZipReader.cpp
         tools/common/packaging/InstallerStubGen.cpp
@@ -396,6 +397,7 @@ if(WIN32)
         tools/common/packaging/ZipReader.cpp
         tools/common/packaging/PkgDeflate.cpp
         tools/common/packaging/PkgHash.cpp
+        tools/common/packaging/WindowsPEValidation.cpp
         runtime/core/rt_crc32.c
         "${CMAKE_CURRENT_BINARY_DIR}/WindowsInstallerHost.rc")
     set_target_properties(zanna_installer_host PROPERTIES

@@ -2769,8 +2769,9 @@ if (ZANNA_BASH_EXECUTABLE)
             LABELS "tools;smoke;requires_posix_shell"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             # A clean full-tree scan normally completes in about ten seconds on
-            # Windows; retain headroom for concurrent compiler process startup.
-            TIMEOUT 60)
+            # Windows, but the complete parallel Debug suite can saturate process
+            # startup and storage long enough to exceed a one-minute bound.
+            TIMEOUT 180)
 
     add_test(NAME platform_policy_lint_empty_candidates
             COMMAND ${ZANNA_BASH_COMMAND} "src/tests/e2e/test_platform_policy_lint_empty_candidates.sh"

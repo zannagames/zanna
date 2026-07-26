@@ -146,6 +146,39 @@ function Assert-ArtifactDestination {
     }
 }
 
+function Assert-NoReparseTree {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        throw "$Description is missing or is not a directory: $Root"
+    }
+    $rootItem = Get-Item -LiteralPath $Root -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Description is a reparse point: $Root"
+    }
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($rootItem.FullName)
+    $visitedEntries = 0
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($entry in Get-ChildItem -LiteralPath $directory -Force) {
+            ++$visitedEntries
+            if ($visitedEntries -gt 250000) {
+                throw "$Description exceeds the bounded tree-entry limit: $Root"
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Description contains a reparse point: $($entry.FullName)"
+            }
+            if ($entry.PSIsContainer) {
+                $pending.Push($entry.FullName)
+            }
+        }
+    }
+}
+
 function Invoke-CheckedNative {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -182,13 +215,112 @@ function Get-CMakeCacheValue {
     )
 
     $prefix = "${Name}:"
-    foreach ($line in Get-Content -LiteralPath $Cache) {
+    foreach ($line in @(Read-BoundedUtf8Lines -Path $Cache `
+            -Description "CMake cache" -MaximumBytes 8388608)) {
         if ($line.StartsWith($prefix, [StringComparison]::Ordinal)) {
             $separator = $line.IndexOf('=')
             if ($separator -ge 0) {
                 return $line.Substring($separator + 1).Trim()
             }
         }
+    }
+    return ""
+}
+
+function Read-BoundedUtf8Lines {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][int64]$MaximumBytes
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Description is missing or is not an ordinary file: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -lt 0 -or $item.Length -gt $MaximumBytes) {
+        throw "$Description has an unsafe shape or size: $Path"
+    }
+    $stream = [IO.File]::Open(
+        $item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -gt $MaximumBytes) {
+            throw "$Description changed to an oversized file: $Path"
+        }
+        $reader = [IO.StreamReader]::new(
+            $stream, [Text.UTF8Encoding]::new($false, $true), $true, 4096, $true)
+        try {
+            $lines = [Collections.Generic.List[string]]::new()
+            while (-not $reader.EndOfStream) {
+                $line = $reader.ReadLine()
+                if ($null -eq $line -or $line.Length -gt 65536 -or
+                    $line.IndexOf([char]0) -ge 0) {
+                    throw "$Description contains an invalid or oversized line: $Path"
+                }
+                $lines.Add($line)
+            }
+            return $lines.ToArray()
+        } finally {
+            $reader.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Get-CMakeGeneratedSystemProcessor {
+    param([Parameter(Mandatory = $true)][string]$Cache)
+
+    $tree = Split-Path -Parent ([IO.Path]::GetFullPath($Cache))
+    $cmakeFiles = Join-Path $tree "CMakeFiles"
+    if (-not (Test-Path -LiteralPath $cmakeFiles -PathType Container)) {
+        return ""
+    }
+    $rootItem = Get-Item -LiteralPath $cmakeFiles -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "CMake metadata root is a reparse point: $cmakeFiles"
+    }
+    $reported = @{}
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($rootItem.FullName)
+    $visitedEntries = 0
+    $systemFileCount = 0
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($entry in Get-ChildItem -LiteralPath $directory -Force) {
+            ++$visitedEntries
+            if ($visitedEntries -gt 250000) {
+                throw "CMake metadata tree exceeds the bounded entry limit: $tree"
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "CMake metadata tree contains a reparse point: $($entry.FullName)"
+            }
+            if ($entry.PSIsContainer) {
+                $pending.Push($entry.FullName)
+                continue
+            }
+            if (-not [string]::Equals(
+                    $entry.Name, "CMakeSystem.cmake", [StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+            ++$systemFileCount
+            if ($systemFileCount -gt 16) {
+                throw "CMake tree has too many generated system descriptions: $tree"
+            }
+            foreach ($line in @(Read-BoundedUtf8Lines -Path $entry.FullName `
+                    -Description "CMake generated system description" -MaximumBytes 65536)) {
+                if ($line -match '^\s*set\(CMAKE_SYSTEM_PROCESSOR\s+"?([^"\s\)]+)"?\s*\)\s*$') {
+                    $reported[$Matches[1].ToLowerInvariant()] = $Matches[1]
+                }
+            }
+        }
+    }
+    if ($reported.Count -gt 1) {
+        throw "CMake tree contains conflicting generated system architectures: $tree"
+    }
+    if ($reported.Count -eq 1) {
+        return [string]($reported.Values | Select-Object -First 1)
     }
     return ""
 }
@@ -205,7 +337,10 @@ function Assert-CMakeTreeArchitecture {
         $reported = Get-CMakeCacheValue -Cache $Cache -Name "CMAKE_SYSTEM_PROCESSOR"
     }
     if ([string]::IsNullOrWhiteSpace($reported)) {
-        return
+        $reported = Get-CMakeGeneratedSystemProcessor -Cache $Cache
+    }
+    if ([string]::IsNullOrWhiteSpace($reported)) {
+        throw "$Description CMake tree cannot prove its target architecture: $Cache"
     }
     $normalized = switch ($reported.ToLowerInvariant()) {
         "arm64" { "arm64" }
@@ -215,8 +350,10 @@ function Assert-CMakeTreeArchitecture {
         "x86_64" { "x64" }
         default { "" }
     }
-    if (-not [string]::IsNullOrWhiteSpace($normalized) -and
-        $normalized -ne $Architecture) {
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        throw "$Description CMake tree reports unsupported architecture '$reported': $Cache"
+    }
+    if ($normalized -ne $Architecture) {
         throw "$Description CMake tree targets $reported, not requested architecture $Architecture`: $Cache"
     }
 }
@@ -227,52 +364,7 @@ function Assert-PortableExecutableArchitecture {
         [Parameter(Mandatory = $true)][ValidateSet("arm64", "x64")][string]$Architecture
     )
 
-    if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
-        throw "Expected Windows executable was not produced: $Binary"
-    }
-    $machine = 0
-    $stream = [IO.File]::Open(
-        $Binary, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    try {
-        if ($stream.Length -lt 64) {
-            throw "Windows executable is too small to contain a PE header: $Binary"
-        }
-        $reader = [IO.BinaryReader]::new($stream, [Text.Encoding]::ASCII, $true)
-        try {
-            if ($reader.ReadUInt16() -ne 0x5A4D) {
-                throw "Windows executable is missing the MZ signature: $Binary"
-            }
-            $stream.Position = 0x3c
-            $peOffset = [uint64]$reader.ReadUInt32()
-            if ($peOffset -gt [uint64]($stream.Length - 26)) {
-                throw "Windows executable has an out-of-range PE header: $Binary"
-            }
-            $stream.Position = [int64]$peOffset
-            if ($reader.ReadUInt32() -ne 0x00004550) {
-                throw "Windows executable is missing the PE signature: $Binary"
-            }
-            $machine = $reader.ReadUInt16()
-            $stream.Position = [int64]($peOffset + 20)
-            $optionalHeaderSize = [uint64]$reader.ReadUInt16()
-            if ($optionalHeaderSize -lt 2 -or
-                $peOffset + 24 + $optionalHeaderSize -gt [uint64]$stream.Length) {
-                throw "Windows executable has an invalid optional header: $Binary"
-            }
-            $stream.Position = [int64]($peOffset + 24)
-            if ($reader.ReadUInt16() -ne 0x020B) {
-                throw "Windows executable is not a PE32+ image: $Binary"
-            }
-        } finally {
-            $reader.Dispose()
-        }
-    } finally {
-        $stream.Dispose()
-    }
-    $expectedMachine = if ($Architecture -eq "arm64") { 0xAA64 } else { 0x8664 }
-    if ($machine -ne $expectedMachine) {
-        throw ("Windows executable machine 0x{0:X4} does not match requested {1}: {2}" -f
-            $machine, $Architecture, $Binary)
-    }
+    Assert-ZannaPeImageArchitecture -Binary $Binary -Architecture $Architecture
 }
 
 function Show-Usage {
@@ -328,6 +420,7 @@ while ($argumentIndex -lt $args.Count) {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
+. (Join-Path $scriptRoot "windows_pe_validation.ps1")
 $ideDir = Join-Path $repoRoot "src\zannastudio"
 
 $buildDirSetting = [Environment]::GetEnvironmentVariable("ZANNA_IDE_BUILD_DIR", "Process")
@@ -448,7 +541,11 @@ function Ensure-ZannaBuild {
         $generator = [Environment]::GetEnvironmentVariable("ZANNA_CMAKE_GENERATOR", "Process")
         if (-not [string]::IsNullOrWhiteSpace($generator)) {
             $configureArguments += @("-G", $generator)
-        } elseif (-not $TreeIsExplicit) {
+            if ($generator.StartsWith("Visual Studio ", [StringComparison]::OrdinalIgnoreCase)) {
+                $cmakeArch = if ($Architecture -eq "arm64") { "ARM64" } else { "x64" }
+                $configureArguments += @("-A", $cmakeArch)
+            }
+        } else {
             $cmakeArch = if ($Architecture -eq "arm64") { "ARM64" } else { "x64" }
             $configureArguments += @("-A", $cmakeArch)
         }
@@ -467,11 +564,15 @@ function Ensure-ZannaBuild {
     Invoke-CheckedNative -FilePath "cmake" `
         -Arguments @("--build", $Tree, "--config", $buildType, "--target", "zanna", "-j", [string]$jobs) `
         -FailureMessage "$Description build failed"
+    Assert-CMakeTreeArchitecture -Cache $cache -Architecture $Architecture `
+        -Description $Description
     $resolvedExecutable =
         Resolve-ZannaExecutable -Tree $Tree -Configuration $buildType
     if (-not (Test-Path -LiteralPath $resolvedExecutable -PathType Leaf)) {
         throw "$Description still not found in $Tree"
     }
+    Assert-PortableExecutableArchitecture -Binary $resolvedExecutable `
+        -Architecture $Architecture
 }
 
 function Write-StagedBuildInfo {
@@ -485,7 +586,13 @@ function Write-StagedBuildInfo {
 
     $versionPath = Join-Path $repoRoot "src\buildmeta\VERSION"
     $version = if (Test-Path -LiteralPath $versionPath -PathType Leaf) {
-        ([string](Get-Content -LiteralPath $versionPath -TotalCount 1)).Trim()
+        $versionLines = @(Read-BoundedUtf8Lines -Path $versionPath `
+                -Description "Zanna version metadata" -MaximumBytes 4096)
+        if ($versionLines.Count -gt 0) {
+            ([string]$versionLines[0]).Trim()
+        } else {
+            "unknown"
+        }
     } else {
         "unknown"
     }
@@ -524,7 +631,17 @@ function Write-StagedBuildInfo {
         "Output: $PublishedBinary",
         "Zanna: $ZannaExecutable"
     )
-    [IO.File]::WriteAllLines($MetadataPath, $lines, [Text.UTF8Encoding]::new($false))
+    $metadataText = [string]::Join([Environment]::NewLine, $lines) +
+        [Environment]::NewLine
+    $metadataBytes = [Text.UTF8Encoding]::new($false).GetBytes($metadataText)
+    $metadataStream = [IO.File]::Open(
+        $MetadataPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $metadataStream.Write($metadataBytes, 0, $metadataBytes.Length)
+        $metadataStream.Flush($true)
+    } finally {
+        $metadataStream.Dispose()
+    }
 }
 
 function Publish-StudioArtifact {
@@ -532,12 +649,26 @@ function Publish-StudioArtifact {
         [Parameter(Mandatory = $true)][string]$StagedBinary,
         [Parameter(Mandatory = $true)][string]$StagedMetadata,
         [Parameter(Mandatory = $true)][string]$DestinationBinary,
-        [Parameter(Mandatory = $true)][string]$DestinationMetadata
+        [Parameter(Mandatory = $true)][string]$DestinationMetadata,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("arm64", "x64")]
+        [string]$Architecture
     )
 
+    Assert-ArtifactDestination -Path $StagedBinary -Description "Staged Studio executable"
+    Assert-ArtifactDestination -Path $StagedMetadata -Description "Staged Studio metadata"
+    Assert-PortableExecutableArchitecture -Binary $StagedBinary -Architecture $Architecture
+    $stagedBinaryHash = (Get-FileHash -LiteralPath $StagedBinary -Algorithm SHA256).Hash
+    $stagedMetadataHash = (Get-FileHash -LiteralPath $StagedMetadata -Algorithm SHA256).Hash
     $token = [Guid]::NewGuid().ToString("N")
     $binaryBackup = "$DestinationBinary.zanna-backup-$token"
     $metadataBackup = "$DestinationMetadata.zanna-backup-$token"
+    foreach ($backup in @($binaryBackup, $metadataBackup)) {
+        Assert-ArtifactDestination -Path $backup -Description "Studio rollback path"
+        if (Test-Path -LiteralPath $backup) {
+            throw "Cannot allocate a private Studio rollback path: $backup"
+        }
+    }
     $hadBinary = Test-Path -LiteralPath $DestinationBinary -PathType Leaf
     $hadMetadata = Test-Path -LiteralPath $DestinationMetadata -PathType Leaf
     $publishedBinary = $false
@@ -554,6 +685,18 @@ function Publish-StudioArtifact {
         $publishedBinary = $true
         Move-Item -LiteralPath $StagedMetadata -Destination $DestinationMetadata
         $publishedMetadata = $true
+        Assert-ArtifactDestination -Path $DestinationBinary `
+            -Description "Published Studio executable"
+        Assert-ArtifactDestination -Path $DestinationMetadata `
+            -Description "Published Studio metadata"
+        Assert-PortableExecutableArchitecture `
+            -Binary $DestinationBinary -Architecture $Architecture
+        if ((Get-FileHash -LiteralPath $DestinationBinary -Algorithm SHA256).Hash -cne
+                $stagedBinaryHash -or
+            (Get-FileHash -LiteralPath $DestinationMetadata -Algorithm SHA256).Hash -cne
+                $stagedMetadataHash) {
+            throw "Published Studio artifact pair changed during publication."
+        }
         $publicationSucceeded = $true
     } catch {
         if ($publishedMetadata -and
@@ -653,16 +796,22 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $ideDir "zanna.project") -PathType Leaf)) {
         throw "No zanna.project found in $ideDir"
     }
+    Assert-NoReparseTree -Root $ideDir -Description "Zanna Studio source tree"
     $toolCache = Join-Path $toolBuildDir "CMakeCache.txt"
     if (Test-Path -LiteralPath $toolCache -PathType Leaf) {
         Assert-CMakeTreeArchitecture -Cache $toolCache -Architecture $hostArch `
             -Description "host Zanna tool"
+    } elseif (Test-Path -LiteralPath $zanna -PathType Leaf) {
+        throw "Host Zanna executable has no CMake cache proving its architecture: $zanna"
     }
     $targetCache = Join-Path $buildDir "CMakeCache.txt"
     if (-not (Test-PathsEqual -Left $toolBuildDir -Right $buildDir) -and
         (Test-Path -LiteralPath $targetCache -PathType Leaf)) {
         Assert-CMakeTreeArchitecture -Cache $targetCache -Architecture $ideArch `
             -Description "target-architecture Zanna runtime"
+    } elseif (-not (Test-PathsEqual -Left $toolBuildDir -Right $buildDir) -and
+              (Test-Path -LiteralPath $targetZanna -PathType Leaf)) {
+        throw "Target Zanna executable has no CMake cache proving its architecture: $targetZanna"
     }
     if (-not (Test-Path -LiteralPath $zanna -PathType Leaf)) {
         Ensure-ZannaBuild -Tree $toolBuildDir -Architecture $hostArch `
@@ -704,6 +853,12 @@ try {
     $buildToken = [Guid]::NewGuid().ToString("N")
     $stagedOutput = Join-Path $outputDir ".zannastudio-$PID-$buildToken.tmp.exe"
     $stagedMetadata = Join-Path $outputDir ".zannastudio-$PID-$buildToken.tmp.buildinfo"
+    foreach ($stagedPath in @($stagedOutput, $stagedMetadata)) {
+        Assert-ArtifactDestination -Path $stagedPath -Description "Studio staging path"
+        if (Test-Path -LiteralPath $stagedPath) {
+            throw "Cannot allocate a private Studio staging path: $stagedPath"
+        }
+    }
     $temporaryPaths.Add($stagedOutput)
     $temporaryPaths.Add($stagedMetadata)
     $buildArguments = @("build", $ideDir, "--arch", $ideArch, "-o", $stagedOutput)
@@ -727,7 +882,8 @@ try {
     Write-StagedBuildInfo -Binary $stagedOutput -PublishedBinary $outputFile `
         -MetadataPath $stagedMetadata -Architecture $ideArch -ZannaExecutable $zanna
     Publish-StudioArtifact -StagedBinary $stagedOutput -StagedMetadata $stagedMetadata `
-        -DestinationBinary $outputFile -DestinationMetadata $outputMetadata
+        -DestinationBinary $outputFile -DestinationMetadata $outputMetadata `
+        -Architecture $ideArch
     Write-Host "OK"
     if ($skipCompatCopy -eq "0" -and
         -not (Test-PathsEqual -Left $outputFile -Right $compatOutput)) {
@@ -736,6 +892,13 @@ try {
             Join-Path $compatDir ".zannastudio-compat-$PID-$compatToken.tmp.exe"
         $stagedCompatMetadata =
             Join-Path $compatDir ".zannastudio-compat-$PID-$compatToken.tmp.buildinfo"
+        foreach ($stagedPath in @($stagedCompat, $stagedCompatMetadata)) {
+            Assert-ArtifactDestination -Path $stagedPath `
+                -Description "Studio compatibility staging path"
+            if (Test-Path -LiteralPath $stagedPath) {
+                throw "Cannot allocate a private Studio compatibility staging path: $stagedPath"
+            }
+        }
         $temporaryPaths.Add($stagedCompat)
         $temporaryPaths.Add($stagedCompatMetadata)
         Copy-Item -LiteralPath $outputFile -Destination $stagedCompat
@@ -745,7 +908,7 @@ try {
             -ZannaExecutable $zanna
         Publish-StudioArtifact -StagedBinary $stagedCompat `
             -StagedMetadata $stagedCompatMetadata -DestinationBinary $compatOutput `
-            -DestinationMetadata $compatMetadata
+            -DestinationMetadata $compatMetadata -Architecture $ideArch
         Write-Host "Compatibility copy: $compatOutput"
     }
     Write-Host "Built: $outputFile"

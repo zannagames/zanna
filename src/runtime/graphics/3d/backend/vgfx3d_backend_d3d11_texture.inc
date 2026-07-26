@@ -44,7 +44,8 @@ static HRESULT d3d11_allocate_cubemap_srv(d3d11_context_t *ctx,
 static ID3D11ShaderResourceView *d3d11_fallback_white_srv(d3d11_context_t *ctx) {
     if (!ctx || !ctx->fallback_white_srv)
         return NULL;
-    ctx->stats.texture_fallback_binds++;
+    ctx->stats.texture_fallback_binds =
+        vgfx3d_d3d11_saturating_add_u64(ctx->stats.texture_fallback_binds, 1u);
     return ctx->fallback_white_srv;
 }
 
@@ -54,7 +55,8 @@ static ID3D11ShaderResourceView *d3d11_fallback_white_srv(d3d11_context_t *ctx) 
 static ID3D11ShaderResourceView *d3d11_fallback_white_cubemap_srv(d3d11_context_t *ctx) {
     if (!ctx || !ctx->fallback_white_cube_srv)
         return NULL;
-    ctx->stats.texture_fallback_binds++;
+    ctx->stats.texture_fallback_binds =
+        vgfx3d_d3d11_saturating_add_u64(ctx->stats.texture_fallback_binds, 1u);
     return ctx->fallback_white_cube_srv;
 }
 
@@ -826,7 +828,7 @@ static HRESULT d3d11_allocate_texture_srv(d3d11_context_t *ctx,
     desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, NULL, out_tex);
-    if (SUCCEEDED(hr) && *out_tex) {
+    if (SUCCEEDED(hr) && *out_tex && d3d11_texture2d_desc_matches(*out_tex, &desc)) {
         memset(&srv_desc, 0, sizeof(srv_desc));
         srv_desc.Format = desc.Format;
         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
@@ -835,8 +837,11 @@ static HRESULT d3d11_allocate_texture_srv(d3d11_context_t *ctx,
             ctx->device, (ID3D11Resource *)*out_tex, &srv_desc, out_srv);
         if (SUCCEEDED(hr) && !*out_srv)
             hr = E_POINTER;
+        else if (SUCCEEDED(hr) &&
+                 !d3d11_srv_matches_texture2d(*out_srv, *out_tex, srv_desc.Format, desc.MipLevels))
+            hr = E_FAIL;
     } else if (SUCCEEDED(hr)) {
-        hr = E_POINTER;
+        hr = *out_tex ? E_FAIL : E_POINTER;
     }
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D/ShaderResourceView(texture)", hr);
@@ -893,7 +898,7 @@ static HRESULT d3d11_allocate_native_texture_srv(d3d11_context_t *ctx,
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, NULL, out_tex);
-    if (SUCCEEDED(hr) && *out_tex) {
+    if (SUCCEEDED(hr) && *out_tex && d3d11_texture2d_desc_matches(*out_tex, &desc)) {
         memset(&srv_desc, 0, sizeof(srv_desc));
         srv_desc.Format = desc.Format;
         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
@@ -902,8 +907,11 @@ static HRESULT d3d11_allocate_native_texture_srv(d3d11_context_t *ctx,
             ctx->device, (ID3D11Resource *)*out_tex, &srv_desc, out_srv);
         if (SUCCEEDED(hr) && !*out_srv)
             hr = E_POINTER;
+        else if (SUCCEEDED(hr) &&
+                 !d3d11_srv_matches_texture2d(*out_srv, *out_tex, srv_desc.Format, desc.MipLevels))
+            hr = E_FAIL;
     } else if (SUCCEEDED(hr)) {
-        hr = E_POINTER;
+        hr = *out_tex ? E_FAIL : E_POINTER;
     }
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D/ShaderResourceView(native texture)", hr);
@@ -1529,7 +1537,7 @@ static HRESULT d3d11_allocate_cubemap_srv(d3d11_context_t *ctx,
     desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE | D3D11_RESOURCE_MISC_GENERATE_MIPS;
 
     hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, NULL, out_tex);
-    if (SUCCEEDED(hr) && *out_tex) {
+    if (SUCCEEDED(hr) && *out_tex && d3d11_texture2d_desc_matches(*out_tex, &desc)) {
         memset(&srv_desc, 0, sizeof(srv_desc));
         srv_desc.Format = desc.Format;
         srv_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
@@ -1538,8 +1546,11 @@ static HRESULT d3d11_allocate_cubemap_srv(d3d11_context_t *ctx,
             ctx->device, (ID3D11Resource *)*out_tex, &srv_desc, out_srv);
         if (SUCCEEDED(hr) && !*out_srv)
             hr = E_POINTER;
+        else if (SUCCEEDED(hr) && !d3d11_srv_matches_texturecube(
+                                      *out_srv, *out_tex, srv_desc.Format, desc.MipLevels))
+            hr = E_FAIL;
     } else if (SUCCEEDED(hr)) {
-        hr = E_POINTER;
+        hr = *out_tex ? E_FAIL : E_POINTER;
     }
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateTexture2D/ShaderResourceView(cubemap)", hr);

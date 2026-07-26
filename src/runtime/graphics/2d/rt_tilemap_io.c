@@ -1080,7 +1080,7 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
     size_t len = strlen(json_cstr);
     int8_t wrote_all = tmio_write_all(f, json_cstr, len);
     int write_error = ferror(f) != 0;
-    int close_error = fclose(f) != 0;
+    int close_error = !rt_file_stdio_flush_sync_close(f);
     f = NULL;
 
     result = (wrote_all && !write_error && !close_error) ? 1 : 0;

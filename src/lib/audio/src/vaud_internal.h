@@ -539,9 +539,11 @@ int vaud_music_seek_output_frame(struct vaud_music *music, int64_t target_frame)
 int vaud_platform_init(vaud_context_t ctx);
 
 /// @brief Shutdown platform audio backend.
-/// @details Stops audio thread, closes audio device, frees platform_data.
+/// @details Stops the audio thread, closes the device, and frees platform data
+///          only after worker termination is proven.
 /// @param ctx Audio context.
-void vaud_platform_shutdown(vaud_context_t ctx);
+/// @return 1 after complete teardown; 0 when teardown cannot safely proceed.
+int vaud_platform_shutdown(vaud_context_t ctx);
 
 /// @brief Pause platform audio output.
 /// @param ctx Audio context.

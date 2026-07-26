@@ -2187,6 +2187,35 @@ static void test_d3d11_backend_source_contracts(void) {
                                             "&new_staging);",
                                             "d3d11_release_readback_staging_texture(ctx);"),
                 "Readback staging allocates before releasing the cached surface");
+    EXPECT_TRUE(count_text(source, "d3d11_texture2d_desc_matches(") >= 13u,
+                "D3D11 validates created and cached texture descriptors before use");
+    EXPECT_TRUE(count_text(source, "d3d11_view_resource_matches(") >= 4u &&
+                    strstr(source, "d3d11_rtv_matches_texture2d") != NULL &&
+                    strstr(source, "d3d11_dsv_matches_texture2d") != NULL &&
+                    strstr(source, "d3d11_srv_matches_texturecube") != NULL,
+                "D3D11 validates view shape and backing-resource identity");
+    EXPECT_TRUE(text_appears_in_order_after(source,
+                                            "d3d11_ensure_readback_staging_texture",
+                                            "d3d11_texture2d_desc_matches(ctx->readback_staging",
+                                            "return S_OK;"),
+                "Readback staging metadata cannot hide a malformed cached native texture");
+    EXPECT_TRUE(strstr(source, "d3d11_query_desc_matches(ctx->frame_time_disjoint_query") != NULL &&
+                    count_text(source, "d3d11_query_desc_matches(") >= 4u,
+                "D3D11 timestamp queries validate their native types before publication");
+    EXPECT_TRUE(count_text(source, "d3d11_sampler_desc_matches(") >= 6u &&
+                    strstr(source, "D3D11_DECODE_IS_ANISOTROPIC_FILTER") != NULL &&
+                    strstr(source, "D3D11_DECODE_IS_COMPARISON_FILTER") != NULL &&
+                    strstr(source, "D3D11_TEXTURE_ADDRESS_BORDER") != NULL &&
+                    strstr(source, "SAFE_RELEASE(*cached);") != NULL,
+                "D3D11 samplers validate behavior-bearing fields and evict stale cache entries");
+    EXPECT_TRUE(count_text(source, "d3d11_buffer_desc_matches(") >= 4u,
+                "D3D11 constant and immutable buffers validate native descriptors");
+    EXPECT_TRUE(strstr(source, "ID3D11Texture2D_GetDesc(depth, &depth_desc)") != NULL &&
+                    strstr(source, "depth_desc.Format != DXGI_FORMAT_R32_TYPELESS") != NULL,
+                "Opaque-depth copies validate the source resource contract first");
+    EXPECT_TRUE(count_text(source, "vgfx3d_d3d11_saturating_add_u64(") >= 3u &&
+                    count_text(source, "texture_fallback_binds++") == 0u,
+                "D3D11 texture telemetry cannot wrap after long-running fallback use");
     EXPECT_TRUE(text_appears_in_order_after(source,
                                             "d3d11_ensure_presented_snapshot_texture",
                                             "ID3D11Texture2D_GetDesc(ctx->presented_color_tex",

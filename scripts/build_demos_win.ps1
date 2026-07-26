@@ -96,14 +96,103 @@ function Test-PathWithin {
         [switch]$AllowBase
     )
 
-    $baseFull = [IO.Path]::GetFullPath($Base).TrimEnd('\', '/')
-    $candidateFull = [IO.Path]::GetFullPath($Candidate).TrimEnd('\', '/')
+    $baseFull = [IO.Path]::GetFullPath($Base)
+    $baseRoot = [IO.Path]::GetPathRoot($baseFull)
+    if (-not [string]::Equals(
+            $baseFull, $baseRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $baseFull = $baseFull.TrimEnd('\', '/')
+    }
+    $candidateFull = [IO.Path]::GetFullPath($Candidate)
+    $candidateRoot = [IO.Path]::GetPathRoot($candidateFull)
+    if (-not [string]::Equals(
+            $candidateFull, $candidateRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        $candidateFull = $candidateFull.TrimEnd('\', '/')
+    }
     if ($AllowBase -and
         [string]::Equals($baseFull, $candidateFull, [StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
-    $prefix = $baseFull + [IO.Path]::DirectorySeparatorChar
+    $prefix = if ($baseFull.EndsWith(
+            [string][IO.Path]::DirectorySeparatorChar, [StringComparison]::Ordinal)) {
+        $baseFull
+    } else {
+        $baseFull + [IO.Path]::DirectorySeparatorChar
+    }
     return $candidateFull.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Read-SafeAutomationLines {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][int64]$MaximumBytes,
+        [int]$MaximumLineLength = 65536
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Description is missing or is not an ordinary file: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -lt 0 -or $item.Length -gt $MaximumBytes) {
+        throw "$Description has an unsafe shape or size: $Path"
+    }
+    $stream = [IO.File]::Open(
+        $item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -gt $MaximumBytes) {
+            throw "$Description changed to an oversized file: $Path"
+        }
+        $reader = [IO.StreamReader]::new(
+            $stream, [Text.UTF8Encoding]::new($false, $true), $true, 4096, $true)
+        try {
+            $lines = [Collections.Generic.List[string]]::new()
+            while (-not $reader.EndOfStream) {
+                $line = $reader.ReadLine()
+                if ($null -eq $line -or $line.Length -gt $MaximumLineLength -or
+                    $line.IndexOf([char]0) -ge 0) {
+                    throw "$Description contains an invalid or oversized line: $Path"
+                }
+                $lines.Add($line)
+            }
+            return $lines.ToArray()
+        } finally {
+            $reader.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Assert-SafeRelativeWindowsPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [switch]$AllowCurrentDirectory
+    )
+
+    if ($AllowCurrentDirectory -and
+        [string]::Equals($Path, ".", [StringComparison]::Ordinal)) {
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($Path) -or [IO.Path]::IsPathRooted($Path) -or
+        $Path.IndexOfAny([char[]](0..31)) -ge 0 -or
+        $Path.IndexOfAny([char[]]('<', '>', ':', '"', '|', '?', '*')) -ge 0) {
+        throw "$Description must be a safe relative Windows path: $Path"
+    }
+    foreach ($component in $Path.Split(
+            [char[]]@('\', '/'), [StringSplitOptions]::None)) {
+        if ([string]::IsNullOrWhiteSpace($component) -or
+            $component -in @(".", "..") -or $component.Length -gt 255 -or
+            $component.EndsWith(".", [StringComparison]::Ordinal) -or
+            $component.EndsWith(" ", [StringComparison]::Ordinal)) {
+            throw "$Description contains an unsafe component: $Path"
+        }
+        $deviceStem = $component.Split('.')[0]
+        if ($deviceStem -imatch '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+            throw "$Description contains a reserved Windows device name: $Path"
+        }
+    }
 }
 
 function Invoke-CheckedNative {
@@ -167,6 +256,7 @@ while ($argumentIndex -lt $args.Count) {
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
+. (Join-Path $scriptRoot "windows_pe_validation.ps1")
 $buildDirSetting = [Environment]::GetEnvironmentVariable("ZANNA_DEMO_BUILD_DIR", "Process")
 $buildDirExplicit = -not [string]::IsNullOrWhiteSpace($buildDirSetting)
 if (-not $buildDirExplicit) {
@@ -282,7 +372,8 @@ function Get-CMakeCacheValue {
     )
 
     $prefix = "${Name}:"
-    foreach ($line in Get-Content -LiteralPath $Cache) {
+    foreach ($line in @(Read-SafeAutomationLines -Path $Cache `
+            -Description "CMake cache" -MaximumBytes 8388608)) {
         if ($line.StartsWith($prefix, [StringComparison]::Ordinal)) {
             $separator = $line.IndexOf('=')
             if ($separator -ge 0) {
@@ -301,18 +392,39 @@ function Get-CMakeGeneratedSystemProcessor {
     if (-not (Test-Path -LiteralPath $cmakeFiles -PathType Container)) {
         return ""
     }
+    $rootItem = Get-Item -LiteralPath $cmakeFiles -Force
+    if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "CMake metadata root is a reparse point: $cmakeFiles"
+    }
     $reported = @{}
-    $systemFiles = @(Get-ChildItem -LiteralPath $cmakeFiles -Filter "CMakeSystem.cmake" `
-        -File -Recurse)
-    if ($systemFiles.Count -gt 16) {
-        throw "CMake tree has an implausible number of generated system descriptions: $tree"
+    $systemFiles = [Collections.Generic.List[string]]::new()
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($rootItem.FullName)
+    $visitedEntries = 0
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        foreach ($entry in Get-ChildItem -LiteralPath $directory -Force) {
+            ++$visitedEntries
+            if ($visitedEntries -gt 250000) {
+                throw "CMake metadata tree exceeds the bounded entry limit: $tree"
+            }
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "CMake metadata tree contains a reparse point: $($entry.FullName)"
+            }
+            if ($entry.PSIsContainer) {
+                $pending.Push($entry.FullName)
+            } elseif ([string]::Equals(
+                    $entry.Name, "CMakeSystem.cmake", [StringComparison]::OrdinalIgnoreCase)) {
+                $systemFiles.Add($entry.FullName)
+                if ($systemFiles.Count -gt 16) {
+                    throw "CMake tree has an implausible number of generated system descriptions: $tree"
+                }
+            }
+        }
     }
     foreach ($file in $systemFiles) {
-        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-            $file.Length -gt 65536) {
-            throw "CMake generated system description is unsafe: $($file.FullName)"
-        }
-        foreach ($line in Get-Content -LiteralPath $file.FullName) {
+        foreach ($line in @(Read-SafeAutomationLines -Path $file `
+                -Description "CMake generated system description" -MaximumBytes 65536)) {
             if ($line -match '^\s*set\(CMAKE_SYSTEM_PROCESSOR\s+"?([^"\s\)]+)"?\s*\)\s*$') {
                 $reported[$Matches[1].ToLowerInvariant()] = $Matches[1]
             }
@@ -409,9 +521,22 @@ function Assert-NoReparseTree {
         throw "$Description is a reparse point: $Root"
     }
     if ($rootItem.PSIsContainer) {
-        foreach ($entry in Get-ChildItem -LiteralPath $Root -Force -Recurse) {
-            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "$Description contains a reparse point: $($entry.FullName)"
+        $pending = [Collections.Generic.Stack[string]]::new()
+        $pending.Push($rootItem.FullName)
+        $visitedEntries = 0
+        while ($pending.Count -gt 0) {
+            $directory = $pending.Pop()
+            foreach ($entry in Get-ChildItem -LiteralPath $directory -Force) {
+                ++$visitedEntries
+                if ($visitedEntries -gt 250000) {
+                    throw "$Description exceeds the bounded tree-entry limit: $Root"
+                }
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "$Description contains a reparse point: $($entry.FullName)"
+                }
+                if ($entry.PSIsContainer) {
+                    $pending.Push($entry.FullName)
+                }
             }
         }
     }
@@ -423,71 +548,17 @@ function Assert-PortableExecutableArchitecture {
         [Parameter(Mandatory = $true)][ValidateSet("arm64", "x64")][string]$Architecture
     )
 
-    if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
-        throw "Expected demo executable was not produced: $Binary"
-    }
-    $machine = 0
-    $stream = [IO.File]::Open(
-        $Binary, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    try {
-        if ($stream.Length -lt 64) {
-            throw "Demo executable is too small to contain a PE header: $Binary"
-        }
-        $reader = [IO.BinaryReader]::new($stream, [Text.Encoding]::ASCII, $true)
-        try {
-            if ($reader.ReadUInt16() -ne 0x5A4D) {
-                throw "Demo executable is missing the MZ signature: $Binary"
-            }
-            $stream.Position = 0x3c
-            $peOffset = [uint64]$reader.ReadUInt32()
-            if ($peOffset -gt [uint64]($stream.Length - 26)) {
-                throw "Demo executable has an out-of-range PE header: $Binary"
-            }
-            $stream.Position = [int64]$peOffset
-            if ($reader.ReadUInt32() -ne 0x00004550) {
-                throw "Demo executable is missing the PE signature: $Binary"
-            }
-            $machine = $reader.ReadUInt16()
-            $sectionCount = $reader.ReadUInt16()
-            if ($sectionCount -lt 1 -or $sectionCount -gt 96) {
-                throw "Demo executable has an invalid PE section count: $Binary"
-            }
-            $stream.Position = [int64]($peOffset + 20)
-            $optionalHeaderSize = [uint64]$reader.ReadUInt16()
-            $characteristics = $reader.ReadUInt16()
-            if ($optionalHeaderSize -lt 112 -or
-                $peOffset + 24 + $optionalHeaderSize -gt [uint64]$stream.Length) {
-                throw "Demo executable has an invalid optional header: $Binary"
-            }
-            if (($characteristics -band 0x0002) -eq 0 -or
-                ($characteristics -band 0x2000) -ne 0) {
-                throw "Demo output is not a non-DLL executable image: $Binary"
-            }
-            $stream.Position = [int64]($peOffset + 24)
-            if ($reader.ReadUInt16() -ne 0x020B) {
-                throw "Demo executable is not a PE32+ image: $Binary"
-            }
-            $stream.Position = [int64]($peOffset + 24 + 16)
-            if ($reader.ReadUInt32() -eq 0) {
-                throw "Demo executable has no entry point: $Binary"
-            }
-        } finally {
-            $reader.Dispose()
-        }
-    } finally {
-        $stream.Dispose()
-    }
-    $expectedMachine = if ($Architecture -eq "arm64") { 0xAA64 } else { 0x8664 }
-    if ($machine -ne $expectedMachine) {
-        throw ("Demo executable machine 0x{0:X4} does not match requested {1}: {2}" -f
-            $machine, $Architecture, $Binary)
-    }
+    Assert-ZannaPeImageArchitecture -Binary $Binary -Architecture $Architecture
 }
 
 function Publish-DemoDirectory {
     param(
         [Parameter(Mandatory = $true)][string]$Stage,
-        [Parameter(Mandatory = $true)][string]$Destination
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$ExecutableName,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("arm64", "x64")]
+        [string]$Architecture
     )
 
     $stageFull = [IO.Path]::GetFullPath($Stage)
@@ -504,6 +575,8 @@ function Publish-DemoDirectory {
     if (-not (Test-Path -LiteralPath $stageFull -PathType Container)) {
         throw "Validated demo directory stage disappeared: $stageFull"
     }
+    Assert-PortableExecutableArchitecture `
+        -Binary (Join-Path $stageFull $ExecutableName) -Architecture $Architecture
     if (Test-Path -LiteralPath $destinationFull -PathType Leaf) {
         throw "Demo directory destination is a file: $destinationFull"
     }
@@ -512,6 +585,12 @@ function Publish-DemoDirectory {
         ".zanna-demo-backup-{0}-{1}" -f
             [IO.Path]::GetFileName($destinationFull),
             [Guid]::NewGuid().ToString("N"))
+    if (-not (Test-PathWithin -Base $binDir -Candidate $backup) -or
+        (Test-Path -LiteralPath $backup)) {
+        throw "Cannot allocate a private rollback path for demo publication."
+    }
+    Assert-NoReparsePath -Base $binDir -Candidate $backup `
+        -Description "Demo publication rollback path"
     $backedUp = $false
     $published = $false
     try {
@@ -520,9 +599,18 @@ function Publish-DemoDirectory {
                 -Description "Existing demo publication tree"
             [IO.Directory]::Move($destinationFull, $backup)
             $backedUp = $true
+            Assert-NoReparseTree -Root $backup `
+                -Description "Demo publication rollback tree"
         }
+        Assert-NoReparseTree -Root $stageFull -Description "Demo directory staging tree"
+        Assert-PortableExecutableArchitecture `
+            -Binary (Join-Path $stageFull $ExecutableName) -Architecture $Architecture
         [IO.Directory]::Move($stageFull, $destinationFull)
         $published = $true
+        Assert-NoReparseTree -Root $destinationFull `
+            -Description "Published demo generation"
+        Assert-PortableExecutableArchitecture `
+            -Binary (Join-Path $destinationFull $ExecutableName) -Architecture $Architecture
     } catch {
         if ($published -and (Test-Path -LiteralPath $destinationFull)) {
             Remove-DemoRunDirectoryEntry -Path $destinationFull
@@ -564,7 +652,11 @@ function Ensure-ZannaBuild {
         $generator = [Environment]::GetEnvironmentVariable("ZANNA_CMAKE_GENERATOR", "Process")
         if (-not [string]::IsNullOrWhiteSpace($generator)) {
             $configureArguments += @("-G", $generator)
-        } elseif (-not $TreeIsExplicit) {
+            if ($generator.StartsWith("Visual Studio ", [StringComparison]::OrdinalIgnoreCase)) {
+                $cmakeArch = if ($Architecture -eq "arm64") { "ARM64" } else { "x64" }
+                $configureArguments += @("-A", $cmakeArch)
+            }
+        } else {
             $cmakeArch = if ($Architecture -eq "arm64") { "ARM64" } else { "x64" }
             $configureArguments += @("-A", $cmakeArch)
         }
@@ -573,15 +665,24 @@ function Ensure-ZannaBuild {
             ([Environment]::GetEnvironmentVariable("ZANNA_EXTRA_CMAKE_ARGS", "Process")))
         Invoke-CheckedNative -FilePath "cmake" -Arguments $configureArguments `
             -FailureMessage "CMake configuration failed for $Description"
+        if (-not (Test-Path -LiteralPath $cache -PathType Leaf)) {
+            throw "CMake did not produce an expected cache for $Description`: $cache"
+        }
+        Assert-CMakeTreeArchitecture -Cache $cache -Architecture $Architecture `
+            -Description $Description
     }
     Write-Host "Building $Description..."
     Invoke-CheckedNative -FilePath "cmake" `
         -Arguments @("--build", $Tree, "--config", $buildType, "--target", "zanna", "-j", [string]$jobs) `
         -FailureMessage "$Description build failed"
+    Assert-CMakeTreeArchitecture -Cache $cache -Architecture $Architecture `
+        -Description $Description
     $resolvedExecutable = Resolve-ZannaExecutable -Tree $Tree
     if (-not (Test-Path -LiteralPath $resolvedExecutable -PathType Leaf)) {
         throw "$Description still not found in $Tree"
     }
+    Assert-PortableExecutableArchitecture -Binary $resolvedExecutable `
+        -Architecture $Architecture
     return $resolvedExecutable
 }
 
@@ -590,7 +691,7 @@ function Copy-DemoAssetEntry {
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$Destination,
         [Parameter(Mandatory = $true)][string]$DestinationRoot,
-        [Parameter(Mandatory = $true)][hashtable]$Ownership
+        [Parameter(Mandatory = $true)][Collections.IDictionary]$Ownership
     )
 
     $sourceItem = Get-Item -LiteralPath $Source -Force
@@ -622,22 +723,32 @@ function Copy-DemoAssetEntry {
     if (Test-Path -LiteralPath $Destination -PathType Container) {
         throw "Demo asset file collides with a directory: $Destination"
     }
-    $key = [IO.Path]::GetFullPath($Destination).ToLowerInvariant()
+    $key = [IO.Path]::GetFullPath($Destination)
     if ($Ownership.ContainsKey($key)) {
         $previousSource = [string]$Ownership[$key]
-        if (-not [string]::Equals(
+        if ([string]::Equals(
                 $previousSource, $Source, [StringComparison]::OrdinalIgnoreCase)) {
-            $sameLength = (Get-Item -LiteralPath $previousSource).Length -eq $sourceItem.Length
-            $sameHash = $sameLength -and
-                (Get-FileHash -LiteralPath $previousSource -Algorithm SHA256).Hash -eq
-                (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
-            if (-not $sameHash) {
-                throw "Demo asset destination collision: $Destination"
-            }
+            return
         }
-        return
+        throw "Demo asset destination collision with '$previousSource': $Destination"
     }
-    [IO.File]::Copy($Source, $Destination, $true)
+    if (Test-Path -LiteralPath $Destination) {
+        throw "Demo asset destination was created outside the ownership map: $Destination"
+    }
+    $input = [IO.File]::Open(
+        $sourceItem.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $output = [IO.File]::Open(
+            $Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $input.CopyTo($output)
+            $output.Flush($true)
+        } finally {
+            $output.Dispose()
+        }
+    } finally {
+        $input.Dispose()
+    }
     $Ownership[$key] = $Source
 }
 
@@ -647,12 +758,13 @@ function Copy-DemoAsset {
         [Parameter(Mandatory = $true)][string]$SourceRelative,
         [Parameter(Mandatory = $true)][string]$TargetRelative,
         [Parameter(Mandatory = $true)][string]$DestinationRoot,
-        [Parameter(Mandatory = $true)][hashtable]$Ownership
+        [Parameter(Mandatory = $true)][Collections.IDictionary]$Ownership
     )
 
-    if ([IO.Path]::IsPathRooted($SourceRelative) -or [IO.Path]::IsPathRooted($TargetRelative)) {
-        throw "Demo asset paths must be relative to their project and examples/bin."
-    }
+    Assert-SafeRelativeWindowsPath -Path $SourceRelative `
+        -Description "Demo asset source"
+    Assert-SafeRelativeWindowsPath -Path $TargetRelative `
+        -Description "Demo asset target" -AllowCurrentDirectory
     $source = [IO.Path]::GetFullPath((Join-Path $ProjectDir $SourceRelative))
     if (-not (Test-PathWithin -Base $ProjectDir -Candidate $source -AllowBase)) {
         throw "Asset source escapes the demo project: $SourceRelative"
@@ -690,11 +802,12 @@ function Stage-DemoAssets {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$DestinationRoot,
-        [Parameter(Mandatory = $true)][hashtable]$Ownership
+        [Parameter(Mandatory = $true)][Collections.IDictionary]$Ownership
     )
 
     $projectFile = Join-Path $ProjectDir "zanna.project"
-    foreach ($line in Get-Content -LiteralPath $projectFile) {
+    foreach ($line in @(Read-SafeAutomationLines -Path $projectFile `
+            -Description "Demo project manifest" -MaximumBytes 1048576)) {
         $trimmed = $line.Trim()
         if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("#")) {
             continue
@@ -844,7 +957,9 @@ function Test-DemoRun {
     $process = $null
     $succeeded = $false
     try {
-        $runAssetOwners = @{}
+        $runAssetOwners =
+            [Collections.Generic.Dictionary[string, string]]::new(
+                [StringComparer]::OrdinalIgnoreCase)
         foreach ($child in Get-ChildItem -LiteralPath $SourceDirectory -Force) {
             Copy-DemoAssetEntry -Source $child.FullName `
                 -Destination (Join-Path $runDirectory $child.Name) `
@@ -941,11 +1056,15 @@ function Build-Demo {
         Write-Host ""
         return $false
     }
+    Assert-NoReparseTree -Root $ProjectDir -Description "Demo project tree"
 
     $outputDirectory = Join-Path $binDir $Name
     $output = Join-Path $outputDirectory "$Name.exe"
     $stageDirectory = Join-Path $binDir (
         ".zanna-demo-stage-{0}-{1}" -f $Name, [Guid]::NewGuid().ToString("N"))
+    if (Test-Path -LiteralPath $stageDirectory) {
+        throw "Cannot allocate a private demo staging directory: $stageDirectory"
+    }
     [void][IO.Directory]::CreateDirectory($stageDirectory)
     Assert-NoReparsePath -Base $binDir -Candidate $stageDirectory `
         -Description "Demo staging directory"
@@ -983,16 +1102,22 @@ function Build-Demo {
     }
     try {
         Assert-PortableExecutableArchitecture -Binary $stage -Architecture $demoArch
-        $assetOwners = @{}
+        $assetOwners =
+            [Collections.Generic.Dictionary[string, string]]::new(
+                [StringComparer]::OrdinalIgnoreCase)
+        $assetOwners.Add(
+            [IO.Path]::GetFullPath($stage), "<generated demo executable>")
         Stage-DemoAssets -ProjectDir $ProjectDir -DestinationRoot $stageDirectory `
             -Ownership $assetOwners
+        Assert-PortableExecutableArchitecture -Binary $stage -Architecture $demoArch
         if ($run -and -not (Test-DemoRun -Name $Name -SourceDirectory $stageDirectory)) {
             Write-Host "  FAILED"
             Write-Host "  Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff')"
             Write-Host ""
             return $false
         }
-        Publish-DemoDirectory -Stage $stageDirectory -Destination $outputDirectory
+        Publish-DemoDirectory -Stage $stageDirectory -Destination $outputDirectory `
+            -ExecutableName "$Name.exe" -Architecture $demoArch
     } catch {
         Write-Host "  ERROR: $($_.Exception.Message)"
         Write-Host "  FAILED"
@@ -1034,11 +1159,15 @@ try {
     if (Test-Path -LiteralPath $toolCache -PathType Leaf) {
         Assert-CMakeTreeArchitecture -Cache $toolCache -Architecture $hostArch `
             -Description "host Zanna tool"
+    } elseif (Test-Path -LiteralPath $zanna -PathType Leaf) {
+        throw "Host Zanna executable has no CMake cache proving its architecture: $zanna"
     }
     $targetCache = Join-Path $buildDir "CMakeCache.txt"
     if (Test-Path -LiteralPath $targetCache -PathType Leaf) {
         Assert-CMakeTreeArchitecture -Cache $targetCache -Architecture $demoArch `
             -Description "target-architecture Zanna runtime"
+    } elseif (Test-Path -LiteralPath $targetZanna -PathType Leaf) {
+        throw "Target Zanna executable has no CMake cache proving its architecture: $targetZanna"
     }
     if (-not (Test-Path -LiteralPath $zanna -PathType Leaf)) {
         $zanna = Ensure-ZannaBuild -Tree $toolBuildDir -Architecture $hostArch `
@@ -1048,6 +1177,10 @@ try {
         -not (Test-Path -LiteralPath $targetZanna -PathType Leaf)) {
         $targetZanna = Ensure-ZannaBuild -Tree $buildDir -Architecture $demoArch `
             -TreeIsExplicit $buildDirExplicit -Description "target-architecture Zanna runtime"
+    }
+    Assert-PortableExecutableArchitecture -Binary $zanna -Architecture $hostArch
+    if ($toolBuildDir -ine $buildDir) {
+        Assert-PortableExecutableArchitecture -Binary $targetZanna -Architecture $demoArch
     }
 
     if (Test-Path -LiteralPath $binDir) {
@@ -1077,8 +1210,15 @@ try {
     $failed = 0
     $succeeded = 0
     $entries = 0
-    $seenNames = @{}
-    foreach ($line in Get-Content -LiteralPath $manifest) {
+    $publishedExecutables = [Collections.Generic.List[IO.FileInfo]]::new()
+    $seenNames =
+        [Collections.Generic.Dictionary[string, bool]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+    $seenProjects =
+        [Collections.Generic.Dictionary[string, string]]::new(
+            [StringComparer]::OrdinalIgnoreCase)
+    foreach ($line in @(Read-SafeAutomationLines -Path $manifest `
+            -Description "Demo project inventory" -MaximumBytes 1048576)) {
         $trimmed = $line.Trim()
         if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("#")) {
             continue
@@ -1099,13 +1239,14 @@ try {
             ++$failed
             continue
         }
-        $nameKey = $name.ToLowerInvariant()
-        if ($seenNames.ContainsKey($nameKey)) {
+        Assert-SafeRelativeWindowsPath -Path $name -Description "Demo executable name"
+        Assert-SafeRelativeWindowsPath -Path $directory -Description "Demo project directory"
+        if ($seenNames.ContainsKey($name)) {
             Write-Host "ERROR: duplicate demo executable name '$name'"
             ++$failed
             continue
         }
-        $seenNames[$nameKey] = $true
+        $seenNames[$name] = $true
         if ($category -ieq "games") {
             $categoryRoot = Join-Path $repoRoot "examples\games"
         } elseif ($category -ieq "apps") {
@@ -1121,8 +1262,17 @@ try {
             ++$failed
             continue
         }
+        if ($seenProjects.ContainsKey($projectDir)) {
+            Write-Host ("ERROR: demo project '$projectDir' is already owned by executable " +
+                "'$($seenProjects[$projectDir])'")
+            ++$failed
+            continue
+        }
+        $seenProjects[$projectDir] = $name
         if (Build-Demo -Name $name -ProjectDir $projectDir) {
             ++$succeeded
+            $publishedPath = Join-Path (Join-Path $binDir $name) "$name.exe"
+            $publishedExecutables.Add((Get-Item -LiteralPath $publishedPath -Force))
         } else {
             ++$failed
         }
@@ -1140,8 +1290,7 @@ try {
         }
         Write-Host ""
         Write-Host "Binaries and assets are in per-demo directories under: $binDir"
-        Get-ChildItem -LiteralPath $binDir -File -Recurse |
-            Where-Object { $_.Extension -ieq ".exe" } |
+        $publishedExecutables |
             Format-Table Mode, LastWriteTime, Length, FullName
         exit 0
     }

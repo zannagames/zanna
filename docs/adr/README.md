@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-23
+last-verified: 2026-07-26
 ---
 
 # Architecture Decision Records
@@ -212,6 +212,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 
 ## Release & Packaging
 
+- [ADR 0196](0196-map-windows-runtime-hardening-imports.md) — Map Windows Runtime Hardening Imports
 - [ADR 0155](0155-map-msvc-float-classification-to-ucrt.md) — Map MSVC Float Classification to UCRT
 - [ADR 0113](0113-windows-automation-powershell-entry-points.md) — Use PowerShell for Windows Automation Entry Points
 - [ADR 0025](0025-windows-release-installer-workflow.md) — Windows Release Installer Workflow

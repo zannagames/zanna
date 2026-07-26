@@ -23,6 +23,7 @@
 #include "WindowsInstallerHost.hpp"
 
 #include "PkgHash.hpp"
+#include "WindowsPEValidation.hpp"
 #include "ZipReader.hpp"
 
 #include <shellapi.h>
@@ -212,20 +213,6 @@ std::string bytesToString(const std::vector<uint8_t> &bytes) {
 void requirePeArchitecture(const std::vector<uint8_t> &bytes,
                            std::string_view architecture,
                            std::string_view label) {
-    constexpr uint16_t kPe32PlusMagic = 0x020BU;
-    constexpr uint16_t kExecutableImage = 0x0002U;
-    constexpr uint16_t kDllImage = 0x2000U;
-    constexpr size_t kCoffHeaderBytes = 20U;
-    constexpr size_t kSectionHeaderBytes = 40U;
-    if (bytes.size() < 64U || readLe16(bytes.data()) != 0x5A4DU)
-        throw std::runtime_error(std::string(label) + " is too small for a PE header");
-    const uint32_t peOffset = readLe32(bytes.data() + 60U);
-    if (peOffset < 64U || peOffset > bytes.size() - 4U - kCoffHeaderBytes ||
-        readLe32(bytes.data() + peOffset) != 0x00004550U) {
-        throw std::runtime_error(std::string(label) + " has an invalid PE header");
-    }
-    const size_t coff = static_cast<size_t>(peOffset) + 4U;
-    const uint16_t machine = readLe16(bytes.data() + peOffset + 4U);
     uint16_t expected = 0;
     if (architecture == "arm64")
         expected = 0xAA64U;
@@ -233,66 +220,16 @@ void requirePeArchitecture(const std::vector<uint8_t> &bytes,
         expected = 0x8664U;
     else
         throw std::runtime_error(std::string(label) + " metadata architecture is unsupported");
-    if (machine != expected)
-        throw std::runtime_error(std::string(label) + " architecture does not match metadata");
-
-    const uint16_t sectionCount = readLe16(bytes.data() + coff + 2U);
-    const uint16_t optionalSize = readLe16(bytes.data() + coff + 16U);
-    const uint16_t characteristics = readLe16(bytes.data() + coff + 18U);
-    if (sectionCount == 0 || sectionCount > 96U || optionalSize < 112U ||
-        (characteristics & kExecutableImage) == 0 || (characteristics & kDllImage) != 0) {
-        throw std::runtime_error(std::string(label) + " has invalid PE image characteristics");
-    }
-
-    const size_t optional = coff + kCoffHeaderBytes;
-    if (optionalSize > bytes.size() - optional ||
-        readLe16(bytes.data() + optional) != kPe32PlusMagic) {
-        throw std::runtime_error(std::string(label) + " is not a bounded PE32+ image");
-    }
-    const uint32_t entryPoint = readLe32(bytes.data() + optional + 16U);
-    const uint32_t sectionAlignment = readLe32(bytes.data() + optional + 32U);
-    const uint32_t fileAlignment = readLe32(bytes.data() + optional + 36U);
-    const uint32_t sizeOfImage = readLe32(bytes.data() + optional + 56U);
-    const uint32_t sizeOfHeaders = readLe32(bytes.data() + optional + 60U);
-    const uint16_t subsystem = readLe16(bytes.data() + optional + 68U);
-    if (entryPoint == 0 || sectionAlignment == 0 || fileAlignment == 0 ||
-        (fileAlignment & (fileAlignment - 1U)) != 0 || fileAlignment > 65536U || sizeOfImage == 0 ||
-        sizeOfHeaders == 0 || sizeOfHeaders > bytes.size() ||
-        (subsystem != 2U && subsystem != 3U)) {
-        throw std::runtime_error(std::string(label) + " has invalid PE32+ optional metadata");
-    }
-
-    const size_t sectionTable = optional + optionalSize;
-    if (sectionCount > (bytes.size() - sectionTable) / kSectionHeaderBytes)
-        throw std::runtime_error(std::string(label) + " has a truncated PE section table");
-    const size_t sectionTableEnd =
-        sectionTable + static_cast<size_t>(sectionCount) * kSectionHeaderBytes;
-    if (sizeOfHeaders < sectionTableEnd)
-        throw std::runtime_error(std::string(label) + " has overlapping PE headers and sections");
-
-    std::vector<std::pair<uint64_t, uint64_t>> rawRanges;
-    for (uint16_t index = 0; index < sectionCount; ++index) {
-        const uint8_t *section =
-            bytes.data() + sectionTable + static_cast<size_t>(index) * kSectionHeaderBytes;
-        const uint32_t virtualSize = readLe32(section + 8U);
-        const uint32_t virtualAddress = readLe32(section + 12U);
-        const uint32_t rawSize = readLe32(section + 16U);
-        const uint32_t rawOffset = readLe32(section + 20U);
-        const uint64_t virtualEnd =
-            static_cast<uint64_t>(virtualAddress) + std::max(virtualSize, rawSize);
-        if (virtualEnd > sizeOfImage)
-            throw std::runtime_error(std::string(label) + " has an out-of-range PE section");
-        if (rawSize == 0)
-            continue;
-        const uint64_t rawEnd = static_cast<uint64_t>(rawOffset) + rawSize;
-        if (rawOffset < sizeOfHeaders || rawEnd > bytes.size())
-            throw std::runtime_error(std::string(label) + " has invalid PE section storage");
-        rawRanges.emplace_back(rawOffset, rawEnd);
-    }
-    std::sort(rawRanges.begin(), rawRanges.end());
-    for (size_t index = 1; index < rawRanges.size(); ++index) {
-        if (rawRanges[index].first < rawRanges[index - 1U].second)
-            throw std::runtime_error(std::string(label) + " has overlapping PE sections");
+    std::string validationError;
+    zanna::pkg::WindowsPEImageInfo image;
+    if (!zanna::pkg::validateWindowsPEImage(bytes.empty() ? nullptr : bytes.data(),
+                                            bytes.size(),
+                                            expected,
+                                            &image,
+                                            validationError)) {
+        throw std::runtime_error(std::string(label) + " is not a bounded " +
+                                 std::string(architecture) +
+                                 " PE32+ executable: " + validationError);
     }
 }
 

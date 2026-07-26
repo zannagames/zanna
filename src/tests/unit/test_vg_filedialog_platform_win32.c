@@ -73,7 +73,12 @@ static void test_join_and_utf8_guards(void) {
 
     assert(vg_filedialog_platform_is_absolute_path("C:\\Zanna"));
     assert(vg_filedialog_platform_is_absolute_path("\\\\server\\share\\Zanna"));
+    assert(vg_filedialog_platform_is_absolute_path("\\\\?\\C:\\Zanna"));
+    assert(vg_filedialog_platform_is_absolute_path("\\\\?\\UNC\\server\\share\\Zanna"));
     assert(!vg_filedialog_platform_is_absolute_path("Zanna\\project.zia"));
+    assert(!vg_filedialog_platform_is_absolute_path("\\\\server"));
+    assert(!vg_filedialog_platform_is_absolute_path("\\\\.\\PhysicalDrive0"));
+    assert(!vg_filedialog_platform_is_absolute_path("\\\\?\\GLOBALROOT\\Device"));
     assert(!vg_filedialog_platform_path_is_dir("\xC0\xAF"));
 }
 
@@ -102,6 +107,13 @@ static void test_home_requires_existing_directory(void) {
     home = vg_filedialog_platform_home_dir();
     assert(home != NULL);
     assert(strcmp(home, "Z:\\definitely-missing-zanna-profile") != 0);
+    free(home);
+
+    assert(SetEnvironmentVariableW(L"USERPROFILE", L"."));
+    home = vg_filedialog_platform_home_dir();
+    assert(home != NULL);
+    assert(strcmp(home, ".") != 0);
+    assert(vg_filedialog_platform_is_absolute_path(home));
     free(home);
 
     assert(SetEnvironmentVariableW(L"USERPROFILE", savedProfile));

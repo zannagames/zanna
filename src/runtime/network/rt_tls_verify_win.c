@@ -34,6 +34,12 @@
 #include "rt_tls_verify_internal.h"
 
 #if defined(_WIN32)
+#include <errno.h>
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
+
 enum {
     TLS_MAX_CUSTOM_CA_FILE_BYTES = 16 * 1024 * 1024,
     TLS_MAX_CUSTOM_CA_CERTIFICATES = 1024,
@@ -49,6 +55,7 @@ enum {
 static FILE *tls_open_file_utf8_win(const char *path) {
     wchar_t *wide_path = NULL;
     FILE *file = NULL;
+    int descriptor = -1;
     int required;
 
     if (!path || !*path)
@@ -60,8 +67,14 @@ static FILE *tls_open_file_utf8_win(const char *path) {
     if (!wide_path)
         return NULL;
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide_path, required) ==
-        required) {
-        file = _wfopen(wide_path, L"rb");
+            required &&
+        _wsopen_s(&descriptor, wide_path, _O_RDONLY | _O_BINARY, _SH_DENYWR, _S_IREAD) == 0) {
+        file = _fdopen(descriptor, "rb");
+        if (!file) {
+            int saved_errno = errno;
+            (void)_close(descriptor);
+            errno = saved_errno;
+        }
     }
     free(wide_path);
     return file;

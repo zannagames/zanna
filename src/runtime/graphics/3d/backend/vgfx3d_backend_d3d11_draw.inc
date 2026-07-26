@@ -305,10 +305,6 @@ static ID3D11SamplerState *d3d11_get_material_sampler(d3d11_context_t *ctx,
                      : vgfx3d_d3d11_sanitize_anisotropy(anisotropy);
     filter_index = d3d11_sampler_filter_index(min_filter, mag_filter, mip_filter);
     anisotropy_index = vgfx3d_d3d11_sampler_anisotropy_index(anisotropy);
-    if (ctx->material_samplers[wrap_s][wrap_t][filter_index][anisotropy_index])
-        return ctx->material_samplers[wrap_s][wrap_t][filter_index][anisotropy_index];
-    if (!ctx->device)
-        return ctx->linear_wrap_sampler;
     d3d11_init_sampler_desc_defaults(&desc);
     desc.Filter = d3d11_sampler_filter_mode(min_filter, mag_filter, mip_filter);
     if (mip_filter == RT_MATERIAL3D_TEXTURE_MIP_FILTER_NONE)
@@ -320,8 +316,17 @@ static ID3D11SamplerState *d3d11_get_material_sampler(d3d11_context_t *ctx,
     desc.AddressU = d3d11_sampler_address_mode(wrap_s);
     desc.AddressV = d3d11_sampler_address_mode(wrap_t);
     desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    if (ctx->material_samplers[wrap_s][wrap_t][filter_index][anisotropy_index]) {
+        ID3D11SamplerState **cached =
+            &ctx->material_samplers[wrap_s][wrap_t][filter_index][anisotropy_index];
+        if (d3d11_sampler_desc_matches(*cached, &desc))
+            return *cached;
+        SAFE_RELEASE(*cached);
+    }
+    if (!ctx->device)
+        return ctx->linear_wrap_sampler;
     hr = ID3D11Device_CreateSamplerState(ctx->device, &desc, &created_sampler);
-    if (FAILED(hr) || !created_sampler) {
+    if (FAILED(hr) || !created_sampler || !d3d11_sampler_desc_matches(created_sampler, &desc)) {
         d3d11_log_hresult("CreateSamplerState(material)", FAILED(hr) ? hr : E_FAIL);
         SAFE_RELEASE(created_sampler);
         return ctx->linear_wrap_sampler;
@@ -534,6 +539,8 @@ static void d3d11_resolve_opaque_targets(void *ctx_ptr) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     ID3D11Texture2D *depth;
     ID3D11ShaderResourceView *null_srv = NULL;
+    D3D11_TEXTURE2D_DESC depth_desc;
+    D3D11_TEXTURE2D_DESC expected_desc;
     int32_t w;
     int32_t h;
 
@@ -557,25 +564,37 @@ static void d3d11_resolve_opaque_targets(void *ctx_ptr) {
     h = ctx->current_height;
     if (!depth || !vgfx3d_d3d11_is_valid_texture2d_extent(w, h))
         return;
-    if (!ctx->opaque_depth_tex || ctx->opaque_depth_w != w || ctx->opaque_depth_h != h) {
-        D3D11_TEXTURE2D_DESC desc;
+    memset(&depth_desc, 0, sizeof(depth_desc));
+    ID3D11Texture2D_GetDesc(depth, &depth_desc);
+    if (depth_desc.Width != (UINT)w || depth_desc.Height != (UINT)h || depth_desc.MipLevels != 1u ||
+        depth_desc.ArraySize != 1u ||
+        (depth_desc.Format != DXGI_FORMAT_R32_TYPELESS &&
+         depth_desc.Format != DXGI_FORMAT_D32_FLOAT) ||
+        depth_desc.SampleDesc.Count != 1u || depth_desc.SampleDesc.Quality != 0u ||
+        depth_desc.Usage != D3D11_USAGE_DEFAULT || depth_desc.CPUAccessFlags != 0u)
+        return;
+    memset(&expected_desc, 0, sizeof(expected_desc));
+    expected_desc.Width = (UINT)w;
+    expected_desc.Height = (UINT)h;
+    expected_desc.MipLevels = 1u;
+    expected_desc.ArraySize = 1u;
+    expected_desc.Format = DXGI_FORMAT_R32_TYPELESS;
+    expected_desc.SampleDesc.Count = 1u;
+    expected_desc.Usage = D3D11_USAGE_DEFAULT;
+    expected_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    if (!ctx->opaque_depth_tex || !ctx->opaque_depth_srv || ctx->opaque_depth_w != w ||
+        ctx->opaque_depth_h != h ||
+        !d3d11_texture2d_desc_matches(ctx->opaque_depth_tex, &expected_desc) ||
+        !d3d11_srv_matches_texture2d(
+            ctx->opaque_depth_srv, ctx->opaque_depth_tex, DXGI_FORMAT_R32_FLOAT, 1u)) {
         D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
         ID3D11Texture2D *new_tex = NULL;
         ID3D11ShaderResourceView *new_srv = NULL;
         HRESULT hr;
-        memset(&desc, 0, sizeof(desc));
-        desc.Width = (UINT)w;
-        desc.Height = (UINT)h;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT_R32_TYPELESS;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, NULL, &new_tex);
-        if (FAILED(hr) || !new_tex) {
+        hr = ID3D11Device_CreateTexture2D(ctx->device, &expected_desc, NULL, &new_tex);
+        if (FAILED(hr) || !new_tex || !d3d11_texture2d_desc_matches(new_tex, &expected_desc)) {
             if (SUCCEEDED(hr))
-                hr = E_POINTER;
+                hr = new_tex ? E_FAIL : E_POINTER;
             d3d11_log_hresult("CreateTexture2D(opaqueDepth)", hr);
             SAFE_RELEASE(new_tex);
             return;
@@ -586,9 +605,11 @@ static void d3d11_resolve_opaque_targets(void *ctx_ptr) {
         srv_desc.Texture2D.MipLevels = 1;
         hr = ID3D11Device_CreateShaderResourceView(
             ctx->device, (ID3D11Resource *)new_tex, &srv_desc, &new_srv);
-        if (FAILED(hr) || !new_srv) {
+        if (FAILED(hr) || !new_srv ||
+            !d3d11_srv_matches_texture2d(
+                new_srv, new_tex, srv_desc.Format, srv_desc.Texture2D.MipLevels)) {
             if (SUCCEEDED(hr))
-                hr = E_POINTER;
+                hr = new_srv ? E_FAIL : E_POINTER;
             d3d11_log_hresult("CreateSRV(opaqueDepth)", hr);
             SAFE_RELEASE(new_srv);
             SAFE_RELEASE(new_tex);
