@@ -34,6 +34,7 @@
 #include "rt_lightbaker3d.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
+#include "rt_file_stdio.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_pixels_internal.h"
@@ -1394,7 +1395,8 @@ void *rt_lightprobegrid3d_sample(void *obj, void *position, void *normal) {
 
 /// @brief Save a baked probe grid to the versioned VLPG binary layout.
 /// @details Writes magic, native double/int metadata, validity bytes, and
-///   probe-major float coefficients. The file is not published transactionally.
+///   probe-major float coefficients to a same-directory temporary file, then
+///   atomically replaces the destination only after a complete close.
 /// @param obj Baked LightProbeGrid3D receiver.
 /// @param path Runtime string naming the output filesystem path.
 /// @return Nonzero only when every write and file open succeeds.
@@ -1404,7 +1406,8 @@ int8_t rt_lightprobegrid3d_save(void *obj, rt_string path) {
     const char *cpath = path ? rt_string_cstr(path) : NULL;
     if (!grid || !cpath || !grid->baked)
         return 0;
-    FILE *f = fopen(cpath, "wb");
+    char *tmp_path = NULL;
+    FILE *f = rt_file_stdio_open_temp_for_replace_utf8(cpath, &tmp_path);
     if (!f)
         return 0;
     size_t probes = (size_t)grid->nx * grid->ny * grid->nz;
@@ -1415,7 +1418,13 @@ int8_t rt_lightprobegrid3d_save(void *obj, rt_string path) {
              fwrite(&grid->nz, sizeof(int32_t), 1, f) == 1 &&
              fwrite(grid->valid, 1, probes, f) == probes &&
              fwrite(grid->sh, sizeof(float), probes * 27, f) == probes * 27;
-    fclose(f);
+    if (fclose(f) != 0)
+        ok = 0;
+    if (ok)
+        ok = rt_file_stdio_replace_utf8(tmp_path, cpath);
+    if (!ok)
+        (void)rt_file_stdio_unlink_utf8(tmp_path);
+    free(tmp_path);
     return ok ? 1 : 0;
 }
 
@@ -1433,7 +1442,7 @@ int8_t rt_lightprobegrid3d_load(void *obj, rt_string path) {
     const char *cpath = path ? rt_string_cstr(path) : NULL;
     if (!grid || !cpath)
         return 0;
-    FILE *f = fopen(cpath, "rb");
+    FILE *f = rt_file_stdio_open_utf8(cpath, "rb");
     if (!f)
         return 0;
     char magic[8] = {0};

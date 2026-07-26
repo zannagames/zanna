@@ -25,6 +25,7 @@
 ///          reader-owned storage valid until the next packet call or rewind.
 
 #include "rt_ogg.h"
+#include "rt_file_stdio.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -48,26 +49,34 @@ struct ogg_packet_node_t {
 //===----------------------------------------------------------------------===//
 
 static uint32_t ogg_crc_table[256];
-static int ogg_crc_table_init = 0;
+static volatile int ogg_crc_table_state = 0;
 
 /// @brief Lazily build the 256-entry Ogg CRC-32 lookup table.
 /// @details Ogg uses the IEEE 802.3 polynomial 0x04C11DB7 with the
-///          shift direction reversed from the standard zlib CRC. The
-///          table is computed once and reused for every page.
+///          shift direction reversed from the standard zlib CRC. An atomic
+///          three-state latch prevents concurrent first readers from observing
+///          a partially initialized table.
 static void ogg_crc_init(void) {
-    if (ogg_crc_table_init)
+    if (rt_atomic_load_i32(&ogg_crc_table_state, __ATOMIC_ACQUIRE) == 2)
         return;
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i << 24;
-        for (int j = 0; j < 8; j++) {
-            if (c & 0x80000000)
-                c = (c << 1) ^ 0x04C11DB7;
-            else
-                c <<= 1;
+    int expected = 0;
+    if (rt_atomic_compare_exchange_i32(
+            &ogg_crc_table_state, &expected, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i << 24;
+            for (int j = 0; j < 8; j++) {
+                if (c & 0x80000000)
+                    c = (c << 1) ^ 0x04C11DB7;
+                else
+                    c <<= 1;
+            }
+            ogg_crc_table[i] = c;
         }
-        ogg_crc_table[i] = c;
+        rt_atomic_store_i32(&ogg_crc_table_state, 2, __ATOMIC_RELEASE);
+        return;
     }
-    ogg_crc_table_init = 1;
+    while (rt_atomic_load_i32(&ogg_crc_table_state, __ATOMIC_ACQUIRE) != 2)
+        rt_atomic_thread_fence(__ATOMIC_ACQUIRE);
 }
 
 //===----------------------------------------------------------------------===//
@@ -449,7 +458,7 @@ static int process_page_packets(ogg_reader_t *r, const uint8_t *body, size_t bod
 ogg_reader_t *ogg_reader_open_file(const char *path) {
     if (!path)
         return NULL;
-    FILE *f = fopen(path, "rb");
+    FILE *f = rt_file_stdio_open_utf8(path, "rb");
     if (!f)
         return NULL;
     ogg_reader_t *r = (ogg_reader_t *)calloc(1, sizeof(ogg_reader_t));

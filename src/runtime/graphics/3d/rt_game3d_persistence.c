@@ -31,6 +31,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_file_stdio.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
 #include "rt_graphics3d_ids.h"
@@ -143,10 +144,8 @@ static void game3d_persist_apply_alive_record(rt_game3d_entity *entity,
                                               const rt_game3d_persist_record *record) {
     void *node = game3d_entity_node_ref(entity);
     if (node) {
-        void *quat = rt_quat_new(record->rotation[0],
-                                 record->rotation[1],
-                                 record->rotation[2],
-                                 record->rotation[3]);
+        void *quat = rt_quat_new(
+            record->rotation[0], record->rotation[1], record->rotation[2], record->rotation[3]);
         if (quat)
             rt_scene_node3d_set_rotation(node, quat);
         game3d_release_ref(&quat);
@@ -734,24 +733,18 @@ int8_t rt_game3d_world_save_state(void *obj, rt_string app_name, rt_string slot)
         free(writer.data);
         return 0;
     }
-    size_t tmp_len = strlen(path) + sizeof(".tmp");
-    char *tmp_path = (char *)malloc(tmp_len);
+    char *tmp_path = NULL;
     int8_t ok = 0;
-    if (tmp_path) {
-        snprintf(tmp_path, tmp_len, "%s.tmp", path);
-        FILE *file = fopen(tmp_path, "wb");
-        if (file) {
-            size_t written = writer.size ? fwrite(writer.data, 1, writer.size, file) : 0;
-            int closed = fclose(file);
-            if (written == writer.size && closed == 0) {
-                remove(path); /* Windows rename() refuses to replace. */
-                ok = rename(tmp_path, path) == 0 ? 1 : 0;
-            }
-            if (!ok)
-                remove(tmp_path);
-        }
-        free(tmp_path);
+    FILE *file = rt_file_stdio_open_temp_for_replace_utf8(path, &tmp_path);
+    if (file) {
+        size_t written = writer.size ? fwrite(writer.data, 1, writer.size, file) : 0;
+        int closed = fclose(file);
+        if (written == writer.size && closed == 0)
+            ok = rt_file_stdio_replace_utf8(tmp_path, path) ? 1 : 0;
+        if (!ok)
+            (void)rt_file_stdio_unlink_utf8(tmp_path);
     }
+    free(tmp_path);
     free(path);
     free(writer.data);
     return ok;
@@ -770,7 +763,7 @@ int8_t rt_game3d_world_load_state(void *obj, rt_string app_name, rt_string slot)
     char *path = persist3d_slot_path(app_name, slot);
     if (!path)
         return 0;
-    FILE *file = fopen(path, "rb");
+    FILE *file = rt_file_stdio_open_utf8(path, "rb");
     free(path);
     if (!file)
         return 0;

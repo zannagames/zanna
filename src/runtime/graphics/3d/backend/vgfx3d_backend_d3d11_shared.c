@@ -1235,7 +1235,8 @@ int vgfx3d_d3d11_compute_float_srv_capacity(size_t current_capacity,
         *out_capacity = current_capacity;
         return 1;
     }
-    capacity = current_capacity;
+    capacity =
+        vgfx3d_d3d11_is_valid_float_srv_element_count(current_capacity) ? current_capacity : 0u;
     if (capacity < VGFX3D_D3D11_MIN_FLOAT_SRV_CAPACITY)
         capacity = VGFX3D_D3D11_MIN_FLOAT_SRV_CAPACITY;
     while (capacity < needed_capacity) {
@@ -1249,6 +1250,56 @@ int vgfx3d_d3d11_compute_float_srv_capacity(size_t current_capacity,
         return 0;
     *out_capacity = capacity;
     return 1;
+}
+
+/// @brief Validate a cached typed-float buffer before a boxed update.
+/// @details The native byte width must encode exactly the backend-tracked
+///   float-element capacity. This prevents stale metadata from authorizing an
+///   UpdateSubresource box beyond the resource or seeding oversized growth.
+/// @param[in] byte_width Native descriptor byte width.
+/// @param[in] tracked_capacity Backend-tracked float-element capacity.
+/// @param[in] required_elements Minimum elements needed for the pending upload.
+/// @param[in] has_default_usage Nonzero when usage is DEFAULT.
+/// @param[in] has_exact_srv_bind Nonzero for exactly SHADER_RESOURCE binding.
+/// @param[in] has_no_cpu_access Nonzero when CPU access flags are zero.
+/// @param[in] misc_flags Descriptor miscellaneous flags.
+/// @param[in] structure_byte_stride Structured-buffer stride field.
+/// @return One when the descriptor is safe for the pending update.
+int vgfx3d_d3d11_float_srv_buffer_desc_is_usable(uint32_t byte_width,
+                                                 size_t tracked_capacity,
+                                                 size_t required_elements,
+                                                 int has_default_usage,
+                                                 int has_exact_srv_bind,
+                                                 int has_no_cpu_access,
+                                                 uint32_t misc_flags,
+                                                 uint32_t structure_byte_stride) {
+    size_t expected_bytes = 0u;
+
+    return required_elements <= tracked_capacity &&
+           vgfx3d_d3d11_is_valid_float_srv_element_count(tracked_capacity) &&
+           vgfx3d_d3d11_checked_mul_size(tracked_capacity, sizeof(float), &expected_bytes) &&
+           expected_bytes == (size_t)byte_width && has_default_usage && has_exact_srv_bind &&
+           has_no_cpu_access && misc_flags == 0u && structure_byte_stride == 0u;
+}
+
+/// @brief Validate a cached typed-float shader-resource view.
+/// @details Morph buffers expose every backing float starting at element zero;
+///   accepting a narrower, offset, or differently typed view would bind stale
+///   or unrelated data even when the backing buffer itself remained valid.
+/// @param[in] tracked_capacity Backend-tracked float-element capacity.
+/// @param[in] has_r32_float_format Nonzero for the R32_FLOAT format.
+/// @param[in] has_buffer_dimension Nonzero for the BUFFER view dimension.
+/// @param[in] first_element First element exposed by the view.
+/// @param[in] num_elements Number of elements exposed by the view.
+/// @return One when the view exposes exactly the tracked typed-float buffer.
+int vgfx3d_d3d11_float_srv_view_desc_is_usable(size_t tracked_capacity,
+                                               int has_r32_float_format,
+                                               int has_buffer_dimension,
+                                               uint32_t first_element,
+                                               uint32_t num_elements) {
+    return vgfx3d_d3d11_is_valid_float_srv_element_count(tracked_capacity) &&
+           tracked_capacity == (size_t)num_elements && has_r32_float_format &&
+           has_buffer_dimension && first_element == 0u;
 }
 
 /// @brief Validate the fields required for WRITE_DISCARD constant-buffer updates.
@@ -1267,6 +1318,32 @@ int vgfx3d_d3d11_constant_buffer_desc_is_usable(uint32_t byte_width,
                                                 uint32_t structure_byte_stride) {
     return byte_width > 0 && byte_width <= VGFX3D_D3D11_MAX_CONSTANT_BUFFER_BYTES &&
            (byte_width & 15u) == 0u && has_dynamic_usage && has_constant_buffer_bind &&
+           has_cpu_write_access && misc_flags == 0u && structure_byte_stride == 0u;
+}
+
+/// @brief Validate a cached dynamic vertex/index buffer before WRITE_DISCARD reuse.
+/// @details The native ByteWidth must agree exactly with the backend's tracked
+///   capacity. This prevents stale metadata from authorizing a memcpy beyond
+///   the mapped resource or seeding an unbounded replacement allocation.
+/// @param[in] byte_width Native descriptor byte width.
+/// @param[in] tracked_capacity Backend-tracked byte capacity.
+/// @param[in] required_bytes Minimum bytes needed for the pending upload.
+/// @param[in] has_dynamic_usage Nonzero when usage is dynamic.
+/// @param[in] has_exact_bind_flags Nonzero when the bind class is exactly the requested class.
+/// @param[in] has_cpu_write_access Nonzero when CPU write access is enabled.
+/// @param[in] misc_flags Descriptor miscellaneous flags.
+/// @param[in] structure_byte_stride Structured-buffer stride field.
+/// @return One when the descriptor is safe for the pending mapped upload.
+int vgfx3d_d3d11_dynamic_buffer_desc_is_usable(uint32_t byte_width,
+                                               size_t tracked_capacity,
+                                               size_t required_bytes,
+                                               int has_dynamic_usage,
+                                               int has_exact_bind_flags,
+                                               int has_cpu_write_access,
+                                               uint32_t misc_flags,
+                                               uint32_t structure_byte_stride) {
+    return byte_width > 0u && tracked_capacity == (size_t)byte_width &&
+           required_bytes <= tracked_capacity && has_dynamic_usage && has_exact_bind_flags &&
            has_cpu_write_access && misc_flags == 0u && structure_byte_stride == 0u;
 }
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-07-20
+last-verified: 2026-07-25
 ---
 
 # Testing Guide
@@ -128,6 +128,27 @@ report unchanged demos as up to date, and the third measures release O2. For an
 optimizer change-report audit, rerun a representative target with
 `ZANNA_VERIFY_PASS_CHANGE_REPORTS=1`; this deliberately restores full-module
 fingerprints around every pass and is not a performance configuration.
+
+### Windows demo build and launch gate
+
+Use the canonical PowerShell driver to rebuild, PE-validate, launch-smoke, and
+publish the curated Windows demos:
+
+```powershell
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `
+    scripts/build_demos_win.ps1 --clean --run
+```
+
+Each demo is compiled once into a private directory with its declared assets.
+That exact generation is copied to a private smoke directory and replaces the
+published `examples/bin/<demo>/` directory only after validation succeeds.
+Publication retains a complete rollback generation during the directory swap.
+`ZANNA_DEMO_TIMEOUT` controls the per-demo launch budget in seconds (default
+`5`; selected large demos receive at least `10`), and
+`ZANNA_DEMO_MAX_OUTPUT_BYTES` bounds each redirected stream (default `1048576`,
+accepted range `4096` through `16777216`). A timeout counts as a successful
+interactive smoke only after the complete Windows process tree is terminated
+and the root process is reaped.
 
 ## Test Labels
 

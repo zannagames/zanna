@@ -292,8 +292,16 @@ static HRESULT d3d11_ensure_presented_snapshot_texture(d3d11_context_t *ctx,
     if (!ctx || !ctx->device || !vgfx3d_d3d11_is_valid_texture2d_extent(width, height))
         return E_INVALIDARG;
     if (ctx->presented_color_tex && ctx->presented_width == width &&
-        ctx->presented_height == height)
-        return S_OK;
+        ctx->presented_height == height) {
+        ID3D11Texture2D_GetDesc(ctx->presented_color_tex, &desc);
+        if (desc.Width == (UINT)width && desc.Height == (UINT)height && desc.MipLevels == 1u &&
+            desc.ArraySize == 1u && desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM &&
+            desc.SampleDesc.Count == 1u && desc.SampleDesc.Quality == 0u &&
+            desc.Usage == D3D11_USAGE_DEFAULT && desc.BindFlags == 0u &&
+            desc.CPUAccessFlags == 0u && desc.MiscFlags == 0u) {
+            return S_OK;
+        }
+    }
 
     memset(&desc, 0, sizeof(desc));
     desc.Width = (UINT)width;
@@ -307,6 +315,15 @@ static HRESULT d3d11_ensure_presented_snapshot_texture(d3d11_context_t *ctx,
     if (FAILED(hr) || !new_texture) {
         SAFE_RELEASE(new_texture);
         return FAILED(hr) ? hr : E_POINTER;
+    }
+    ID3D11Texture2D_GetDesc(new_texture, &desc);
+    if (desc.Width != (UINT)width || desc.Height != (UINT)height || desc.MipLevels != 1u ||
+        desc.ArraySize != 1u || desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM ||
+        desc.SampleDesc.Count != 1u || desc.SampleDesc.Quality != 0u ||
+        desc.Usage != D3D11_USAGE_DEFAULT || desc.BindFlags != 0u || desc.CPUAccessFlags != 0u ||
+        desc.MiscFlags != 0u) {
+        SAFE_RELEASE(new_texture);
+        return E_FAIL;
     }
     SAFE_RELEASE(ctx->presented_color_tex);
     ctx->presented_color_tex = new_texture;

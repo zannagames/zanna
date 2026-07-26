@@ -242,7 +242,8 @@ static inline int rt_atomic_fetch_add_i32(volatile int *ptr, int value, int orde
 /// @return The value stored in @p ptr before the subtraction.
 static inline int rt_atomic_fetch_sub_i32(volatile int *ptr, int value, int order) {
     (void)order;
-    return _InterlockedExchangeAdd((volatile long *)ptr, -value);
+    const uint32_t delta_bits = UINT32_C(0) - (uint32_t)value;
+    return _InterlockedExchangeAdd((volatile long *)ptr, (long)delta_bits);
 }
 
 /// @brief Atomically load a 64-bit signed integer on MSVC platforms.
@@ -320,7 +321,8 @@ static inline int64_t rt_atomic_fetch_add_i64(volatile int64_t *ptr, int64_t val
 /// @return The value stored in @p ptr before the subtraction.
 static inline int64_t rt_atomic_fetch_sub_i64(volatile int64_t *ptr, int64_t value, int order) {
     (void)order;
-    return _InterlockedExchangeAdd64((volatile long long *)ptr, -value);
+    const uint64_t delta_bits = UINT64_C(0) - (uint64_t)value;
+    return _InterlockedExchangeAdd64((volatile long long *)ptr, (long long)delta_bits);
 }
 
 /// @brief Atomically load a size_t value on MSVC platforms.
@@ -409,10 +411,11 @@ static inline size_t rt_atomic_fetch_add_size(volatile size_t *ptr, size_t value
 /// @return The value stored in @p ptr before the subtraction.
 static inline size_t rt_atomic_fetch_sub_size(volatile size_t *ptr, size_t value, int order) {
     (void)order;
+    const size_t delta_bits = (size_t)0 - value;
 #if defined(_M_X64) || defined(_M_ARM64)
-    return (size_t)_InterlockedExchangeAdd64((volatile long long *)ptr, -(long long)value);
+    return (size_t)_InterlockedExchangeAdd64((volatile long long *)ptr, (long long)delta_bits);
 #else
-    return (size_t)_InterlockedExchangeAdd((volatile long *)ptr, -(long)value);
+    return (size_t)_InterlockedExchangeAdd((volatile long *)ptr, (long)delta_bits);
 #endif
 }
 

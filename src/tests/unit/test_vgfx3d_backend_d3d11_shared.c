@@ -616,6 +616,31 @@ static void test_capacity_and_mip_helpers(void) {
                 "Constant-buffer descriptor validation requires CPU write access");
     EXPECT_TRUE(vgfx3d_d3d11_constant_buffer_desc_is_usable(32u, 1, 1, 1, 1u, 0u) == 0,
                 "Constant-buffer descriptor validation rejects incompatible misc flags");
+    EXPECT_TRUE(vgfx3d_d3d11_dynamic_buffer_desc_is_usable(4096u, 4096u, 1024u, 1, 1, 1, 0u, 0u) ==
+                    1,
+                "Dynamic-buffer descriptor validation accepts matching mapped storage");
+    EXPECT_TRUE(vgfx3d_d3d11_dynamic_buffer_desc_is_usable(1024u, 4096u, 2048u, 1, 1, 1, 0u, 0u) ==
+                    0,
+                "Dynamic-buffer descriptor validation rejects overstated cached capacity");
+    EXPECT_TRUE(vgfx3d_d3d11_dynamic_buffer_desc_is_usable(4096u, 4096u, 4097u, 1, 1, 1, 0u, 0u) ==
+                    0,
+                "Dynamic-buffer descriptor validation rejects uploads beyond ByteWidth");
+    EXPECT_TRUE(vgfx3d_d3d11_dynamic_buffer_desc_is_usable(4096u, 4096u, 1024u, 1, 0, 1, 0u, 0u) ==
+                    0,
+                "Dynamic-buffer descriptor validation rejects a mismatched bind class");
+    EXPECT_TRUE(vgfx3d_d3d11_float_srv_buffer_desc_is_usable(4096u, 1024u, 512u, 1, 1, 1, 0u, 0u) ==
+                    1,
+                "Float-SRV buffer validation accepts matching typed storage");
+    EXPECT_TRUE(vgfx3d_d3d11_float_srv_buffer_desc_is_usable(1024u, 1024u, 512u, 1, 1, 1, 0u, 0u) ==
+                    0,
+                "Float-SRV buffer validation rejects overstated cached capacity");
+    EXPECT_TRUE(
+        vgfx3d_d3d11_float_srv_buffer_desc_is_usable(4096u, 1024u, 1025u, 1, 1, 1, 0u, 0u) == 0,
+        "Float-SRV buffer validation rejects uploads beyond capacity");
+    EXPECT_TRUE(vgfx3d_d3d11_float_srv_view_desc_is_usable(1024u, 1, 1, 0u, 1024u) == 1,
+                "Float-SRV view validation accepts an exact full-buffer view");
+    EXPECT_TRUE(vgfx3d_d3d11_float_srv_view_desc_is_usable(1024u, 1, 1, 1u, 1023u) == 0,
+                "Float-SRV view validation rejects offset and narrowed views");
     EXPECT_TRUE(vgfx3d_d3d11_compute_rgba8_upload_pitch(3, &row_pitch) == 1 && row_pitch == 12u,
                 "RGBA8 upload-pitch helper computes tightly packed rows");
     EXPECT_TRUE(vgfx3d_d3d11_compute_rgba8_upload_pitch(0, &row_pitch) == 0 && row_pitch == 0u,
@@ -684,6 +709,10 @@ static void test_capacity_and_mip_helpers(void) {
     EXPECT_TRUE(vgfx3d_d3d11_compute_float_srv_capacity(512u, 300u, &capacity) == 1 &&
                     capacity == 512u,
                 "Float-SRV capacity preserves sufficient existing storage");
+    EXPECT_TRUE(vgfx3d_d3d11_compute_float_srv_capacity(
+                    (size_t)VGFX3D_D3D11_MAX_BUFFER_TEXELS + 1u, 3u, &capacity) == 1 &&
+                    capacity == VGFX3D_D3D11_MIN_FLOAT_SRV_CAPACITY,
+                "Float-SRV capacity recovers from invalid cached metadata");
     EXPECT_TRUE(vgfx3d_d3d11_compute_float_srv_capacity(
                     0u, (size_t)VGFX3D_D3D11_MAX_BUFFER_TEXELS + 1u, &capacity) == 0 &&
                     capacity == 0u,
@@ -2160,9 +2189,28 @@ static void test_d3d11_backend_source_contracts(void) {
                 "Readback staging allocates before releasing the cached surface");
     EXPECT_TRUE(text_appears_in_order_after(source,
                                             "d3d11_ensure_presented_snapshot_texture",
+                                            "ID3D11Texture2D_GetDesc(ctx->presented_color_tex",
+                                            "ID3D11Device_CreateTexture2D"),
+                "Presented snapshots validate cached native descriptors before reuse");
+    EXPECT_TRUE(text_appears_in_order_after(source,
+                                            "d3d11_ensure_presented_snapshot_texture",
                                             "&new_texture);",
                                             "SAFE_RELEASE(ctx->presented_color_tex);"),
                 "Presented snapshots allocate before replacing the cached texture");
+    EXPECT_TRUE(strstr(source, "vgfx3d_d3d11_dynamic_buffer_desc_is_usable") != NULL,
+                "Dynamic VB/IB reuse validates native descriptors against tracked capacity");
+    EXPECT_TRUE(text_appears_in_order_after(source,
+                                            "d3d11_ensure_float_srv_buffer",
+                                            "d3d11_float_srv_pair_is_usable(*buffer",
+                                            "ID3D11Device_CreateBuffer"),
+                "Float-SRV caches validate the backing buffer and view before reuse");
+    EXPECT_TRUE(text_appears_in_order_after(source,
+                                            "d3d11_ensure_float_srv_buffer",
+                                            "ID3D11Device_CreateShaderResourceView",
+                                            "d3d11_float_srv_pair_is_usable("),
+                "Float-SRV replacements validate native descriptors before publication");
+    EXPECT_TRUE(count_text(source, "return d3d11_required_output_result") == 0u,
+                "Direct D3D11 creation helpers release partial COM outputs on failure");
     EXPECT_TRUE(text_appears_in_order_after(source,
                                             "d3d11_ensure_scene_targets",
                                             "&new_depth_srv);",

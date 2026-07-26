@@ -27,7 +27,7 @@
 //        lib/gui/src/font/vg_canvas_integration.c
 //
 //===----------------------------------------------------------------------===//
-#include "../../../../runtime/rt_platform.h"
+#include "../vg_file_stdio.h"
 #include "vg_ttf_internal.h"
 #include <limits.h>
 #include <math.h>
@@ -135,43 +135,6 @@ static int vg_font_metric_to_int(double value) {
     return (int)value;
 }
 
-/// @brief Open a font file path using the platform's Unicode-aware API.
-/// @details POSIX platforms pass UTF-8 paths directly to fopen.  Windows uses
-///          `_wfopen` after converting the UTF-8 path and mode to UTF-16 so
-///          fonts outside the process ANSI code page can be loaded.
-/// @param path UTF-8 path to open.
-/// @param mode Standard fopen mode string.
-/// @return Open FILE handle, or NULL on conversion/open failure.
-static FILE *vg_font_fopen_utf8(const char *path, const char *mode) {
-#if RT_PLATFORM_WINDOWS
-    if (!path || !mode)
-        return NULL;
-    int path_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-    int mode_len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, NULL, 0);
-    if (path_len <= 0 || mode_len <= 0)
-        return NULL;
-    wchar_t *wide_path = (wchar_t *)malloc((size_t)path_len * sizeof(wchar_t));
-    wchar_t *wide_mode = (wchar_t *)malloc((size_t)mode_len * sizeof(wchar_t));
-    if (!wide_path || !wide_mode) {
-        free(wide_path);
-        free(wide_mode);
-        return NULL;
-    }
-    FILE *file = NULL;
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wide_path, path_len) ==
-            path_len &&
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, mode, -1, wide_mode, mode_len) ==
-            mode_len) {
-        file = _wfopen(wide_path, wide_mode);
-    }
-    free(wide_path);
-    free(wide_mode);
-    return file;
-#else
-    return fopen(path, mode);
-#endif
-}
-
 /// @brief Build a font around an owned TTF data buffer.
 /// @details Ownership of @p data transfers to this helper on entry. On success,
 ///          the returned font frees it from vg_font_destroy(); on failure, the
@@ -244,7 +207,7 @@ vg_font_t *vg_font_load_file(const char *path) {
     if (!path)
         return NULL;
 
-    FILE *f = vg_font_fopen_utf8(path, "rb");
+    FILE *f = vg_file_open_read_utf8(path);
     if (!f)
         return NULL;
 
@@ -864,7 +827,8 @@ static float vg_font_draw_shaped_segment(void *canvas,
         }
         float advance = 0.0f;
         for (uint16_t s = 0; s < shaped[i].source_len; ++s)
-            advance += vg_font_get_codepoint_advance(font, size, codepoints[shaped[i].source_start + s]);
+            advance +=
+                vg_font_get_codepoint_advance(font, size, codepoints[shaped[i].source_start + s]);
         // Always rasterize the SHAPED glyph id: fonts substitute in place
         // (contextual alternates keep one glyph per character with new ids —
         // the JetBrains Mono model) or merge (classic LookupType 4).

@@ -36,6 +36,7 @@
 #include "../../include/vg_theme.h"
 #include "../../include/vg_widget.h"
 #include "../../include/vg_widgets.h"
+#include "../vg_file_stdio.h"
 #include "vgfx.h"
 #if defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
@@ -319,7 +320,7 @@ static void image_unpremultiply_rgba(uint8_t *pixels, size_t width, size_t heigh
 /// @return `true` when the file was valid and its complete pixel array was
 ///         installed; `false` on I/O, validation, or allocation failure.
 static bool image_load_bmp(vg_image_t *image, const char *path) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = vg_file_open_read_utf8(path);
     if (!f)
         return false;
 
@@ -727,9 +728,12 @@ static void image_paint(vg_widget_t *widget, void *canvas) {
     vgfx_fill_rect((vgfx_window_t)canvas, dx, dy, dw, thickness, ring);
     vgfx_fill_rect((vgfx_window_t)canvas, dx, dy + dh - thickness, dw, thickness, ring);
     vgfx_fill_rect((vgfx_window_t)canvas, dx, dy + thickness, thickness, dh - thickness * 2, ring);
-    vgfx_fill_rect(
-        (vgfx_window_t)canvas, dx + dw - thickness, dy + thickness, thickness, dh - thickness * 2,
-        ring);
+    vgfx_fill_rect((vgfx_window_t)canvas,
+                   dx + dw - thickness,
+                   dy + thickness,
+                   thickness,
+                   dh - thickness * 2,
+                   ring);
 }
 
 /// @brief Create an image widget with no initial pixel data.

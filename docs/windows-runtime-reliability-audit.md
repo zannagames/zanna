@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-07-24
+last-verified: 2026-07-25
 ---
 
 # Windows Runtime Reliability Audit
@@ -18,7 +18,9 @@ native-link cross-layer dependency added for current MSVC object code.
 The 2026-07-23 passes added WR-199 through WR-450: 252 concrete repairs, with installer and
 Zanna Studio packaging intentionally receiving the largest share. The 2026-07-24 pass adds
 WR-451 through WR-502: 52 further Direct3D, native-installer, Windows build, and demo-automation
-repairs aimed at alpha-quality failure behavior.
+repairs aimed at alpha-quality failure behavior. The 2026-07-25 pass adds WR-503 through WR-560:
+58 remaining Unicode-I/O, persistence, synchronization, Direct3D cache, installer, and
+demo-automation repairs.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -524,15 +526,75 @@ repairs aimed at alpha-quality failure behavior.
 | WR-500 | demo timeout wait | After kill, the driver performed an unbounded `WaitForExit()`, so inherited redirected handles or failed termination could hang all demo automation. Reaping uses one finite five-second bound and reports a deterministic failure. |
 | WR-501 | Xenoscape asset generator | A newly added scene-source copy retained a raw `_WIN32` branch that was absent from the platform-policy debt baseline, making the complete Windows CTest gate fail after every compiled test passed. Both generator copies now select the available directory API through header capability detection, and directory-creation failures other than an existing output directory are fatal. |
 | WR-502 | installer build self-lock | Explicit `--build-dir` packaging launched that tree's `zanna.exe` and then asked it to relink the same image, which Windows denied with `LNK1104`. The wrapper now executes a unique, byte-exact staged driver outside the relink target, verifies its shape and SHA-256 before launch, and removes only the exact file and empty private directory afterward. |
+| WR-503 | runtime audio detection | Signature detection opened a UTF-8 runtime path through narrow `fopen`, so audio under names outside the active ANSI code page was reported as an unknown format. It now uses the strict UTF-8/native-path stdio adapter. |
+| WR-504 | runtime MP3 decode | Eager MP3-to-WAV conversion used the same narrow path boundary and failed before decoding non-ASCII filenames. The complete file read now starts from a strict UTF-16 Windows open. |
+| WR-505 | runtime MP3 streaming | The streaming MP3 reader independently used narrow `fopen`, so long-form playback disagreed with eager decoding on Unicode paths. Both paths now share the same non-inheritable UTF-8 adapter. |
+| WR-506 | runtime Ogg streaming | Ogg file readers also interpreted managed UTF-8 paths through the process ANSI code page. Ogg streams now open through the shared strict Windows filesystem boundary. |
+| WR-507 | runtime TLS files | Custom CA certificates, certificate chains, and private keys could not be read from Unicode paths. The common TLS text loader now performs strict UTF-8-to-UTF-16 opening. |
+| WR-508 | runtime HDR assets | Cubemap panorama loading used narrow stdio even though the runtime asset contract is UTF-8. HDR files now use the shared Unicode/non-inheritable adapter. |
+| WR-509 | light-probe persistence | Probe-grid load and save paths were ANSI-only on Windows. Both directions now honor the runtime's UTF-8 path contract. |
+| WR-510 | game-state persistence | World save slots could be constructed as UTF-8 beneath a Unicode profile but were then reopened through narrow stdio. State loads and temporary saves now stay Unicode end to end. |
+| WR-511 | native audio sound files | ZannaAUD eager WAV loading bypassed runtime path adapters and could not open non-ACP filenames. A library-local strict UTF-8 reader now opens them through UTF-16. |
+| WR-512 | native audio music files | ZannaAUD's streaming WAV path had a second independent narrow open. Music streams now use the same Unicode reader as sound effects. |
+| WR-513 | GUI bitmap files | The GUI BMP widget loaded image paths with narrow stdio. It now shares a strict UTF-8 GUI asset reader with the font loader. |
+| WR-514 | GUI/font handle inheritance | The prior Unicode font helper used `_wfopen`, whose descriptor could remain inheritable across a later child launch. GUI asset descriptors are now created explicitly with `_O_NOINHERIT`. |
+| WR-515 | audio handle inheritance | ZannaAUD file descriptors could likewise escape into spawned processes and retain asset locks. Its Windows reader now creates non-inheritable descriptors before converting them to `FILE *`. |
+| WR-516 | malformed asset paths | The new GUI and audio boundaries could have preserved Unicode support while still accepting lossy conversion. Both helpers use `MB_ERR_INVALID_CHARS` and fail without opening a replacement-character path. |
+| WR-517 | light-probe save atomicity | Probe-grid saves wrote directly into the destination, so disk-full or short-write failure destroyed the prior valid bake. They now write an exclusive same-directory temporary file and atomically replace only after a successful close. |
+| WR-518 | game-state temp collisions | World saves reused one predictable `<slot>.tmp` name, allowing concurrent saves or stale files to truncate each other's work. A bounded exclusive-create sequence now gives each attempt collision-safe staging. |
+| WR-519 | game-state replacement gap | Windows `rename` was preceded by unconditional destination deletion, so replacement failure lost the last good save. `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)` now publishes without a delete gap and failed stages are removed. |
+| WR-520 | Ogg CRC initialization | Concurrent first Ogg readers raced on a plain initialized flag and could calculate page CRCs through a partially populated table. A release/acquire three-state latch publishes the table only after all 256 entries exist. |
+| WR-521 | MSVC 32-bit atomics | `fetch_sub(ptr, INT_MIN)` evaluated `-INT_MIN`, which is signed overflow before reaching the interlocked intrinsic. The subtraction delta is now formed with defined unsigned modulo arithmetic. |
+| WR-522 | MSVC 64-bit atomics | The 64-bit interlocked subtraction repeated the same undefined negation for `INT64_MIN`. It now forms and passes the exact two's-complement bit delta without signed arithmetic. |
+| WR-523 | MSVC size atomics | `size_t` subtraction first narrowed an unsigned decrement to a signed native integer and then negated it, making large decrements implementation-dependent or undefined. The modulo delta is computed in `size_t` before the width-specific intrinsic call. |
+| WR-524 | D3D11 float-SRV growth | A corrupted current morph-buffer capacity above the typed-buffer limit was used as the growth seed and could force an impossible or overflowing allocation. Invalid capacities now reset to the bounded initial growth policy. |
+| WR-525 | D3D11 dynamic-buffer cache | Vertex/index buffer reuse trusted the backend's byte-capacity field without checking the live resource. `ByteWidth`, usage, exact bind class, CPU access, misc flags, and stride must now match before mapped reuse. |
+| WR-526 | D3D11 dynamic bind input | The resize helper accepted arbitrary or combined bind flags even though its mapped-update contract supports only vertex or index buffers. Unsupported bind classes now fail before resource creation. |
+| WR-527 | D3D11 poisoned growth | An invalid cached buffer could still seed the next geometric allocation with stale, attacker-sized metadata. Only a descriptor-validated cache contributes its prior capacity. |
+| WR-528 | D3D11 dynamic publication | A successful driver/proxy buffer creation was published without checking that its native descriptor matched the requested capacity and update mode. Replacement resources are now re-read and validated before the old cache is released. |
+| WR-529 | D3D11 snapshot cache | Presented-color snapshots were reused from width/height metadata alone. The cached texture must now also match exact format, subresources, sampling, usage, bind, CPU-access, and misc fields. |
+| WR-530 | D3D11 snapshot publication | A newly created snapshot was trusted solely from HRESULT and non-null output. Its complete descriptor is now validated before it can replace the last usable snapshot. |
+| WR-531 | D3D11 morph backing buffer | Morph uploads trusted a float capacity that could overstate the backing buffer and authorize an out-of-range `UpdateSubresource` box. The native byte width must now equal exactly `capacity * sizeof(float)`. |
+| WR-532 | D3D11 morph SRV range | A cached morph SRV could expose the wrong type, an offset, or fewer elements while still being rebound. Reuse now requires an exact R32_FLOAT full-buffer view starting at element zero. |
+| WR-533 | D3D11 morph resource pairing | A structurally valid SRV could name a different buffer from the cached upload target. `GetResource` identity is checked and its temporary COM reference is released on every path. |
+| WR-534 | D3D11 morph publication | New morph buffer/SRV pairs were published immediately after creation. The complete pair, its descriptors, capacity, and resource identity are now validated transactionally first. |
+| WR-535 | D3D11 rasterizer output | Base rasterizer creation returned a failed HRESULT without releasing a faulty driver's partial output. The helper now clears every failed or successful-null output before returning. |
+| WR-536 | D3D11 biased rasterizer output | Per-draw biased rasterizer creation had the same direct-return leak and could retain a partial state outside the cache. It now enforces the owned-output cleanup contract. |
+| WR-537 | D3D11 constant-buffer output | Constant-buffer creation was the third direct helper that leaked a partial COM object on failure. It now releases partial output and requires a non-null successful buffer. |
+| WR-538 | Win32 thread joins | Four server teardown paths treated every return from `WaitForSingleObject` as a completed join and then freed borrowed state. A shared helper accepts only `WAIT_OBJECT_0` before cleanup. |
+| WR-539 | Win32 self joins | A server stopped from its own accept thread could wait forever. The helper recognizes the current thread by native thread ID, closes the owned handle, and reports the self-stop case distinctly. |
+| WR-540 | Win32 join ownership | Invalid non-thread handles and wait failures could leak the supposedly owned handle. Failure paths now preserve a deterministic error while attempting the matching close. |
+| WR-541 | HTTP teardown | Plain HTTP retained its own unchecked wait/close sequence. It now uses the checked join boundary and aborts before unsafe state cleanup if synchronization fails. |
+| WR-542 | HTTPS teardown | HTTPS duplicated the same unchecked lifecycle and now follows the identical checked ownership rule. |
+| WR-543 | WebSocket teardown | Plain WebSocket teardown could deadlock on self-stop or continue after a failed native wait. It now uses the shared exact join result. |
+| WR-544 | secure WebSocket teardown | WSS had the fourth raw wait/close sequence and now shares the checked self/failure handling. |
+| WR-545 | installer package snapshot | The host read its running installer through a sharing mode that allowed another process to modify or replace it between hashing, overlay parsing, and extraction. `CreateFileW` now denies write/delete sharing while the complete package snapshot is retained. |
+| WR-546 | installer package reads | Stream positioning did not provide one exact native read contract for truncation, growth, short reads, and close failure. The host now bounds `GetFileSizeEx`, loops exact `ReadFile` chunks, probes EOF, and checks `CloseHandle`. |
+| WR-547 | installer log short writes | A successful zero/oversized `WriteFile` result returned failure without a reliable error, so diagnostics could report stale `GetLastError` state. Short writes now publish `ERROR_WRITE_FAULT`. |
+| WR-548 | installer log failure recovery | Throwing on a log append failure while retaining the bad handle made rollback logging throw repeatedly and could interrupt recovery. The failed log is closed and disabled before the first error escapes. |
+| WR-549 | installer BOM diagnostics | A successful short BOM write could reuse an unrelated prior error, while flush failure was folded into the same ambiguous condition. Exact write and flush results now select deterministic diagnostics and close the failed log. |
+| WR-550 | installer validator clock | Child timeouts used adjustable wall-clock UTC, so a clock correction could extend or prematurely expire validation. Process budgets now use a monotonic `Stopwatch`. |
+| WR-551 | installer validator descendants | Timeout and output-limit cleanup killed only the root validator child, allowing installer/compiler descendants to retain files, pipes, or mutations. Cleanup now invokes the Windows process-tree terminator for the exact root PID. |
+| WR-552 | installer validator termination | The tree terminator itself could hang or fail silently. Its launch, ten-second exit, and exit code are checked before validation continues. |
+| WR-553 | installer validator reap | Root reaping after termination was ignored, allowing the next lifecycle phase to race a still-live process. A second bounded wait now proves the root handle is signaled. |
+| WR-554 | demo diagnostics | A failed demo compilation reran the complete compiler solely to recover stderr, doubling time and potentially changing artifacts or diagnostics. One combined captured invocation is now authoritative. |
+| WR-555 | demo publication unit | Executables and assets were updated separately, so a failure could expose a new executable with old/partial assets. A complete private directory is smoke-tested and moved into place as one generation. |
+| WR-556 | demo publication rollback | Replacing a published demo did not preserve one complete prior directory across a failed move. Publication moves the old generation to a unique sibling backup and restores it on any commit failure. |
+| WR-557 | demo stale assets | Rebuilding after removing an asset directive left the old file live because staging copied into the existing output tree. Whole-directory replacement makes the manifest's current asset set exact. |
+| WR-558 | demo smoke generation | Smoke runs independently recopied project assets, so the tested generation could differ from the one later published. The runner now copies only the already completed staged directory. |
+| WR-559 | demo smoke resources | A child could emit redirected output without bound, exhausting disk while the driver waited. Separate stdout/stderr limits are enforced during and after execution with a configurable 1 MiB default. |
+| WR-560 | demo cleanup and deadlines | Smoke timeouts used one blocking wait and clean used recursive deletion that could traverse a reparse point. Monotonic polling now bounds output and process-tree termination, while root/child reparse validation removes each owned entry without following indirection. |
 
 ## Regression coverage
 
 - `test_rt_windows_runtime` exercises finite wait slicing, concurrent process-lifetime WinSock
   initialization, the CRT-exit-table exclusion, deterministic WinSock error/output contracts,
   entropy argument handling, strict Windows path transcoding, checked directory conversion,
-  ordinal comparison, fail-closed deletion guards, processor-count validity, drive-root temp
-  preservation, long environment-backed home paths, CRT-aware network workers, restricted child
-  handle inheritance, checked capture/wait failures, and the bounded WASAPI
+  Unicode/non-inheritable stdio, failure-atomic save source contracts, signed-minimum atomic
+  subtraction, exact thread-handle joining, ordinal comparison, fail-closed deletion guards,
+  processor-count validity, drive-root temp preservation, long environment-backed home paths,
+  CRT-aware network workers, restricted child handle inheritance, checked capture/wait failures,
+  and the bounded WASAPI
   thread/format/buffer/control-thread source contracts. `native_run_windows_environment`
   additionally compiles
   and runs an ephemeral `TcpServer` through the CRT-less native PE startup path.
@@ -557,7 +619,9 @@ repairs aimed at alpha-quality failure behavior.
   switching, staging recovery, resize ordering, post-FX target planning, overlay-preserving scene
   replacement, BGRA/feature-level device creation, device-health checks after void GPU commands,
   hardware-to-WARP retry cleanup, complete fallback-resource publication, timing-query health
-  checks, malformed RTT staging eviction, and initialized diagnostic formatting;
+  checks, malformed RTT staging eviction, native dynamic/morph-buffer descriptor validation,
+  exact morph SRV/resource pairing, partial-output cleanup, presented-snapshot validation, and
+  initialized diagnostic formatting;
   `zia_smoke_d3d11_rtt_readback`,
   `g3d_test_canvas3d_viewmodel_sprite`, `g3d_test_canvas3d_point_shadows_d3d11`, and the Ridgebound
   D3D11 smoke exercise the hardware backend.
@@ -571,8 +635,9 @@ repairs aimed at alpha-quality failure behavior.
   input-race detection, paired metadata publication, staging cleanup, single/multi-config Studio
   discovery, PE/provenance checks, path confinement, bounded installer validation, duplicate
   demo-output rejection, transactional demo PE publication, quoted asset parsing, reparse
-  rejection, architecture proof, private smoke directories, process-tree termination, and bounded
-  reap waits. It also launches the logic-free `.cmd` compatibility shim and pins installer-wrapper
+  rejection, architecture proof, whole-generation demo publication and rollback, private smoke
+  directories, bounded output, monotonic deadlines, process-tree termination, and checked reap
+  waits. It also launches the logic-free `.cmd` compatibility shim and pins installer-wrapper
   help, equals-form input detection, required Studio output checks, and the distinct
   package/product version domains used during lifecycle validation.
 - `test_windows_installer_cleanup_policy` covers supported drive/UNC namespaces, root and traversal
@@ -594,7 +659,8 @@ repairs aimed at alpha-quality failure behavior.
   guarded painting, per-monitor DPI transitions, quit preservation, and bounded/coalesced progress.
   `test_windows_installer_brand_validation` directly exercises page/progress UTF-16 and size
   bounds, action identity, accessible labels, default/close results, verification gates, and work
-  presence.
+  presence. Host source contracts additionally pin mutation-denying package snapshots, exact
+  native reads, deterministic log short-write errors, and fail-closed log initialization.
 - `windows_installer_host_cli_contracts` exercises duplicate, empty, ambiguous-help, and malformed
   internal-handoff options without entering an installer mutation path.
 - `windows_utf8_tool_command_line` exercises Unicode source input through `zanna`, `zia`, and
@@ -617,6 +683,28 @@ The `.cmd` demo shim delegates to that canonical PowerShell implementation under
 remains mandatory for future changes in these adapters.
 
 ## Validation record
+
+Revalidated on Windows x64/MSVC on 2026-07-25:
+
+- A clean canonical `scripts/build_zanna_win.ps1` run passed 1,858/1,858 CTests in
+  486.58 seconds, then completed strict platform-policy lint, the runtime-surface audit,
+  every cross-platform host smoke, and installation. The audit accounted for 7,586 runtime
+  functions, 524 classes, and 8,940 header declarations, and its eight focused tests passed.
+- After the last native and automation changes, a frozen-source incremental canonical run passed
+  the same 1,858/1,858 CTests in 502.56 seconds and repeated the lint, runtime audit, host-smoke,
+  and install gates. Both canonical runs produced empty stderr logs. Targeted Windows runtime,
+  Direct3D shared-backend, audio, installer-lifecycle, and automation regression CTests also
+  passed during development.
+- `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+  scripts/build_demos_win.ps1 --clean --run` rebuilt, PE-validated, privately launch-smoked, and
+  atomically published all nine curated native x64 demos in 307.1 seconds: Ashfall, 3D Bowling,
+  Ridgebound, Xenoscape, Crackman, Chess, Baseball, Paint, and ZannaSQL. The demo gate produced
+  no stderr output.
+- `clang-format --dry-run --Werror` passed for all 26 changed native source files. PowerShell
+  parser checks passed for all three changed scripts, the source-header audit found zero missing
+  file headers, `scripts/check_docs.sh`, strict changed-only platform lint, and
+  `git diff --check` passed. The documentation auditor's 540 existing undocumented runtime
+  prototypes remain informational debt and were not increased by this pass.
 
 Revalidated on Windows x64/MSVC on 2026-07-24:
 

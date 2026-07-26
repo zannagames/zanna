@@ -1206,7 +1206,11 @@ static HRESULT d3d11_create_rasterizer_state(d3d11_context_t *ctx,
     desc.FrontCounterClockwise = TRUE;
     desc.DepthClipEnable = TRUE;
     hr = ID3D11Device_CreateRasterizerState(ctx->device, &desc, out_state);
-    return d3d11_required_output_result(hr, *out_state);
+    if (FAILED(hr) || !*out_state) {
+        SAFE_RELEASE(*out_state);
+        return FAILED(hr) ? hr : E_POINTER;
+    }
+    return S_OK;
 }
 
 /// @brief Pick the right pre-built rasterizer state for the given draw flags.
@@ -1292,7 +1296,11 @@ static HRESULT d3d11_create_depth_biased_rasterizer(d3d11_context_t *ctx,
     desc.SlopeScaledDepthBias = d3d11_slope_bias(cmd->slope_scaled_depth_bias, reversed_z);
     desc.DepthBiasClamp = 0.0f;
     hr = ID3D11Device_CreateRasterizerState(ctx->device, &desc, out_state);
-    return d3d11_required_output_result(hr, *out_state);
+    if (FAILED(hr) || !*out_state) {
+        SAFE_RELEASE(*out_state);
+        return FAILED(hr) ? hr : E_POINTER;
+    }
+    return S_OK;
 }
 
 /// @brief Return a cached rasterizer state matching a biased draw.
@@ -1394,7 +1402,11 @@ static HRESULT d3d11_create_constant_buffer(d3d11_context_t *ctx,
         return E_OUTOFMEMORY;
     desc.ByteWidth = (UINT)byte_width;
     hr = ID3D11Device_CreateBuffer(ctx->device, &desc, NULL, out_buffer);
-    return d3d11_required_output_result(hr, *out_buffer);
+    if (FAILED(hr) || !*out_buffer) {
+        SAFE_RELEASE(*out_buffer);
+        return FAILED(hr) ? hr : E_POINTER;
+    }
+    return S_OK;
 }
 
 /// @brief Initialize common non-comparison sampler fields to D3D11-valid defaults.
@@ -1677,16 +1689,31 @@ static HRESULT d3d11_ensure_dynamic_buffer(d3d11_context_t *ctx,
     size_t new_capacity;
     ID3D11Buffer *new_buffer = NULL;
     uint32_t byte_width;
+    int cached_usable = 0;
     HRESULT hr;
 
     if (!ctx || !ctx->device || !buffer || !capacity)
         return E_INVALIDARG;
+    if (bind_flags != D3D11_BIND_VERTEX_BUFFER && bind_flags != D3D11_BIND_INDEX_BUFFER)
+        return E_INVALIDARG;
     if (needed == 0)
         needed = 4;
-    if (*buffer && *capacity >= needed)
-        return S_OK;
+    if (*buffer) {
+        ID3D11Buffer_GetDesc(*buffer, &desc);
+        cached_usable = vgfx3d_d3d11_dynamic_buffer_desc_is_usable(
+            desc.ByteWidth,
+            *capacity,
+            0u,
+            desc.Usage == D3D11_USAGE_DYNAMIC,
+            desc.BindFlags == bind_flags,
+            desc.CPUAccessFlags == D3D11_CPU_ACCESS_WRITE,
+            desc.MiscFlags,
+            desc.StructureByteStride);
+        if (cached_usable && *capacity >= needed)
+            return S_OK;
+    }
 
-    new_capacity = *capacity > 0 ? *capacity : initial_size;
+    new_capacity = cached_usable ? *capacity : initial_size;
     if (new_capacity == 0)
         new_capacity = 4;
     while (new_capacity < needed) {
@@ -1704,6 +1731,19 @@ static HRESULT d3d11_ensure_dynamic_buffer(d3d11_context_t *ctx,
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     hr = ID3D11Device_CreateBuffer(ctx->device, &desc, NULL, &new_buffer);
     if (SUCCEEDED(hr) && new_buffer) {
+        ID3D11Buffer_GetDesc(new_buffer, &desc);
+        if (!vgfx3d_d3d11_dynamic_buffer_desc_is_usable(desc.ByteWidth,
+                                                        new_capacity,
+                                                        needed,
+                                                        desc.Usage == D3D11_USAGE_DYNAMIC,
+                                                        desc.BindFlags == bind_flags,
+                                                        desc.CPUAccessFlags ==
+                                                            D3D11_CPU_ACCESS_WRITE,
+                                                        desc.MiscFlags,
+                                                        desc.StructureByteStride)) {
+            SAFE_RELEASE(new_buffer);
+            return E_FAIL;
+        }
         SAFE_RELEASE(*buffer);
         *buffer = new_buffer;
         *capacity = new_capacity;
@@ -2023,6 +2063,51 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
     }
 }
 
+/// @brief Validate a cached typed-float buffer and its paired SRV.
+/// @details Descriptor validation prevents stale capacity metadata, a view of a
+///   different resource, or a narrowed/offset view from being reused for morph
+///   uploads. GetResource adds a temporary reference that is always released.
+/// @param[in] buffer Candidate typed-float backing buffer.
+/// @param[in] srv Candidate view paired with @p buffer.
+/// @param[in] tracked_capacity Backend-tracked float-element capacity.
+/// @param[in] required_elements Minimum elements required by the next upload.
+/// @return One when the pair exactly matches the backend's update and bind contract.
+static int d3d11_float_srv_pair_is_usable(ID3D11Buffer *buffer,
+                                          ID3D11ShaderResourceView *srv,
+                                          size_t tracked_capacity,
+                                          size_t required_elements) {
+    D3D11_BUFFER_DESC buffer_desc;
+    D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc;
+    ID3D11Resource *view_resource = NULL;
+    int usable;
+
+    if (!buffer || !srv)
+        return 0;
+    memset(&buffer_desc, 0, sizeof(buffer_desc));
+    memset(&srv_desc, 0, sizeof(srv_desc));
+    ID3D11Buffer_GetDesc(buffer, &buffer_desc);
+    ID3D11ShaderResourceView_GetDesc(srv, &srv_desc);
+    ID3D11ShaderResourceView_GetResource(srv, &view_resource);
+    usable = view_resource == (ID3D11Resource *)buffer &&
+             vgfx3d_d3d11_float_srv_buffer_desc_is_usable(buffer_desc.ByteWidth,
+                                                          tracked_capacity,
+                                                          required_elements,
+                                                          buffer_desc.Usage == D3D11_USAGE_DEFAULT,
+                                                          buffer_desc.BindFlags ==
+                                                              D3D11_BIND_SHADER_RESOURCE,
+                                                          buffer_desc.CPUAccessFlags == 0u,
+                                                          buffer_desc.MiscFlags,
+                                                          buffer_desc.StructureByteStride) &&
+             vgfx3d_d3d11_float_srv_view_desc_is_usable(tracked_capacity,
+                                                        srv_desc.Format == DXGI_FORMAT_R32_FLOAT,
+                                                        srv_desc.ViewDimension ==
+                                                            D3D11_SRV_DIMENSION_BUFFER,
+                                                        srv_desc.Buffer.FirstElement,
+                                                        srv_desc.Buffer.NumElements);
+    SAFE_RELEASE(view_resource);
+    return usable;
+}
+
 /// @brief Resize a Buffer + SRV pair to hold `element_count` floats.
 ///
 /// Creates a replacement buffer/SRV at `element_count` elements and swaps it
@@ -2044,6 +2129,7 @@ static HRESULT d3d11_ensure_float_srv_buffer(d3d11_context_t *ctx,
     ID3D11Buffer *new_buffer = NULL;
     ID3D11ShaderResourceView *new_srv = NULL;
     size_t allocation_capacity;
+    size_t growth_base = 0u;
     size_t bytes;
     uint32_t byte_width;
     HRESULT hr;
@@ -2052,10 +2138,14 @@ static HRESULT d3d11_ensure_float_srv_buffer(d3d11_context_t *ctx,
         return E_INVALIDARG;
     if (element_count == 0)
         return S_OK;
-    if (*buffer && *srv && *capacity >= element_count)
-        return S_OK;
+    if (d3d11_float_srv_pair_is_usable(*buffer, *srv, *capacity, 0u)) {
+        if (*capacity >= element_count)
+            return S_OK;
+        growth_base = *capacity;
+    }
 
-    if (!vgfx3d_d3d11_compute_float_srv_capacity(*capacity, element_count, &allocation_capacity) ||
+    if (!vgfx3d_d3d11_compute_float_srv_capacity(
+            growth_base, element_count, &allocation_capacity) ||
         !d3d11_checked_mul_size(allocation_capacity, sizeof(float), &bytes))
         return E_OUTOFMEMORY;
     if (!vgfx3d_d3d11_compute_buffer_byte_width(bytes, &byte_width))
@@ -2081,6 +2171,11 @@ static HRESULT d3d11_ensure_float_srv_buffer(d3d11_context_t *ctx,
         SAFE_RELEASE(new_srv);
         SAFE_RELEASE(new_buffer);
         return FAILED(hr) ? hr : E_POINTER;
+    }
+    if (!d3d11_float_srv_pair_is_usable(new_buffer, new_srv, allocation_capacity, element_count)) {
+        SAFE_RELEASE(new_srv);
+        SAFE_RELEASE(new_buffer);
+        return E_FAIL;
     }
     d3d11_unbind_draw_resources(ctx);
     SAFE_RELEASE(*srv);

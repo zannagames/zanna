@@ -9,7 +9,16 @@
 // Purpose: Audio format detection and decoding to WAV/PCM (WAV passthrough,
 //   Ogg Vorbis, MP3). The audio engine/mixer lives in rt_audio.c.
 //
-// Links: rt_audio.h, rt_audio_internal.h, rt_audio.c
+// Key invariants:
+//   - File paths remain strict UTF-8 through the native filesystem boundary.
+//   - Decoded sizes and RIFF fields are checked before allocation or narrowing.
+//   - Failure never publishes a partial caller-owned output buffer.
+//
+// Ownership/Lifetime:
+//   - Successful conversion outputs transfer malloc-owned bytes to the caller.
+//   - File streams and decoder state are closed or released on every return path.
+//
+// Links: rt_audio.h, rt_audio_internal.h, rt_audio.c, rt_file_stdio.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,9 +30,11 @@
 ///          for the common sound-loading path. Every returned byte buffer is
 ///          allocated with `malloc` and transfers ownership to the caller.
 
-#include "rt_audio.h"
 #include "rt_asset.h"
+#include "rt_audio.h"
+#include "rt_audio_internal.h"
 #include "rt_error.h"
+#include "rt_file_stdio.h"
 #include "rt_mixgroup.h"
 #include "rt_mp3.h"
 #include "rt_object.h"
@@ -40,7 +51,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "rt_audio_internal.h"
 
 /// @brief Identify an encoded audio format from its leading bytes.
 /// @details Recognizes RIFF/WAV and Ogg capture signatures, MP3 streams with an
@@ -72,7 +82,7 @@ int detect_audio_format_mem(const void *data, size_t size) {
 /// @return `1` for RIFF/WAV, `2` for Ogg, `3` for MP3, or `0` when the file
 ///         cannot be opened/read or its signature is unrecognized.
 int detect_audio_format(const char *filepath) {
-    FILE *af = fopen(filepath, "rb");
+    FILE *af = rt_file_stdio_open_utf8(filepath, "rb");
     if (!af)
         return 0;
     uint8_t hdr[4];
@@ -377,7 +387,7 @@ int mp3_data_to_wav(const uint8_t *data, size_t size, uint8_t **out_data, size_t
 /// @param out_len Receives the WAV buffer length in bytes on success.
 /// @return `0` on success, or `-1` on file, size, allocation, or decode failure.
 int mp3_file_to_wav(const char *filepath, uint8_t **out_data, size_t *out_len) {
-    FILE *mf = fopen(filepath, "rb");
+    FILE *mf = rt_file_stdio_open_utf8(filepath, "rb");
     if (!mf)
         return -1;
     if (fseek(mf, 0, SEEK_END) != 0) {

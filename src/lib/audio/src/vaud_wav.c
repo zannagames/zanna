@@ -5,30 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// ZannaAUD WAV File Parser
+// File: src/lib/audio/src/vaud_wav.c
+// Purpose: Parse RIFF/WAVE files and provide bounded eager and streaming PCM
+//          decode paths for the native audio library.
 //
-// Parses RIFF WAV files containing PCM audio data. Supports:
-// - 8-bit unsigned PCM
-// - 16-bit signed PCM
-// - Mono and stereo
-// - Any sample rate (will be resampled by caller if needed)
+// Key invariants:
+//   - Accepted PCM/IEEE-float layouts are validated before sample conversion.
+//   - Windows file paths are decoded strictly from UTF-8 and opened without
+//     descriptor inheritance.
+//   - Decoded samples use the library's interleaved signed-16 representation.
 //
-// WAV file format (simplified):
-//   Offset  Size  Description
-//   0       4     "RIFF" chunk ID
-//   4       4     Chunk size (file size - 8)
-//   8       4     "WAVE" format
-//   12      4     "fmt " subchunk ID
-//   16      4     Subchunk size (16 for PCM)
-//   20      2     Audio format (1 = PCM)
-//   22      2     Number of channels
-//   24      4     Sample rate
-//   28      4     Byte rate
-//   32      2     Block align
-//   34      2     Bits per sample
-//   36      4     "data" subchunk ID
-//   40      4     Data size
-//   44      ...   PCM data
+// Ownership/Lifetime:
+//   - Eager decode outputs transfer malloc-owned sample storage to the caller.
+//   - Streaming state borrows its FILE only for the lifetime documented by the
+//     owning vaud_music object.
+//
+// Links: src/lib/audio/src/vaud_file_stdio.h,
+//        src/lib/audio/src/vaud_internal.h,
+//        src/lib/audio/include/vaud.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,6 +41,7 @@
 #define _LARGEFILE_SOURCE
 #endif
 
+#include "vaud_file_stdio.h"
 #include "vaud_internal.h"
 #include <math.h>
 #include <stdio.h>
@@ -686,7 +681,7 @@ int vaud_wav_load_file(const char *path,
     *out_sample_rate = 0;
     *out_channels = 0;
 
-    FILE *file = fopen(path, "rb");
+    FILE *file = vaud_file_open_read_utf8(path);
     if (!file) {
         vaud_set_error(VAUD_ERR_FILE, "Failed to open WAV file");
         return 0;
@@ -831,7 +826,7 @@ int vaud_wav_open_stream(const char *path,
                              out_format);
 
     /* Open file */
-    FILE *file = fopen(path, "rb");
+    FILE *file = vaud_file_open_read_utf8(path);
     if (!file) {
         vaud_set_error(VAUD_ERR_FILE, "Failed to open music file");
         return 0;

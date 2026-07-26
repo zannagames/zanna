@@ -210,15 +210,34 @@ Assert-True ($demoSource.Contains('$outputDirectory = Join-Path $binDir $Name'))
     "The demo driver does not isolate each demo's published executable and assets."
 Assert-True ($demoSource.Contains("Assert-NoReparsePath") -and
              $demoSource.Contains("Assert-PortableExecutableArchitecture") -and
-             $demoSource.Contains("Publish-DemoExecutable")) `
-    "The demo driver lacks indirection checks or transactional PE publication."
+             $demoSource.Contains("Publish-DemoDirectory") -and
+             $demoSource.Contains("[IO.Directory]::Move(`$stageFull, `$destinationFull)")) `
+    "The demo driver lacks indirection checks or transactional directory publication."
 Assert-True ($demoSource.Contains("New-DemoRunDirectory") -and
              $demoSource.Contains("Stop-DemoProcessTree") -and
-             $demoSource.Contains("taskkill.exe")) `
+             $demoSource.Contains("taskkill.exe") -and
+             -not $demoSource.Contains(
+                 '$killer.ExitCode -ne 0 -and -not $Process.HasExited')) `
     "The demo driver does not isolate smoke runs or terminate child process trees."
 Assert-True ($demoSource.Contains('WaitForExit($processStopTimeoutMilliseconds)') -and
              -not $demoSource.Contains('$process.WaitForExit()')) `
     "The demo driver retains an unbounded redirected-process wait."
+Assert-True ($demoSource.Contains("ZANNA_DEMO_MAX_OUTPUT_BYTES") -and
+             $demoSource.Contains("[Diagnostics.Stopwatch]::StartNew()") -and
+             $demoSource.Contains("output exceeded the")) `
+    "The demo driver does not bound smoke output with a monotonic deadline."
+Assert-True ($demoSource.Contains("SourceDirectory `$stageDirectory") -and
+             $demoSource.Contains("Stage-DemoAssets -ProjectDir `$ProjectDir " +
+                                  "-DestinationRoot `$stageDirectory") -and
+             $demoSource.Contains("Existing demo publication tree")) `
+    "The demo driver does not smoke and publish one complete executable/asset generation."
+Assert-True (([regex]::Matches(
+                 $demoSource, [regex]::Escape('& $zanna @buildArguments'))).Count -eq 1) `
+    "The demo driver still recompiles a failed project to recover diagnostics."
+Assert-True ($demoSource.Contains("Remove-DemoRunDirectoryEntry -Path `$entry.FullName") -and
+             -not $demoSource.Contains(
+                 "Remove-Item -LiteralPath `$entry.FullName -Recurse -Force")) `
+    "The demo clean path can recursively traverse a reparse point."
 Assert-True ($demoSource.Contains("ConvertFrom-NativeArgumentString -Value `$trimmed") -and
              $demoSource.Contains("malformed asset directive")) `
     "The demo driver does not parse quoted asset paths fail-closed."
@@ -297,8 +316,16 @@ $validatorSource = [IO.File]::ReadAllText($ValidatorScript)
 Assert-True ($validatorSource.Contains("ProcessTimeoutSeconds") -and
              $validatorSource.Contains("MaximumCaptureBytes") -and
              $validatorSource.Contains("MaximumInspectBytes") -and
-             $validatorSource.Contains("Process timed out after")) `
+             $validatorSource.Contains("Process timed out after") -and
+             $validatorSource.Contains("[Diagnostics.Stopwatch]::StartNew()")) `
     "The installer validator lacks bounded process and inspect handling."
+Assert-True ($validatorSource.Contains("Stop-CheckedProcessTree") -and
+             $validatorSource.Contains("taskkill.exe") -and
+             $validatorSource.Contains("did not reap within 10 seconds") -and
+             -not $validatorSource.Contains(
+                 '$killer.ExitCode -ne 0 -and -not $Process.HasExited') -and
+             -not $validatorSource.Contains("[void]`$process.Kill()")) `
+    "The installer validator does not terminate and confirm complete process trees."
 Assert-True ($validatorSource.Contains("Resolve-SafeRelativePath") -and
              $validatorSource.Contains("Test-PathWithin") -and
              $validatorSource.Contains("[IO.FileMode]::CreateNew")) `

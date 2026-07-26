@@ -37,7 +37,6 @@
 #include <chrono>
 #include <cstdlib>
 #include <cwchar>
-#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -78,21 +77,50 @@ bool isAsciiAlnum(unsigned char ch) {
 }
 
 std::vector<uint8_t> readWholeFile(const fs::path &path) {
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input)
+    HANDLE file = CreateFileW(path.c_str(),
+                              GENERIC_READ,
+                              FILE_SHARE_READ,
+                              nullptr,
+                              OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                              nullptr);
+    if (file == INVALID_HANDLE_VALUE)
         throw std::runtime_error("cannot open installer executable");
-    const std::streamoff end = input.tellg();
-    if (end < 0 || static_cast<uint64_t>(end) > kMaximumInstallerExecutableBytes ||
-        static_cast<uint64_t>(end) > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-        throw std::runtime_error("installer executable is too large");
+    try {
+        LARGE_INTEGER nativeSize{};
+        if (!GetFileSizeEx(file, &nativeSize) || nativeSize.QuadPart < 0 ||
+            static_cast<uint64_t>(nativeSize.QuadPart) > kMaximumInstallerExecutableBytes ||
+            static_cast<uint64_t>(nativeSize.QuadPart) >
+                static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+            throw std::runtime_error("installer executable is too large");
+        }
+        std::vector<uint8_t> bytes(static_cast<size_t>(nativeSize.QuadPart));
+        size_t offset = 0;
+        while (offset < bytes.size()) {
+            const DWORD requested = static_cast<DWORD>(
+                std::min<size_t>(bytes.size() - offset, static_cast<size_t>(MAXDWORD)));
+            DWORD read = 0;
+            if (!ReadFile(file, bytes.data() + offset, requested, &read, nullptr) || read == 0 ||
+                read > requested) {
+                throw std::runtime_error("cannot read installer executable");
+            }
+            offset += read;
+        }
+        uint8_t extra = 0;
+        DWORD extraRead = 0;
+        if (!ReadFile(file, &extra, 1, &extraRead, nullptr) || extraRead != 0)
+            throw std::runtime_error("installer executable changed while it was being read");
+        if (!CloseHandle(file)) {
+            file = INVALID_HANDLE_VALUE;
+            throw std::runtime_error("cannot close installer executable");
+        }
+        file = INVALID_HANDLE_VALUE;
+        return bytes;
+    } catch (...) {
+        if (file != INVALID_HANDLE_VALUE)
+            CloseHandle(file);
+        throw;
     }
-    std::vector<uint8_t> bytes(static_cast<size_t>(end));
-    input.seekg(0, std::ios::beg);
-    if (!bytes.empty() && !input.read(reinterpret_cast<char *>(bytes.data()), end))
-        throw std::runtime_error("cannot read installer executable");
-    if (input.peek() != std::ifstream::traits_type::eof())
-        throw std::runtime_error("installer executable changed while it was being read");
-    return bytes;
 }
 
 struct OverlayRange {
@@ -411,8 +439,11 @@ bool appendLogRecord(HANDLE handle, std::string_view record) {
         const DWORD requested =
             static_cast<DWORD>(std::min<size_t>(record.size() - offset, MAXDWORD));
         DWORD written = 0;
-        if (!WriteFile(handle, record.data() + offset, requested, &written, nullptr) ||
-            written == 0 || written > requested) {
+        if (!WriteFile(handle, record.data() + offset, requested, &written, nullptr)) {
+            return false;
+        }
+        if (written == 0 || written > requested) {
+            SetLastError(ERROR_WRITE_FAULT);
             return false;
         }
         offset += written;
@@ -609,9 +640,14 @@ void Logger::open(const fs::path &path) {
     if (size.QuadPart == 0) {
         static constexpr uint8_t kUtf8Bom[] = {0xEF, 0xBB, 0xBF};
         DWORD written = 0;
-        if (!WriteFile(handle_, kUtf8Bom, sizeof(kUtf8Bom), &written, nullptr) ||
-            written != sizeof(kUtf8Bom) || !FlushFileBuffers(handle_)) {
-            const DWORD error = GetLastError();
+        const BOOL writeOk = WriteFile(handle_, kUtf8Bom, sizeof(kUtf8Bom), &written, nullptr);
+        const BOOL flushOk =
+            writeOk && written == sizeof(kUtf8Bom) ? FlushFileBuffers(handle_) : FALSE;
+        if (!writeOk || written != sizeof(kUtf8Bom) || !flushOk) {
+            DWORD error =
+                writeOk && written != sizeof(kUtf8Bom) ? ERROR_WRITE_FAULT : GetLastError();
+            if (error == ERROR_SUCCESS)
+                error = ERROR_WRITE_FAULT;
             CloseHandle(handle_);
             handle_ = INVALID_HANDLE_VALUE;
             throw std::runtime_error("cannot initialize the installer log: " +
@@ -631,7 +667,14 @@ void Logger::write(std::wstring_view level, std::wstring_view message) {
              << std::setw(3) << now.wMilliseconds << L"Z [" << level << L"] "
              << sanitizeLogLine(message) << L"\r\n";
         const std::string utf8 = wideToUtf8(line.str());
-        (void)appendLogRecord(handle_, utf8);
+        if (!appendLogRecord(handle_, utf8)) {
+            const DWORD error = GetLastError();
+            CloseHandle(handle_);
+            handle_ = INVALID_HANDLE_VALUE;
+            throw std::runtime_error(
+                "cannot append the installer log: " +
+                wideToUtf8(formatWindowsError(error == ERROR_SUCCESS ? ERROR_WRITE_FAULT : error)));
+        }
     }
     if (progressCallback_ && level != L"ERROR") {
         try {

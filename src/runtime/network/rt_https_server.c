@@ -39,6 +39,7 @@
 #include "rt_string.h"
 #include "rt_threadpool.h"
 #include "rt_tls_server_internal.h"
+#include "rt_win32_wait.h"
 #include "system/rt_machine.h"
 
 #include <ctype.h>
@@ -1995,12 +1996,8 @@ void rt_https_server_stop(void *obj) {
 
     if (had_thread) {
 #ifdef _WIN32
-        DWORD accept_thread_id = accept_thread ? GetThreadId(accept_thread) : 0;
-        int stopping_from_accept_thread =
-            accept_thread_id != 0 && accept_thread_id == GetCurrentThreadId();
-        if (!stopping_from_accept_thread)
-            WaitForSingleObject(accept_thread, INFINITE);
-        CloseHandle(accept_thread);
+        if (rt_win32_join_thread_handle(accept_thread) == RT_WIN32_THREAD_JOIN_FAILED)
+            abort();
 #else
         if (pthread_equal(pthread_self(), accept_thread) != 0)
             pthread_detach(accept_thread);

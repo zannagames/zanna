@@ -36,6 +36,7 @@
 #include "rt_asset.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
+#include "rt_file_stdio.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_parallel.h"
 #include "rt_pixels.h"
@@ -772,7 +773,7 @@ static void cubemap_hdr_sample_panorama(
 /// @return `malloc`-owned file bytes, including a one-byte allocation for an
 ///   empty file, or `NULL` on open/seek/read/allocation failure.
 static uint8_t *cubemap_hdr_read_file(const char *path, size_t *out_size) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = rt_file_stdio_open_utf8(path, "rb");
     long len;
     uint8_t *data;
     *out_size = 0;

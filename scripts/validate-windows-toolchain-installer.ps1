@@ -61,6 +61,45 @@ function Quote-ProcessArgument {
     return $escaped
 }
 
+function Stop-CheckedProcessTree {
+    param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
+
+    if ($Process.HasExited) {
+        return
+    }
+    $taskkill = Join-Path $env:SystemRoot "System32\taskkill.exe"
+    if (-not (Test-Path -LiteralPath $taskkill -PathType Leaf)) {
+        throw "Cannot locate the Windows process-tree terminator: $taskkill"
+    }
+    $killInfo = [Diagnostics.ProcessStartInfo]::new()
+    $killInfo.FileName = $taskkill
+    $killInfo.Arguments = "/PID $($Process.Id) /T /F"
+    $killInfo.UseShellExecute = $false
+    $killInfo.CreateNoWindow = $true
+    $killer = [Diagnostics.Process]::Start($killInfo)
+    if ($null -eq $killer) {
+        throw "Failed to start the Windows process-tree terminator."
+    }
+    try {
+        if (-not $killer.WaitForExit(10000)) {
+            try {
+                $killer.Kill()
+            } catch {
+                # The bounded wait failure remains authoritative.
+            }
+            throw "The Windows process-tree terminator did not exit within 10 seconds."
+        }
+        if ($killer.ExitCode -ne 0) {
+            throw "The Windows process-tree terminator failed with exit code $($killer.ExitCode)."
+        }
+    } finally {
+        $killer.Dispose()
+    }
+    if (-not $Process.WaitForExit(10000)) {
+        throw "The terminated process tree did not reap within 10 seconds."
+    }
+}
+
 function Test-PathWithin {
     param(
         [Parameter(Mandatory = $true)][string]$Base,
@@ -317,7 +356,7 @@ function Invoke-CapturedProcess {
 
         $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
         $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
-        $deadline = [DateTime]::UtcNow.AddSeconds($ProcessTimeoutSeconds)
+        $elapsed = [Diagnostics.Stopwatch]::StartNew()
         $failure = $null
         while (-not $process.WaitForExit(25)) {
             if ($stdoutStream.Length -gt $MaximumCaptureBytes -or
@@ -326,20 +365,14 @@ function Invoke-CapturedProcess {
                     "Process output exceeded the $MaximumCaptureBytes-byte capture limit: $FilePath"
                 break
             }
-            if ([DateTime]::UtcNow -ge $deadline) {
+            if ($elapsed.Elapsed.TotalSeconds -ge $ProcessTimeoutSeconds) {
                 $failure = "Process timed out after $ProcessTimeoutSeconds seconds: $FilePath"
                 break
             }
         }
+        $elapsed.Stop()
         if ($failure) {
-            try {
-                [void]$process.Kill()
-            } catch {
-                if (-not $process.HasExited) {
-                    throw
-                }
-            }
-            [void]$process.WaitForExit(10000)
+            Stop-CheckedProcessTree -Process $process
             [void]$process.StandardOutput.Close()
             [void]$process.StandardError.Close()
         } else {

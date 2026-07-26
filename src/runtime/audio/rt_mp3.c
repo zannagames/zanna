@@ -30,6 +30,7 @@
 ///          borrowed frame buffer owned by the stream.
 
 #include "rt_mp3.h"
+#include "rt_file_stdio.h"
 #include "rt_mp3_tables.h"
 
 #include <math.h>
@@ -1152,7 +1153,7 @@ mp3_stream_t *mp3_stream_open(const char *filepath) {
     if (!filepath)
         return NULL;
 
-    FILE *f = fopen(filepath, "rb");
+    FILE *f = rt_file_stdio_open_utf8(filepath, "rb");
     if (!f)
         return NULL;
     fseek(f, 0, SEEK_END);

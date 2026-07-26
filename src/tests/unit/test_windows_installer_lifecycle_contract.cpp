@@ -131,6 +131,14 @@ int main() {
            "Writable-parent probes retry bounded name collisions");
     expect(source.find("cannot inspect an existing installation entry") != std::string::npos,
            "Disk preflight fails closed when existing entry attributes are unreadable");
+    expect(hostSource.find("FILE_SHARE_READ") != std::string::npos &&
+               hostSource.find("FILE_FLAG_SEQUENTIAL_SCAN") != std::string::npos &&
+               hostSource.find("installer executable changed while it was being read") !=
+                   std::string::npos,
+           "Installer package reads deny concurrent mutation and require an exact snapshot");
+    expect(hostSource.find("cannot append the installer log") != std::string::npos &&
+               hostSource.find("SetLastError(ERROR_WRITE_FAULT)") != std::string::npos,
+           "Installer logging surfaces short writes and flush failures");
 
     expect(source.find("kMaximumTextFileBytes") != std::string::npos &&
                source.find("metadata text file grew while being read") != std::string::npos,

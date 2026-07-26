@@ -612,6 +612,36 @@ int vgfx3d_d3d11_is_valid_float_srv_element_count(size_t element_count);
 int vgfx3d_d3d11_compute_float_srv_capacity(size_t current_capacity,
                                             size_t needed_capacity,
                                             size_t *out_capacity);
+/// @brief Validate cached typed-float buffer descriptor metadata.
+/// @param[in] byte_width Native descriptor width.
+/// @param[in] tracked_capacity Backend-tracked float-element capacity.
+/// @param[in] required_elements Minimum elements required by the next upload.
+/// @param[in] has_default_usage Default-usage flag.
+/// @param[in] has_exact_srv_bind Exact shader-resource bind flag.
+/// @param[in] has_no_cpu_access No-CPU-access flag.
+/// @param[in] misc_flags Miscellaneous flags.
+/// @param[in] structure_byte_stride Structure stride.
+/// @return One when the native descriptor and cached capacity agree.
+int vgfx3d_d3d11_float_srv_buffer_desc_is_usable(uint32_t byte_width,
+                                                 size_t tracked_capacity,
+                                                 size_t required_elements,
+                                                 int has_default_usage,
+                                                 int has_exact_srv_bind,
+                                                 int has_no_cpu_access,
+                                                 uint32_t misc_flags,
+                                                 uint32_t structure_byte_stride);
+/// @brief Validate cached typed-float shader-resource-view metadata.
+/// @param[in] tracked_capacity Backend-tracked float-element capacity.
+/// @param[in] has_r32_float_format R32_FLOAT format flag.
+/// @param[in] has_buffer_dimension Buffer-dimension flag.
+/// @param[in] first_element First exposed buffer element.
+/// @param[in] num_elements Number of exposed elements.
+/// @return One when the view exposes exactly the tracked float buffer.
+int vgfx3d_d3d11_float_srv_view_desc_is_usable(size_t tracked_capacity,
+                                               int has_r32_float_format,
+                                               int has_buffer_dimension,
+                                               uint32_t first_element,
+                                               uint32_t num_elements);
 /// @brief Validate the structural contract required by a dynamic constant buffer.
 /// @param[in] byte_width Descriptor width.
 /// @param[in] has_dynamic_usage Dynamic-usage flag.
@@ -626,6 +656,24 @@ int vgfx3d_d3d11_constant_buffer_desc_is_usable(uint32_t byte_width,
                                                 int has_cpu_write_access,
                                                 uint32_t misc_flags,
                                                 uint32_t structure_byte_stride);
+/// @brief Validate cached dynamic vertex/index-buffer descriptor metadata.
+/// @param[in] byte_width Native descriptor width.
+/// @param[in] tracked_capacity Backend-tracked byte capacity.
+/// @param[in] required_bytes Minimum bytes required by the next upload.
+/// @param[in] has_dynamic_usage Dynamic-usage flag.
+/// @param[in] has_exact_bind_flags Exact expected vertex/index bind flag.
+/// @param[in] has_cpu_write_access CPU-write flag.
+/// @param[in] misc_flags Miscellaneous flags.
+/// @param[in] structure_byte_stride Structure stride.
+/// @return One when the native descriptor and cached capacity agree.
+int vgfx3d_d3d11_dynamic_buffer_desc_is_usable(uint32_t byte_width,
+                                               size_t tracked_capacity,
+                                               size_t required_bytes,
+                                               int has_dynamic_usage,
+                                               int has_exact_bind_flags,
+                                               int has_cpu_write_access,
+                                               uint32_t misc_flags,
+                                               uint32_t structure_byte_stride);
 /// @brief Validate an RGBA8 readback destination span.
 /// @param[in] width Destination width.
 /// @param[in] height Destination height.

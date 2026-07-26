@@ -18,6 +18,7 @@
 //   - Entropy adapters reject invalid outputs without a fallback.
 //   - Filesystem adapters reject malformed UTF-8/UTF-16 at Win32 boundaries
 //     and recursive-delete protection fails closed.
+//   - MSVC atomic subtraction preserves modulo arithmetic at signed minima.
 //   - Machine queries preserve drive roots and long environment-backed paths.
 //   - WASAPI source contracts use the CRT thread entry point, strict negotiated
 //     format metadata, bounded repeated failures, and paired buffer release.
@@ -32,7 +33,8 @@
 // Links: src/runtime/rt_win32_wait.h,
 //        src/runtime/network/rt_socket_platform.h,
 //        src/runtime/network/rt_entropy_platform.h,
-//        src/runtime/io/rt_file_path.h, src/runtime/io/rt_dir_internal.h,
+//        src/runtime/io/rt_file_path.h, src/runtime/io/rt_file_stdio.h,
+//        src/runtime/io/rt_dir_internal.h,
 //        src/lib/audio/src/vaud_platform_win32.c, src/common/RunProcess.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -47,12 +49,15 @@
 #include "rt_dir_internal.h"
 #include "rt_entropy_platform.h"
 #include "rt_file_path.h"
+#include "rt_file_stdio.h"
 #include "rt_internal.h"
 #include "rt_machine.h"
+#include "rt_platform.h"
 #include "rt_win32_wait.h"
 
 #include <array>
 #include <cassert>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -61,6 +66,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <process.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -84,6 +90,55 @@ static void test_finite_wait_deadlines() {
     assert(rt_win32_wait_slice_at(100, 100 + (ULONGLONG)INFINITE) == RT_WIN32_MAX_FINITE_WAIT_MS);
     assert(rt_win32_wait_slice_at(0, ULLONG_MAX) == RT_WIN32_MAX_FINITE_WAIT_MS);
     assert(RT_WIN32_MAX_FINITE_WAIT_MS != INFINITE);
+}
+
+static unsigned __stdcall completed_thread_entry(void *) {
+    return 0;
+}
+
+static void test_checked_win32_thread_join() {
+    const uintptr_t raw = _beginthreadex(nullptr, 0, completed_thread_entry, nullptr, 0, nullptr);
+    assert(raw != 0);
+    const HANDLE thread = reinterpret_cast<HANDLE>(raw);
+    assert(rt_win32_join_thread_handle(thread) == RT_WIN32_THREAD_JOINED);
+    DWORD flags = 0;
+    assert(!GetHandleInformation(thread, &flags));
+    assert(GetLastError() == ERROR_INVALID_HANDLE);
+
+    HANDLE current = nullptr;
+    assert(DuplicateHandle(GetCurrentProcess(),
+                           GetCurrentThread(),
+                           GetCurrentProcess(),
+                           &current,
+                           SYNCHRONIZE | THREAD_QUERY_LIMITED_INFORMATION,
+                           FALSE,
+                           0));
+    assert(rt_win32_join_thread_handle(current) == RT_WIN32_THREAD_JOIN_CURRENT);
+    assert(!GetHandleInformation(current, &flags));
+    assert(GetLastError() == ERROR_INVALID_HANDLE);
+
+    const HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    assert(event != nullptr);
+    assert(rt_win32_join_thread_handle(event) == RT_WIN32_THREAD_JOIN_FAILED);
+    assert(!GetHandleInformation(event, &flags));
+    assert(GetLastError() == ERROR_INVALID_HANDLE);
+}
+
+static void test_msvc_atomic_subtraction_wraparound() {
+    volatile int value32 = 7;
+    assert(rt_atomic_fetch_sub_i32(&value32, INT_MIN, __ATOMIC_SEQ_CST) == 7);
+    assert((uint32_t)rt_atomic_load_i32(&value32, __ATOMIC_SEQ_CST) ==
+           UINT32_C(7) - (uint32_t)INT_MIN);
+
+    volatile int64_t value64 = INT64_C(11);
+    assert(rt_atomic_fetch_sub_i64(&value64, INT64_MIN, __ATOMIC_SEQ_CST) == INT64_C(11));
+    assert((uint64_t)rt_atomic_load_i64(&value64, __ATOMIC_SEQ_CST) ==
+           UINT64_C(11) - (uint64_t)INT64_MIN);
+
+    volatile size_t size_value = (size_t)13;
+    const size_t decrement = (SIZE_MAX / 2U) + 1U;
+    assert(rt_atomic_fetch_sub_size(&size_value, decrement, __ATOMIC_SEQ_CST) == (size_t)13);
+    assert(rt_atomic_load_size(&size_value, __ATOMIC_SEQ_CST) == (size_t)13 - decrement);
 }
 
 static void test_concurrent_winsock_initialization() {
@@ -166,6 +221,42 @@ static void test_strict_windows_path_transcoding() {
     assert(rt_dir_win_wide_to_string_checked(L"zanna-\x6771\x4EAC", &checked_valid));
     assert(std::strcmp(rt_string_cstr(checked_valid), valid_utf8) == 0);
     rt_str_release_maybe(checked_valid);
+}
+
+static void test_utf8_stdio_open_and_inheritance() {
+    wchar_t tempRoot[32768]{};
+    const DWORD length = GetTempPathW(static_cast<DWORD>(std::size(tempRoot)), tempRoot);
+    assert(length > 0 && length < std::size(tempRoot));
+    const std::filesystem::path nativePath =
+        std::filesystem::path(tempRoot) /
+        (L"zanna-stdio-\x6771\x4EAC-" + std::to_wstring(GetCurrentProcessId()) + L".bin");
+    rt_string utf8Path = rt_file_path_wide_to_string(nativePath.c_str());
+    assert(utf8Path != nullptr);
+    const char *path = rt_string_cstr(utf8Path);
+    assert(path != nullptr && path[0] != '\0');
+
+    FILE *output = rt_file_stdio_open_utf8(path, "wb");
+    assert(output != nullptr);
+    const intptr_t nativeHandle = _get_osfhandle(_fileno(output));
+    assert(nativeHandle != -1);
+    DWORD flags = HANDLE_FLAG_INHERIT;
+    assert(GetHandleInformation(reinterpret_cast<HANDLE>(nativeHandle), &flags));
+    assert((flags & HANDLE_FLAG_INHERIT) == 0);
+    static constexpr char payload[] = "utf8-stdio";
+    assert(std::fwrite(payload, 1, sizeof(payload), output) == sizeof(payload));
+    assert(std::fclose(output) == 0);
+
+    FILE *input = rt_file_stdio_open_utf8(path, "rb");
+    assert(input != nullptr);
+    char actual[sizeof(payload)]{};
+    assert(std::fread(actual, 1, sizeof(actual), input) == sizeof(actual));
+    assert(std::memcmp(actual, payload, sizeof(payload)) == 0);
+    assert(std::fclose(input) == 0);
+    assert(rt_file_stdio_unlink_utf8(path) == 0);
+    rt_str_release_maybe(utf8Path);
+
+    const char malformed[] = "\xC0\xAF";
+    assert(rt_file_stdio_open_utf8(malformed, "rb") == nullptr);
 }
 
 static void test_recursive_delete_path_guards() {
@@ -274,6 +365,8 @@ static void test_windows_network_worker_source_contracts() {
         assert(source.find("_beginthreadex") != std::string::npos);
         assert(source.find("CreateThread(NULL") == std::string::npos);
         assert(source.find("unsigned __stdcall") != std::string::npos);
+        assert(source.find("rt_win32_join_thread_handle") != std::string::npos);
+        assert(source.find("WaitForSingleObject(") == std::string::npos);
     }
 }
 
@@ -293,6 +386,36 @@ static void test_windows_unicode_storage_source_contracts() {
     assert(savedata.find("getenv(\"USERPROFILE\")") == std::string::npos);
     assert(savedata.find("getenv(\"HOMEDRIVE\")") == std::string::npos);
     assert(savedata.find("getenv(\"HOMEPATH\")") == std::string::npos);
+
+    constexpr std::array<const char *, 8> utf8RuntimeFiles = {
+        "src/runtime/audio/rt_audio_decode.c",
+        "src/runtime/audio/rt_mp3.c",
+        "src/runtime/audio/rt_ogg.c",
+        "src/runtime/network/rt_tls_certs.c",
+        "src/runtime/graphics/3d/rt_game3d_persistence.c",
+        "src/runtime/graphics/3d/render/rt_cubemap3d.c",
+        "src/runtime/graphics/3d/render/rt_lightbaker3d.c",
+        "src/lib/audio/src/vaud_wav.c",
+    };
+    for (const char *relativePath : utf8RuntimeFiles) {
+        const std::string file = read_source({relativePath});
+        assert(file.find("fopen(") == std::string::npos);
+    }
+    const std::string image = read_source({"src", "lib", "gui", "src/widgets/vg_image.c"});
+    assert(image.find("fopen(") == std::string::npos);
+    const std::string guiFile = read_source({"src", "lib", "gui", "src/vg_file_stdio.h"});
+    assert(guiFile.find("_O_NOINHERIT") != std::string::npos);
+    const std::string audioFile = read_source({"src", "lib", "audio", "src/vaud_file_stdio.h"});
+    assert(audioFile.find("_O_NOINHERIT") != std::string::npos);
+    const std::string persistence =
+        read_source({"src", "runtime", "graphics", "3d/rt_game3d_persistence.c"});
+    assert(persistence.find("rt_file_stdio_open_temp_for_replace_utf8") != std::string::npos);
+    assert(persistence.find("remove(path)") == std::string::npos);
+    const std::string lightBaker =
+        read_source({"src", "runtime", "graphics", "3d/render/rt_lightbaker3d.c"});
+    assert(lightBaker.find("rt_file_stdio_open_temp_for_replace_utf8") != std::string::npos);
+    const std::string ogg = read_source({"src", "runtime", "audio", "rt_ogg.c"});
+    assert(ogg.find("rt_atomic_compare_exchange_i32") != std::string::npos);
 }
 
 static void test_win32_window_source_contracts() {
@@ -324,11 +447,14 @@ static void test_windows_run_process_source_contracts() {
 
 int main() {
     test_finite_wait_deadlines();
+    test_checked_win32_thread_join();
+    test_msvc_atomic_subtraction_wraparound();
     test_concurrent_winsock_initialization();
     test_winsock_error_contracts();
     test_winsock_startup_source_contract();
     test_entropy_argument_contracts();
     test_strict_windows_path_transcoding();
+    test_utf8_stdio_open_and_inheritance();
     test_recursive_delete_path_guards();
     test_machine_windows_snapshots();
     test_wasapi_backend_source_contracts();

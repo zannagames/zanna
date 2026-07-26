@@ -28,6 +28,7 @@
 #include "rt_crypto.h"
 #include "rt_crypto_module.h"
 #include "rt_ecdsa_p256.h"
+#include "rt_file_stdio.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_rsa.h"
@@ -55,7 +56,7 @@ char *tls_read_text_file(const char *path, size_t *len_out) {
     if (!path || !*path)
         return NULL;
 
-    f = fopen(path, "rb");
+    f = rt_file_stdio_open_utf8(path, "rb");
     if (!f)
         return NULL;
     if (fseek(f, 0, SEEK_END) != 0)

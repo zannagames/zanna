@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-23
+last-verified: 2026-07-25
 ---
 
 # Installer and Package Release Guide
@@ -353,8 +353,11 @@ cmake --install build --prefix "$PWD\build\release-stage" --config Release
 .\scripts\validate-windows-toolchain-installer.ps1 -Installer build\zanna-toolchain.exe
 ```
 
-The validator gives every child a finite timeout and streams stdout/stderr
-through bounded captures. Override the defaults with
+The validator gives every child a monotonic finite timeout and streams
+stdout/stderr through bounded captures. Timeout and capture-limit failures
+terminate the complete Windows process tree, bound and check the terminator,
+and prove the root process was reaped before the next lifecycle phase.
+Override the defaults with
 `-ProcessTimeoutSeconds`, `-MaximumCaptureBytes`, and `-MaximumInspectBytes`
 only for a known slow disposable host. It validates every installed tool as an
 architecture-matched PE32+ image and checks the complete Studio

@@ -32,6 +32,7 @@
 #include "rt_string.h"
 #include "rt_threadpool.h"
 #include "rt_tls_server_internal.h"
+#include "rt_win32_wait.h"
 #include "system/rt_machine.h"
 
 #include <limits.h>
@@ -1225,8 +1226,8 @@ void rt_wss_server_stop(void *obj) {
 
     if (s->thread_started) {
 #if RT_PLATFORM_WINDOWS
-        WaitForSingleObject(s->accept_thread, INFINITE);
-        CloseHandle(s->accept_thread);
+        if (rt_win32_join_thread_handle(s->accept_thread) == RT_WIN32_THREAD_JOIN_FAILED)
+            abort();
 #else
         pthread_join(s->accept_thread, NULL);
 #endif
