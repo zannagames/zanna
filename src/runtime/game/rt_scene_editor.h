@@ -302,6 +302,87 @@ int64_t rt_game_scene_object_x(void *scene, int64_t index);
 /// @return Stored y coordinate, or `0` for an invalid index.
 int64_t rt_game_scene_object_y(void *scene, int64_t index);
 
+/// @brief Return an object's rotation in canonical [0, 360) degrees (ADR 0192).
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored rotation, or `0` for an invalid index.
+double rt_game_scene_object_rotation(void *scene, int64_t index);
+
+/// @brief Set an object's rotation about its pivot, normalized into [0, 360).
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param degrees Rotation in degrees; non-finite input becomes 0.
+void rt_game_scene_set_object_rotation(void *scene, int64_t index, double degrees);
+
+/// @brief Return an object's horizontal scale factor (default 1).
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored factor, or `1` for an invalid index.
+double rt_game_scene_object_scale_x(void *scene, int64_t index);
+
+/// @brief Return an object's vertical scale factor (default 1).
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored factor, or `1` for an invalid index.
+double rt_game_scene_object_scale_y(void *scene, int64_t index);
+
+/// @brief Set an object's scale factors about its pivot.
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param scale_x Horizontal factor clamped to [-10000, 10000]; 0 becomes 1.
+/// @param scale_y Vertical factor with the same envelope.
+void rt_game_scene_set_object_scale(void *scene, int64_t index, double scale_x, double scale_y);
+
+/// @brief Return whether an object mirrors horizontally about its pivot.
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored flag, or `0` for an invalid index.
+int8_t rt_game_scene_object_flip_x(void *scene, int64_t index);
+
+/// @brief Return whether an object mirrors vertically about its pivot.
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored flag, or `0` for an invalid index.
+int8_t rt_game_scene_object_flip_y(void *scene, int64_t index);
+
+/// @brief Set an object's mirroring flags.
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param flip_x Nonzero mirrors horizontally about the pivot.
+/// @param flip_y Nonzero mirrors vertically about the pivot.
+void rt_game_scene_set_object_flip(void *scene, int64_t index, int8_t flip_x, int8_t flip_y);
+
+/// @brief Return an object's RGBA multiply tint (opaque white = no tint).
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored 32-bit tint, or opaque white for an invalid index.
+int64_t rt_game_scene_object_tint(void *scene, int64_t index);
+
+/// @brief Set an object's RGBA multiply tint, masked to 32 bits.
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param rgba Replacement tint; opaque white means "no tint".
+void rt_game_scene_set_object_tint(void *scene, int64_t index, int64_t rgba);
+
+/// @brief Return an object's normalized horizontal pivot (default 0.5).
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored pivot component in [0, 1], or `0.5` for an invalid index.
+double rt_game_scene_object_pivot_x(void *scene, int64_t index);
+
+/// @brief Return an object's normalized vertical pivot (default 0.5).
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored pivot component in [0, 1], or `0.5` for an invalid index.
+double rt_game_scene_object_pivot_y(void *scene, int64_t index);
+
+/// @brief Set an object's normalized pivot within its sprite footprint.
+/// @param scene Borrowed SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param pivot_x Horizontal component clamped to [0, 1].
+/// @param pivot_y Vertical component clamped to [0, 1].
+void rt_game_scene_set_object_pivot(void *scene, int64_t index, double pivot_x, double pivot_y);
+
 /// @brief Return an object's organizational parent index, or -1 for a root.
 /// @details Invalid object indices also return -1. Positions remain absolute
 ///          scene-space coordinates and do not inherit from this parent.

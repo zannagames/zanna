@@ -75,6 +75,14 @@ typedef pthread_mutex_t http_server_mutex_t;
 extern void rt_trap_net(const char *msg, int err_code);
 extern int rt_trap_get_net_code(void);
 
+/// @brief Expose a runtime String's exact bytes while detecting embedded nulls.
+/// @details Output receivers are cleared first. A valid handle with a
+///          host-representable nonnegative length publishes its borrowed bytes
+///          and length for additional caller validation.
+/// @param s Runtime String to inspect.
+/// @param data_out Optional receiver for the borrowed byte pointer.
+/// @param len_out Optional receiver for the exact logical length.
+/// @return Nonzero for a missing or wrong-kind handle or an embedded null byte; zero otherwise.
 static int server_string_has_embedded_nul(rt_string s, const char **data_out, size_t *len_out) {
     if (data_out)
         *data_out = NULL;
@@ -188,11 +196,15 @@ static void build_route_response(rt_http_server_impl *server, server_req_t *req,
 static void free_route_entries(rt_http_server_impl *server);
 static void free_handler_bindings(rt_http_server_impl *server);
 
+/// @brief Acquire the mutex protecting running state and active-connection bookkeeping.
+/// @param server Initialized server payload; null or partial payloads are no-ops.
 static void server_state_lock(rt_http_server_impl *server) {
     if (server && server->state_lock_initialized)
         HTTP_SERVER_MUTEX_LOCK(&server->state_lock);
 }
 
+/// @brief Release the server state mutex.
+/// @param server Server whose initialized state mutex is held by the caller.
 static void server_state_unlock(rt_http_server_impl *server) {
     if (server && server->state_lock_initialized)
         HTTP_SERVER_MUTEX_UNLOCK(&server->state_lock);
@@ -258,6 +270,9 @@ static server_res_t *server_res_checked(void *obj) {
     return (server_res_t *)obj;
 }
 
+/// @brief Read the server's published running flag under its state mutex.
+/// @param server Server to inspect.
+/// @return One while the accept loop is running; zero for stopped or null servers.
 static int server_is_running(rt_http_server_impl *server) {
     int running = 0;
     if (!server)
@@ -286,6 +301,13 @@ static int server_configuration_blocked(rt_http_server_impl *server) {
     return blocked;
 }
 
+/// @brief Add a TCP handle to the synchronized active-connection registry.
+/// @details Duplicate registration succeeds without adding a second entry.
+///          Storage grows geometrically up to the implementation cap.
+/// @param server Server that owns the registry.
+/// @param conn Managed TCP connection handle to record.
+/// @return 1 when already or newly registered; 0 for invalid input, capacity exhaustion, or
+///         allocation failure.
 static int server_register_active_conn(rt_http_server_impl *server, void *conn) {
     int ok = 1;
     if (!server || !conn)
@@ -317,6 +339,9 @@ static int server_register_active_conn(rt_http_server_impl *server, void *conn) 
     return ok;
 }
 
+/// @brief Remove a TCP handle from the active registry using unordered compaction.
+/// @param server Server that owns the registry.
+/// @param conn Connection handle to remove.
 static void server_unregister_active_conn(rt_http_server_impl *server, void *conn) {
     if (!server || !conn)
         return;
@@ -332,6 +357,11 @@ static void server_unregister_active_conn(rt_http_server_impl *server, void *con
     server_state_unlock(server);
 }
 
+/// @brief Capture retained references to all currently active TCP connections.
+/// @param server Server whose registry is snapshotted.
+/// @param count_out Optional receiver for the number of returned handles.
+/// @return Malloc-owned array of retained connection references, or null when empty or allocation
+///         fails.
 static void **server_snapshot_active_conns(rt_http_server_impl *server, int *count_out) {
     void **snapshot = NULL;
     int count = 0;
@@ -357,6 +387,8 @@ static void **server_snapshot_active_conns(rt_http_server_impl *server, int *cou
     return snapshot;
 }
 
+/// @brief Interrupt blocking I/O on a TCP connection without releasing its handle.
+/// @param conn Managed TCP connection whose native socket is shut down in both directions.
 static void server_interrupt_tcp_conn(void *conn) {
     socket_t sock = rt_tcp_socket_fd(conn);
     if (sock == INVALID_SOCK)
@@ -943,6 +975,7 @@ static void http_connection_state_cleanup(rt_http_server_impl *server,
 ///
 /// @param server Server impl owning the route table and bindings.
 /// @param tcp    Accepted TCP connection handle (we close it).
+/// @param state  Heap-resident per-connection cleanup and recovery state.
 static void handle_connection(rt_http_server_impl *server,
                               void *tcp,
                               http_connection_state_t *state) {
@@ -1383,16 +1416,25 @@ void rt_http_server_get(void *obj, rt_string pattern, rt_string handler_tag) {
 }
 
 /// @brief `HttpServer.Post(pattern, handler_tag)` — register a POST route.
+/// @param obj HttpServer handle.
+/// @param pattern URL pattern.
+/// @param handler_tag Handler tag resolved by `BindHandler`.
 void rt_http_server_post(void *obj, rt_string pattern, rt_string handler_tag) {
     add_route_binding(obj, pattern, handler_tag, rt_http_router_post);
 }
 
 /// @brief `HttpServer.Put(pattern, handler_tag)` — register a PUT route.
+/// @param obj HttpServer handle.
+/// @param pattern URL pattern.
+/// @param handler_tag Handler tag resolved by `BindHandler`.
 void rt_http_server_put(void *obj, rt_string pattern, rt_string handler_tag) {
     add_route_binding(obj, pattern, handler_tag, rt_http_router_put);
 }
 
 /// @brief `HttpServer.Delete(pattern, handler_tag)` — register a DELETE route.
+/// @param obj HttpServer handle.
+/// @param pattern URL pattern.
+/// @param handler_tag Handler tag resolved by `BindHandler`.
 void rt_http_server_del(void *obj, rt_string pattern, rt_string handler_tag) {
     add_route_binding(obj, pattern, handler_tag, rt_http_router_delete);
 }
@@ -2223,6 +2265,14 @@ static void http_sync_request_cleanup(rt_http_server_impl *server,
     http_sync_request_release_managed(server, state);
 }
 
+/// @brief Process one complete HTTP/1 request through the live parser, router, and serializer.
+/// @details Registers a synchronous activity slot so route or binding mutation
+///          cannot overlap handler dispatch. Malformed requests produce a
+///          complete 400 wire response; trap recovery releases all managed and
+///          native transaction state.
+/// @param obj HttpServer handle; null returns an empty String.
+/// @param raw_request Complete request bytes in a managed String.
+/// @return Caller-owned wire-response String, or null after a returning trap hook.
 void *rt_http_server_process_request(void *obj, rt_string raw_request) {
     if (!obj)
         return rt_string_from_bytes("", 0);

@@ -57,19 +57,29 @@ std::atomic_flag g_directoryPageCursorLock = ATOMIC_FLAG_INIT;
 std::atomic<uint64_t> g_directoryPageCursorClock{0};
 
 struct DirectoryPageCursorLockGuard {
+    /// @brief Acquire the process-local cursor-cache spin lock.
+    /// @details The protected critical sections only link, unlink, find, or
+    /// evict cursor nodes; filesystem iteration occurs after releasing it.
     DirectoryPageCursorLockGuard() {
         while (g_directoryPageCursorLock.test_and_set(std::memory_order_acquire)) {
         }
     }
 
+    /// @brief Release the cursor-cache spin lock.
     ~DirectoryPageCursorLockGuard() {
         g_directoryPageCursorLock.clear(std::memory_order_release);
     }
 
+    /// Lock guards cannot be copied because each instance owns one acquisition.
     DirectoryPageCursorLockGuard(const DirectoryPageCursorLockGuard &) = delete;
+    /// Lock guards cannot be copy-assigned.
     DirectoryPageCursorLockGuard &operator=(const DirectoryPageCursorLockGuard &) = delete;
 };
 
+/// @brief Copy a runtime string's exact byte span into a C++ string.
+/// @param value Borrowed runtime string.
+/// @return Byte-preserving string, or an empty string for `NULL`, invalid, or
+/// zero-length input.
 std::string toStdString(rt_string value) {
     if (!value)
         return {};
@@ -80,22 +90,37 @@ std::string toStdString(rt_string value) {
     return std::string(bytes, static_cast<size_t>(length));
 }
 
+/// @brief Release one temporary reference to a runtime object.
+/// @param object Object reference; `nullptr` is accepted. Storage is reclaimed
+/// immediately only when this was the final reference.
 void releaseObject(void *object) {
     if (object && rt_obj_release_check0(object))
         rt_obj_free(object);
 }
 
+/// @brief Store a copied C++ string value under an immortal map key.
+/// @param map Runtime Map receiving the value.
+/// @param key Static NUL-terminated key.
+/// @param value Byte string copied into a fresh runtime string.
 void mapSetString(void *map, const char *key, const std::string &value) {
     rt_string managed = rt_string_from_bytes(value.data(), value.size());
     rt_map_set_str(map, rt_const_cstr(key), managed);
     rt_string_unref(managed);
 }
 
+/// @brief Append a runtime object to an owning sequence and release the local reference.
+/// @param sequence Element-owning runtime Seq.
+/// @param value Newly created object whose reference is transferred to the
+/// sequence.
 void sequencePushOwned(void *sequence, void *value) {
     rt_seq_push(sequence, value);
     releaseObject(value);
 }
 
+/// @brief Append a structured `dir.page` diagnostic to a page result.
+/// @param diagnostics Element-owning diagnostics Seq.
+/// @param message Human-readable diagnostic text.
+/// @param path Related path stored in the diagnostic's `file` field.
 void pushDiagnostic(void *diagnostics, const std::string &message, const std::string &path) {
     void *diagnostic = rt_map_new();
     mapSetString(diagnostic, "message", message);
@@ -104,6 +129,8 @@ void pushDiagnostic(void *diagnostics, const std::string &message, const std::st
     sequencePushOwned(diagnostics, diagnostic);
 }
 
+/// @brief Remove a cursor node from the cache list without deleting it.
+/// @param cursor Cursor to detach; `nullptr` and absent nodes are no-ops.
 void unlinkCursor(DirectoryPageCursor *cursor) {
     if (!cursor)
         return;
@@ -118,6 +145,8 @@ void unlinkCursor(DirectoryPageCursor *cursor) {
     }
 }
 
+/// @brief Insert a detached cursor at the head of the cache list.
+/// @param cursor Cursor to cache; `nullptr` is ignored.
 void linkCursor(DirectoryPageCursor *cursor) {
     if (!cursor)
         return;
@@ -125,6 +154,11 @@ void linkCursor(DirectoryPageCursor *cursor) {
     g_directoryPageCursorHead = cursor;
 }
 
+/// @brief Find a resumable cursor for one canonical directory and exact offset.
+/// @param key Canonical generic-string directory key.
+/// @param offset Logical next-entry offset requested by the caller.
+/// @return Borrowed cached cursor when its key/offset match and it is not done;
+/// otherwise `nullptr`.
 DirectoryPageCursor *findCursor(const std::string &key, int64_t offset) {
     for (DirectoryPageCursor *cursor = g_directoryPageCursorHead; cursor; cursor = cursor->next) {
         if (!cursor->done && cursor->key == key && cursor->offset == offset)
@@ -133,6 +167,8 @@ DirectoryPageCursor *findCursor(const std::string &key, int64_t offset) {
     return nullptr;
 }
 
+/// @brief Count nodes in the cursor cache.
+/// @return Current number of linked cursor objects.
 size_t cursorCount() {
     size_t count = 0;
     for (DirectoryPageCursor *cursor = g_directoryPageCursorHead; cursor; cursor = cursor->next) {
@@ -141,6 +177,9 @@ size_t cursorCount() {
     return count;
 }
 
+/// @brief Enforce the fixed cursor-cache limit using least-recently-used eviction.
+/// @details Must be called with the cursor-cache lock held. Evicted cursors are
+/// unlinked and deleted, closing their iterator state through RAII.
 void evictCursorsIfNeeded() {
     while (cursorCount() > kDirectoryPageCursorCacheSize) {
         DirectoryPageCursor *oldest = nullptr;
@@ -156,6 +195,12 @@ void evictCursorsIfNeeded() {
     }
 }
 
+/// @brief Allocate and open a fresh cursor at directory offset zero.
+/// @param key Canonical cache key copied into the cursor.
+/// @param path Filesystem directory to enumerate.
+/// @param diagnostics Seq receiving allocation or traversal diagnostics.
+/// @return Caller-owned cursor on success, or `nullptr` after recording a
+/// diagnostic.
 DirectoryPageCursor *startCursor(const std::string &key, const fs::path &path, void *diagnostics) {
     auto *cursor = new (std::nothrow) DirectoryPageCursor();
     if (!cursor) {
@@ -174,6 +219,12 @@ DirectoryPageCursor *startCursor(const std::string &key, const fs::path &path, v
     return cursor;
 }
 
+/// @brief Convert one filesystem entry into the public page-entry map shape.
+/// @details Status errors classify the entry as `other`; they do not abort the
+/// surrounding page.
+/// @param entries Element-owning result Seq.
+/// @param directoryEntry Native immediate-child entry.
+/// @param absolutePath Normalized absolute path reported to the caller.
 void emitEntry(void *entries,
                const fs::directory_entry &directoryEntry,
                const fs::path &absolutePath) {
@@ -190,6 +241,13 @@ void emitEntry(void *entries,
     sequencePushOwned(entries, entry);
 }
 
+/// @brief Advance a detached cursor while emitting at most one requested page.
+/// @param cursor Exclusively owned cursor removed from the shared cache.
+/// @param root Normalized absolute directory root.
+/// @param entries Element-owning output Seq.
+/// @param requestedOffset First logical entry eligible for emission.
+/// @param limit Maximum number of entries to emit.
+/// @return Number of entry maps appended to @p entries.
 int64_t scanCursor(DirectoryPageCursor *cursor,
                    const fs::path &root,
                    void *entries,
@@ -218,6 +276,18 @@ int64_t scanCursor(DirectoryPageCursor *cursor,
 
 extern "C" {
 
+/// @brief Return a bounded, resumable page of immediate directory children.
+/// @details Negative offsets become zero. Non-positive limits select 128 and
+/// values above 4096 are clamped. The returned map is always populated with
+/// page metadata, entries, and diagnostics; invalid roots or caught C++
+/// failures set `valid` false rather than escaping an exception across the C
+/// ABI. An unfinished iterator is cached under its canonical path and exact
+/// next offset.
+/// @param pathString Runtime directory path.
+/// @param offset Zero-based logical entry offset.
+/// @param limit Requested page size.
+/// @return Fresh runtime-owned result Map whose nested Seqs and entry Maps are
+/// retained by the result.
 void *rt_dir_page(rt_string pathString, int64_t offset, int64_t limit) {
     void *result = rt_map_new();
     void *entries = rt_seq_new_owned();

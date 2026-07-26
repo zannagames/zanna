@@ -1028,6 +1028,9 @@ void rt_messagebox_destroy(void *box) {
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
 /// @brief Stub: graphics disabled — no dialog shown; returns 0 immediately.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always zero.
 int64_t rt_messagebox_info(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1035,6 +1038,9 @@ int64_t rt_messagebox_info(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — no dialog shown; returns 0 immediately.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always zero.
 int64_t rt_messagebox_warning(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1042,6 +1048,9 @@ int64_t rt_messagebox_warning(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — no dialog shown; returns 0 immediately.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always zero.
 int64_t rt_messagebox_error(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1049,6 +1058,9 @@ int64_t rt_messagebox_error(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — no Yes/No dialog; returns 0 (treated as "No").
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always zero, the compatibility No/dismissed result.
 int64_t rt_messagebox_question(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1056,6 +1068,9 @@ int64_t rt_messagebox_question(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — no OK/Cancel dialog; returns 0 (treated as "Cancel").
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always zero, the compatibility Cancel/dismissed result.
 int64_t rt_messagebox_confirm(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1063,6 +1078,9 @@ int64_t rt_messagebox_confirm(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — no text-input prompt; returns empty string immediately.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime prompt label.
+/// @return Canonical empty runtime string.
 rt_string rt_messagebox_prompt(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1070,6 +1088,9 @@ rt_string rt_messagebox_prompt(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics-disabled prompts always return `None`.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime prompt label.
+/// @return Managed None option indicating no accepted prompt.
 void *rt_messagebox_prompt_option(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1077,6 +1098,10 @@ void *rt_messagebox_prompt_option(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no stateful dialog object is created.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @param type Ignored public icon kind.
+/// @return Always NULL.
 void *rt_messagebox_new(rt_string title, rt_string message, int64_t type) {
     (void)title;
     (void)message;
@@ -1085,6 +1110,9 @@ void *rt_messagebox_new(rt_string title, rt_string message, int64_t type) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no info dialog object is created.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always NULL.
 void *rt_messagebox_new_info(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1092,6 +1120,9 @@ void *rt_messagebox_new_info(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no warning dialog object is created.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always NULL.
 void *rt_messagebox_new_warning(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1099,6 +1130,9 @@ void *rt_messagebox_new_warning(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no error dialog object is created.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always NULL.
 void *rt_messagebox_new_error(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1106,6 +1140,9 @@ void *rt_messagebox_new_error(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no question dialog object is created.
+/// @param title Ignored runtime title.
+/// @param message Ignored runtime body.
+/// @return Always NULL.
 void *rt_messagebox_new_question(rt_string title, rt_string message) {
     (void)title;
     (void)message;
@@ -1113,6 +1150,9 @@ void *rt_messagebox_new_question(rt_string title, rt_string message) {
 }
 
 /// @brief Stub: graphics disabled — no-op; button registration is silently ignored.
+/// @param box Ignored candidate MessageBox handle.
+/// @param text Ignored runtime button label.
+/// @param id Ignored stable result ID.
 void rt_messagebox_add_button(void *box, rt_string text, int64_t id) {
     (void)box;
     (void)text;
@@ -1120,6 +1160,10 @@ void rt_messagebox_add_button(void *box, rt_string text, int64_t id) {
 }
 
 /// @brief Stub: semantic button registration is ignored without graphics.
+/// @param box Ignored candidate MessageBox handle.
+/// @param text Ignored runtime button label.
+/// @param id Ignored stable result ID.
+/// @param role Ignored semantic role.
 void rt_messagebox_add_button_with_role(void *box, rt_string text, int64_t id, int64_t role) {
     (void)box;
     (void)text;
@@ -1128,6 +1172,10 @@ void rt_messagebox_add_button_with_role(void *box, rt_string text, int64_t id, i
 }
 
 /// @brief Stub: no button role can be updated without a dialog object.
+/// @param box Ignored candidate MessageBox handle.
+/// @param id Ignored stable result ID.
+/// @param role Ignored semantic role.
+/// @return Always zero.
 int64_t rt_messagebox_set_button_role(void *box, int64_t id, int64_t role) {
     (void)box;
     (void)id;
@@ -1136,6 +1184,9 @@ int64_t rt_messagebox_set_button_role(void *box, int64_t id, int64_t role) {
 }
 
 /// @brief Stub: no cancel binding exists without a dialog object.
+/// @param box Ignored candidate MessageBox handle.
+/// @param id Ignored stable result ID.
+/// @return Always zero.
 int64_t rt_messagebox_set_cancel_button(void *box, int64_t id) {
     (void)box;
     (void)id;
@@ -1143,6 +1194,9 @@ int64_t rt_messagebox_set_cancel_button(void *box, int64_t id) {
 }
 
 /// @brief Stub: graphics disabled — no-op; default button selection is silently ignored.
+/// @param box Ignored candidate MessageBox handle.
+/// @param id Ignored stable result ID.
+/// @return Always zero.
 int64_t rt_messagebox_set_default_button(void *box, int64_t id) {
     (void)box;
     (void)id;
@@ -1150,48 +1204,63 @@ int64_t rt_messagebox_set_default_button(void *box, int64_t id) {
 }
 
 /// @brief Stub: asynchronous presentation cannot start without graphics.
+/// @param box Ignored candidate MessageBox handle.
+/// @return Always zero.
 int64_t rt_messagebox_show_async(void *box) {
     (void)box;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns -1 (no dialog to show, no button chosen).
+/// @param box Ignored candidate MessageBox handle.
+/// @return Always -1.
 int64_t rt_messagebox_show(void *box) {
     (void)box;
     return -1;
 }
 
 /// @brief Stub: no MessageBox is open without graphics.
+/// @param box Ignored candidate MessageBox handle.
+/// @return Always zero.
 int64_t rt_messagebox_is_open(void *box) {
     (void)box;
     return 0;
 }
 
 /// @brief Stub: no stateful MessageBox completion exists without graphics.
+/// @param box Ignored candidate MessageBox handle.
+/// @return Always zero.
 int64_t rt_messagebox_was_completed(void *box) {
     (void)box;
     return 0;
 }
 
 /// @brief Stub: absent MessageBox handles report Failed.
+/// @param box Ignored candidate MessageBox handle.
+/// @return @c RT_GUI_DIALOG_STATUS_FAILED.
 int64_t rt_messagebox_get_status(void *box) {
     (void)box;
     return RT_GUI_DIALOG_STATUS_FAILED;
 }
 
 /// @brief Stub: no custom result is available without graphics.
+/// @param box Ignored candidate MessageBox handle.
+/// @return Always -1.
 int64_t rt_messagebox_get_result(void *box) {
     (void)box;
     return -1;
 }
 
 /// @brief Stub: return the stable graphics-disabled capability diagnostic.
+/// @param box Ignored candidate MessageBox handle.
+/// @return Runtime string describing unavailable GUI support.
 rt_string rt_messagebox_get_error(void *box) {
     (void)box;
     return rt_const_cstr("GUI support is not available in this build");
 }
 
 /// @brief Stub: graphics disabled — no-op; nothing to destroy when graphics are absent.
+/// @param box Ignored candidate MessageBox handle.
 void rt_messagebox_destroy(void *box) {
     (void)box;
 }

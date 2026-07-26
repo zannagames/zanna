@@ -31,9 +31,9 @@
 //     finalizer path; non-pooled Vec3s are collected by the standard GC.
 //     Callers must not free Vec3s manually.
 //
-// Links: src/runtime/graphics/rt_vec3.h (public API),
-//        src/runtime/graphics/rt_vec2.c (2D counterpart),
-//        src/runtime/graphics/rt_mat3.c (matrix–vector transform consumer)
+// Links: src/runtime/graphics/math/rt_vec3.h (public API),
+//        src/runtime/graphics/math/rt_vec2.c (2D counterpart),
+//        src/runtime/graphics/math/rt_mat4.c (matrix-vector transform consumer)
 //
 //===----------------------------------------------------------------------===//
 
@@ -58,6 +58,7 @@ static _Thread_local int vec3_pool_top_ = 0;
 ///          otherwise `rt_obj_resurrect` prevents GC collection and re-registers
 ///          this function as the next finalizer so the object re-enters the pool
 ///          on the next release.
+/// @param p Vec3 payload whose finalizer is running.
 static void vec3_pool_return(void *p) {
     if (vec3_pool_top_ < VEC3_POOL_CAPACITY) {
         rt_obj_resurrect(p);
@@ -116,6 +117,10 @@ static ZannaVec3 *vec3_checked(void *v, const char *op) {
 /// @details Uses chained `hypot` calls instead of `sqrt(x*x + y*y + z*z)`,
 ///          preventing overflow/underflow during normalization, distance, and
 ///          angle calculations. Non-finite input returns `INFINITY`.
+/// @param x Vector x component.
+/// @param y Vector y component.
+/// @param z Vector z component.
+/// @return Euclidean length, or positive infinity when any component is non-finite.
 static double vec3_safe_len(double x, double y, double z) {
     if (!isfinite(x) || !isfinite(y) || !isfinite(z))
         return INFINITY;
@@ -339,6 +344,9 @@ double rt_vec3_z(void *v) {
 }
 
 /// @brief Set the X component in place.
+/// @details Raises a runtime trap and leaves memory untouched if @p v is not a compatible Vec3.
+/// @param v Mutable Vec3 handle.
+/// @param x New x component.
 void rt_vec3_set_x(void *v, double x) {
     ZannaVec3 *vec = vec3_checked(v, "Vec3.set_X: invalid vector");
     if (!vec)
@@ -347,6 +355,9 @@ void rt_vec3_set_x(void *v, double x) {
 }
 
 /// @brief Set the Y component in place.
+/// @details Raises a runtime trap and leaves memory untouched if @p v is not a compatible Vec3.
+/// @param v Mutable Vec3 handle.
+/// @param y New y component.
 void rt_vec3_set_y(void *v, double y) {
     ZannaVec3 *vec = vec3_checked(v, "Vec3.set_Y: invalid vector");
     if (!vec)
@@ -355,6 +366,9 @@ void rt_vec3_set_y(void *v, double y) {
 }
 
 /// @brief Set the Z component in place.
+/// @details Raises a runtime trap and leaves memory untouched if @p v is not a compatible Vec3.
+/// @param v Mutable Vec3 handle.
+/// @param z New z component.
 void rt_vec3_set_z(void *v, double z) {
     ZannaVec3 *vec = vec3_checked(v, "Vec3.set_Z: invalid vector");
     if (!vec)
@@ -363,6 +377,11 @@ void rt_vec3_set_z(void *v, double z) {
 }
 
 /// @brief Set all components in place.
+/// @details Raises a runtime trap and leaves memory untouched if @p v is not a compatible Vec3.
+/// @param v Mutable Vec3 handle.
+/// @param x New x component.
+/// @param y New y component.
+/// @param z New z component.
 void rt_vec3_set(void *v, double x, double y, double z) {
     ZannaVec3 *vec = vec3_checked(v, "Vec3.Set: invalid vector");
     if (!vec)
@@ -373,6 +392,10 @@ void rt_vec3_set(void *v, double x, double y, double z) {
 }
 
 /// @brief Copy all components from @p other into @p v.
+/// @details Validates both handles before copying. An invalid handle raises a runtime trap and no
+///          components are assigned.
+/// @param v Mutable destination Vec3.
+/// @param other Source Vec3.
 void rt_vec3_copy_from(void *v, void *other) {
     ZannaVec3 *dst = vec3_checked(v, "Vec3.CopyFrom: invalid vector");
     ZannaVec3 *src = vec3_checked(other, "Vec3.CopyFrom: invalid vector");
@@ -502,13 +525,13 @@ void *rt_vec3_mul(void *v, double s) {
 /// ```
 ///
 /// @param v Vector to divide. Must not be NULL.
-/// @param s Scalar divisor. Must not be zero.
+/// @param s Scalar divisor. Must be finite and nonzero.
 ///
 /// @return A new Vec3 with components divided by s.
 ///
 /// @note O(1) time complexity.
 /// @note Traps with "Vec3.Div: null vector" if v is NULL.
-/// @note Traps with "Vec3.Div: division by zero" if s is 0.
+/// @note Traps with "Vec3.Div: invalid divisor" if s is zero or non-finite.
 ///
 /// @see rt_vec3_mul For scalar multiplication
 /// @see rt_vec3_norm For normalizing to unit length
@@ -733,7 +756,7 @@ double rt_vec3_len_sq(void *v) {
 ///
 /// @note O(1) time complexity (involves sqrt).
 /// @note For comparisons, prefer rt_vec3_len_sq to avoid sqrt.
-/// @note Traps if v is NULL (via rt_vec3_len_sq).
+/// @note Traps if v is not a compatible Vec3 handle.
 ///
 /// @see rt_vec3_len_sq For squared length (faster for comparisons)
 /// @see rt_vec3_norm For getting a unit-length vector
@@ -794,8 +817,8 @@ double rt_vec3_dist(void *a, void *b) {
 /// They are used extensively in graphics for normals, directions, and lighting.
 ///
 /// **Special Case:**
-/// If the input vector has zero length, returns a zero vector (0, 0, 0) rather
-/// than trapping. This prevents division by zero.
+/// If the input vector has zero or non-finite length, returns a zero vector
+/// (0, 0, 0) rather than dividing by an unusable magnitude.
 ///
 /// **Usage example:**
 /// ```
@@ -812,10 +835,10 @@ double rt_vec3_dist(void *a, void *b) {
 ///
 /// @param v Vector to normalize. Must not be NULL.
 ///
-/// @return A new unit vector (length = 1), or zero vector if input has zero length.
+/// @return A new unit vector, or zero vector if input length is zero or non-finite.
 ///
 /// @note O(1) time complexity.
-/// @note Safe for zero-length vectors (returns zero vector).
+/// @note Safe for zero-length and non-finite vectors (returns zero vector).
 /// @note Traps with "Vec3.Norm: null vector" if v is NULL.
 ///
 /// @see rt_vec3_len For getting the length
@@ -887,7 +910,11 @@ void *rt_vec3_lerp(void *a, void *b, double t) {
 /// @brief Reflect `v` across a surface with the given `normal`.
 /// @details The normal is normalized internally so callers do not need to provide a unit vector.
 ///          Non-finite components or a degenerate normal return the zero vector instead of
-///          propagating NaN into later physics or lighting calculations.
+///          propagating NaN into later physics or lighting calculations. NULL handles also return
+///          zero; incompatible non-NULL handles trap before the same fallback.
+/// @param v Vec3 incident vector.
+/// @param normal Vec3 surface normal; it need not be normalized.
+/// @return New reflected Vec3, or a zero Vec3 for invalid or degenerate input.
 void *rt_vec3_reflect(void *v, void *normal) {
     if (!v || !normal)
         return vec3_alloc(0, 0, 0);
@@ -912,7 +939,11 @@ void *rt_vec3_reflect(void *v, void *normal) {
 /// @brief Project `v` onto the line spanned by `onto`.
 /// @details Returns `((v·onto)/(onto·onto)) * onto`. The denominator is computed from an
 ///          overflow-resistant length, and any non-finite operand or degenerate target returns
-///          the zero vector.
+///          the zero vector. NULL handles also return zero; incompatible non-NULL handles trap
+///          before the same fallback.
+/// @param v Vec3 to project.
+/// @param onto Vec3 defining the target line.
+/// @return New projected Vec3, or a zero Vec3 for invalid or degenerate input.
 void *rt_vec3_project(void *v, void *onto) {
     if (!v || !onto)
         return vec3_alloc(0, 0, 0);
@@ -934,9 +965,13 @@ void *rt_vec3_project(void *v, void *onto) {
     return vec3_alloc(s * t->x, s * t->y, s * t->z);
 }
 
-/// @brief Clamp `v`'s length to at most `max_len`. Vectors already shorter pass through; longer
-/// ones are scaled proportionally. Useful for capping speeds. Returns zero for null `v` or
-/// non-positive `max_len`.
+/// @brief Clamp a vector's length to a maximum magnitude.
+/// @details Returns a value copy when the input is already short enough and scales longer vectors
+///          proportionally. NULL vectors, non-positive or non-finite limits, and non-finite vector
+///          lengths produce zero. An incompatible non-NULL handle also traps.
+/// @param v Vec3 to clamp.
+/// @param max_len Maximum permitted non-negative magnitude.
+/// @return New clamped Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_clamp_len(void *v, double max_len) {
     if (!v || !isfinite(max_len) || max_len <= 0.0)
         return vec3_alloc(0, 0, 0);
@@ -952,8 +987,15 @@ void *rt_vec3_clamp_len(void *v, double max_len) {
     return vec3_alloc(vv->x * s, vv->y * s, vv->z * s);
 }
 
-/// @brief Step from `current` toward `target` by at most `max_delta` units. Snaps exactly to
-/// `target` when within reach. Non-finite or negative deltas keep the current position.
+/// @brief Move a point toward a target by at most a specified distance.
+/// @details Snaps exactly to @p target when it is within reach. A negative or non-finite
+///          @p max_delta, or a non-finite separation, returns a copy of @p current. NULL handles
+///          produce zero; incompatible non-NULL handles also trap.
+/// @param current Vec3 starting point.
+/// @param target Vec3 destination point.
+/// @param max_delta Maximum distance to move.
+/// @return New moved Vec3, a current-position copy for an unusable delta, or zero for invalid
+///         vector handles.
 void *rt_vec3_move_towards(void *current, void *target, double max_delta) {
     if (!current || !target)
         return vec3_alloc(0, 0, 0);
@@ -976,6 +1018,9 @@ void *rt_vec3_move_towards(void *current, void *target, double max_delta) {
 /// @brief Compute the unsigned angle in radians between vectors `a` and `b` via
 /// `acos((a·b)/(|a||b|))`. Result is in [0, π]. Returns 0 for degenerate (zero-length) inputs;
 /// the cosine is clamped to [-1, 1] for numerical safety against floating-point drift.
+/// @param a First Vec3 direction.
+/// @param b Second Vec3 direction.
+/// @return Unsigned angle in [0, pi], or 0.0 for invalid, non-finite, or near-zero input.
 double rt_vec3_angle(void *a, void *b) {
     if (!a || !b)
         return 0.0;
@@ -1001,8 +1046,13 @@ double rt_vec3_angle(void *a, void *b) {
     return acos(cos_a);
 }
 
-/// @brief Component-wise minimum: `(min(a.x,b.x), min(a.y,b.y), min(a.z,b.z))`. Useful for
-/// AABB construction. Returns the zero vector for null inputs.
+/// @brief Compute the component-wise minimum of two vectors.
+/// @details Uses `fmin` independently on x, y, and z, which selects the numeric operand when only
+///          one component is NaN. NULL handles return zero; incompatible non-NULL handles trap
+///          before the same fallback.
+/// @param a First Vec3 operand.
+/// @param b Second Vec3 operand.
+/// @return New component-wise minimum Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_min(void *a, void *b) {
     if (!a || !b)
         return vec3_alloc(0, 0, 0);
@@ -1013,8 +1063,13 @@ void *rt_vec3_min(void *a, void *b) {
     return vec3_alloc(fmin(va->x, vb->x), fmin(va->y, vb->y), fmin(va->z, vb->z));
 }
 
-/// @brief Component-wise maximum: `(max(a.x,b.x), max(a.y,b.y), max(a.z,b.z))`. Pairs with
-/// `_min` for AABB construction. Returns the zero vector for null inputs.
+/// @brief Compute the component-wise maximum of two vectors.
+/// @details Uses `fmax` independently on x, y, and z, which selects the numeric operand when only
+///          one component is NaN. NULL handles return zero; incompatible non-NULL handles trap
+///          before the same fallback.
+/// @param a First Vec3 operand.
+/// @param b Second Vec3 operand.
+/// @return New component-wise maximum Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_max(void *a, void *b) {
     if (!a || !b)
         return vec3_alloc(0, 0, 0);

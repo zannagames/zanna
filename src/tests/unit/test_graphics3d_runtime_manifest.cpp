@@ -213,7 +213,7 @@ int main() {
 
     // Filled from the canonical registry after deliberate ABI review. This one value
     // covers every function name/signature/C symbol and every class member binding.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x8666815f7c99e0e5);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xee419c5eecc2b423);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

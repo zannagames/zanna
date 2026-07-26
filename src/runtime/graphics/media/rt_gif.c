@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_gif.c
+// File: src/runtime/graphics/media/rt_gif.c
 // Purpose: GIF87a/89a decoder with LZW decompression and multi-frame animation.
 // Key invariants:
 //   - LZW code table limited to 4096 entries (12-bit codes maximum)
@@ -15,7 +15,8 @@
 // Ownership/Lifetime:
 //   - Each decoded frame produces a GC-managed Pixels object via pixels_alloc
 //   - The gif_frame_t array itself is malloc'd; caller frees it
-// Links: rt_gif.h (public API), rt_pixels_internal.h (pixels_alloc)
+// Links: src/runtime/graphics/media/rt_gif.h (public API),
+//        src/runtime/graphics/2d/rt_pixels_internal.h (Pixels allocation)
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,7 +50,10 @@ typedef struct {
 #define GIF_MAX_LZW_SUB_BLOCK_BYTES ((size_t)64u * 1024u * 1024u)
 #define GIF_PREVIOUS_CANVAS_RETAIN_PIXELS ((size_t)2u * 1024u * 1024u)
 
+/// @brief Install a temporary runtime-trap recovery target for decoder file I/O.
+/// @param buf Jump buffer that receives a recovered trap.
 void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Clear the current thread's temporary runtime-trap recovery target.
 void rt_trap_clear_recovery(void);
 
 /// @brief Read a GIF file through the runtime file API into decoder-owned memory.
@@ -193,7 +197,11 @@ static int gif_decoded_frame_budget_allows(size_t decoded_bytes, size_t frame_by
     return decoded_bytes + frame_bytes <= GIF_MAX_DECODED_FRAME_BYTES;
 }
 
-/// @brief Read `count` bytes from the GIF stream into `buf`; returns 1 on success, 0 on underflow.
+/// @brief Copy bytes from a bounded GIF reader and advance its cursor.
+/// @param r Reader whose current position is consumed.
+/// @param buf Writable destination for @p count bytes.
+/// @param count Number of bytes to copy.
+/// @return 1 on success, or 0 for invalid input or insufficient remaining data.
 static int gif_read(gif_reader_t *r, void *buf, size_t count) {
     if (!r || !buf || r->pos > r->len || count > r->len - r->pos)
         return 0;
@@ -202,14 +210,18 @@ static int gif_read(gif_reader_t *r, void *buf, size_t count) {
     return 1;
 }
 
-/// @brief Read one unsigned byte from the GIF stream; returns -1 on end of data.
+/// @brief Read one unsigned byte and advance the GIF reader.
+/// @param r Valid reader to consume.
+/// @return Byte value in [0, 255], or -1 at end of data.
 static int gif_read_u8(gif_reader_t *r) {
     if (r->pos >= r->len)
         return -1;
     return r->data[r->pos++];
 }
 
-/// @brief Read a little-endian uint16 from the GIF stream; returns -1 on underflow.
+/// @brief Read one little-endian 16-bit value and advance the GIF reader.
+/// @param r Reader to consume.
+/// @return Unsigned value in [0, 65535], or -1 for invalid input or underflow.
 static int gif_read_u16_le(gif_reader_t *r) {
     if (!r || r->pos > r->len || 2u > r->len - r->pos)
         return -1;
@@ -268,8 +280,13 @@ typedef struct {
     size_t block_pos;
 } lzw_state_t;
 
-/// @brief Read LZW sub-blocks into a flat buffer.
-/// @return malloc'd buffer of concatenated sub-block data, or NULL.
+/// @brief Concatenate a terminated GIF data-sub-block sequence.
+/// @details Grows a decoder-owned byte buffer up to @ref GIF_MAX_LZW_SUB_BLOCK_BYTES and requires a
+///          zero-length terminator. The reader is left after the terminator on success.
+/// @param r Reader positioned at the first sub-block length byte.
+/// @param out_len Required destination for the concatenated byte count.
+/// @return Malloc-owned concatenated data, or NULL for truncation, budget, overflow, or allocation
+///         failure.
 static uint8_t *gif_read_sub_blocks(gif_reader_t *r, size_t *out_len) {
     size_t cap = 256;
     size_t len = 0;
@@ -323,7 +340,11 @@ static uint8_t *gif_read_sub_blocks(gif_reader_t *r, size_t *out_len) {
     return buf;
 }
 
-/// @brief Initialize LZW decompressor state with root entries for all `clear_code` color indices.
+/// @brief Initialize LZW state and its root color-index entries.
+/// @param s Writable decompressor state.
+/// @param min_code_size Valid GIF root code width in [2, 8].
+/// @param data Concatenated borrowed LZW bytes.
+/// @param len Length of @p data in bytes.
 static void lzw_init(lzw_state_t *s, int min_code_size, const uint8_t *data, size_t len) {
     s->min_code_size = min_code_size;
     s->clear_code = 1 << min_code_size;
@@ -346,7 +367,9 @@ static void lzw_init(lzw_state_t *s, int min_code_size, const uint8_t *data, siz
     s->block_pos = 0;
 }
 
-/// @brief Read the next variable-width LZW code from the bit stream; returns -1 on end of data.
+/// @brief Read the next variable-width code from an LZW bit stream.
+/// @param s Mutable decompressor and bit-reader state.
+/// @return Decoded non-negative code, or -1 when insufficient input bits remain.
 static int lzw_read_code(lzw_state_t *s) {
     while (s->bits_left < s->code_size) {
         if (s->block_pos >= s->block_len)
@@ -360,7 +383,15 @@ static int lzw_read_code(lzw_state_t *s) {
     return code;
 }
 
-/// @brief Emit the string for a code into the output buffer.
+/// @brief Expand one LZW dictionary code into the output index buffer.
+/// @details Walks prefix links backward while writing from the end of the reserved string span, so
+///          the resulting color indices retain forward order.
+/// @param s Initialized LZW dictionary state.
+/// @param code Dictionary code to expand.
+/// @param out Writable output buffer.
+/// @param out_cap Capacity of @p out in bytes.
+/// @param out_pos In/out cursor advanced by the emitted string length.
+/// @return 0 on success, or -1 for invalid state, code, dictionary links, or output bounds.
 static int lzw_emit_string(
     lzw_state_t *s, int code, uint8_t *out, size_t out_cap, size_t *out_pos) {
     if (!s || !out || !out_pos || *out_pos > out_cap || code < 0 || code >= s->table_size)
@@ -383,15 +414,27 @@ static int lzw_emit_string(
     return 0;
 }
 
-/// @brief Get the first byte of the string for a code.
+/// @brief Resolve the first color index in an LZW dictionary string.
+/// @param s Initialized LZW dictionary state.
+/// @param code Dictionary code whose prefix chain is followed.
+/// @return Root suffix byte, or 0 when the code or prefix chain is invalid.
 static uint8_t lzw_first_byte(lzw_state_t *s, int code) {
     while (code >= 0 && code < s->table_size && s->table[code].prefix != 0xFFFF)
         code = (int)s->table[code].prefix;
     return (code >= 0 && code < s->table_size) ? s->table[code].suffix : 0;
 }
 
-/// @brief Decompress LZW data into color indices.
-/// @return malloc'd index buffer, or NULL on failure.
+/// @brief Decompress a complete GIF LZW stream into color indices.
+/// @details Handles clear/end codes, dynamic code-width growth through 12 bits, and the KwKwK
+///          special case. Success requires an explicit end code and exactly @p expected_pixels
+///          output bytes.
+/// @param min_code_size GIF root code width in [2, 8].
+/// @param data Concatenated LZW input bytes.
+/// @param data_len Length of @p data in bytes.
+/// @param expected_pixels Exact number of indices required by the image rectangle.
+/// @param out_len Required destination receiving @p expected_pixels on success.
+/// @return Malloc-owned color-index buffer, or NULL for malformed input, size overflow, or
+///         allocation failure.
 static uint8_t *lzw_decompress(int min_code_size,
                                const uint8_t *data,
                                size_t data_len,
@@ -503,6 +546,8 @@ static const int gif_interlace_step[4] = {8, 8, 4, 2};
 /// @details The file stores delay in centiseconds. A zero or one-centisecond delay is commonly
 ///          authored accidentally and causes busy animation loops, so the decoder follows browser
 ///          practice by normalizing those tiny values to a conservative 100 ms fallback.
+/// @param delay_cs Encoded frame delay in centiseconds.
+/// @return Display delay in milliseconds, saturated at `INT_MAX`.
 static int gif_delay_ms_from_centiseconds(int delay_cs) {
     if (delay_cs <= 1)
         return 100;
@@ -514,6 +559,10 @@ static int gif_delay_ms_from_centiseconds(int delay_cs) {
 /// @brief Map a decoded GIF row to its display row, accounting for four-pass interlacing.
 /// @details Non-interlaced images use row order directly. Interlaced images are stored by pass, so
 ///          this helper centralizes the row remap for the full-animation and first-frame decoders.
+/// @param decoded_row Sequential row index in the decoded image data.
+/// @param image_height Image-rectangle height in rows.
+/// @param interlaced Nonzero when GIF four-pass row ordering is active.
+/// @return Display-relative row index for the decoded row.
 static int gif_actual_image_row(int decoded_row, int image_height, int interlaced) {
     int row_in_pass;
     if (!interlaced)
@@ -974,6 +1023,17 @@ int gif_decode_file(const char *filepath,
     return frame_count;
 }
 
+/// @brief Decode the first renderable GIF image from a memory buffer into RGBA32 pixels.
+/// @details Validates GIF87a/GIF89a structure, canvas and file-size budgets, palettes, image bounds,
+///          LZW termination, and palette indices. Extension blocks before the first image are
+///          honored for transparency; later animation frames and disposal are not decoded. Output
+///          pointers are initialized to NULL/zero before validation.
+/// @param data Read-only GIF file bytes.
+/// @param len Accessible byte length of @p data, limited to 100 MiB.
+/// @param out_pixels Required destination receiving a malloc-owned full-canvas RGBA32 buffer.
+/// @param out_width Optional destination receiving the logical screen width.
+/// @param out_height Optional destination receiving the logical screen height.
+/// @return 1 after decoding the first valid image, otherwise 0 with initialized outputs.
 int rt_gif_decode_memory_first_rgba32(
     const uint8_t *data, size_t len, uint32_t **out_pixels, int *out_width, int *out_height) {
     gif_reader_t reader;

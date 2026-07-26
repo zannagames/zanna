@@ -29,9 +29,9 @@
 //     and ys double arrays are malloc'd separately and freed in spline_finalizer,
 //     registered as the GC finalizer at construction.
 //
-// Links: src/runtime/graphics/rt_spline.h (public API),
-//        src/runtime/graphics/rt_vec2.h (Vec2 control point and return type),
-//        src/runtime/rt_seq.h (input sequence of Vec2 control points)
+// Links: src/runtime/graphics/math/rt_spline.h (public API),
+//        src/runtime/graphics/math/rt_vec2.h (Vec2 control point and return type),
+//        src/runtime/collections/rt_seq.h (input sequence of Vec2 control points)
 //
 //===----------------------------------------------------------------------===//
 
@@ -60,6 +60,7 @@ typedef struct {
 ///   independently because the spline object itself is managed by the GC pool.
 ///   NULLing the pointers after free is defensive but harmless since the finalizer
 ///   is called exactly once before the object memory is reclaimed.
+/// @param payload Spline payload being finalized; NULL is accepted as a no-op.
 static void spline_finalizer(void *payload) {
     ZannaSpline *s = (ZannaSpline *)payload;
     if (s) {
@@ -74,6 +75,8 @@ static void spline_finalizer(void *payload) {
 /// @details Requires the explicit Spline class id: unlike Vec3/Quat there is no legacy
 ///          classless layout to accept, and the struct holds raw pointers, so any
 ///          unrecognized payload must be rejected before its fields are dereferenced.
+/// @param spline Candidate runtime object payload.
+/// @return 1 for a compatible Spline payload, otherwise 0.
 static int spline_is_compatible_object(void *spline) {
     if (!spline)
         return 0;
@@ -103,6 +106,8 @@ static ZannaSpline *spline_checked(void *spline, const char *op) {
 /// @brief Allocate a GC-managed spline object with `count` control point slots.
 /// @details Allocates xs/ys double arrays via calloc and sets the spline kind.
 ///          On allocation failure, releases the partially-constructed object and traps.
+/// @param kind Evaluation algorithm assigned to the spline.
+/// @param count Number of x/y coordinate slots to allocate.
 /// @return New ZannaSpline or NULL on OOM.
 static ZannaSpline *spline_alloc(SplineKind kind, int64_t count) {
     ZannaSpline *s =
@@ -148,8 +153,11 @@ static void extract_points(void *points, ZannaSpline *s) {
 // Constructors
 //=============================================================================
 
-/// @brief Build a Catmull-Rom spline through `points` (a Seq of Vec2). The curve interpolates
-/// every input point with C¹ tangent continuity. Requires ≥ 2 points; traps otherwise.
+/// @brief Create a Catmull-Rom spline through a sequence of Vec2 control points.
+/// @details Uses uniform 0.5 tangents and interpolates every stored point with C1 continuity.
+///          NULL input or fewer than two points raises a runtime trap.
+/// @param points Runtime Seq containing at least two Vec2 handles.
+/// @return New GC-managed Spline, or NULL after trapping for invalid input or allocation failure.
 void *rt_spline_catmull_rom(void *points) {
     if (!points) {
         rt_trap("Spline.CatmullRom: null points");
@@ -167,8 +175,14 @@ void *rt_spline_catmull_rom(void *points) {
     return s;
 }
 
-/// @brief Build a cubic Bezier curve from four control points (Vec2). The curve passes through
-/// `p0` and `p3` (endpoints) and is pulled toward `p1` and `p2` (handles). Traps on null inputs.
+/// @brief Create a cubic Bezier spline from four Vec2 control points.
+/// @details The curve interpolates @p p0 and @p p3 and is shaped by the interior handles @p p1 and
+///          @p p2. Any NULL control point raises a runtime trap.
+/// @param p0 Starting anchor point.
+/// @param p1 First interior control handle.
+/// @param p2 Second interior control handle.
+/// @param p3 Ending anchor point.
+/// @return New GC-managed Spline, or NULL after trapping for invalid input or allocation failure.
 void *rt_spline_bezier(void *p0, void *p1, void *p2, void *p3) {
     if (!p0 || !p1 || !p2 || !p3) {
         rt_trap("Spline.Bezier: null control point");
@@ -188,8 +202,11 @@ void *rt_spline_bezier(void *p0, void *p1, void *p2, void *p3) {
     return s;
 }
 
-/// @brief Build a polyline from `points` (Seq of Vec2) — straight segments between adjacent
-/// points. Useful as a baseline for spline-using code paths or for level paths. Requires ≥ 2.
+/// @brief Create a piecewise-linear spline through a sequence of Vec2 points.
+/// @details Joins adjacent control points with straight segments. NULL input or fewer than two
+///          points raises a runtime trap.
+/// @param points Runtime Seq containing at least two Vec2 handles.
+/// @return New GC-managed Spline, or NULL after trapping for invalid input or allocation failure.
 void *rt_spline_linear(void *points) {
     if (!points) {
         rt_trap("Spline.Linear: null points");
@@ -265,12 +282,17 @@ static void eval_bezier(ZannaSpline *s, double t, double *ox, double *oy) {
 ///   continuity across segment boundaries when adjacent segments share the same p1/p2
 ///   as neighbors' p2/p1. P0 and P3 are the ghost points (neighbors outside the
 ///   segment); p1 and p2 are the actual interpolated endpoints for this segment.
-/// @param p0x,p0y  Previous control point (ghost before segment start).
-/// @param p1x,p1y  Segment start — the curve passes through this point at t=0.
-/// @param p2x,p2y  Segment end — the curve passes through this point at t=1.
-/// @param p3x,p3y  Next control point (ghost after segment end).
-/// @param t        Local segment parameter in [0, 1].
-/// @param ox,oy    Output position.
+/// @param p0x Previous control point x coordinate.
+/// @param p0y Previous control point y coordinate.
+/// @param p1x Segment-start x coordinate.
+/// @param p1y Segment-start y coordinate.
+/// @param p2x Segment-end x coordinate.
+/// @param p2y Segment-end y coordinate.
+/// @param p3x Following control point x coordinate.
+/// @param p3y Following control point y coordinate.
+/// @param t Local segment parameter in [0, 1].
+/// @param ox Output position x coordinate.
+/// @param oy Output position y coordinate.
 static void catmull_rom_segment(double p0x,
                                 double p0y,
                                 double p1x,
@@ -429,6 +451,8 @@ static void tangent_catmull_rom(ZannaSpline *s, double t, double *ox, double *oy
 ///          which previously extrapolated — the same well-defined domain and
 ///          ensures no evaluator ever converts a NaN/Inf to a segment index,
 ///          which is undefined in C (VDOC-201).
+/// @param t Raw curve parameter.
+/// @return Finite parameter clamped to [0, 1], with NaN mapped to zero.
 static double spline_sanitize_param(double t) {
     if (isnan(t))
         return 0.0;
@@ -442,6 +466,9 @@ static double spline_sanitize_param(double t) {
 /// @brief Evaluate the spline at parameter `t`, normally in [0, 1], and return a fresh Vec2.
 /// @details Every spline kind clamps `t` to [0,1]; a non-finite `t` maps to the
 ///          curve start (0). See `spline_sanitize_param` (VDOC-201).
+/// @param spline Spline handle to evaluate.
+/// @param t Curve parameter; finite values are clamped to [0, 1] and NaN maps to zero.
+/// @return New Vec2 position, or NULL after trapping for an invalid spline or allocation failure.
 void *rt_spline_eval(void *spline, double t) {
     ZannaSpline *s = spline_checked(spline, "Spline.Eval: invalid spline");
     if (!s)
@@ -465,6 +492,10 @@ void *rt_spline_eval(void *spline, double t) {
 /// @brief Return the spline's unnormalized tangent vector at `t` as a fresh Vec2.
 /// @details Linear uses the active segment delta, Bezier uses its analytic derivative,
 ///          and Catmull-Rom uses a finite-difference derivative.
+/// @param spline Spline handle to differentiate.
+/// @param t Curve parameter sanitized to the inclusive range [0, 1].
+/// @return New unnormalized tangent Vec2, or NULL after trapping for an invalid spline or
+///         allocation failure.
 void *rt_spline_tangent(void *spline, double t) {
     ZannaSpline *s = spline_checked(spline, "Spline.Tangent: invalid spline");
     if (!s)
@@ -485,14 +516,20 @@ void *rt_spline_tangent(void *spline, double t) {
     return rt_vec2_new(ox, oy);
 }
 
-/// @brief Return the count of elements in the spline.
+/// @brief Return the number of stored spline control points.
+/// @param spline Spline handle to inspect.
+/// @return Control-point count, or 0 after trapping for an invalid spline.
 int64_t rt_spline_point_count(void *spline) {
     ZannaSpline *s = spline_checked(spline, "Spline.PointCount: invalid spline");
     return s ? s->count : 0;
 }
 
-/// @brief Read the i-th control/anchor point from the spline as a fresh Vec2. Useful for
-/// debug visualization or editing tools. An out-of-range index traps.
+/// @brief Copy one stored spline control point into a new Vec2.
+/// @details Invalid spline handles and indices outside `[0, point_count)` raise a runtime trap.
+/// @param spline Spline handle to inspect.
+/// @param index Zero-based control-point index.
+/// @return New Vec2 containing the point, or NULL after trapping for invalid input or allocation
+///         failure.
 void *rt_spline_point_at(void *spline, int64_t index) {
     ZannaSpline *s = spline_checked(spline, "Spline.PointAt: invalid spline");
     if (!s)
@@ -504,7 +541,16 @@ void *rt_spline_point_at(void *spline, int64_t index) {
     return rt_vec2_new(s->xs[index], s->ys[index]);
 }
 
-/// @brief Arc the length of the spline.
+/// @brief Approximate spline arc length over a parameter interval.
+/// @details Sanitizes both endpoints to [0, 1], samples @p steps equal parameter intervals, and
+///          sums the resulting chord lengths. Values of @p steps below one are promoted to one.
+///          Reversed endpoints traverse the same sampled path in reverse and still yield a
+///          non-negative length.
+/// @param spline Spline handle to measure.
+/// @param t0 Starting curve parameter.
+/// @param t1 Ending curve parameter.
+/// @param steps Number of line segments in the approximation.
+/// @return Approximated arc length, or 0.0 after trapping for an invalid spline.
 double rt_spline_arc_length(void *spline, double t0, double t1, int64_t steps) {
     ZannaSpline *s = spline_checked(spline, "Spline.ArcLength: invalid spline");
     if (!s)
@@ -555,8 +601,11 @@ double rt_spline_arc_length(void *spline, double t0, double t1, int64_t steps) {
     return length;
 }
 
-/// @brief Generate a Seq of `count` Vec2 points along the spline, evenly spaced in `t`. Useful
-/// for tessellating the curve for rendering or hit-test acceleration.
+/// @brief Sample a spline at evenly spaced parameter values.
+/// @details Promotes counts below two to two and includes both parameter endpoints.
+/// @param spline Spline handle to sample.
+/// @param count Requested number of samples.
+/// @return New Seq containing at least two Vec2 samples, or NULL after an invalid-spline trap.
 void *rt_spline_sample(void *spline, int64_t count) {
     if (!spline_checked(spline, "Spline.Sample: invalid spline"))
         return NULL;

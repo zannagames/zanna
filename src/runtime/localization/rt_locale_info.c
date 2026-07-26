@@ -117,7 +117,7 @@ int8_t rt_locale_info_is_rtl(void *locale) {
     return (int8_t)(strcmp(d->text_direction, "rtl") == 0 ? 1 : 0);
 }
 
-/// @brief Return the measurement system name for @p locale (e.g., "metric" or "US").
+/// @brief Return the measurement system code for @p locale (e.g., "metric" or "us").
 /// @details Maps to the `measurement` field of the bound locale data. Useful for
 ///          selecting unit-formatting rules (km vs. mi, kg vs. lb).
 /// @param locale Opaque Locale handle; may be NULL.

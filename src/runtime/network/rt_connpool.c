@@ -282,6 +282,9 @@ static void discard_entry(rt_connpool_impl *pool, pooled_entry_t *entry, bool cl
 /// @details Order within the @c entries array is not meaningful — slots are
 ///          looked up linearly by `(key, in_use)` — so the cheap swap is
 ///          preferred over a memmove. The vacated tail slot is zeroed.
+/// @param pool Locked pool containing the entry.
+/// @param index Zero-based entry index to remove; invalid values are ignored.
+/// @param close_transport Whether to close a transport still leased to @p pool.
 static void remove_entry_at(rt_connpool_impl *pool, int index, bool close_transport) {
     if (!pool || index < 0 || index >= pool->count)
         return;
@@ -667,6 +670,7 @@ void rt_connpool_release(void *obj, void *conn) {
 ///          without closing so a handle currently held by an `Acquire`
 ///          caller keeps working — it simply is no longer tracked (a later
 ///          `Release` re-adopts or closes it).
+/// @param obj ConnectionPool handle to clear; NULL is a no-op.
 void rt_connpool_clear(void *obj) {
     if (!obj)
         return;
@@ -708,9 +712,10 @@ int64_t rt_connpool_size(void *obj) {
 }
 
 /// @brief Count entries that are tracked but not currently checked out.
-/// @details Useful for sizing decisions — when this returns 0 the next
-///          `acquire` will either reuse an in-use entry (impossible — the
-///          pool only reuses idle entries) or open a fresh connection.
+/// @details Takes the pool mutex and snapshots only the `in_use == false`
+///          entries. It does not probe health or evict expired connections.
+/// @param obj ConnectionPool handle to inspect; NULL returns zero.
+/// @return Number of currently idle tracked entries.
 int64_t rt_connpool_available(void *obj) {
     if (!obj)
         return 0;

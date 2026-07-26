@@ -19,8 +19,10 @@
 //     recoverable allocation traps.
 //
 // Ownership/Lifetime:
-//   - LineReader objects are heap-allocated; caller must close and free when done.
-//   - Returned strings from Read are newly allocated; caller must release them.
+//   - LineReader objects are runtime-managed opaque handles. Callers should close them promptly;
+//     the registered finalizer closes a forgotten native stream when the object is reclaimed.
+//   - Returned strings from Read and ReadAll are runtime-managed references owned by the caller.
+//   - Receiver and path arguments are borrowed for each call and are never retained.
 //
 // Links: src/runtime/io/rt_linereader.c (implementation), src/runtime/core/rt_string.h
 //
@@ -44,7 +46,9 @@ extern "C" {
 void *rt_linereader_open(rt_string path);
 
 /// @brief Close the line reader and release resources.
-/// @param obj LineReader object.
+/// @details Idempotently closes the native stream. The runtime object remains valid but unusable
+///          until its references are released normally.
+/// @param obj Borrowed LineReader object; NULL is ignored.
 void rt_linereader_close(void *obj);
 
 /// @brief Read one line from the file.
@@ -55,11 +59,15 @@ void rt_linereader_close(void *obj);
 rt_string rt_linereader_read(void *obj);
 
 /// @brief Read a single character from the file.
+/// @details Reads one raw byte without interpreting line endings. Invalid or closed receivers and
+///          native I/O failures trap.
 /// @param obj LineReader object.
 /// @return Character code (0-255) or -1 on EOF.
 int64_t rt_linereader_read_char(void *obj);
 
 /// @brief Peek at the next character without consuming it.
+/// @details Stores one raw byte in the reader's lookahead slot so repeated peeks return the same
+///          value. Invalid or closed receivers and native I/O failures trap.
 /// @param obj LineReader object.
 /// @return Character code (0-255) or -1 on EOF.
 int64_t rt_linereader_peek_char(void *obj);
@@ -72,8 +80,10 @@ int64_t rt_linereader_peek_char(void *obj);
 rt_string rt_linereader_read_all(void *obj);
 
 /// @brief Check if at end of file.
-/// @param obj LineReader object.
-/// @return 1 if at EOF, 0 otherwise.
+/// @details Reports the sticky flag set by a previous read that encountered EOF; it does not probe
+///          the native stream.
+/// @param obj Borrowed LineReader object; may be NULL.
+/// @return 1 for NULL, closed, or EOF readers; otherwise 0.
 int8_t rt_linereader_eof(void *obj);
 
 #ifdef __cplusplus

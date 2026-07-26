@@ -13,9 +13,9 @@
 //          the chain that short-circuits on the first true rule.
 //
 // Key invariants:
-//   - Every rule chain ends in an RT_PRN_TRUE node, so a category always
-//     matches. If the chain is empty (shouldn't happen in practice),
-//     RT_PLURAL_OTHER is returned as a conservative fallback.
+//   - Locale rule chains conventionally end in an RT_PRN_TRUE node. Empty,
+//     malformed, or non-matching chains still return RT_PLURAL_OTHER as a
+//     conservative evaluator fallback.
 //   - AST evaluation is pure (no allocation) and thread-safe.
 //   - Operand variables (n, i, v, f, t) are computed according to CLDR
 //     Unicode Technical Standard #35 Section 5 conventions: n is the
@@ -25,6 +25,8 @@
 //
 // Ownership/Lifetime:
 //   - PluralRules handles are rt_obj_new_i64-allocated; GC manages them.
+//   - Each handle retains its Locale and captured locale-data record until its
+//     finalizer runs. Category strings and category lists are returned owned.
 //
 // Links: src/runtime/localization/rt_plural_rules.h (interface),
 //        src/runtime/localization/rt_locale_data.h (AST node shape),
@@ -56,18 +58,21 @@
 // PluralRules instance struct
 //===----------------------------------------------------------------------===//
 
+/// @brief Retained locale context for one PluralRules instance.
 typedef struct rt_plural_rules_inst {
     void *locale;                 ///< strong Locale handle ref
     const rt_locale_data_t *data; ///< non-owning
 } rt_plural_rules_inst_t;
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime handle to release, or NULL for a no-op.
 static void plural_release_handle(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief GC finalizer: release the rules' locale data and locale handle.
+/// @param obj PluralRules allocation being finalized. NULL is accepted.
 static void plural_finalizer(void *obj) {
     rt_plural_rules_inst_t *self = (rt_plural_rules_inst_t *)obj;
     if (!self)
@@ -81,6 +86,13 @@ static void plural_finalizer(void *obj) {
 /// @brief snprintf forced through the "C" LC_NUMERIC locale so the operand
 ///        digits ("%.Nf" of the value) are always '.'-separated regardless of
 ///        the ambient locale — the CLDR plural operands must be locale-neutral.
+/// @details Creates and releases a platform C numeric-locale object for this
+///          call, falling back to ordinary `vsnprintf` if creation fails.
+/// @param out Destination buffer for formatted bytes.
+/// @param cap Capacity of @p out in bytes.
+/// @param fmt `printf`-style format string followed by its arguments.
+/// @return Required byte count excluding the terminator, or a negative value
+///         on encoding/format failure.
 static int plural_snprintf_c(char *out, size_t cap, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -126,6 +138,10 @@ typedef struct {
 } plural_operands_t;
 
 /// @brief Compute plural operands from an integer input (all-integer path).
+/// @details Uses unsigned magnitude arithmetic so `INT64_MIN` remains exact.
+///          Visible-fraction operands are all zero.
+/// @param n Signed integer whose absolute value supplies `n` and `i`.
+/// @return Fully initialized operand record with exact-magnitude metadata.
 static plural_operands_t operands_from_int(int64_t n) {
     plural_operands_t op;
     uint64_t mag = n < 0 ? (uint64_t)(-(n + 1)) + 1u : (uint64_t)n;
@@ -145,6 +161,9 @@ static plural_operands_t operands_from_int(int64_t n) {
 ///          integer and fractional parts for operand derivation. This avoids
 ///          the default `%g` six-significant-digit truncation while still
 ///          stripping insignificant trailing zeros for common user inputs.
+/// @param n Real input whose absolute value supplies the operands.
+/// @return Fully initialized operand record. Non-finite input maps to zero
+///         operands, although public real selection rejects it beforehand.
 static plural_operands_t operands_from_double(double n) {
     double abs_n = n < 0 ? -n : n;
     plural_operands_t op;
@@ -172,8 +191,8 @@ static plural_operands_t operands_from_double(double n) {
         return op;
     }
 
-    // Render via %g which strips trailing zeros by default; %.15g gives us
-    // enough precision for any IEEE-754 double without false precision.
+    // Render via %g which strips trailing zeros by default; %.15g provides
+    // bounded working precision without exposing most binary representation noise.
     char buf[64];
     int len = plural_snprintf_c(buf, sizeof(buf), "%.15g", abs_n);
     if (len < 0 || len >= (int)sizeof(buf)) {
@@ -247,6 +266,11 @@ static plural_operands_t operands_from_double(double n) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Resolve a VAR or INT node to its numeric value.
+/// @details Applies a variable node's positive modulus with floating `fmod`.
+///          Unsupported or NULL nodes resolve to zero.
+/// @param node Expression node to evaluate.
+/// @param op Precomputed CLDR operands.
+/// @return Numeric expression value as a double.
 static double eval_expr(const rt_plural_rule_node_t *node, const plural_operands_t *op) {
     if (!node)
         return 0.0;
@@ -285,6 +309,8 @@ static double eval_expr(const rt_plural_rule_node_t *node, const plural_operands
 }
 
 /// @brief True iff @p x is finite and has no fractional part.
+/// @param x Floating-point value to inspect.
+/// @return Non-zero only for finite integral values.
 static int plural_is_integral(double x) {
     return isfinite(x) && floor(x) == x;
 }
@@ -294,6 +320,9 @@ static int plural_is_integral(double x) {
 ///          rule integer literals, the always-integral v/f/t operands, and
 ///          n/i for integer inputs (tracked via `mag`, which also preserves
 ///          the INT64_MIN magnitude). Modulo is applied in integer space.
+/// @param node Expression node to evaluate.
+/// @param op Precomputed CLDR operands and exact-integer metadata.
+/// @param out Receives the exact unsigned value on success.
 /// @return 1 with @p *out set when exact; 0 to fall back to the double path.
 static int eval_expr_u64(const rt_plural_rule_node_t *node,
                          const plural_operands_t *op,
@@ -338,6 +367,8 @@ static int eval_expr_u64(const rt_plural_rule_node_t *node,
 }
 
 /// @brief Evaluate a CLDR range predicate (`n in/within a..b, c..d`).
+/// @param node Range-predicate AST node.
+/// @param op Precomputed CLDR operands.
 /// @param allow_fraction 0 for "in" (integers only), 1 for "within".
 /// @return 1 if the operand expression's value lands in any listed range.
 static int eval_range_pred(const rt_plural_rule_node_t *node,
@@ -375,6 +406,12 @@ static int eval_range_pred(const rt_plural_rule_node_t *node,
 }
 
 /// @brief Evaluate a rule AST node as a boolean predicate.
+/// @details Recursively short-circuits `and` and `or`, uses exact unsigned
+///          comparison when available, and delegates range operators to
+///          @ref eval_range_pred.
+/// @param node Predicate node to evaluate.
+/// @param op Precomputed CLDR operands.
+/// @return 1 when the predicate matches; 0 for false, NULL, or unsupported nodes.
 static int eval_pred(const rt_plural_rule_node_t *node, const plural_operands_t *op) {
     if (!node)
         return 0;
@@ -412,6 +449,10 @@ static int eval_pred(const rt_plural_rule_node_t *node, const plural_operands_t 
 
 /// @brief Return the first rule entry whose predicate matches @p op,
 ///        defaulting to RT_PLURAL_OTHER when none do (CLDR fallback).
+/// @param entries Ordered plural-rule entries, or NULL.
+/// @param count Number of entries in @p entries.
+/// @param op Precomputed CLDR operands.
+/// @return First matching category, or @ref RT_PLURAL_OTHER.
 static rt_plural_category_t walk_chain(const rt_plural_rule_entry_t *entries,
                                        size_t count,
                                        const plural_operands_t *op) {
@@ -428,6 +469,11 @@ static rt_plural_category_t walk_chain(const rt_plural_rule_entry_t *entries,
 // Internal entry points (shared with other Localization modules)
 //===----------------------------------------------------------------------===//
 
+/// @brief Select a cardinal category directly from locale data for a real input.
+/// @param data Borrowed locale-data record, or NULL.
+/// @param n Real value whose absolute-value operands will be evaluated.
+/// @return First matching category, or `other` for NULL data, non-finite input,
+///         or a non-matching chain.
 rt_plural_category_t rt_plural_rules_select_cardinal(const rt_locale_data_t *data, double n) {
     if (!data || !isfinite(n))
         return RT_PLURAL_OTHER;
@@ -435,6 +481,10 @@ rt_plural_category_t rt_plural_rules_select_cardinal(const rt_locale_data_t *dat
     return walk_chain(data->plural_cardinal, data->cardinal_count, &op);
 }
 
+/// @brief Select a cardinal category directly from locale data for an integer.
+/// @param data Borrowed locale-data record, or NULL.
+/// @param n Signed integer evaluated with exact unsigned-magnitude operands.
+/// @return First matching category, or `other` for NULL data or no match.
 rt_plural_category_t rt_plural_rules_select_cardinal_int(const rt_locale_data_t *data, int64_t n) {
     if (!data)
         return RT_PLURAL_OTHER;
@@ -442,6 +492,10 @@ rt_plural_category_t rt_plural_rules_select_cardinal_int(const rt_locale_data_t 
     return walk_chain(data->plural_cardinal, data->cardinal_count, &op);
 }
 
+/// @brief Select an ordinal category directly from locale data for an integer.
+/// @param data Borrowed locale-data record, or NULL.
+/// @param n Signed integer evaluated with exact unsigned-magnitude operands.
+/// @return First matching ordinal category, or `other` for NULL data or no match.
 rt_plural_category_t rt_plural_rules_select_ordinal(const rt_locale_data_t *data, int64_t n) {
     if (!data)
         return RT_PLURAL_OTHER;
@@ -449,6 +503,9 @@ rt_plural_category_t rt_plural_rules_select_ordinal(const rt_locale_data_t *data
     return walk_chain(data->plural_ordinal, data->ordinal_count, &op);
 }
 
+/// @brief Convert a plural-category enum to its canonical CLDR keyword.
+/// @param cat Category to name.
+/// @return Process-lifetime string literal; unknown values map to `"other"`.
 const char *rt_plural_rules_category_name(rt_plural_category_t cat) {
     switch (cat) {
         case RT_PLURAL_ZERO:
@@ -473,11 +530,19 @@ const char *rt_plural_rules_category_name(rt_plural_category_t cat) {
 
 /// @brief Wrap a plural category's canonical CLDR keyword
 ///        ("zero"/"one"/"two"/"few"/"many"/"other") as a runtime string.
+/// @param cat Category to convert.
+/// @return Newly allocated runtime string containing the canonical keyword.
 static rt_string category_to_string(rt_plural_category_t cat) {
     const char *s = rt_plural_rules_category_name(cat);
     return rt_string_from_bytes(s, strlen(s));
 }
 
+/// @brief Create a PluralRules instance bound to a locale.
+/// @details Retains both @p locale and its resolved locale-data record; NULL
+///          locale resolves to the baked invariant data.
+/// @param locale Locale handle to retain, or NULL for invariant rules.
+/// @return Newly allocated PluralRules handle, or NULL after allocation failure
+///         if the runtime trap hook returns.
 void *rt_plural_rules_for_locale(void *locale) {
     rt_plural_rules_inst_t *self =
         (rt_plural_rules_inst_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_plural_rules_inst_t));
@@ -494,6 +559,11 @@ void *rt_plural_rules_for_locale(void *locale) {
     return self;
 }
 
+/// @brief Select the bound locale's cardinal category for a real value.
+/// @param self_obj PluralRules handle, or NULL.
+/// @param n Real value to classify.
+/// @return Newly allocated canonical category string; NULL @p self_obj and
+///         non-finite values select `"other"`.
 rt_string rt_plural_rules_cardinal(void *self_obj, double n) {
     if (!self_obj)
         return rt_string_from_bytes("other", 5);
@@ -501,6 +571,11 @@ rt_string rt_plural_rules_cardinal(void *self_obj, double n) {
     return category_to_string(rt_plural_rules_select_cardinal(self->data, n));
 }
 
+/// @brief Select the bound locale's cardinal category for an integer.
+/// @param self_obj PluralRules handle, or NULL.
+/// @param n Signed integer to classify exactly.
+/// @return Newly allocated canonical category string; NULL @p self_obj selects
+///         `"other"`.
 rt_string rt_plural_rules_cardinal_int(void *self_obj, int64_t n) {
     if (!self_obj)
         return rt_string_from_bytes("other", 5);
@@ -508,6 +583,11 @@ rt_string rt_plural_rules_cardinal_int(void *self_obj, int64_t n) {
     return category_to_string(rt_plural_rules_select_cardinal_int(self->data, n));
 }
 
+/// @brief Select the bound locale's ordinal category for an integer.
+/// @param self_obj PluralRules handle, or NULL.
+/// @param n Signed integer to classify exactly.
+/// @return Newly allocated canonical category string; NULL @p self_obj selects
+///         `"other"`.
 rt_string rt_plural_rules_ordinal(void *self_obj, int64_t n) {
     if (!self_obj)
         return rt_string_from_bytes("other", 5);
@@ -515,6 +595,13 @@ rt_string rt_plural_rules_ordinal(void *self_obj, int64_t n) {
     return category_to_string(rt_plural_rules_select_ordinal(self->data, n));
 }
 
+/// @brief Enumerate distinct categories used by the cardinal and ordinal chains.
+/// @details Preserves first appearance across the cardinal chain followed by
+///          the ordinal chain, skips invalid enum values, and stores owned
+///          category strings in a fresh List.
+/// @param self_obj PluralRules handle, or NULL.
+/// @return Newly allocated List, empty for NULL/missing locale data; possibly
+///         NULL if list allocation fails.
 void *rt_plural_rules_categories(void *self_obj) {
     void *list = rt_list_new();
     if (!list || !self_obj)

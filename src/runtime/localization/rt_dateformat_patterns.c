@@ -54,6 +54,12 @@ typedef struct digit_spans {
 
 /// @brief Byte length of the leading UTF-8 codepoint in @p s (0 if empty/NULL,
 ///        1 on a malformed lead byte so callers always make forward progress).
+/// @details This is a bounded-glyph span helper for trusted locale data, not a
+///          full UTF-8 validator; it classifies the lead byte and verifies only
+///          that the expected following bytes exist before the NUL terminator.
+/// @param s NUL-terminated text positioned at a glyph boundary; may be NULL.
+/// @return Span length from one through four, zero at end/NULL, or one for an
+///         unsupported/truncated lead.
 static size_t utf8_cp_len(const char *s) {
     if (!s || !*s)
         return 0;
@@ -73,6 +79,9 @@ static size_t utf8_cp_len(const char *s) {
 /// @details Walks the (possibly multi-byte) @c numbers.digits string; falls back
 ///          to ASCII "0123456789". @c ds.valid is set only when exactly ten
 ///          codepoints were consumed, so emitters can safely index ds.ptr/len.
+/// @param data Locale data whose numbering-system glyph string is inspected;
+///             may be NULL for ASCII fallback.
+/// @return Borrowed spans into the locale/ASCII digit string plus a validity flag.
 static digit_spans_t digit_spans_from_locale(const rt_locale_data_t *data) {
     digit_spans_t ds;
     memset(&ds, 0, sizeof(ds));
@@ -108,6 +117,10 @@ static int dateformat_check_append(rt_sb_status_t status) {
 
 /// @brief Append @p len bytes, transliterating ASCII '0'-'9' to the locale's
 ///        native digit glyphs; non-digit bytes are passed through verbatim.
+/// @param sb Destination string builder.
+/// @param data Locale supplying numbering-system digit glyphs.
+/// @param bytes Bounded ASCII-formatted bytes to append.
+/// @param len Number of readable bytes at @p bytes.
 /// @return 1 on success, 0 when a builder append failed.
 static int emit_ascii_digits(rt_string_builder *sb,
                              const rt_locale_data_t *data,
@@ -129,6 +142,13 @@ static int emit_ascii_digits(rt_string_builder *sb,
 }
 
 /// @brief Append @p value as a zero-padded decimal of @p width digits.
+/// @details A negative sign is emitted before padding and is not counted in
+///          @p width. Decimal digits are translated through the Locale's
+///          numbering system when it supplies exactly ten glyphs.
+/// @param sb Destination string builder.
+/// @param data Locale supplying digit glyphs.
+/// @param value Signed integer to format.
+/// @param width Minimum number of magnitude digits.
 /// @return 1 on success, 0 when formatting or append work failed.
 static int emit_padded_int(rt_string_builder *sb,
                            const rt_locale_data_t *data,
@@ -161,6 +181,9 @@ static int emit_padded_int(rt_string_builder *sb,
 }
 
 /// @brief Append @p value as an unpadded decimal.
+/// @param sb Destination string builder.
+/// @param data Locale supplying digit glyphs.
+/// @param value Signed integer to format.
 /// @return 1 on success, 0 when formatting or append work failed.
 static int emit_int(rt_string_builder *sb, const rt_locale_data_t *data, int64_t value) {
     char buf[32];
@@ -173,6 +196,8 @@ static int emit_int(rt_string_builder *sb, const rt_locale_data_t *data, int64_t
 }
 
 /// @brief Append a C string (NULL-tolerant).
+/// @param sb Destination string builder.
+/// @param s NUL-terminated bytes to append; NULL and empty are successful no-ops.
 /// @return 1 on success, 0 when a builder append failed.
 static int emit_cstr(rt_string_builder *sb, const char *s) {
     if (!s || !*s)
@@ -181,6 +206,10 @@ static int emit_cstr(rt_string_builder *sb, const char *s) {
 }
 
 /// @brief Append the single leading UTF-8 codepoint of @p s (narrow form).
+/// @details Locale name data does not store dedicated narrow forms, so the
+///          first glyph of the wide name is used. NULL/empty input is a no-op.
+/// @param sb Destination string builder.
+/// @param s NUL-terminated wide name.
 /// @return 1 on success, 0 when a builder append failed.
 static int emit_narrow(rt_string_builder *sb, const char *s) {
     if (!s || !*s)
@@ -212,6 +241,11 @@ typedef struct {
 
 /// @brief Emit the year for a CLDR 'y' run: count==2 → 2-digit (year % 100),
 ///        count>=4 → zero-padded to @p count, else the full year unclamped.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `y` pattern letters.
+/// @param data Locale supplying digit glyphs.
+/// @return 1 on success, otherwise 0.
 static int emit_year(rt_string_builder *sb,
                      const dt_components_t *c,
                      int count,
@@ -228,6 +262,11 @@ static int emit_year(rt_string_builder *sb,
 /// @brief Emit the month for a CLDR 'M' run: 1=numeric, 2=zero-padded,
 ///        3=abbreviated name, 4=wide name, 5+=narrow (first glyph of wide).
 /// @details Traps if the component month is outside 1-12.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `M` pattern letters.
+/// @param data Locale supplying names and digit glyphs.
+/// @return 1 on success, otherwise 0.
 static int emit_month(rt_string_builder *sb,
                       const dt_components_t *c,
                       int count,
@@ -254,6 +293,11 @@ static int emit_month(rt_string_builder *sb,
 
 /// @brief Emit the day-of-month for a CLDR 'd' run: count>=2 → zero-padded to
 ///        two digits, otherwise the bare number.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `d` pattern letters.
+/// @param data Locale supplying digit glyphs.
+/// @return 1 on success, otherwise 0.
 static int emit_day(rt_string_builder *sb,
                     const dt_components_t *c,
                     int count,
@@ -266,6 +310,11 @@ static int emit_day(rt_string_builder *sb,
 /// @brief Emit the weekday name for a CLDR 'E' run: count<=3 → abbreviated,
 ///        4 → wide, 5+ → narrow (first glyph of wide).
 /// @details Traps if the component day-of-week is outside 0-6 (Sun..Sat).
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `E` pattern letters.
+/// @param data Locale supplying weekday names.
+/// @return 1 on success, otherwise 0.
 static int emit_dow(rt_string_builder *sb,
                     const dt_components_t *c,
                     int count,
@@ -286,6 +335,11 @@ static int emit_dow(rt_string_builder *sb,
 }
 
 /// @brief Emit the hour on a 24-hour clock (CLDR 'H'); count>=2 → zero-padded.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `H` pattern letters.
+/// @param data Locale supplying digit glyphs.
+/// @return 1 on success, otherwise 0.
 static int emit_hour24(rt_string_builder *sb,
                        const dt_components_t *c,
                        int count,
@@ -297,6 +351,11 @@ static int emit_hour24(rt_string_builder *sb,
 
 /// @brief Emit the hour on a 12-hour clock (CLDR 'h'); 0 maps to 12,
 ///        count>=2 → zero-padded.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `h` pattern letters.
+/// @param data Locale supplying digit glyphs.
+/// @return 1 on success, otherwise 0.
 static int emit_hour12(rt_string_builder *sb,
                        const dt_components_t *c,
                        int count,
@@ -310,6 +369,11 @@ static int emit_hour12(rt_string_builder *sb,
 }
 
 /// @brief Emit the minute (CLDR 'm'); count>=2 → zero-padded to two digits.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `m` pattern letters.
+/// @param data Locale supplying digit glyphs.
+/// @return 1 on success, otherwise 0.
 static int emit_minute(rt_string_builder *sb,
                        const dt_components_t *c,
                        int count,
@@ -320,6 +384,11 @@ static int emit_minute(rt_string_builder *sb,
 }
 
 /// @brief Emit the second (CLDR 's'); count>=2 → zero-padded to two digits.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components.
+/// @param count Number of consecutive `s` pattern letters.
+/// @param data Locale supplying digit glyphs.
+/// @return 1 on success, otherwise 0.
 static int emit_second(rt_string_builder *sb,
                        const dt_components_t *c,
                        int count,
@@ -331,6 +400,10 @@ static int emit_second(rt_string_builder *sb,
 
 /// @brief Emit the AM/PM marker (CLDR 'a') using the locale's tokens,
 ///        falling back to literal "AM"/"PM" when the locale omits them.
+/// @param sb Destination string builder.
+/// @param c Extracted local date/time components used to select the period.
+/// @param data Locale supplying AM/PM tokens.
+/// @return 1 on success, otherwise 0.
 static int emit_ampm(rt_string_builder *sb,
                      const dt_components_t *c,
                      const rt_locale_data_t *data) {
@@ -357,7 +430,13 @@ void rt_dateformat_emit_pattern(rt_string_builder *sb,
 /// @brief Compatibility wrapper for callers that ignore pattern-emission status.
 /// @details New code should prefer @ref rt_dateformat_emit_pattern_checked so
 ///          allocation and formatting failures do not silently materialize a
-///          partial date string.
+///          partial date string. This wrapper leaves any partial builder
+///          contents in place when checked emission fails.
+/// @param sb Caller-owned destination builder.
+/// @param timestamp Unix seconds whose local civil-time components are emitted.
+/// @param pattern Bounded pattern bytes; no terminating NUL is required.
+/// @param pattern_len Number of readable pattern bytes, at most 256.
+/// @param data Captured Locale data supplying names, tokens, and digits.
 void rt_dateformat_emit_pattern(rt_string_builder *sb,
                                 int64_t timestamp,
                                 const char *pattern,
@@ -370,7 +449,14 @@ void rt_dateformat_emit_pattern(rt_string_builder *sb,
 /// @details Interprets supported date pattern letters, quoted literals, and
 ///          locale-specific digits. Any unsupported pattern, invalid component,
 ///          or builder append failure traps through the existing DateFormat
-///          error policy and returns 0 after recovery.
+///          error policy and returns 0 after recovery. NULL arguments return
+///          zero directly. On any failure the caller must discard or otherwise
+///          account for bytes appended before the error.
+/// @param sb Caller-owned destination builder.
+/// @param timestamp Unix seconds interpreted by local-time component accessors.
+/// @param pattern Bounded pattern bytes; no terminating NUL is required.
+/// @param pattern_len Number of readable pattern bytes, at most 256.
+/// @param data Captured Locale data supplying names, tokens, and digits.
 /// @return 1 when the full pattern was emitted, 0 when emission stopped early.
 int rt_dateformat_emit_pattern_checked(rt_string_builder *sb,
                                        int64_t timestamp,

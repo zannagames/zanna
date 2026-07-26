@@ -70,6 +70,19 @@ Constructor: `Zanna.Game2D.SceneDocument.New`
 | <a id="zanna-game2d-scenedocument-trysetobjectparent"></a>`TrySetObjectParent` | `i1(i64,i64)` | `Zanna.Game2D.SceneDocument.TrySetObjectParent` |
 | <a id="zanna-game2d-scenedocument-setobjectmetadata"></a>`SetObjectMetadata` | `void(i64,str,str)` | `Zanna.Game2D.SceneDocument.SetObjectMetadata` |
 | <a id="zanna-game2d-scenedocument-setobjectposition"></a>`SetObjectPosition` | `void(i64,i64,i64)` | `Zanna.Game2D.SceneDocument.SetObjectPosition` |
+| <a id="zanna-game2d-scenedocument-objectrotation"></a>`ObjectRotation` | `f64(i64)` | `Zanna.Game2D.SceneDocument.ObjectRotation` |
+| <a id="zanna-game2d-scenedocument-setobjectrotation"></a>`SetObjectRotation` | `void(i64,f64)` | `Zanna.Game2D.SceneDocument.SetObjectRotation` |
+| <a id="zanna-game2d-scenedocument-objectscalex"></a>`ObjectScaleX` | `f64(i64)` | `Zanna.Game2D.SceneDocument.ObjectScaleX` |
+| <a id="zanna-game2d-scenedocument-objectscaley"></a>`ObjectScaleY` | `f64(i64)` | `Zanna.Game2D.SceneDocument.ObjectScaleY` |
+| <a id="zanna-game2d-scenedocument-setobjectscale"></a>`SetObjectScale` | `void(i64,f64,f64)` | `Zanna.Game2D.SceneDocument.SetObjectScale` |
+| <a id="zanna-game2d-scenedocument-objectflipx"></a>`ObjectFlipX` | `i1(i64)` | `Zanna.Game2D.SceneDocument.ObjectFlipX` |
+| <a id="zanna-game2d-scenedocument-objectflipy"></a>`ObjectFlipY` | `i1(i64)` | `Zanna.Game2D.SceneDocument.ObjectFlipY` |
+| <a id="zanna-game2d-scenedocument-setobjectflip"></a>`SetObjectFlip` | `void(i64,i1,i1)` | `Zanna.Game2D.SceneDocument.SetObjectFlip` |
+| <a id="zanna-game2d-scenedocument-objecttint"></a>`ObjectTint` | `i64(i64)` | `Zanna.Game2D.SceneDocument.ObjectTint` |
+| <a id="zanna-game2d-scenedocument-setobjecttint"></a>`SetObjectTint` | `void(i64,i64)` | `Zanna.Game2D.SceneDocument.SetObjectTint` |
+| <a id="zanna-game2d-scenedocument-objectpivotx"></a>`ObjectPivotX` | `f64(i64)` | `Zanna.Game2D.SceneDocument.ObjectPivotX` |
+| <a id="zanna-game2d-scenedocument-objectpivoty"></a>`ObjectPivotY` | `f64(i64)` | `Zanna.Game2D.SceneDocument.ObjectPivotY` |
+| <a id="zanna-game2d-scenedocument-setobjectpivot"></a>`SetObjectPivot` | `void(i64,f64,f64)` | `Zanna.Game2D.SceneDocument.SetObjectPivot` |
 | <a id="zanna-game2d-scenedocument-duplicateobject"></a>`DuplicateObject` | `i64(i64,str)` | `Zanna.Game2D.SceneDocument.DuplicateObject` |
 | <a id="zanna-game2d-scenedocument-setobjectproperty"></a>`SetObjectProperty` | `void(i64,str,str)` | `Zanna.Game2D.SceneDocument.SetObjectProperty` |
 | <a id="zanna-game2d-scenedocument-getobjectproperty"></a>`GetObjectProperty` | `str(i64,str)` | `Zanna.Game2D.SceneDocument.GetObjectProperty` |
@@ -204,6 +217,19 @@ Constructor: `Zanna.Game2D.SceneDocument.New`
 | `Zanna.Game2D.SceneDocument.TrySetObjectParent` | `i1(obj,i64,i64)` | `rt_game_scene_try_set_object_parent` |
 | `Zanna.Game2D.SceneDocument.SetObjectMetadata` | `void(obj,i64,str,str)` | `rt_game_scene_set_object_metadata` |
 | `Zanna.Game2D.SceneDocument.SetObjectPosition` | `void(obj,i64,i64,i64)` | `rt_game_scene_set_object_position` |
+| `Zanna.Game2D.SceneDocument.ObjectRotation` | `f64(obj,i64)` | `rt_game_scene_object_rotation` |
+| `Zanna.Game2D.SceneDocument.SetObjectRotation` | `void(obj,i64,f64)` | `rt_game_scene_set_object_rotation` |
+| `Zanna.Game2D.SceneDocument.ObjectScaleX` | `f64(obj,i64)` | `rt_game_scene_object_scale_x` |
+| `Zanna.Game2D.SceneDocument.ObjectScaleY` | `f64(obj,i64)` | `rt_game_scene_object_scale_y` |
+| `Zanna.Game2D.SceneDocument.SetObjectScale` | `void(obj,i64,f64,f64)` | `rt_game_scene_set_object_scale` |
+| `Zanna.Game2D.SceneDocument.ObjectFlipX` | `i1(obj,i64)` | `rt_game_scene_object_flip_x` |
+| `Zanna.Game2D.SceneDocument.ObjectFlipY` | `i1(obj,i64)` | `rt_game_scene_object_flip_y` |
+| `Zanna.Game2D.SceneDocument.SetObjectFlip` | `void(obj,i64,i1,i1)` | `rt_game_scene_set_object_flip` |
+| `Zanna.Game2D.SceneDocument.ObjectTint` | `i64(obj,i64)` | `rt_game_scene_object_tint` |
+| `Zanna.Game2D.SceneDocument.SetObjectTint` | `void(obj,i64,i64)` | `rt_game_scene_set_object_tint` |
+| `Zanna.Game2D.SceneDocument.ObjectPivotX` | `f64(obj,i64)` | `rt_game_scene_object_pivot_x` |
+| `Zanna.Game2D.SceneDocument.ObjectPivotY` | `f64(obj,i64)` | `rt_game_scene_object_pivot_y` |
+| `Zanna.Game2D.SceneDocument.SetObjectPivot` | `void(obj,i64,f64,f64)` | `rt_game_scene_set_object_pivot` |
 | `Zanna.Game2D.SceneDocument.DuplicateObject` | `i64(obj,i64,str)` | `rt_game_scene_duplicate_object` |
 | `Zanna.Game2D.SceneDocument.SetObjectProperty` | `void(obj,i64,str,str)` | `rt_game_scene_set_object_property` |
 | `Zanna.Game2D.SceneDocument.GetObjectProperty` | `str(obj,i64,str)` | `rt_game_scene_get_object_property` |

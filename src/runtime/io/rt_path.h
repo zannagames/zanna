@@ -10,14 +10,18 @@
 // dirname, basename, extension, normalization, and existence queries.
 //
 // Key invariants:
-//   - All functions return newly allocated runtime strings.
-//   - Path separators are normalized to platform-native on all operations.
+//   - Returned strings never borrow input storage; nonempty results are copied and empty results
+//     may use the shared canonical empty string.
+//   - Join and normalization emit platform-native separators; component extraction otherwise
+//     preserves path bytes selected from the input.
 //   - rt_path_join handles absolute and relative path combination correctly.
 //   - rt_path_normalize resolves . and .. components and removes redundant separators.
 //   - Link inspection never follows the final path component and never traps.
 //
 // Ownership/Lifetime:
-//   - Caller must release all returned strings.
+//   - Every returned runtime string transfers a managed reference to the caller.
+//   - rt_path_exe_dir_cstr is the sole exception: it returns malloc-owned C storage that the
+//     caller must free.
 //   - Input strings are borrowed; they are not retained.
 //
 // Links: src/runtime/io/rt_path.c (implementation), src/runtime/core/rt_string.h
@@ -36,33 +40,33 @@ extern "C" {
 /// @brief Join two path components with the platform separator.
 /// @param a First path component.
 /// @param b Second path component.
-/// @return Newly allocated joined path.
+/// @return Runtime-managed joined path that does not borrow either input.
 /// @details If b is absolute, returns b. Otherwise joins with platform separator.
 rt_string rt_path_join(rt_string a, rt_string b);
 
 /// @brief Get the directory portion of a path.
 /// @param path Path to extract directory from.
-/// @return Newly allocated directory path, or "." if no directory component.
+/// @return Runtime-managed directory path, or "." if no directory component.
 /// @details For "/foo/bar/baz.txt" returns "/foo/bar".
 ///          For "baz.txt" returns ".".
 rt_string rt_path_dir(rt_string path);
 
 /// @brief Get the filename portion of a path.
 /// @param path Path to extract filename from.
-/// @return Newly allocated filename string.
+/// @return Runtime-managed filename string.
 /// @details For "/foo/bar/baz.txt" returns "baz.txt".
 rt_string rt_path_name(rt_string path);
 
 /// @brief Get the filename without extension.
 /// @param path Path to extract stem from.
-/// @return Newly allocated stem string.
+/// @return Runtime-managed stem string.
 /// @details For "/foo/bar/baz.txt" returns "baz".
 ///          For ".hidden" returns ".hidden" (no extension).
 rt_string rt_path_stem(rt_string path);
 
 /// @brief Get the file extension including the dot.
 /// @param path Path to extract extension from.
-/// @return Newly allocated extension string (e.g., ".txt"), or empty if none.
+/// @return Runtime-managed extension string (e.g., ".txt"), or empty if none.
 /// @details For "/foo/bar/baz.txt" returns ".txt".
 ///          For ".hidden" returns "" (leading dot is not an extension).
 rt_string rt_path_ext(rt_string path);
@@ -70,7 +74,7 @@ rt_string rt_path_ext(rt_string path);
 /// @brief Replace the extension of a path.
 /// @param path Original path.
 /// @param new_ext New extension (with or without leading dot).
-/// @return Newly allocated path with new extension.
+/// @return Runtime-managed path with the replacement extension.
 /// @details For "/foo/bar.txt" with ".md" returns "/foo/bar.md".
 rt_string rt_path_with_ext(rt_string path, rt_string new_ext);
 
@@ -90,27 +94,27 @@ int64_t rt_path_is_link(rt_string path);
 
 /// @brief Convert a relative path to absolute.
 /// @param path Path to convert.
-/// @return Newly allocated absolute path.
+/// @return Runtime-managed absolute normalized path.
 /// @details Prepends current working directory and normalizes.
 rt_string rt_path_abs(rt_string path);
 
 /// @brief Normalize a path by removing redundant separators and resolving . and ..
 /// @param path Path to normalize.
-/// @return Newly allocated normalized path.
+/// @return Runtime-managed normalized path.
 /// @details Removes "." components, resolves ".." where possible,
 ///          collapses multiple separators, returns "." for empty result.
 rt_string rt_path_norm(rt_string path);
 
 /// @brief Get the platform-specific path separator.
-/// @return Newly allocated string containing "/" (Unix) or "\" (Windows).
+/// @return Runtime-managed string containing "/" (Unix) or "\" (Windows).
 rt_string rt_path_sep(void);
 
 /// @brief Get the directory containing the running executable.
-/// @return Newly allocated runtime string. Returns "." if detection fails.
+/// @return Runtime-managed executable-directory string, or "." if detection fails.
 rt_string rt_path_exe_dir_str(void);
 
 /// @brief Get the directory containing the running executable (C string).
-/// @return malloc'd C string (caller must free), or NULL on failure.
+/// @return Malloc-owned C string for the caller to free, or NULL on failure.
 char *rt_path_exe_dir_cstr(void);
 
 #ifdef __cplusplus

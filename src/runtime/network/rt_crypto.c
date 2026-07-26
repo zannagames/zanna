@@ -8,8 +8,8 @@
 // File: src/runtime/network/rt_crypto.c
 // Purpose: Cryptographic primitives for TLS support: SHA-256/384/512, HMAC-SHA256,
 //          HKDF (RFC 5869), ChaCha20-Poly1305 AEAD (RFC 8439), AES-128-GCM
-//          (NIST SP 800-38D), and X25519 key exchange (RFC 7748). All implemented
-//          in pure C with no external dependencies.
+//          and AES-256-GCM (NIST SP 800-38D), plus secure entropy dispatch.
+//          X25519 is implemented separately in rt_x25519.c.
 //
 // Key invariants:
 //   - All key material is zeroed before return using rt_secure_zero to prevent
@@ -21,7 +21,7 @@
 // Ownership/Lifetime:
 //   - Pure functions operating on caller-provided buffers; no heap allocation.
 //
-// Links: rt_crypto.h, rt_tls.c
+// Links: rt_crypto.h, rt_x25519.c, rt_tls.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,6 +41,8 @@
 /// @brief Secure memory zeroing that the compiler cannot optimize away.
 /// @details Uses volatile pointer writes to prevent dead-store elimination.
 ///          Each byte write is guaranteed to occur even if the buffer is not read afterward.
+/// @param ptr Writable memory to clear.
+/// @param len Number of bytes to overwrite with zero.
 void rt_secure_zero(void *ptr, size_t len) {
     volatile unsigned char *p = (volatile unsigned char *)ptr;
     while (len--)
@@ -66,21 +68,28 @@ static const uint8_t *rt_crypto_checked_input(const void *data, size_t len, cons
 }
 
 /// @brief Store a 64-bit value as 8 little-endian bytes.
-/// Used to encode the AAD and ciphertext length fields in AEAD constructions.
+/// @details Used to encode the AAD and ciphertext length fields in AEAD constructions.
+/// @param out Eight-byte output buffer.
+/// @param value Integer value to encode.
 static void store64_le(uint8_t out[8], uint64_t value) {
     for (int i = 0; i < 8; i++)
         out[i] = (uint8_t)(value >> (8 * i));
 }
 
 /// @brief Load a 32-bit little-endian word from an unaligned byte buffer.
+/// @param in Four input bytes in least-significant-first order.
+/// @return Decoded 32-bit value.
 static uint32_t load32_le(const uint8_t in[4]) {
     return ((uint32_t)in[0]) | ((uint32_t)in[1] << 8) | ((uint32_t)in[2] << 16) |
            ((uint32_t)in[3] << 24);
 }
 
 /// @brief Return non-zero if both lengths can be safely multiplied by 8 to get bit counts.
-/// GCM length block encodes aad_len and ct_len in bits as 64-bit big-endian values;
-/// overflow would silently produce a wrong tag.
+/// @details The GCM length block encodes AAD and ciphertext lengths in bits as
+///          64-bit big-endian values; overflow would silently produce a wrong tag.
+/// @param aad_len Additional-authenticated-data length in bytes.
+/// @param text_len Plaintext or ciphertext length in bytes.
+/// @return Non-zero when both byte-to-bit conversions fit in `uint64_t`.
 static int gcm_lengths_valid(size_t aad_len, size_t text_len) {
     return (uint64_t)aad_len <= UINT64_MAX / 8 && (uint64_t)text_len <= UINT64_MAX / 8;
 }
@@ -144,6 +153,8 @@ static const uint32_t sha256_k[64] = {
 /// Implements the FIPS 180-4 §6.2 message schedule plus the 64-round
 /// inner loop. Operates on a private set of working variables and
 /// folds them back into `ctx->state` at the end.
+/// @param ctx Initialized SHA-256 context to mutate.
+/// @param data Complete 64-byte message block.
 static void sha256_transform(rt_sha256_ctx *ctx, const uint8_t data[64]) {
     uint32_t a, b, c, d, e, f, g, h, t1, t2, w[64];
 
@@ -188,6 +199,7 @@ static void sha256_transform(rt_sha256_ctx *ctx, const uint8_t data[64]) {
 }
 
 /// @brief Initialise a SHA-256 context with FIPS 180-4 IV constants.
+/// @param ctx Context whose state, count, and buffered position are reset.
 void rt_sha256_init(rt_sha256_ctx *ctx) {
     ctx->state[0] = 0x6a09e667;
     ctx->state[1] = 0xbb67ae85;
@@ -205,6 +217,9 @@ void rt_sha256_init(rt_sha256_ctx *ctx) {
 /// Buffers partial blocks; calls `sha256_transform` whenever 64
 /// bytes have accumulated. Tracks the cumulative bit count so the
 /// MD-strengthening step in `final()` can append the correct length.
+/// @param ctx Initialized SHA-256 context to update.
+/// @param data Input bytes, or NULL only when @p len is zero.
+/// @param len Number of input bytes.
 void rt_sha256_update(rt_sha256_ctx *ctx, const void *data, size_t len) {
     if (!ctx) {
         rt_trap("SHA256: context is null");
@@ -245,6 +260,8 @@ void rt_sha256_update(rt_sha256_ctx *ctx, const void *data, size_t len) {
 /// length ≡ 56 (mod 64), then the message bit-count in big-endian
 /// 64-bit form. The final state words are serialised big-endian
 /// into `digest`.
+/// @param ctx Incremental SHA-256 context to finalize.
+/// @param digest Output buffer receiving exactly 32 digest bytes.
 void rt_sha256_final(rt_sha256_ctx *ctx, uint8_t digest[32]) {
     if (!ctx) {
         rt_trap("SHA256: context is null");
@@ -282,6 +299,9 @@ void rt_sha256_final(rt_sha256_ctx *ctx, uint8_t digest[32]) {
 }
 
 /// @brief One-shot SHA-256: init → update → final into a fresh context.
+/// @param data Input bytes, or NULL only when @p len is zero.
+/// @param len Number of input bytes.
+/// @param digest Output buffer receiving exactly 32 digest bytes.
 void rt_sha256(const void *data, size_t len, uint8_t digest[32]) {
     rt_sha256_ctx ctx;
     if (!digest) {
@@ -340,6 +360,8 @@ static const uint64_t sha512_k[80] = {
 /// Mirrors sha256_transform but operates on 64-bit words, 80 rounds, and the
 /// FIPS 180-4 SHA-512 message schedule (SIG0_64/SIG1_64 macros). Used by both
 /// SHA-384 and SHA-512 since they share the same compression function.
+/// @param ctx Initialized SHA-512-family context to mutate.
+/// @param data Complete 128-byte message block.
 static void sha512_transform(rt_sha512_ctx_internal *ctx, const uint8_t data[128]) {
     uint64_t a, b, c, d, e, f, g, h, t1, t2, w[80];
 
@@ -385,6 +407,7 @@ static void sha512_transform(rt_sha512_ctx_internal *ctx, const uint8_t data[128
 }
 
 /// @brief Initialise SHA-512 or SHA-384 context with the correct FIPS 180-4 IV.
+/// @param ctx Context whose state and 128-bit bit count are reset.
 /// @param is_sha384 Non-zero to use SHA-384 IVs; zero for SHA-512.
 static void sha512_family_init(rt_sha512_ctx_internal *ctx, int is_sha384) {
     if (is_sha384) {
@@ -416,6 +439,9 @@ static void sha512_family_init(rt_sha512_ctx_internal *ctx, int is_sha384) {
 /// 128-bit count (count_hi/count_lo) to handle the >2^64 bit-length
 /// that SHA-512 supports in theory. In practice `count_hi` carries
 /// overflow from count_lo so the implementation handles files > 2 EiB.
+/// @param ctx Initialized SHA-512-family context to update.
+/// @param data Input bytes, or NULL only when @p len is zero.
+/// @param len Number of input bytes.
 static void sha512_family_update(rt_sha512_ctx_internal *ctx, const void *data, size_t len) {
     if (!ctx) {
         rt_trap("SHA512: context is null");
@@ -456,6 +482,8 @@ static void sha512_family_update(rt_sha512_ctx_internal *ctx, const void *data, 
 /// processes the remaining blocks. The outer caller truncates the state
 /// by passing the appropriate digest_len; the state words are serialised
 /// big-endian, byte-by-byte.
+/// @param ctx Incremental SHA-512-family context to finalize.
+/// @param digest Output buffer receiving @p digest_len bytes.
 static void sha512_family_final(rt_sha512_ctx_internal *ctx, uint8_t *digest, size_t digest_len) {
     if (!ctx) {
         rt_trap("SHA512: context is null");
@@ -500,6 +528,9 @@ static void sha512_family_final(rt_sha512_ctx_internal *ctx, uint8_t *digest, si
 }
 
 /// @brief One-shot SHA-384: init → update → final → 48-byte digest.
+/// @param data Input bytes, or NULL only when @p len is zero.
+/// @param len Number of input bytes.
+/// @param digest Output buffer receiving exactly 48 digest bytes.
 void rt_sha384(const void *data, size_t len, uint8_t digest[48]) {
     rt_sha512_ctx_internal ctx;
     if (!digest) {
@@ -515,6 +546,9 @@ void rt_sha384(const void *data, size_t len, uint8_t digest[48]) {
 }
 
 /// @brief One-shot SHA-512: init → update → final → 64-byte digest.
+/// @param data Input bytes, or NULL only when @p len is zero.
+/// @param len Number of input bytes.
+/// @param digest Output buffer receiving exactly 64 digest bytes.
 void rt_sha512(const void *data, size_t len, uint8_t digest[64]) {
     rt_sha512_ctx_internal ctx;
     if (!digest) {
@@ -540,6 +574,11 @@ void rt_sha512(const void *data, size_t len, uint8_t digest[64]) {
 /// `H((K ⊕ opad) || H((K ⊕ ipad) || data))`. All intermediate
 /// key-derived material is cleared before return to discourage
 /// post-call leakage.
+/// @param key Secret key bytes, or NULL only when @p key_len is zero.
+/// @param key_len Number of key bytes.
+/// @param data Message bytes, or NULL only when @p data_len is zero.
+/// @param data_len Number of message bytes.
+/// @param mac Output buffer receiving exactly 32 MAC bytes.
 void rt_hmac_sha256(
     const uint8_t *key, size_t key_len, const void *data, size_t data_len, uint8_t mac[32]) {
     uint8_t k[64], ipad[64], opad[64];
@@ -670,12 +709,22 @@ static void hmac_sha512_family(const uint8_t *key,
 }
 
 /// @brief HMAC-SHA-384 wrapper over @ref hmac_sha512_family.
+/// @param key Secret key bytes, or NULL only when @p key_len is zero.
+/// @param key_len Number of key bytes.
+/// @param data Message bytes, or NULL only when @p data_len is zero.
+/// @param data_len Number of message bytes.
+/// @param mac Output buffer receiving exactly 48 MAC bytes.
 void rt_hmac_sha384(
     const uint8_t *key, size_t key_len, const void *data, size_t data_len, uint8_t mac[48]) {
     hmac_sha512_family(key, key_len, data, data_len, mac, 48, 1);
 }
 
 /// @brief HMAC-SHA-512 wrapper over @ref hmac_sha512_family.
+/// @param key Secret key bytes, or NULL only when @p key_len is zero.
+/// @param key_len Number of key bytes.
+/// @param data Message bytes, or NULL only when @p data_len is zero.
+/// @param data_len Number of message bytes.
+/// @param mac Output buffer receiving exactly 64 MAC bytes.
 void rt_hmac_sha512(
     const uint8_t *key, size_t key_len, const void *data, size_t data_len, uint8_t mac[64]) {
     hmac_sha512_family(key, key_len, data, data_len, mac, 64, 0);
@@ -690,6 +739,11 @@ void rt_hmac_sha512(
 /// PRK = HMAC-SHA256(salt, IKM). When the caller passes a NULL or
 /// empty salt, the spec mandates substituting `HashLen` zero bytes
 /// — TLS 1.3 relies on this for the early-secret derivation.
+/// @param salt Optional salt bytes; NULL is valid only with zero length.
+/// @param salt_len Number of salt bytes.
+/// @param ikm Input keying material, or NULL only when @p ikm_len is zero.
+/// @param ikm_len Number of input-key-material bytes.
+/// @param prk Output buffer receiving the 32-byte pseudorandom key.
 void rt_hkdf_extract(
     const uint8_t *salt, size_t salt_len, const uint8_t *ikm, size_t ikm_len, uint8_t prk[32]) {
     if (!prk) {
@@ -720,6 +774,11 @@ void rt_hkdf_extract(
 /// iteration's intermediate HMAC pads are scrubbed before
 /// returning. The spec caps OKM at `255 * HashLen`; this
 /// implementation enforces `RT_HKDF_MAX_OKM_LEN`.
+/// @param prk 32-byte pseudorandom key from HKDF-Extract.
+/// @param info Optional application context, or NULL only when @p info_len is zero.
+/// @param info_len Number of context bytes.
+/// @param okm Output keying-material buffer, or NULL only for zero output length.
+/// @param okm_len Requested output length in bytes.
 /// @return 0 on success, -1 if the requested size exceeds the cap.
 int rt_hkdf_expand(
     const uint8_t prk[32], const uint8_t *info, size_t info_len, uint8_t *okm, size_t okm_len) {
@@ -785,6 +844,12 @@ int rt_hkdf_expand(
 /// Wraps `rt_hkdf_expand` with the standardised info-block encoding:
 /// `length(2) || "tls13 " + label(prefixed-1) || context(prefixed-1)`.
 /// All TLS 1.3 traffic key derivations route through this function.
+/// @param secret 32-byte secret used as the HKDF pseudorandom key.
+/// @param label NUL-terminated label without the `"tls13 "` prefix.
+/// @param context Optional context bytes, or NULL only when @p context_len is zero.
+/// @param context_len Number of context bytes.
+/// @param out Output keying-material buffer, or NULL only for zero output length.
+/// @param out_len Requested output length encoded in the two-byte TLS field.
 /// @return 0 on success, -1 if the resulting OKM length would
 ///         exceed the HKDF cap.
 int rt_hkdf_expand_label(const uint8_t secret[32],
@@ -838,6 +903,11 @@ int rt_hkdf_expand_label(const uint8_t secret[32],
 /// @details Mirrors @ref rt_hkdf_extract but uses the SHA-384 hash and a
 ///          48-byte zero-salt default. Used by the TLS 1.3 SHA-384
 ///          cipher-suite family.
+/// @param salt Optional salt bytes; NULL is valid only with zero length.
+/// @param salt_len Number of salt bytes.
+/// @param ikm Input keying material, or NULL only when @p ikm_len is zero.
+/// @param ikm_len Number of input-key-material bytes.
+/// @param prk Output buffer receiving the 48-byte pseudorandom key.
 void rt_hkdf_extract_sha384(
     const uint8_t *salt, size_t salt_len, const uint8_t *ikm, size_t ikm_len, uint8_t prk[48]) {
     if (!prk) {
@@ -868,6 +938,11 @@ void rt_hkdf_extract_sha384(
 ///          input rather than streaming the HMAC update — keeps the
 ///          implementation small at the cost of one malloc/free per
 ///          iteration. Cap is @c 255 * 48 = 12240 bytes.
+/// @param prk 48-byte pseudorandom key from SHA-384 HKDF-Extract.
+/// @param info Optional application context, or NULL only when @p info_len is zero.
+/// @param info_len Number of context bytes.
+/// @param okm Output keying-material buffer, or NULL only for zero output length.
+/// @param okm_len Requested output length in bytes.
 /// @return 0 on success; -1 on bad argument, OOM, or oversize @p okm_len.
 int rt_hkdf_expand_sha384(
     const uint8_t prk[48], const uint8_t *info, size_t info_len, uint8_t *okm, size_t okm_len) {
@@ -924,6 +999,12 @@ done:
 ///          for the SHA-384 PRK path. The 48-byte secret + 6-byte
 ///          "tls13 " prefix + label + context all fit inside the
 ///          stack-resident 512-byte scratch buffer.
+/// @param secret 48-byte secret used as the HKDF pseudorandom key.
+/// @param label NUL-terminated label without the `"tls13 "` prefix.
+/// @param context Optional context bytes, or NULL only when @p context_len is zero.
+/// @param context_len Number of context bytes.
+/// @param out Output keying-material buffer, or NULL only for zero output length.
+/// @param out_len Requested output length encoded in the two-byte TLS field.
 /// @return 0 on success; -1 on bad input or oversize encoding.
 int rt_hkdf_expand_label_sha384(const uint8_t secret[48],
                                 const char *label,
@@ -991,6 +1072,8 @@ int rt_hkdf_expand_label_sha384(const uint8_t secret[48],
 /// 20 rounds = 10 column-round pairs of `QUARTERROUND`s, then add
 /// the original state back to thwart the trivial inverse, and
 /// serialise little-endian.
+/// @param state Sixteen-word input state; not modified.
+/// @param out Output buffer receiving 64 keystream bytes.
 static void chacha20_block(const uint32_t state[16], uint8_t out[64]) {
     uint32_t x[16];
     memcpy(x, state, 64);
@@ -1026,6 +1109,10 @@ static void chacha20_block(const uint32_t state[16], uint8_t out[64]) {
 ///   words[4..11] = 256-bit key (little-endian)
 ///   words[12]    = block counter
 ///   words[13..15] = 96-bit nonce (little-endian)
+/// @param state Sixteen-word output state.
+/// @param key 32-byte ChaCha20 key.
+/// @param nonce 12-byte IETF nonce.
+/// @param counter Initial 32-bit block counter.
 static void chacha20_init(uint32_t state[16],
                           const uint8_t key[32],
                           const uint8_t nonce[12],
@@ -1057,6 +1144,13 @@ static void chacha20_init(uint32_t state[16],
 /// Generates one 64-byte keystream block per iteration, advancing
 /// the block counter. Aborts the loop if the counter wraps to zero
 /// (256 GiB with the same key+nonce) so we never reuse keystream.
+/// @param key 32-byte ChaCha20 key.
+/// @param nonce 12-byte IETF nonce.
+/// @param counter Initial block counter.
+/// @param in Input bytes.
+/// @param out Output buffer; may alias @p in.
+/// @param len Number of bytes to transform.
+/// @return 0 on success; -1 if more data remains after counter wrap.
 static int chacha20_crypt(const uint8_t key[32],
                           const uint8_t nonce[12],
                           uint32_t counter,
@@ -1100,6 +1194,8 @@ typedef struct {
 /// Splits the key into the multiplier `r` (clamped per RFC 8439
 /// §2.5.1 to ensure modular arithmetic stays bounded) and the
 /// final additive `pad`. The accumulator `h` starts at zero.
+/// @param ctx Poly1305 context to initialize.
+/// @param key 32-byte one-time authentication key.
 static void poly1305_init(poly1305_ctx *ctx, const uint8_t key[32]) {
     // r (first 16 bytes, clamped)
     uint32_t t0 = load32_le(key);
@@ -1131,6 +1227,10 @@ static void poly1305_init(poly1305_ctx *ctx, const uint8_t key[32]) {
 /// 64-bit intermediates. The `final` flag suppresses the implicit
 /// 0x01 high bit on the last (padded) block; the public
 /// `poly1305_final` sets `final=1` for the partial tail.
+/// @param ctx Initialized Poly1305 context to update.
+/// @param data Input containing at least @p len complete-block bytes.
+/// @param len Number of bytes to absorb; only complete 16-byte blocks are consumed.
+/// @param final Non-zero to suppress the implicit high bit for a padded tail.
 static void poly1305_blocks(poly1305_ctx *ctx, const uint8_t *data, size_t len, int final) {
     uint32_t r0 = ctx->r[0], r1 = ctx->r[1], r2 = ctx->r[2], r3 = ctx->r[3], r4 = ctx->r[4];
     uint32_t s1 = r1 * 5, s2 = r2 * 5, s3 = r3 * 5, s4 = r4 * 5;
@@ -1200,6 +1300,9 @@ static void poly1305_blocks(poly1305_ctx *ctx, const uint8_t *data, size_t len, 
 }
 
 /// @brief Stream `len` bytes through Poly1305, buffering partial 16-byte blocks.
+/// @param ctx Initialized Poly1305 context to update.
+/// @param data Input bytes, or NULL only when @p len is zero.
+/// @param len Number of bytes to absorb.
 static void poly1305_update(poly1305_ctx *ctx, const void *data, size_t len) {
     if (len == 0)
         return;
@@ -1244,6 +1347,8 @@ static void poly1305_update(poly1305_ctx *ctx, const void *data, size_t len) {
 ///      "freeze" trick (compute `h - p` and conditionally select).
 ///   3. Add `pad` (a one-time 128-bit value derived from the
 ///      ChaCha20 keystream) and serialise little-endian.
+/// @param ctx Poly1305 context to finalize.
+/// @param tag Output buffer receiving the 16-byte authentication tag.
 static void poly1305_final(poly1305_ctx *ctx, uint8_t tag[16]) {
     // Process remaining bytes
     if (ctx->buffer_len > 0) {
@@ -1335,6 +1440,8 @@ static void poly1305_final(poly1305_ctx *ctx, uint8_t tag[16]) {
 /// component (AAD, ciphertext) is padded to a 16-byte multiple
 /// before the next is absorbed so an attacker can't slide bytes
 /// between fields.
+/// @param ctx Poly1305 context receiving the zero padding.
+/// @param len Unpadded component length in bytes.
 static void pad16(poly1305_ctx *ctx, size_t len) {
     size_t pad = (16 - (len & 15)) & 15;
     uint8_t zeros[16] = {0};
@@ -1349,8 +1456,15 @@ static void pad16(poly1305_ctx *ctx, size_t len) {
 /// 16-byte tag over `aad ‖ pad16 ‖ ct ‖ pad16 ‖ aad_len_le64 ‖
 /// ct_len_le64`. The tag is appended to `ciphertext` so the output
 /// length is `plaintext_len + 16`.
+/// @param key 32-byte encryption key.
+/// @param nonce Unique 12-byte nonce for this key.
+/// @param aad Additional authenticated data, or NULL only when @p aad_len is zero.
+/// @param aad_len Number of AAD bytes.
+/// @param plaintext Input bytes, or NULL only when @p plaintext_len is zero.
+/// @param plaintext_len Number of plaintext bytes.
 /// @param ciphertext Output buffer; must have room for `plaintext_len + 16` bytes.
-/// @return Total bytes written, or 0 if `plaintext_len` exceeds the safety cap.
+/// @return Total bytes written, or 0 for invalid input, counter exhaustion, or
+///         a plaintext length beyond the safety cap.
 size_t rt_chacha20_poly1305_encrypt(const uint8_t key[32],
                                     const uint8_t nonce[12],
                                     const void *aad,
@@ -1405,7 +1519,14 @@ size_t rt_chacha20_poly1305_encrypt(const uint8_t key[32],
 /// Poly1305 MAC in constant time. Only on tag match is the
 /// ciphertext stripped of the tag and decrypted into `plaintext`.
 /// On mismatch nothing is written to `plaintext` and -1 is returned.
+/// @param key 32-byte decryption key.
+/// @param nonce 12-byte nonce used for encryption.
+/// @param aad Additional authenticated data, or NULL only when @p aad_len is zero.
+/// @param aad_len Number of AAD bytes.
+/// @param ciphertext Ciphertext bytes followed by the 16-byte tag.
 /// @param ciphertext_len Includes the 16-byte tag.
+/// @param plaintext Output buffer for `ciphertext_len - 16` bytes; may be NULL
+///                  only for an empty plaintext.
 /// @return Plaintext length on success, -1 on tag failure / too-short input.
 long rt_chacha20_poly1305_decrypt(const uint8_t key[32],
                                   const uint8_t nonce[12],
@@ -1494,6 +1615,8 @@ static const uint8_t aes_sbox[256] = {
 static const uint8_t aes_rcon[10] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36};
 
 /// @brief Expand AES-128 key (16 bytes) into 11 round keys (176 bytes).
+/// @param key 16-byte cipher key.
+/// @param rk Output buffer receiving 176 bytes of round-key material.
 static void aes128_key_expand(const uint8_t key[16], uint8_t rk[176]) {
     memcpy(rk, key, 16);
     for (int i = 4; i < 44; i++) {
@@ -1512,6 +1635,8 @@ static void aes128_key_expand(const uint8_t key[16], uint8_t rk[176]) {
 }
 
 /// @brief Expand AES-256 key (32 bytes) into 15 round keys (240 bytes).
+/// @param key 32-byte cipher key.
+/// @param rk Output buffer receiving 240 bytes of round-key material.
 static void aes256_key_expand(const uint8_t key[32], uint8_t rk[240]) {
     memcpy(rk, key, 32);
     for (int i = 8; i < 60; i++) {
@@ -1535,11 +1660,17 @@ static void aes256_key_expand(const uint8_t key[32], uint8_t rk[240]) {
 }
 
 /// @brief xtime: multiply by 2 in GF(2^8) with AES reducing polynomial.
+/// @param x Field element to multiply.
+/// @return Product `x * 2` reduced by the AES polynomial.
 static uint8_t aes_xtime(uint8_t x) {
     return (uint8_t)((x << 1) ^ ((x >> 7) * 0x1b));
 }
 
 /// @brief AES encrypt one 16-byte block with an expanded key.
+/// @param rk Expanded round-key bytes.
+/// @param rounds AES round count: 10 for AES-128 or 14 for AES-256.
+/// @param in Sixteen-byte plaintext block.
+/// @param out Sixteen-byte ciphertext block; may alias @p in.
 static void aes_encrypt_block_generic(const uint8_t *rk,
                                       int rounds,
                                       const uint8_t in[16],
@@ -1619,11 +1750,17 @@ static void aes_encrypt_block_generic(const uint8_t *rk,
 }
 
 /// @brief AES-128 encrypt one 16-byte block.
+/// @param rk Expanded 176-byte AES-128 round-key schedule.
+/// @param in Sixteen-byte plaintext block.
+/// @param out Sixteen-byte ciphertext block; may alias @p in.
 static void aes128_encrypt_block(const uint8_t rk[176], const uint8_t in[16], uint8_t out[16]) {
     aes_encrypt_block_generic(rk, 10, in, out);
 }
 
 /// @brief AES-256 encrypt one 16-byte block.
+/// @param rk Expanded 240-byte AES-256 round-key schedule.
+/// @param in Sixteen-byte plaintext block.
+/// @param out Sixteen-byte ciphertext block; may alias @p in.
 static void aes256_encrypt_block(const uint8_t rk[240], const uint8_t in[16], uint8_t out[16]) {
     aes_encrypt_block_generic(rk, 14, in, out);
 }
@@ -1633,6 +1770,7 @@ static void aes256_encrypt_block(const uint8_t rk[240], const uint8_t in[16], ui
 //=============================================================================
 
 /// @brief Increment the rightmost 32 bits of a 128-bit counter (big-endian).
+/// @param counter Mutable 16-byte counter block.
 static void gcm_inc32(uint8_t counter[16]) {
     for (int i = 15; i >= 12; i--) {
         if (++counter[i] != 0)
@@ -1641,7 +1779,11 @@ static void gcm_inc32(uint8_t counter[16]) {
 }
 
 /// @brief GF(2^128) multiplication for GHASH.
-/// Reducing polynomial: x^128 + x^7 + x^2 + x + 1 (represented as 0xE1).
+/// @details Uses the reducing polynomial `x^128 + x^7 + x^2 + x + 1`,
+///          represented by `0xE1` in the high byte.
+/// @param H Sixteen-byte hash subkey field element.
+/// @param X Sixteen-byte multiplicand field element.
+/// @param out Output buffer receiving the 16-byte product.
 static void ghash_mult(const uint8_t H[16], const uint8_t X[16], uint8_t out[16]) {
     uint8_t V[16], Z[16];
     memcpy(V, H, 16);
@@ -1665,6 +1807,12 @@ static void ghash_mult(const uint8_t H[16], const uint8_t X[16], uint8_t out[16]
 }
 
 /// @brief GHASH over padded AAD + ciphertext + length block.
+/// @param H Sixteen-byte GCM hash subkey.
+/// @param aad Additional authenticated data, or NULL when @p aad_len is zero.
+/// @param aad_len Number of AAD bytes.
+/// @param ct Ciphertext bytes, or NULL when @p ct_len is zero.
+/// @param ct_len Number of ciphertext bytes.
+/// @param tag Output buffer receiving the 16-byte GHASH value.
 static void ghash_compute(const uint8_t H[16],
                           const uint8_t *aad,
                           size_t aad_len,
@@ -1727,8 +1875,15 @@ static void ghash_compute(const uint8_t H[16],
 /// `aad ‖ pad || ct ‖ pad || aad_len_bits || ct_len_bits` and
 /// XORs it with `AES(J0)` to form the 16-byte tag. The tag is
 /// appended to `ciphertext`.
+/// @param key 16-byte encryption key.
+/// @param nonce Unique 12-byte nonce for this key.
+/// @param aad Additional authenticated data, or NULL only when @p aad_len is zero.
+/// @param aad_len Number of AAD bytes.
+/// @param plaintext Input bytes, or NULL only when @p plaintext_len is zero.
+/// @param plaintext_len Number of plaintext bytes.
 /// @param ciphertext Output buffer; must have room for `plaintext_len + 16` bytes.
-/// @return Total bytes written.
+/// @return Total bytes written, or 0 for invalid input, unsafe lengths, or
+///         plaintext beyond the GCM counter limit.
 size_t rt_aes128_gcm_encrypt(const uint8_t key[16],
                              const uint8_t nonce[12],
                              const void *aad,
@@ -1805,7 +1960,14 @@ size_t rt_aes128_gcm_encrypt(const uint8_t key[16],
 /// `ciphertext`. On a match, performs CTR-mode decryption into
 /// `plaintext`. On any failure (short input, tag mismatch),
 /// returns -1 and writes nothing.
+/// @param key 16-byte decryption key.
+/// @param nonce 12-byte nonce used for encryption.
+/// @param aad Additional authenticated data, or NULL only when @p aad_len is zero.
+/// @param aad_len Number of AAD bytes.
+/// @param ciphertext Ciphertext bytes followed by the 16-byte tag.
 /// @param ciphertext_len Includes the 16-byte tag.
+/// @param plaintext Output buffer for `ciphertext_len - 16` bytes; may be NULL
+///                  only for an empty plaintext.
 /// @return Plaintext length on success, -1 on failure.
 long rt_aes128_gcm_decrypt(const uint8_t key[16],
                            const uint8_t nonce[12],
@@ -1903,8 +2065,15 @@ long rt_aes128_gcm_decrypt(const uint8_t key[16],
 ///          calls @ref aes256_encrypt_block for both keystream
 ///          generation and the GHASH subkey derivation. The 12-byte
 ///          IV path is the only supported nonce shape.
+/// @param key 32-byte encryption key.
+/// @param nonce Unique 12-byte nonce for this key.
+/// @param aad Additional authenticated data, or NULL only when @p aad_len is zero.
+/// @param aad_len Number of AAD bytes.
+/// @param plaintext Input bytes, or NULL only when @p plaintext_len is zero.
+/// @param plaintext_len Number of plaintext bytes.
 /// @param ciphertext Output buffer; must have room for plaintext_len + 16 bytes.
-/// @return Total bytes written, or 0 if @p plaintext_len exceeds the safety cap.
+/// @return Total bytes written, or 0 for invalid input, unsafe lengths, or
+///         plaintext beyond the GCM counter limit.
 size_t rt_aes256_gcm_encrypt(const uint8_t key[32],
                              const uint8_t nonce[12],
                              const void *aad,
@@ -1975,6 +2144,16 @@ size_t rt_aes256_gcm_encrypt(const uint8_t key[32],
 ///          tag match decrypts the leading data into @p plaintext.
 ///          Returns -1 on tag failure or too-short input; on success
 ///          returns the plaintext length (@c ciphertext_len - 16).
+/// @param key 32-byte decryption key.
+/// @param nonce 12-byte nonce used for encryption.
+/// @param aad Additional authenticated data, or NULL only when @p aad_len is zero.
+/// @param aad_len Number of AAD bytes.
+/// @param ciphertext Ciphertext bytes followed by the 16-byte tag.
+/// @param ciphertext_len Total ciphertext length including the tag.
+/// @param plaintext Output buffer for `ciphertext_len - 16` bytes; may be NULL
+///                  only for an empty plaintext.
+/// @return Plaintext length on success; -1 for invalid input, unsafe lengths,
+///         counter-limit violation, or authentication failure.
 long rt_aes256_gcm_decrypt(const uint8_t key[32],
                            const uint8_t nonce[12],
                            const void *aad,
@@ -2061,7 +2240,7 @@ long rt_aes256_gcm_decrypt(const uint8_t key[32],
 }
 
 //=============================================================================
-// X25519 Key Exchange
+// Cryptographically Secure Random Bytes
 //=============================================================================
 
 

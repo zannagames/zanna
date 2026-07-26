@@ -82,11 +82,16 @@
 #endif
 
 /// @brief Allocate a fresh rt_string from a C string, returning NULL for NULL input.
+/// @param s NUL-terminated bytes to copy; may be NULL.
+/// @return Fresh runtime string, or NULL when @p s is NULL or allocation fails.
 static inline rt_string str_from_cstr(const char *s) {
     return s ? rt_string_from_bytes(s, strlen(s)) : NULL;
 }
 
 /// @brief Clamp a millisecond timeout to the range accepted by POSIX poll(2) / kevent(2).
+/// @param ms Requested wait in milliseconds; a negative value means unbounded.
+/// @return -1 for an unbounded wait, @c INT_MAX for an oversized wait, or the
+///         non-negative timeout converted to int.
 static int watcher_timeout_to_int(int64_t ms) {
     if (ms < 0)
         return -1;
@@ -109,6 +114,10 @@ static int64_t watcher_deadline_from_timeout(int timeout_ms) {
 }
 
 /// @brief Return microseconds remaining before a saturated watcher deadline.
+/// @details Failure to read the monotonic clock is conservatively treated as
+///          expiration so an interrupted bounded wait cannot become unbounded.
+/// @param deadline_us Absolute monotonic deadline in microseconds.
+/// @return Positive remaining duration, or zero when expired or unavailable.
 static int64_t watcher_deadline_remaining_us(int64_t deadline_us) {
     int64_t now_us = rt_clock_ticks_us();
     if (now_us < 0 || now_us >= deadline_us)
@@ -184,6 +193,12 @@ static void watcher_close_kqueue(rt_watcher_impl *w);
 static void watcher_close_windows_handles(rt_watcher_impl *w);
 #endif
 
+/// @brief Validate and unwrap an opaque Watcher object.
+/// @details Validation checks both the runtime class identifier and the full
+///          private payload size; thread ownership is checked separately.
+/// @param obj Candidate managed object.
+/// @param context Operation-specific trap diagnostic, or NULL for the default.
+/// @return Watcher payload on success, or NULL after raising a runtime trap.
 static rt_watcher_impl *watcher_require(void *obj, const char *context) {
     if (!rt_obj_is_instance(obj, RT_WATCHER_CLASS_ID, sizeof(rt_watcher_impl))) {
         rt_trap(context ? context : "Watcher: invalid watcher");
@@ -246,6 +261,7 @@ static void watcher_release_object(void *obj) {
 /// @brief Release all queued event strings and reset the ring buffer to empty.
 /// @details Also clears the `last_event_path` so the watcher's finalizer can call
 ///          this safely without double-releasing any string references.
+/// @param w Watcher whose current event epoch is discarded; NULL is a no-op.
 static void watcher_clear_events(rt_watcher_impl *w) {
     if (!w)
         return;
@@ -269,7 +285,11 @@ static void watcher_clear_events(rt_watcher_impl *w) {
     w->has_last_event = 0;
 }
 
-/// @brief Finalizer callback for Watcher.
+/// @brief Release every native and managed resource owned by a Watcher.
+/// @details Finalization bypasses the construction-thread restriction so
+///          collector-driven cleanup can close a still-active backend, empty
+///          the event ring, and release retained path components.
+/// @param obj Watcher payload being finalized; NULL is a no-op.
 static void rt_watcher_finalize(void *obj) {
     if (!obj)
         return;
@@ -436,6 +456,12 @@ static rt_string watcher_event_path_from_owned_relative(rt_watcher_impl *w,
 /// queued event and the incoming event are represented by an overflow
 /// marker in that newest slot; older queued events remain available.
 /// Takes ownership of the passed-in `path` string.
+/// Consecutive MODIFIED events for the same byte-identical path are coalesced
+/// before capacity accounting. Internal overflow counts the replaced newest
+/// event plus every incoming event, saturating at INT64_MAX.
+/// @param w Valid Watcher whose ring receives the event.
+/// @param type One of the @c RT_WATCH_EVENT_* discriminants.
+/// @param path Owned event-path reference transferred to the ring; may be NULL.
 static void watcher_queue_event_owned(rt_watcher_impl *w, int64_t type, rt_string path) {
     if (type == RT_WATCH_EVENT_MODIFIED && path && w->event_count > 0) {
         int64_t newest_slot =
@@ -496,6 +522,7 @@ static void watcher_queue_event_owned(rt_watcher_impl *w, int64_t type, rt_strin
 ///          Windows report kernel-buffer loss directly; macOS uses the same
 ///          unknown marker for kqueue terminal/error states that require a
 ///          conservative rescan even though kqueue has no countable overflow.
+/// @param w Valid Watcher whose ring receives or coalesces the marker.
 static void watcher_queue_native_overflow(rt_watcher_impl *w) {
     if (w->event_count >= WATCHER_EVENT_QUEUE_SIZE) {
         int64_t slot = (w->event_tail + WATCHER_EVENT_QUEUE_SIZE - 1) % WATCHER_EVENT_QUEUE_SIZE;
@@ -518,6 +545,9 @@ static void watcher_queue_native_overflow(rt_watcher_impl *w) {
 /// count isn't decremented when the slot is later overwritten or the
 /// watcher is finalized. The caller becomes responsible for
 /// releasing `out->path`.
+/// @param w Valid Watcher whose oldest queued event is consumed.
+/// @param out Destination that receives the event and its owned path reference.
+/// @return 1 when an event was transferred, or 0 when the ring was empty.
 static int watcher_dequeue_event(rt_watcher_impl *w, watcher_event *out) {
     if (w->event_count == 0)
         return 0;
@@ -530,6 +560,8 @@ static int watcher_dequeue_event(rt_watcher_impl *w, watcher_event *out) {
 }
 
 #if RT_PLATFORM_LINUX
+/// @brief Remove the inotify watch, close its descriptor, and mark the Watcher inactive.
+/// @param w Watcher to detach; NULL is a no-op.
 static void watcher_close_inotify(rt_watcher_impl *w) {
     if (!w)
         return;
@@ -552,6 +584,9 @@ static void watcher_close_inotify(rt_watcher_impl *w) {
 /// converted to a full path via `watcher_event_path_from_relative`,
 /// which also discards sibling-file events when the watcher is
 /// configured for a specific file rather than a directory.
+/// Malformed batches and terminal kernel conditions enqueue an unknown-loss
+/// overflow marker before retiring the backend.
+/// @param w Active Linux Watcher with a nonblocking inotify descriptor.
 static void watcher_read_inotify_events(rt_watcher_impl *w) {
     char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
     int terminal = 0;
@@ -664,6 +699,11 @@ static void watcher_close_kqueue(rt_watcher_impl *w) {
 /// to Zanna event types (DELETE→DELETED, WRITE/EXTEND/ATTRIB→
 /// MODIFIED, RENAME→RENAMED). `timeout_ms < 0` means wait forever;
 /// 0 is a non-blocking poll.
+/// Interrupted bounded waits resume against one monotonic deadline. Terminal
+/// vnode or queue errors enqueue a conservative overflow marker and retire the backend.
+/// @param w Active macOS Watcher backed by kqueue.
+/// @param timeout_ms Maximum wait in milliseconds, zero for nonblocking, or
+///                   negative to wait indefinitely.
 static void watcher_read_kqueue_events(rt_watcher_impl *w, int timeout_ms) {
     struct kevent event;
     int64_t deadline_us = timeout_ms > 0 ? watcher_deadline_from_timeout(timeout_ms) : 0;
@@ -725,6 +765,8 @@ typedef BOOL(WINAPI *watcher_cancel_io_ex_fn)(HANDLE, LPOVERLAPPED);
 /// @details CancelIoEx is present on every supported Windows release, but the
 ///          native Zanna linker intentionally keeps a fixed import surface.
 ///          Resolve it from kernel32 and retain CancelIo as a legacy fallback.
+/// @param w Watcher that may own a pending overlapped directory request.
+/// @return 1 when a cancellation request was issued successfully, otherwise 0.
 static int watcher_cancel_pending_windows_io(rt_watcher_impl *w) {
     HMODULE kernel32;
     watcher_cancel_io_ex_fn cancel_io_ex;
@@ -741,6 +783,10 @@ static int watcher_cancel_pending_windows_io(rt_watcher_impl *w) {
 }
 
 /// @brief Cancel pending directory I/O and release all Win32 watcher handles.
+/// @details When cancellation is requested, waits for the overlapped request to
+///          settle before closing its directory and event handles. Pending
+///          state is cleared regardless of which handles were present.
+/// @param w Watcher to detach; NULL is a no-op.
 static void watcher_close_windows_handles(rt_watcher_impl *w) {
     DWORD ignored = 0;
     if (!w)
@@ -758,6 +804,11 @@ static void watcher_close_windows_handles(rt_watcher_impl *w) {
     w->pending_read = FALSE;
 }
 
+/// @brief Arm one asynchronous ReadDirectoryChangesW request.
+/// @details Resets the manual-reset completion event and clears the fixed
+///          notification buffer before submitting a non-recursive directory read.
+/// @param w Active Windows Watcher with valid directory and event handles.
+/// @return TRUE when the overlapped request was submitted, otherwise FALSE.
 static BOOL watcher_start_windows_read(rt_watcher_impl *w) {
     if (!w || w->dir_handle == INVALID_HANDLE_VALUE)
         return FALSE;
@@ -779,6 +830,11 @@ static BOOL watcher_start_windows_read(rt_watcher_impl *w) {
 }
 
 /// @brief Rearm overlapped monitoring or report and retire a broken watcher.
+/// @details A first unreported rearm failure queues an overflow/rescan marker.
+///          Failures already represented by a marker do not enqueue a duplicate.
+/// @param w Windows Watcher whose completed request should be rearmed.
+/// @param failure_already_reported Non-zero when the current batch already
+///                                 queued an overflow marker.
 static void watcher_rearm_windows_or_stop(rt_watcher_impl *w, int failure_already_reported) {
     if (!w || !w->is_watching)
         return;
@@ -801,6 +857,9 @@ static void watcher_rearm_windows_or_stop(rt_watcher_impl *w, int failure_alread
 /// `WideCharToMultiByte`, then turned into a full path and queued.
 /// After decoding, immediately re-issues the overlapped read so we
 /// never miss a window of events while the queue is being consumed.
+/// Zero-length, failed, or malformed batches produce an overflow marker so
+/// clients know to rescan. A still-pending request is left untouched.
+/// @param w Active Windows Watcher with a pending overlapped read.
 static void watcher_read_windows_events(rt_watcher_impl *w) {
     if (!w->pending_read)
         return;
@@ -978,9 +1037,13 @@ static rt_watcher_impl *watcher_alloc_configured(rt_string path, int8_t is_direc
     return w;
 }
 
-/// @brief Construct a filesystem watcher for `path` (file or directory). `stat`'s the path up
-/// front and traps if it doesn't exist. Distinguishes file vs directory mode (different OS
-/// primitives needed). Returns a GC-managed handle; user must call `_start` to begin watching.
+/// @brief Construct an inactive filesystem Watcher for an existing path.
+/// @details The path is validated through the platform file-path adapter and
+///          classified as a file or directory before allocation. The result
+///          retains the path, derives file-watch parent/leaf state
+///          transactionally, and remains bound to the constructing thread.
+/// @param path Valid, non-empty runtime path naming an existing entry.
+/// @return Fresh GC-managed Watcher, or NULL after validation/allocation failure.
 void *rt_watcher_new(rt_string path) {
     if (!path) {
         rt_trap("Watcher.New: null path");
@@ -1020,6 +1083,11 @@ void *rt_watcher_new(rt_string path) {
 }
 
 /// @brief Read the path the watcher is configured to monitor (returned freshly retained).
+/// @details The result remains valid independently of the returned Watcher
+///          reference. NULL/invalid/wrong-thread calls return a fresh empty
+///          string after any applicable trap.
+/// @param obj Opaque Watcher created on the current thread.
+/// @return Owned retained watched path, or a fresh empty string on failure.
 rt_string rt_watcher_get_path(void *obj) {
     if (!obj)
         return str_from_cstr("");
@@ -1034,6 +1102,10 @@ rt_string rt_watcher_get_path(void *obj) {
 }
 
 /// @brief Returns 1 between successful `_start` and `_stop`; 0 otherwise.
+/// @details A terminal backend condition may also make an active Watcher
+///          inactive before Stop is called.
+/// @param obj Opaque Watcher created on the current thread.
+/// @return 1 while the native backend is active, otherwise 0.
 int8_t rt_watcher_get_is_watching(void *obj) {
     if (!obj)
         return 0;
@@ -1052,6 +1124,9 @@ int8_t rt_watcher_get_is_watching(void *obj) {
 ///          transient OS resource failure (out of descriptors, path vanished)
 ///          instead leaves the watcher inactive (`IsWatching` stays false) and
 ///          returns, so callers can degrade to periodic rescans rather than crash.
+///          Starting also discards every queued and last event from the
+///          previous epoch.
+/// @param obj Inactive Watcher created on the current thread.
 void rt_watcher_start(void *obj) {
     if (!obj) {
         rt_trap("Watcher.Start: null watcher");
@@ -1198,6 +1273,7 @@ void rt_watcher_start(void *obj) {
 /// @brief Stop watching: tear down the platform-specific descriptor (inotify_rm_watch + close /
 /// close(kqueue) / CancelIo + CloseHandle). Idempotent — no-op on already-stopped watchers.
 /// Pending and last-event state are cleared before returning.
+/// @param obj Watcher created on the current thread; NULL is a no-op.
 void rt_watcher_stop(void *obj) {
     if (!obj)
         return;
@@ -1223,6 +1299,9 @@ void rt_watcher_stop(void *obj) {
 /// @brief Non-blocking poll for the next event. Returns the event-type code (CREATED / MODIFIED /
 /// DELETED / RENAMED) or NONE if no events queued AND the OS reports no new events. The event's
 /// path becomes accessible via `_event_path` immediately after.
+/// @param obj Watcher created on the current thread; NULL yields NONE.
+/// @return Oldest queued @c RT_WATCH_EVENT_* value, including OVERFLOW, or NONE
+///         when no event is immediately available.
 int64_t rt_watcher_poll(void *obj) {
     return rt_watcher_poll_for(obj, 0);
 }
@@ -1230,6 +1309,15 @@ int64_t rt_watcher_poll(void *obj) {
 /// @brief Bounded-wait poll: same as `_poll` but waits up to `ms` milliseconds for an event.
 /// `ms < 0` means wait forever; `ms == 0` is non-blocking. First drains the internal queue, then
 /// asks the OS via `poll`/`kqueue`/`WaitForSingleObject`, then drains the queue again.
+/// @details A queued event returns without consulting the native backend.
+///          Positive POSIX waits share a monotonic deadline across EINTR
+///          retries. Successful dequeue replaces and releases the previously
+///          exposed last-event path.
+/// @param obj Watcher created on the current thread; NULL yields NONE.
+/// @param ms Maximum wait in milliseconds, zero for nonblocking, or negative
+///           to wait indefinitely.
+/// @return Oldest queued @c RT_WATCH_EVENT_* value, or NONE on timeout,
+///         inactive state, invalid use, or wrong-thread access.
 int64_t rt_watcher_poll_for(void *obj, int64_t ms) {
     if (!obj)
         return RT_WATCH_EVENT_NONE;
@@ -1333,6 +1421,11 @@ int64_t rt_watcher_poll_for(void *obj, int64_t ms) {
 
 /// @brief Read the path of the most recently polled event. **Traps** if no `_poll` call
 /// has succeeded yet — the contract is "poll then ask"; not safe to call out of order.
+/// @details The returned path is retained for the caller. Start and Stop clear
+///          the prior event epoch, after which this accessor traps until
+///          another event is successfully polled.
+/// @param obj Watcher created on the current thread.
+/// @return Owned retained last-event path, or a fresh empty string after a trap.
 rt_string rt_watcher_event_path(void *obj) {
     if (!obj) {
         rt_trap("Watcher.EventPath: null watcher");
@@ -1355,6 +1448,8 @@ rt_string rt_watcher_event_path(void *obj) {
 }
 
 /// @brief Read the type code of the last polled event. Returns NONE if no event has been polled.
+/// @param obj Watcher created on the current thread; NULL yields NONE.
+/// @return Last successfully polled @c RT_WATCH_EVENT_* value, or NONE when unavailable.
 int64_t rt_watcher_event_type(void *obj) {
     if (!obj)
         return RT_WATCH_EVENT_NONE;
@@ -1376,6 +1471,9 @@ int64_t rt_watcher_event_type(void *obj) {
 ///          overflow — Linux `IN_Q_OVERFLOW` or a Windows change-buffer overflow
 ///          — the OS does not report how many events were lost, so the value is
 ///          `-1` (unknown) rather than a fabricated count (VDOC-190).
+/// @param obj Watcher created on the current thread; NULL yields zero.
+/// @return Exact/saturated internal dropped-event count, -1 for unknown native
+///         loss, or zero when the last event is not an overflow marker.
 int64_t rt_watcher_event_overflow_count(void *obj) {
     if (!obj)
         return 0;
@@ -1398,36 +1496,48 @@ int64_t rt_watcher_event_overflow_count(void *obj) {
 // =============================================================================
 
 /// @brief Constant: `RT_WATCH_EVENT_NONE` (no event polled).
+/// @param self Unused property-dispatch receiver.
+/// @return @ref RT_WATCH_EVENT_NONE.
 int64_t rt_watcher_event_none(void *self) {
     (void)self;
     return RT_WATCH_EVENT_NONE;
 }
 
 /// @brief Constant: `RT_WATCH_EVENT_CREATED` (file/dir was created).
+/// @param self Unused property-dispatch receiver.
+/// @return @ref RT_WATCH_EVENT_CREATED.
 int64_t rt_watcher_event_created(void *self) {
     (void)self;
     return RT_WATCH_EVENT_CREATED;
 }
 
 /// @brief Constant: `RT_WATCH_EVENT_MODIFIED` (content or attributes changed).
+/// @param self Unused property-dispatch receiver.
+/// @return @ref RT_WATCH_EVENT_MODIFIED.
 int64_t rt_watcher_event_modified(void *self) {
     (void)self;
     return RT_WATCH_EVENT_MODIFIED;
 }
 
 /// @brief Constant: `RT_WATCH_EVENT_DELETED` (file/dir removed).
+/// @param self Unused property-dispatch receiver.
+/// @return @ref RT_WATCH_EVENT_DELETED.
 int64_t rt_watcher_event_deleted(void *self) {
     (void)self;
     return RT_WATCH_EVENT_DELETED;
 }
 
 /// @brief Constant: `RT_WATCH_EVENT_RENAMED` (file/dir was renamed/moved).
+/// @param self Unused property-dispatch receiver.
+/// @return @ref RT_WATCH_EVENT_RENAMED.
 int64_t rt_watcher_event_renamed(void *self) {
     (void)self;
     return RT_WATCH_EVENT_RENAMED;
 }
 
 /// @brief Constant: `RT_WATCH_EVENT_OVERFLOW` (some file-system events were dropped).
+/// @param self Unused property-dispatch receiver.
+/// @return @ref RT_WATCH_EVENT_OVERFLOW.
 int64_t rt_watcher_event_overflow(void *self) {
     (void)self;
     return RT_WATCH_EVENT_OVERFLOW;

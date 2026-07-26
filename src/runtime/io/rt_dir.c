@@ -15,8 +15,10 @@
 // Ownership/Lifetime:
 //   - Temporary native path buffers and returned runtime strings have explicit ownership.
 //   - Recursive helpers release every search handle and child path on all exits.
-// Links: rt_dir.h (public API), rt_dir_internal.h (platform helpers),
-//        rt_dir_list.c (enumeration)
+// Links: src/runtime/io/rt_dir.h,
+//        src/runtime/io/rt_dir_internal.h,
+//        src/runtime/io/rt_dir_list.c,
+//        src/runtime/io/rt_dir_page.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -31,6 +33,8 @@
 /// Blocks RemoveAll on empty strings, root paths, `"."`, `".."`, the process's
 /// current working directory, and an existing ancestor of that directory — all of which would be
 /// catastrophic to wipe. Used as a safety gate before recursive deletion.
+/// @param cpath Native path proposed as the recursive-deletion root.
+/// @return 1 when deletion must be refused; otherwise 0.
 static int rt_dir_remove_all_target_is_protected(const char *cpath) {
     if (!cpath || cpath[0] == '\0')
         return 1;
@@ -403,6 +407,14 @@ void rt_dir_remove(rt_string path) {
 }
 
 #if !defined(_WIN32)
+/// @brief Open one descriptor-relative directory without following symlinks.
+/// @details Validates the child with `fstatat(AT_SYMLINK_NOFOLLOW)`, opens it
+/// with directory/no-follow flags when available, then validates the opened
+/// descriptor again.
+/// @param parent_fd Trusted parent-directory descriptor.
+/// @param name Single child entry name.
+/// @return Open child-directory descriptor, or -1 with `errno` describing the
+/// failure.
 static int rt_dir_posix_open_dir_at(int parent_fd, const char *name) {
     struct stat lst;
     if (fstatat(parent_fd, name, &lst, AT_SYMLINK_NOFOLLOW) != 0)
@@ -445,6 +457,13 @@ static int rt_dir_posix_open_dir_at(int parent_fd, const char *name) {
     return fd;
 }
 
+/// @brief Recursively remove one descriptor-relative filesystem entry.
+/// @details Directories are traversed through verified descriptors; symlinks
+/// and other non-directories are unlinked without following them. Missing
+/// entries are treated as success.
+/// @param parent_fd Descriptor for the trusted parent directory.
+/// @param name Child entry to remove.
+/// @return 1 when the entry is absent or completely removed; otherwise 0.
 static int rt_dir_remove_all_at(int parent_fd, const char *name) {
     int fd = rt_dir_posix_open_dir_at(parent_fd, name);
     if (fd < 0) {
@@ -490,6 +509,10 @@ static int rt_dir_remove_all_at(int parent_fd, const char *name) {
     return ok;
 }
 
+/// @brief Duplicate a POSIX path after removing redundant trailing separators.
+/// @param path NUL-terminated path.
+/// @return Heap-allocated normalized copy owned by the caller, or `NULL` for
+/// empty/allocation-invalid input.
 static char *rt_dir_strip_trailing_seps_dup(const char *path) {
     size_t len = strlen(path);
     while (len > 1 && rt_dir_is_sep_char(path[len - 1]))
@@ -504,6 +527,12 @@ static char *rt_dir_strip_trailing_seps_dup(const char *path) {
     return copy;
 }
 
+/// @brief Remove a POSIX tree through descriptor-relative, no-follow traversal.
+/// @details Opens the target's parent once, then delegates to
+/// rt_dir_remove_all_at(). A top-level symlink is unlinked directly and an
+/// already-missing target succeeds.
+/// @param cpath Native path already approved by the protected-target guard.
+/// @return 1 on complete removal or prior absence; otherwise 0.
 static int rt_dir_remove_all_posix_safe(const char *cpath) {
     char *path = rt_dir_strip_trailing_seps_dup(cpath);
     if (!path)
@@ -570,12 +599,12 @@ static int rt_dir_remove_all_posix_safe(const char *cpath) {
 
 /// @brief Recursively delete a directory tree rooted at the C-string `cpath`.
 ///
-/// Cross-platform recursive delete: on Windows uses `FindFirstFileW` /
-/// `FindNextFileW` with reparse-point awareness; on POSIX uses
-/// `opendir`/`readdir`/`lstat`. Both platforms use `lstat` to avoid
-/// following symlinks into unrelated trees — only the link itself is
-/// removed, not its target. Returns 1 on success, 0 on failure; the
-/// caller traps on failure.
+/// Cross-platform recursive delete: Windows uses `FindFirstFileW` /
+/// `FindNextFileW` with reparse-point awareness; POSIX uses `openat`,
+/// `fstatat`, and descriptor-relative traversal. Neither path follows a
+/// symlink/reparse-point child into an unrelated tree.
+/// @param cpath Native path already approved by the protected-target guard.
+/// @return 1 on complete removal or prior absence; otherwise 0.
 static int rt_dir_remove_all_cpath(const char *cpath) {
 #ifdef _WIN32
     wchar_t *dir_path = rt_dir_win_prepare_path(cpath);

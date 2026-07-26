@@ -65,6 +65,9 @@ static size_t g_http_download_temp_counter = 0;
 
 #if RT_PLATFORM_WINDOWS
 /// @brief Convert one runtime UTF-8 filesystem path to a caller-owned UTF-16 path.
+/// @param path NUL-terminated UTF-8 path.
+/// @return Newly allocated UTF-16 path, or NULL for invalid UTF-8, overflow, or
+///         allocation failure.
 static wchar_t *http_download_utf8_to_wide(const char *path) {
     if (!path)
         return NULL;
@@ -385,6 +388,8 @@ static int http_download_preserve_mode(const char *temp_path, const char *dest_p
 }
 
 /// @brief Remove a staged download using the platform's native path encoding.
+/// @param path NUL-terminated staged-file path.
+/// @return One when the file is removed, otherwise zero.
 static int http_download_remove_file(const char *path) {
     if (!path)
         return 0;
@@ -429,6 +434,7 @@ static void *http_copy_body_to_bytes(const uint8_t *body, size_t body_len, const
 
 /// @brief GC finalizer for an HttpReq object. Safe on a partially-built request
 ///        because every helper either nulls or initialises its target.
+/// @param obj HttpReq payload being finalized, or NULL.
 static void rt_http_req_finalize(void *obj) {
     if (!obj)
         return;
@@ -695,6 +701,8 @@ static void *http_take_response_headers(rt_http_res_t *response) {
 //=============================================================================
 
 /// @brief HTTP GET that returns the body decoded as a UTF-8 string.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @return Newly owned response-body String, or NULL after a returning trap.
 /// @throws Err_InvalidUrl on empty / unparsable URL,
 ///         Err_NetworkError on transport failure.
 rt_string rt_http_get(rt_string url) {
@@ -704,6 +712,8 @@ rt_string rt_http_get(rt_string url) {
 }
 
 /// @brief HTTP GET that returns the raw response body as a Bytes object.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @return Newly owned response-body Bytes, or NULL after a returning trap.
 /// @throws Err_InvalidUrl / Err_NetworkError on failure (see `rt_http_get`).
 void *rt_http_get_bytes(rt_string url) {
     rt_http_res_t *response =
@@ -716,6 +726,9 @@ void *rt_http_get_bytes(rt_string url) {
 /// Adds `Content-Type: text/plain; charset=utf-8` automatically
 /// when the body is non-empty. The body is copied into a request-
 /// owned buffer so the caller's `rt_string` lifetime is independent.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @param body Managed String whose exact bytes become the request body.
+/// @return Newly owned response-body String, or NULL after a returning trap.
 rt_string rt_http_post(rt_string url, rt_string body) {
     rt_http_res_t *response = http_execute_one_shot(
         "POST", url, HTTP_ONE_SHOT_BODY_STRING, body, "text/plain; charset=utf-8");
@@ -727,6 +740,9 @@ rt_string rt_http_post(rt_string url, rt_string body) {
 /// Adds `Content-Type: application/octet-stream` automatically when
 /// the body is non-empty. The Bytes object is referenced directly
 /// (not copied), so it must remain alive for the duration of the call.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @param body Managed Bytes borrowed for this synchronous transaction.
+/// @return Newly owned response-body Bytes, or NULL after a returning trap.
 void *rt_http_post_bytes(rt_string url, void *body) {
     rt_http_res_t *response = http_execute_one_shot(
         "POST", url, HTTP_ONE_SHOT_BODY_BYTES, body, "application/octet-stream");
@@ -846,6 +862,8 @@ int8_t rt_http_download(rt_string url, rt_string dest_path) {
 /// Useful for size/type probes (Content-Length, Content-Type) and
 /// existence checks without paying for the body. Throws on
 /// transport failure.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @return Newly owned independent response-header Map.
 void *rt_http_head(rt_string url) {
     rt_http_res_t *response =
         http_execute_one_shot("HEAD", url, HTTP_ONE_SHOT_BODY_NONE, NULL, NULL);
@@ -856,6 +874,9 @@ void *rt_http_head(rt_string url) {
 ///
 /// Mirrors `rt_http_post` but sends the `PATCH` method
 /// (RFC 5789), used to apply partial updates to a resource.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @param body Managed String copied into request-owned storage.
+/// @return Newly owned response-body String, or NULL after a returning trap.
 rt_string rt_http_patch(rt_string url, rt_string body) {
     rt_http_res_t *response = http_execute_one_shot(
         "PATCH", url, HTTP_ONE_SHOT_BODY_STRING, body, "text/plain; charset=utf-8");
@@ -866,6 +887,8 @@ rt_string rt_http_patch(rt_string url, rt_string body) {
 ///
 /// Typically used for CORS preflight discovery — the meaningful
 /// data lives in the response headers (`Allow`, `Access-Control-*`).
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @return Newly owned response-body String, or NULL after a returning trap.
 rt_string rt_http_options(rt_string url) {
     rt_http_res_t *response =
         http_execute_one_shot("OPTIONS", url, HTTP_ONE_SHOT_BODY_NONE, NULL, NULL);
@@ -876,6 +899,9 @@ rt_string rt_http_options(rt_string url) {
 ///
 /// PUT replaces the target resource (RFC 7231 §4.3.4). Body is
 /// copied and tagged `Content-Type: text/plain; charset=utf-8`.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @param body Managed String copied into request-owned storage.
+/// @return Newly owned response-body String, or NULL after a returning trap.
 rt_string rt_http_put(rt_string url, rt_string body) {
     rt_http_res_t *response = http_execute_one_shot(
         "PUT", url, HTTP_ONE_SHOT_BODY_STRING, body, "text/plain; charset=utf-8");
@@ -886,6 +912,9 @@ rt_string rt_http_put(rt_string url, rt_string body) {
 ///
 /// As `rt_http_put` but for binary payloads — sets
 /// `Content-Type: application/octet-stream` when the body is non-empty.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @param body Managed Bytes borrowed for this synchronous transaction.
+/// @return Newly owned response-body Bytes, or NULL after a returning trap.
 void *rt_http_put_bytes(rt_string url, void *body) {
     rt_http_res_t *response = http_execute_one_shot(
         "PUT", url, HTTP_ONE_SHOT_BODY_BYTES, body, "application/octet-stream");
@@ -893,6 +922,8 @@ void *rt_http_put_bytes(rt_string url, void *body) {
 }
 
 /// @brief HTTP DELETE; returns the response body as a string.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @return Newly owned response-body String, or NULL after a returning trap.
 rt_string rt_http_delete(rt_string url) {
     rt_http_res_t *response =
         http_execute_one_shot("DELETE", url, HTTP_ONE_SHOT_BODY_NONE, NULL, NULL);
@@ -900,6 +931,8 @@ rt_string rt_http_delete(rt_string url) {
 }
 
 /// @brief HTTP DELETE; returns the response body as a Bytes object.
+/// @param url Nonempty managed HTTP/HTTPS URL without embedded NUL.
+/// @return Newly owned response-body Bytes, or NULL after a returning trap.
 void *rt_http_delete_bytes(rt_string url) {
     rt_http_res_t *response =
         http_execute_one_shot("DELETE", url, HTTP_ONE_SHOT_BODY_NONE, NULL, NULL);
@@ -920,6 +953,9 @@ void *rt_http_delete_bytes(rt_string url) {
 /// The URL is parsed eagerly so callers see invalid-URL traps at
 /// construction time rather than when sending. Defaults: 30s
 /// timeout, follow redirects with cap `HTTP_MAX_REDIRECTS`.
+/// @param method Managed nonempty HTTP method token without embedded NUL.
+/// @param url Managed nonempty HTTP/HTTPS URL without embedded NUL.
+/// @return Newly owned managed HttpReq, or NULL after a returning trap.
 /// @throws Err_InvalidUrl on bad URL, generic trap on null method.
 void *rt_http_req_new(rt_string method, rt_string url) {
     const char *method_str = method && rt_string_is_handle(method) ? rt_string_cstr(method) : NULL;
@@ -978,6 +1014,11 @@ void *rt_http_req_new(rt_string method, rt_string url) {
 
 /// @brief Validate header name/value for a request. Traps on NULL request,
 ///        embedded NUL, non-token names, or CR/LF in the value.
+/// @param obj Candidate HttpReq receiver.
+/// @param name Managed header field name, or NULL for an intentional no-op.
+/// @param value Managed field value, or NULL for an intentional no-op.
+/// @param name_out Receives the borrowed validated field-name bytes.
+/// @param value_out Receives the borrowed validated field-value bytes.
 /// @return One when valid, zero when NULL name/value is intentionally ignored,
 ///         and negative one after trapping for an invalid receiver or value.
 static int http_req_header_args_valid(
@@ -1011,6 +1052,9 @@ static int http_req_header_args_valid(
 
 /// @brief Set a request header, replacing any existing field with the same
 ///        case-insensitive name. Silently ignores NULL name/value.
+/// @param obj Required HttpReq receiver.
+/// @param name Managed valid HTTP field name.
+/// @param value Managed value without CR, LF, or embedded NUL.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_header(void *obj, rt_string name, rt_string value) {
     const char *name_str = NULL;
@@ -1030,6 +1074,9 @@ void *rt_http_req_set_header(void *obj, rt_string name, rt_string value) {
 /// @brief Append a request header without replacing existing same-name
 ///        fields (for legitimately repeatable fields). Silently ignores
 ///        NULL name/value.
+/// @param obj Required HttpReq receiver.
+/// @param name Managed valid HTTP field name.
+/// @param value Managed value without CR, LF, or embedded NUL.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_add_header(void *obj, rt_string name, rt_string value) {
     const char *name_str = NULL;
@@ -1049,6 +1096,8 @@ void *rt_http_req_add_header(void *obj, rt_string name, rt_string value) {
 ///
 /// Frees any previously-set body. The bytes are duplicated into a
 /// request-owned buffer so the caller's Bytes lifetime is independent.
+/// @param obj Required HttpReq receiver.
+/// @param data Managed Bytes to copy, or NULL to clear the body.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_body(void *obj, void *data) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1087,7 +1136,11 @@ void *rt_http_req_set_body(void *obj, void *data) {
     return obj;
 }
 
-/// @brief Replace the request body with a string (copied).
+/// @brief Replace the request body with a String's exact bytes.
+/// @details Frees the old body after the replacement copy is complete. NULL
+///          clears the body; embedded NUL bytes are preserved as content.
+/// @param obj Required HttpReq receiver.
+/// @param text Managed String to copy, or NULL to clear the body.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_body_str(void *obj, rt_string text) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1127,6 +1180,8 @@ void *rt_http_req_set_body_str(void *obj, rt_string text) {
 }
 
 /// @brief Set per-request I/O timeout in milliseconds.
+/// @param obj Required HttpReq receiver.
+/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_timeout(void *obj, int64_t timeout_ms) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1143,6 +1198,8 @@ void *rt_http_req_set_timeout(void *obj, int64_t timeout_ms) {
 }
 
 /// @brief Toggle TLS certificate verification for HTTPS requests.
+/// @param obj Required HttpReq receiver.
+/// @param verify Nonzero to verify peer certificate and hostname, zero to skip.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_tls_verify(void *obj, int8_t verify) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1156,6 +1213,7 @@ void *rt_http_req_set_tls_verify(void *obj, int8_t verify) {
 /// @details This wrapper is equivalent to `rt_http_req_set_tls_verify(obj, 0)`, but
 ///          keeps insecure certificate handling visible in source and runtime API
 ///          dumps. Do not use it for production HTTPS clients.
+/// @param obj Required HttpReq receiver.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_allow_insecure_certificates_for_testing(void *obj) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1166,6 +1224,8 @@ void *rt_http_req_allow_insecure_certificates_for_testing(void *obj) {
 }
 
 /// @brief Toggle automatic redirect following (3xx Location handling).
+/// @param obj Required HttpReq receiver.
+/// @param follow Nonzero to follow redirects, zero to return them.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_follow_redirects(void *obj, int8_t follow) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1176,6 +1236,8 @@ void *rt_http_req_set_follow_redirects(void *obj, int8_t follow) {
 }
 
 /// @brief Override the per-request redirect cap (negative values clamp to 0).
+/// @param obj Required HttpReq receiver.
+/// @param max_redirects Maximum hops; values above @c INT_MAX trap.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_max_redirects(void *obj, int64_t max_redirects) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1195,6 +1257,8 @@ void *rt_http_req_set_max_redirects(void *obj, int64_t max_redirects) {
 /// @details Standalone requests (no HttpClient/RestClient pool attached) get
 ///          the process-wide default connection pool at send time, so the
 ///          flag enables real socket reuse on the public `HttpReq` surface.
+/// @param obj Required HttpReq receiver.
+/// @param keep_alive Nonzero to permit pooled reuse, zero to close afterward.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_keep_alive(void *obj, int8_t keep_alive) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1211,6 +1275,8 @@ void *rt_http_req_set_keep_alive(void *obj, int8_t keep_alive) {
 ///          on HTTP/1.1 framing semantics (e.g. the `Connection:
 ///          keep-alive` response header, which HTTP/2 omits because
 ///          persistence is implicit). Default is `0` (allow HTTP/2).
+/// @param obj Required HttpReq receiver.
+/// @param force Nonzero to advertise only HTTP/1.1, zero for default ALPN.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_force_http1(void *obj, int8_t force) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1225,6 +1291,8 @@ void *rt_http_req_set_force_http1(void *obj, int8_t force) {
 ///          race. Stable pool identity is checked again while that reference
 ///          prevents finalization from destroying the native mutex. Invalid or
 ///          stale pools leave the request's previous attachment unchanged.
+/// @param obj Required HttpReq receiver.
+/// @param pool Managed connection pool to retain, or NULL to detach.
 /// @return `obj` (for fluent chaining).
 void *rt_http_req_set_connection_pool(void *obj, void *pool) {
     rt_http_req_t *req = http_require_request(obj, "HTTP: invalid request");
@@ -1261,6 +1329,7 @@ void *rt_http_req_set_connection_pool(void *obj, void *pool) {
 /// `Content-Type: application/octet-stream` if the caller didn't
 /// already set one. Honours the request's redirect cap (which may
 /// be 0 to disable following).
+/// @param obj Required HttpReq receiver.
 /// @return Newly-allocated `rt_http_res_t*` (GC-managed) or NULL on
 ///         transport failure (`do_http_request` returns NULL).
 void *rt_http_req_send(void *obj) {
@@ -1296,6 +1365,8 @@ void *rt_http_req_send(void *obj) {
 ///          transport/setup traps and NULL transport results are converted to
 ///          `Result.ErrStr`, while received HTTP responses are returned as
 ///          `Result.Ok(HttpRes)` regardless of status code.
+/// @param obj HttpReq receiver to execute.
+/// @return Newly owned Result containing Ok(HttpRes) or Err(String).
 void *rt_http_req_send_result(void *obj) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -1322,6 +1393,8 @@ void *rt_http_req_send_result(void *obj) {
 //=============================================================================
 
 /// @brief Status code (e.g. 200, 404). Returns 0 if `obj` is NULL.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Numeric status, or zero for NULL or after a returning invalid-handle trap.
 int64_t rt_http_res_status(void *obj) {
     if (!obj)
         return 0;
@@ -1330,6 +1403,8 @@ int64_t rt_http_res_status(void *obj) {
 }
 
 /// @brief Reason phrase from the status line (e.g. "Not Found"). Empty if unset.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned reason-phrase String, or empty when absent.
 rt_string rt_http_res_status_text(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1349,6 +1424,8 @@ rt_string rt_http_res_status_text(void *obj) {
 /// mutation. Header keys are lower-case (already canonicalised by
 /// the parser). Empty map is returned if `obj` is NULL or the
 /// response has no headers.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned independent Map, or NULL after a returning trap.
 void *rt_http_res_headers(void *obj) {
     if (!obj)
         return rt_map_new();
@@ -1415,6 +1492,8 @@ void *rt_http_res_headers(void *obj) {
 }
 
 /// @brief Return a copy of the raw response body as a Bytes object.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned body Bytes; NULL receivers produce empty Bytes.
 void *rt_http_res_body(void *obj) {
     if (!obj)
         return rt_bytes_new(0);
@@ -1430,6 +1509,8 @@ void *rt_http_res_body(void *obj) {
 ///
 /// No charset detection — bytes are passed through as if UTF-8.
 /// Empty string for null/empty bodies.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned body String, or empty for NULL/empty bodies.
 rt_string rt_http_res_body_str(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1451,6 +1532,9 @@ rt_string rt_http_res_body_str(void *obj) {
 ///
 /// Down-cases `name` and probes the parser-canonicalised header
 /// map. Returns an empty string on miss or null arguments.
+/// @param obj HttpRes receiver, or NULL.
+/// @param name Managed header name without embedded NUL.
+/// @return Newly owned independent value String, or empty on a miss.
 rt_string rt_http_res_header(void *obj, rt_string name) {
     if (!obj)
         return rt_str_empty();
@@ -1556,6 +1640,7 @@ rt_string rt_http_res_header(void *obj, rt_string name) {
 }
 
 /// @brief Convenience predicate: 2xx success status?
+/// @param obj HttpRes receiver, or NULL.
 /// @return 1 if `200 <= status < 300`, 0 otherwise (and on NULL).
 int8_t rt_http_res_is_ok(void *obj) {
     if (!obj)

@@ -3,7 +3,7 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
-// File: src/runtime/graphics/rt_input.h
+// File: src/runtime/graphics/input/rt_input.h
 // Purpose: Keyboard, mouse, and gamepad input handling for the Zanna.Input runtime namespace,
 // providing per-frame key state, mouse position/button, and gamepad queries.
 //
@@ -290,104 +290,302 @@ rt_string rt_keyboard_key_name(int64_t key);
 ///          `rt_keyboard_key_unknown()` is the sentinel for "no/invalid key".
 //=========================================================================
 
+/// @brief Return the unknown-key sentinel.
+/// @return `ZANNA_KEY_UNKNOWN`.
 int64_t rt_keyboard_key_unknown(void);
+/// @brief Return the A key code.
+/// @return `ZANNA_KEY_A`.
 int64_t rt_keyboard_key_a(void);
+/// @brief Return the B key code.
+/// @return `ZANNA_KEY_B`.
 int64_t rt_keyboard_key_b(void);
+/// @brief Return the C key code.
+/// @return `ZANNA_KEY_C`.
 int64_t rt_keyboard_key_c(void);
+/// @brief Return the D key code.
+/// @return `ZANNA_KEY_D`.
 int64_t rt_keyboard_key_d(void);
+/// @brief Return the E key code.
+/// @return `ZANNA_KEY_E`.
 int64_t rt_keyboard_key_e(void);
+/// @brief Return the F key code.
+/// @return `ZANNA_KEY_F`.
 int64_t rt_keyboard_key_f(void);
+/// @brief Return the G key code.
+/// @return `ZANNA_KEY_G`.
 int64_t rt_keyboard_key_g(void);
+/// @brief Return the H key code.
+/// @return `ZANNA_KEY_H`.
 int64_t rt_keyboard_key_h(void);
+/// @brief Return the I key code.
+/// @return `ZANNA_KEY_I`.
 int64_t rt_keyboard_key_i(void);
+/// @brief Return the J key code.
+/// @return `ZANNA_KEY_J`.
 int64_t rt_keyboard_key_j(void);
+/// @brief Return the K key code.
+/// @return `ZANNA_KEY_K`.
 int64_t rt_keyboard_key_k(void);
+/// @brief Return the L key code.
+/// @return `ZANNA_KEY_L`.
 int64_t rt_keyboard_key_l(void);
+/// @brief Return the M key code.
+/// @return `ZANNA_KEY_M`.
 int64_t rt_keyboard_key_m(void);
+/// @brief Return the N key code.
+/// @return `ZANNA_KEY_N`.
 int64_t rt_keyboard_key_n(void);
+/// @brief Return the O key code.
+/// @return `ZANNA_KEY_O`.
 int64_t rt_keyboard_key_o(void);
+/// @brief Return the P key code.
+/// @return `ZANNA_KEY_P`.
 int64_t rt_keyboard_key_p(void);
+/// @brief Return the Q key code.
+/// @return `ZANNA_KEY_Q`.
 int64_t rt_keyboard_key_q(void);
+/// @brief Return the R key code.
+/// @return `ZANNA_KEY_R`.
 int64_t rt_keyboard_key_r(void);
+/// @brief Return the S key code.
+/// @return `ZANNA_KEY_S`.
 int64_t rt_keyboard_key_s(void);
+/// @brief Return the T key code.
+/// @return `ZANNA_KEY_T`.
 int64_t rt_keyboard_key_t(void);
+/// @brief Return the U key code.
+/// @return `ZANNA_KEY_U`.
 int64_t rt_keyboard_key_u(void);
+/// @brief Return the V key code.
+/// @return `ZANNA_KEY_V`.
 int64_t rt_keyboard_key_v(void);
+/// @brief Return the W key code.
+/// @return `ZANNA_KEY_W`.
 int64_t rt_keyboard_key_w(void);
+/// @brief Return the X key code.
+/// @return `ZANNA_KEY_X`.
 int64_t rt_keyboard_key_x(void);
+/// @brief Return the Y key code.
+/// @return `ZANNA_KEY_Y`.
 int64_t rt_keyboard_key_y(void);
+/// @brief Return the Z key code.
+/// @return `ZANNA_KEY_Z`.
 int64_t rt_keyboard_key_z(void);
+/// @brief Return the row-digit 0 key code.
+/// @return `ZANNA_KEY_0`.
 int64_t rt_keyboard_key_0(void);
+/// @brief Return the row-digit 1 key code.
+/// @return `ZANNA_KEY_1`.
 int64_t rt_keyboard_key_1(void);
+/// @brief Return the row-digit 2 key code.
+/// @return `ZANNA_KEY_2`.
 int64_t rt_keyboard_key_2(void);
+/// @brief Return the row-digit 3 key code.
+/// @return `ZANNA_KEY_3`.
 int64_t rt_keyboard_key_3(void);
+/// @brief Return the row-digit 4 key code.
+/// @return `ZANNA_KEY_4`.
 int64_t rt_keyboard_key_4(void);
+/// @brief Return the row-digit 5 key code.
+/// @return `ZANNA_KEY_5`.
 int64_t rt_keyboard_key_5(void);
+/// @brief Return the row-digit 6 key code.
+/// @return `ZANNA_KEY_6`.
 int64_t rt_keyboard_key_6(void);
+/// @brief Return the row-digit 7 key code.
+/// @return `ZANNA_KEY_7`.
 int64_t rt_keyboard_key_7(void);
+/// @brief Return the row-digit 8 key code.
+/// @return `ZANNA_KEY_8`.
 int64_t rt_keyboard_key_8(void);
+/// @brief Return the row-digit 9 key code.
+/// @return `ZANNA_KEY_9`.
 int64_t rt_keyboard_key_9(void);
+/// @brief Return the F1 function-key code.
+/// @return `ZANNA_KEY_F1`.
 int64_t rt_keyboard_key_f1(void);
+/// @brief Return the F2 function-key code.
+/// @return `ZANNA_KEY_F2`.
 int64_t rt_keyboard_key_f2(void);
+/// @brief Return the F3 function-key code.
+/// @return `ZANNA_KEY_F3`.
 int64_t rt_keyboard_key_f3(void);
+/// @brief Return the F4 function-key code.
+/// @return `ZANNA_KEY_F4`.
 int64_t rt_keyboard_key_f4(void);
+/// @brief Return the F5 function-key code.
+/// @return `ZANNA_KEY_F5`.
 int64_t rt_keyboard_key_f5(void);
+/// @brief Return the F6 function-key code.
+/// @return `ZANNA_KEY_F6`.
 int64_t rt_keyboard_key_f6(void);
+/// @brief Return the F7 function-key code.
+/// @return `ZANNA_KEY_F7`.
 int64_t rt_keyboard_key_f7(void);
+/// @brief Return the F8 function-key code.
+/// @return `ZANNA_KEY_F8`.
 int64_t rt_keyboard_key_f8(void);
+/// @brief Return the F9 function-key code.
+/// @return `ZANNA_KEY_F9`.
 int64_t rt_keyboard_key_f9(void);
+/// @brief Return the F10 function-key code.
+/// @return `ZANNA_KEY_F10`.
 int64_t rt_keyboard_key_f10(void);
+/// @brief Return the F11 function-key code.
+/// @return `ZANNA_KEY_F11`.
 int64_t rt_keyboard_key_f11(void);
+/// @brief Return the F12 function-key code.
+/// @return `ZANNA_KEY_F12`.
 int64_t rt_keyboard_key_f12(void);
+/// @brief Return the Up-arrow key code.
+/// @return `ZANNA_KEY_UP`.
 int64_t rt_keyboard_key_up(void);
+/// @brief Return the Down-arrow key code.
+/// @return `ZANNA_KEY_DOWN`.
 int64_t rt_keyboard_key_down(void);
+/// @brief Return the Left-arrow key code.
+/// @return `ZANNA_KEY_LEFT`.
 int64_t rt_keyboard_key_left(void);
+/// @brief Return the Right-arrow key code.
+/// @return `ZANNA_KEY_RIGHT`.
 int64_t rt_keyboard_key_right(void);
+/// @brief Return the Home key code.
+/// @return `ZANNA_KEY_HOME`.
 int64_t rt_keyboard_key_home(void);
+/// @brief Return the End key code.
+/// @return `ZANNA_KEY_END`.
 int64_t rt_keyboard_key_end(void);
+/// @brief Return the Page Up key code.
+/// @return `ZANNA_KEY_PAGEUP`.
 int64_t rt_keyboard_key_pageup(void);
+/// @brief Return the Page Down key code.
+/// @return `ZANNA_KEY_PAGEDOWN`.
 int64_t rt_keyboard_key_pagedown(void);
+/// @brief Return the Insert key code.
+/// @return `ZANNA_KEY_INSERT`.
 int64_t rt_keyboard_key_insert(void);
+/// @brief Return the Delete key code.
+/// @return `ZANNA_KEY_DELETE`.
 int64_t rt_keyboard_key_delete(void);
+/// @brief Return the Backspace key code.
+/// @return `ZANNA_KEY_BACKSPACE`.
 int64_t rt_keyboard_key_backspace(void);
+/// @brief Return the Tab key code.
+/// @return `ZANNA_KEY_TAB`.
 int64_t rt_keyboard_key_tab(void);
+/// @brief Return the main Enter key code.
+/// @return `ZANNA_KEY_ENTER`.
 int64_t rt_keyboard_key_enter(void);
+/// @brief Return the Space key code.
+/// @return `ZANNA_KEY_SPACE`.
 int64_t rt_keyboard_key_space(void);
+/// @brief Return the Escape key code.
+/// @return `ZANNA_KEY_ESCAPE`.
 int64_t rt_keyboard_key_escape(void);
+/// @brief Return the left Shift key code.
+/// @return `ZANNA_KEY_LSHIFT`.
 int64_t rt_keyboard_key_lshift(void);
+/// @brief Return the right Shift key code.
+/// @return `ZANNA_KEY_RSHIFT`.
 int64_t rt_keyboard_key_rshift(void);
+/// @brief Return the left Control key code.
+/// @return `ZANNA_KEY_LCTRL`.
 int64_t rt_keyboard_key_lctrl(void);
+/// @brief Return the right Control key code.
+/// @return `ZANNA_KEY_RCTRL`.
 int64_t rt_keyboard_key_rctrl(void);
+/// @brief Return the left Alt key code.
+/// @return `ZANNA_KEY_LALT`.
 int64_t rt_keyboard_key_lalt(void);
+/// @brief Return the right Alt key code.
+/// @return `ZANNA_KEY_RALT`.
 int64_t rt_keyboard_key_ralt(void);
+/// @brief Return the left Super key code.
+/// @return `ZANNA_KEY_LSUPER`.
 int64_t rt_keyboard_key_lsuper(void);
+/// @brief Return the right Super key code.
+/// @return `ZANNA_KEY_RSUPER`.
 int64_t rt_keyboard_key_rsuper(void);
+/// @brief Return the Minus key code.
+/// @return `ZANNA_KEY_MINUS`.
 int64_t rt_keyboard_key_minus(void);
+/// @brief Return the Equals key code.
+/// @return `ZANNA_KEY_EQUALS`.
 int64_t rt_keyboard_key_equals(void);
+/// @brief Return the left-bracket key code.
+/// @return `ZANNA_KEY_LBRACKET`.
 int64_t rt_keyboard_key_lbracket(void);
+/// @brief Return the right-bracket key code.
+/// @return `ZANNA_KEY_RBRACKET`.
 int64_t rt_keyboard_key_rbracket(void);
+/// @brief Return the Backslash key code.
+/// @return `ZANNA_KEY_BACKSLASH`.
 int64_t rt_keyboard_key_backslash(void);
+/// @brief Return the Semicolon key code.
+/// @return `ZANNA_KEY_SEMICOLON`.
 int64_t rt_keyboard_key_semicolon(void);
+/// @brief Return the Quote key code.
+/// @return `ZANNA_KEY_QUOTE`.
 int64_t rt_keyboard_key_quote(void);
+/// @brief Return the Grave key code.
+/// @return `ZANNA_KEY_GRAVE`.
 int64_t rt_keyboard_key_grave(void);
+/// @brief Return the Comma key code.
+/// @return `ZANNA_KEY_COMMA`.
 int64_t rt_keyboard_key_comma(void);
+/// @brief Return the Period key code.
+/// @return `ZANNA_KEY_PERIOD`.
 int64_t rt_keyboard_key_period(void);
+/// @brief Return the Slash key code.
+/// @return `ZANNA_KEY_SLASH`.
 int64_t rt_keyboard_key_slash(void);
+/// @brief Return the numpad 0 key code.
+/// @return `ZANNA_KEY_NUM0`.
 int64_t rt_keyboard_key_num0(void);
+/// @brief Return the numpad 1 key code.
+/// @return `ZANNA_KEY_NUM1`.
 int64_t rt_keyboard_key_num1(void);
+/// @brief Return the numpad 2 key code.
+/// @return `ZANNA_KEY_NUM2`.
 int64_t rt_keyboard_key_num2(void);
+/// @brief Return the numpad 3 key code.
+/// @return `ZANNA_KEY_NUM3`.
 int64_t rt_keyboard_key_num3(void);
+/// @brief Return the numpad 4 key code.
+/// @return `ZANNA_KEY_NUM4`.
 int64_t rt_keyboard_key_num4(void);
+/// @brief Return the numpad 5 key code.
+/// @return `ZANNA_KEY_NUM5`.
 int64_t rt_keyboard_key_num5(void);
+/// @brief Return the numpad 6 key code.
+/// @return `ZANNA_KEY_NUM6`.
 int64_t rt_keyboard_key_num6(void);
+/// @brief Return the numpad 7 key code.
+/// @return `ZANNA_KEY_NUM7`.
 int64_t rt_keyboard_key_num7(void);
+/// @brief Return the numpad 8 key code.
+/// @return `ZANNA_KEY_NUM8`.
 int64_t rt_keyboard_key_num8(void);
+/// @brief Return the numpad 9 key code.
+/// @return `ZANNA_KEY_NUM9`.
 int64_t rt_keyboard_key_num9(void);
+/// @brief Return the numpad Add key code.
+/// @return `ZANNA_KEY_NUMADD`.
 int64_t rt_keyboard_key_numadd(void);
+/// @brief Return the numpad Subtract key code.
+/// @return `ZANNA_KEY_NUMSUB`.
 int64_t rt_keyboard_key_numsub(void);
+/// @brief Return the numpad Multiply key code.
+/// @return `ZANNA_KEY_NUMMUL`.
 int64_t rt_keyboard_key_nummul(void);
+/// @brief Return the numpad Divide key code.
+/// @return `ZANNA_KEY_NUMDIV`.
 int64_t rt_keyboard_key_numdiv(void);
+/// @brief Return the numpad Enter key code.
+/// @return `ZANNA_KEY_NUMENTER`.
 int64_t rt_keyboard_key_numenter(void);
+/// @brief Return the numpad Decimal key code.
+/// @return `ZANNA_KEY_NUMDOT`.
 int64_t rt_keyboard_key_numdot(void);
 
 //=========================================================================
@@ -430,12 +628,16 @@ void rt_mouse_finalize_frame(void);
 void rt_mouse_update_pos(int64_t x, int64_t y);
 
 /// @brief Override mouse delta for the current frame without moving the cursor.
+/// @param dx Forced horizontal delta in logical canvas pixels.
+/// @param dy Forced vertical delta in logical canvas pixels.
 void rt_mouse_force_delta(int64_t dx, int64_t dy);
 
 /// @brief Override mouse delta with sub-pixel precision (relative mouse mode).
 /// @details Sets both the f64 deltas returned by rt_mouse_delta_xf/yf and the
 ///          rounded i64 deltas returned by rt_mouse_delta_x/y. Used by the
 ///          Canvas3D poll while native raw mouse deltas are active.
+/// @param dx Exact horizontal delta in logical canvas pixels.
+/// @param dy Exact vertical delta in logical canvas pixels.
 void rt_mouse_force_delta_f(double dx, double dy);
 
 //=========================================================================
@@ -447,21 +649,27 @@ void rt_mouse_force_delta_f(double dx, double dy);
 ///          frozen); disabling releases capture. The platform window applies
 ///          the actual raw-input mode on its next poll and reports back via
 ///          rt_mouse_set_relative_native().
+/// @param enabled Non-zero to request relative mode, zero to release it.
 void rt_mouse_set_relative_mode(int8_t enabled);
 
 /// @brief Whether relative mouse mode has been requested.
+/// @return One when requested, otherwise zero.
 int8_t rt_mouse_get_relative_mode(void);
 
 /// @brief Record whether the platform delivers native raw deltas (poll-side).
+/// @param native Non-zero when the active backend supplies native raw motion.
 void rt_mouse_set_relative_native(int8_t native);
 
 /// @brief Whether native raw deltas are active (vs warp-to-center fallback).
+/// @return One only when relative mode is requested and native raw input is active.
 int8_t rt_mouse_get_relative_native(void);
 
 /// @brief Sub-pixel horizontal mouse delta for the current frame.
+/// @return Horizontal delta in logical canvas pixels.
 double rt_mouse_delta_xf(void);
 
 /// @brief Sub-pixel vertical mouse delta for the current frame.
+/// @return Vertical delta in logical canvas pixels.
 double rt_mouse_delta_yf(void);
 
 /// @brief Register a mouse button press event.
@@ -482,9 +690,11 @@ void rt_mouse_update_wheel(double dx, double dy);
 void rt_mouse_set_canvas(void *canvas);
 
 /// @brief Clear the keyboard binding if it points at the given canvas.
+/// @param canvas Canvas being destroyed; NULL is ignored.
 void rt_keyboard_clear_canvas_if_matches(void *canvas);
 
 /// @brief Clear the mouse binding if it points at the given canvas.
+/// @param canvas Canvas being destroyed; NULL is ignored.
 void rt_mouse_clear_canvas_if_matches(void *canvas);
 
 //=========================================================================
@@ -620,10 +830,20 @@ void rt_mouse_set_pos(int64_t x, int64_t y);
 ///        → the side buttons); the code is what rt_mouse_* queries expect.
 //=========================================================================
 
+/// @brief Return the left mouse-button code.
+/// @return `ZANNA_MOUSE_BUTTON_LEFT`.
 int64_t rt_mouse_button_left(void);
+/// @brief Return the right mouse-button code.
+/// @return `ZANNA_MOUSE_BUTTON_RIGHT`.
 int64_t rt_mouse_button_right(void);
+/// @brief Return the middle mouse-button code.
+/// @return `ZANNA_MOUSE_BUTTON_MIDDLE`.
 int64_t rt_mouse_button_middle(void);
+/// @brief Return the X1/back mouse-button code.
+/// @return `ZANNA_MOUSE_BUTTON_X1`.
 int64_t rt_mouse_button_x1(void);
+/// @brief Return the X2/forward mouse-button code.
+/// @return `ZANNA_MOUSE_BUTTON_X2`.
 int64_t rt_mouse_button_x2(void);
 
 //=========================================================================
@@ -790,20 +1010,50 @@ void rt_pad_stop_vibration(int64_t index);
 ///        is what rt_pad_* queries expect.
 //=========================================================================
 
+/// @brief Return the south/A face-button code.
+/// @return `ZANNA_PAD_A`.
 int64_t rt_pad_button_a(void);
+/// @brief Return the east/B face-button code.
+/// @return `ZANNA_PAD_B`.
 int64_t rt_pad_button_b(void);
+/// @brief Return the west/X face-button code.
+/// @return `ZANNA_PAD_X`.
 int64_t rt_pad_button_x(void);
+/// @brief Return the north/Y face-button code.
+/// @return `ZANNA_PAD_Y`.
 int64_t rt_pad_button_y(void);
+/// @brief Return the left-bumper code.
+/// @return `ZANNA_PAD_LB`.
 int64_t rt_pad_button_lb(void);
+/// @brief Return the right-bumper code.
+/// @return `ZANNA_PAD_RB`.
 int64_t rt_pad_button_rb(void);
+/// @brief Return the Back/Select button code.
+/// @return `ZANNA_PAD_BACK`.
 int64_t rt_pad_button_back(void);
+/// @brief Return the Start/Options button code.
+/// @return `ZANNA_PAD_START`.
 int64_t rt_pad_button_start(void);
+/// @brief Return the left-stick-click code.
+/// @return `ZANNA_PAD_LSTICK`.
 int64_t rt_pad_button_lstick(void);
+/// @brief Return the right-stick-click code.
+/// @return `ZANNA_PAD_RSTICK`.
 int64_t rt_pad_button_rstick(void);
+/// @brief Return the D-pad Up code.
+/// @return `ZANNA_PAD_UP`.
 int64_t rt_pad_button_up(void);
+/// @brief Return the D-pad Down code.
+/// @return `ZANNA_PAD_DOWN`.
 int64_t rt_pad_button_down(void);
+/// @brief Return the D-pad Left code.
+/// @return `ZANNA_PAD_LEFT`.
 int64_t rt_pad_button_left(void);
+/// @brief Return the D-pad Right code.
+/// @return `ZANNA_PAD_RIGHT`.
 int64_t rt_pad_button_right(void);
+/// @brief Return the platform Guide button code.
+/// @return `ZANNA_PAD_GUIDE`.
 int64_t rt_pad_button_guide(void);
 
 #ifdef __cplusplus

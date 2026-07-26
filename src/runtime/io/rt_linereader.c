@@ -67,6 +67,13 @@ void rt_trap_set_recovery(jmp_buf *buf);
 void rt_trap_clear_recovery(void);
 const char *rt_trap_get_error(void);
 
+/// @brief Validate and unwrap an opaque LineReader receiver.
+/// @details Checks both the runtime class identifier and complete payload size before casting.
+///          Invalid receivers trap with @p context or a generic fallback.
+/// @param obj Borrowed opaque runtime receiver.
+/// @param context Trap diagnostic for an invalid receiver; may be NULL.
+/// @return Pointer to the validated inline implementation payload, or NULL as trap-control
+///         fallback.
 static rt_linereader_impl *linereader_require(void *obj, const char *context) {
     if (!rt_obj_is_instance(obj, RT_LINEREADER_CLASS_ID, sizeof(rt_linereader_impl))) {
         rt_trap(context ? context : "LineReader: invalid reader");

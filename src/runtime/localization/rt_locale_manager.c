@@ -225,16 +225,22 @@ static int loc_fail(int trap_on_error, const char *msg) {
 }
 
 /// @brief Return non-zero if @p obj is a runtime string handle.
+/// @param obj Candidate runtime object; may be NULL.
+/// @return 1 for a valid runtime string, otherwise 0.
 static int loc_is_string(void *obj) {
     return obj && rt_string_is_handle(obj);
 }
 
 /// @brief Return non-zero if @p obj is a runtime map (JSON object) handle.
+/// @param obj Candidate runtime object; may be NULL.
+/// @return 1 when the object's class identifier is @ref RT_MAP_CLASS_ID, otherwise 0.
 static int loc_is_map(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_MAP_CLASS_ID;
 }
 
 /// @brief Return non-zero if @p obj is a runtime seq (JSON array) handle.
+/// @param obj Candidate runtime object; may be NULL.
+/// @return 1 when the object's class identifier is @ref RT_SEQ_CLASS_ID, otherwise 0.
 static int loc_is_seq(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_SEQ_CLASS_ID;
 }
@@ -388,6 +394,9 @@ static int loc_currency_pattern_valid(const char *pattern) {
 ///        DateFormat (VDOC-070). Mirrors the formatter's scan: quoted
 ///        literals with '' escapes must be terminated, and letter runs are
 ///        restricted to y M d E H h m s a.
+/// @param pattern NUL-terminated pattern to validate; NULL means an absent
+///                optional pattern and is accepted.
+/// @return 1 when the pattern is absent or fully supported, otherwise 0.
 static int loc_date_pattern_valid(const char *pattern) {
     if (!pattern)
         return 1; // absent patterns fall back to defaults
@@ -432,11 +441,15 @@ static int loc_date_pattern_valid(const char *pattern) {
 }
 
 /// @brief True when @p tmpl contains the "{n}" count placeholder.
+/// @param tmpl NUL-terminated relative-time template; may be NULL.
+/// @return 1 when the exact placeholder occurs, otherwise 0.
 static int loc_template_has_n(const char *tmpl) {
     return tmpl && strstr(tmpl, "{n}") != NULL;
 }
 
 /// @brief True when @p tmpl contains both "{0}" and "{1}" placeholders.
+/// @param tmpl NUL-terminated list template; may be NULL.
+/// @return 1 when both exact positional placeholders occur, otherwise 0.
 static int loc_list_template_valid(const char *tmpl) {
     return tmpl && strstr(tmpl, "{0}") != NULL && strstr(tmpl, "{1}") != NULL;
 }
@@ -1296,6 +1309,9 @@ static int loc_register_entry_locked(const rt_locale_data_t *data, int is_baked)
 ///          because those re-enter the manager's init path, causing
 ///          infinite recursion during bootstrap. We build the handle
 ///          directly and bind the data pointer via internal helpers.
+/// @param tag Canonical NUL-terminated tag to parse while the manager lock is held.
+/// @return Fresh Locale handle with retained matching data when registered,
+///         or NULL on allocation/parse failure.
 static void *loc_make_handle_locked(const char *tag) {
     // Use a direct construction path: allocate + set fields + walk registry.
     void *loc = NULL;

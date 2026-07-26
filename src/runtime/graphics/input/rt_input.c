@@ -93,6 +93,8 @@
 #define VGFX_KEY_F12_VG 280
 
 /// @brief Convert vgfx key code to GLFW-style key code.
+/// @param vgfx_key Raw key code produced by the vgfx backend.
+/// @return Equivalent public `ZANNA_KEY_*` code, or the original value when no remapping is needed.
 static int64_t vgfx_to_glfw(int64_t vgfx_key) {
     // Letters and numbers match directly (ASCII)
     if (vgfx_key >= 'A' && vgfx_key <= 'Z')
@@ -138,6 +140,11 @@ static int64_t vgfx_to_glfw(int64_t vgfx_key) {
     }
 }
 
+/// @brief Test whether a Unicode scalar is acceptable as typed text.
+/// @details Rejects C0/C1 controls, DEL, surrogate code points, private-use ranges, and values
+///          beyond Unicode's maximum scalar value.
+/// @param ch Candidate Unicode code point.
+/// @return true when @p ch may be appended to the per-frame text buffer.
 static bool rt_keyboard_codepoint_is_text(int32_t ch) {
     if (ch < 0x20 || ch == 0x7F || ch > 0x10FFFF)
         return false;
@@ -233,6 +240,9 @@ static void rt_keyboard_append_reserved_key_event(int64_t *keys, int *count, int
 /// @param value Runtime coordinate in canvas pixels.
 /// @return @p value saturated to the signed 32-bit range accepted by graphics backends.
 #if defined(ZANNA_ENABLE_GRAPHICS)
+/// @brief Clamp a runtime coordinate to the cursor-warp backend's signed 32-bit range.
+/// @param value Runtime coordinate in canvas pixels.
+/// @return @p value saturated to [`INT32_MIN`, `INT32_MAX`].
 static int32_t rt_input_clamp_i64_to_i32(int64_t value) {
     if (value < (int64_t)INT32_MIN)
         return INT32_MIN;
@@ -452,6 +462,10 @@ void rt_keyboard_begin_frame(void) {
     g_text_length = 0;
 }
 
+/// @brief Apply one normalized key-down transition to level and per-frame edge state.
+/// @details Repeat-down input is ignored. Storage is reserved before state mutation, and an
+///          allocation failure traps without partially recording the transition.
+/// @param key Public `ZANNA_KEY_*` code.
 static void rt_keyboard_record_key_down(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     if (key <= 0 || key >= ZANNA_KEY_MAX)
@@ -473,6 +487,10 @@ static void rt_keyboard_record_key_down(int64_t key) {
     // Caps Lock state is queried from the platform on demand.
 }
 
+/// @brief Apply one normalized key-up transition to level and per-frame edge state.
+/// @details Up events for keys not currently held are ignored. Storage is reserved before state
+///          mutation so allocation failure cannot create a partial release.
+/// @param key Public `ZANNA_KEY_*` code.
 static void rt_keyboard_record_key_up(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     if (key <= 0 || key >= ZANNA_KEY_MAX)
@@ -492,26 +510,33 @@ static void rt_keyboard_record_key_up(int64_t key) {
 }
 
 /// @brief Record a key-down event using public ZANNA_KEY_* constants.
+/// @param key Public normalized key code.
 void rt_keyboard_on_key_down(int64_t key) {
     rt_keyboard_record_key_down(key);
 }
 
 /// @brief Record a key-up event using public ZANNA_KEY_* constants.
+/// @param key Public normalized key code.
 void rt_keyboard_on_key_up(int64_t key) {
     rt_keyboard_record_key_up(key);
 }
 
 /// @brief Record a key-down event from a vgfx window event.
+/// @param key Raw vgfx key code, normalized before state mutation.
 void rt_keyboard_on_vgfx_key_down(int64_t key) {
     rt_keyboard_record_key_down(vgfx_to_glfw(key));
 }
 
 /// @brief Record a key-up event from a vgfx window event.
+/// @param key Raw vgfx key code, normalized before state mutation.
 void rt_keyboard_on_vgfx_key_up(int64_t key) {
     rt_keyboard_record_key_up(vgfx_to_glfw(key));
 }
 
 /// @brief Append a text-input character to the per-frame UTF-8 text buffer.
+/// @details Input is ignored while text mode is disabled or when @p ch is not an accepted Unicode
+///          scalar. Buffer growth failure traps without appending partial UTF-8.
+/// @param ch Unicode code point from the platform text-input event.
 void rt_keyboard_text_input(int32_t ch) {
     RT_ASSERT_MAIN_THREAD();
     if (!g_text_input_enabled)
@@ -554,6 +579,7 @@ void rt_keyboard_text_input(int32_t ch) {
 }
 
 /// @brief Bind the keyboard to a canvas window (auto-initializes on first bind).
+/// @param canvas Borrowed Canvas handle, or NULL to clear the active binding.
 void rt_keyboard_set_canvas(void *canvas) {
     RT_ASSERT_MAIN_THREAD();
     if (canvas)
@@ -587,6 +613,8 @@ void rt_keyboard_clear_canvas_if_matches(void *canvas) {
 //=============================================================================
 
 /// @brief Check whether a key is currently held down (continuous — true every frame while held).
+/// @param key Public `ZANNA_KEY_*` code.
+/// @return One while a valid key is held, otherwise zero.
 int8_t rt_keyboard_is_down(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     if (key <= 0 || key >= ZANNA_KEY_MAX)
@@ -596,6 +624,8 @@ int8_t rt_keyboard_is_down(int64_t key) {
 }
 
 /// @brief Check whether a key is currently not held down.
+/// @param key Public `ZANNA_KEY_*` code.
+/// @return One when the key is up; invalid key codes also report up.
 int8_t rt_keyboard_is_up(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     if (key <= 0 || key >= ZANNA_KEY_MAX)
@@ -605,6 +635,7 @@ int8_t rt_keyboard_is_up(int64_t key) {
 }
 
 /// @brief Check whether any key at all is currently held down.
+/// @return One when at least one public key is held, otherwise zero.
 int8_t rt_keyboard_any_down(void) {
     RT_ASSERT_MAIN_THREAD();
     for (int i = 0; i < ZANNA_KEY_MAX; i++) {
@@ -615,6 +646,7 @@ int8_t rt_keyboard_any_down(void) {
 }
 
 /// @brief Get the key code of the first key currently held down (0 if none).
+/// @return Lowest held public key code, or zero when no key is down.
 int64_t rt_keyboard_get_down(void) {
     RT_ASSERT_MAIN_THREAD();
     for (int i = 0; i < ZANNA_KEY_MAX; i++) {
@@ -629,6 +661,8 @@ int64_t rt_keyboard_get_down(void) {
 //=============================================================================
 
 /// @brief Check whether a key was pressed this frame (edge-triggered — true once on key-down).
+/// @param key Public `ZANNA_KEY_*` code.
+/// @return One when the key gained its down state this frame, otherwise zero.
 int8_t rt_keyboard_was_pressed(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     if (key <= 0 || key >= ZANNA_KEY_MAX)
@@ -637,6 +671,8 @@ int8_t rt_keyboard_was_pressed(int64_t key) {
 }
 
 /// @brief Check whether a key was released this frame (edge-triggered — true once on key-up).
+/// @param key Public `ZANNA_KEY_*` code.
+/// @return One when the key lost its down state this frame, otherwise zero.
 int8_t rt_keyboard_was_released(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     if (key <= 0 || key >= ZANNA_KEY_MAX)
@@ -645,6 +681,7 @@ int8_t rt_keyboard_was_released(int64_t key) {
 }
 
 /// @brief Get a list of all keys pressed this frame as a sequence of key codes.
+/// @return Fresh runtime sequence of boxed public key codes in arrival order.
 void *rt_keyboard_get_pressed(void) {
     RT_ASSERT_MAIN_THREAD();
     void *seq = rt_seq_new();
@@ -655,6 +692,7 @@ void *rt_keyboard_get_pressed(void) {
 }
 
 /// @brief Get a list of all keys released this frame as a sequence of key codes.
+/// @return Fresh runtime sequence of boxed public key codes in arrival order.
 void *rt_keyboard_get_released(void) {
     RT_ASSERT_MAIN_THREAD();
     void *seq = rt_seq_new();
@@ -669,6 +707,7 @@ void *rt_keyboard_get_released(void) {
 //=============================================================================
 
 /// @brief Get the text typed this frame (characters accumulated from text-input events).
+/// @return Owned byte-exact UTF-8 runtime string, or an owned empty string when no text arrived.
 rt_string rt_keyboard_get_text(void) {
     RT_ASSERT_MAIN_THREAD();
     if (g_text_length == 0)
@@ -694,24 +733,28 @@ void rt_keyboard_disable_text_input(void) {
 //=============================================================================
 
 /// @brief Check whether either Shift key is currently held.
+/// @return One when left or right Shift is down, otherwise zero.
 int8_t rt_keyboard_shift(void) {
     RT_ASSERT_MAIN_THREAD();
     return (g_key_state[ZANNA_KEY_LSHIFT] || g_key_state[ZANNA_KEY_RSHIFT]) ? 1 : 0;
 }
 
 /// @brief Check whether either Ctrl key is currently held.
+/// @return One when left or right Control is down, otherwise zero.
 int8_t rt_keyboard_ctrl(void) {
     RT_ASSERT_MAIN_THREAD();
     return (g_key_state[ZANNA_KEY_LCTRL] || g_key_state[ZANNA_KEY_RCTRL]) ? 1 : 0;
 }
 
 /// @brief Check whether either Alt key is currently held.
+/// @return One when left or right Alt is down, otherwise zero.
 int8_t rt_keyboard_alt(void) {
     RT_ASSERT_MAIN_THREAD();
     return (g_key_state[ZANNA_KEY_LALT] || g_key_state[ZANNA_KEY_RALT]) ? 1 : 0;
 }
 
 /// @brief Check whether Caps Lock is active.
+/// @return One when the platform reports Caps Lock active, otherwise zero.
 int8_t rt_keyboard_caps_lock(void) {
     RT_ASSERT_MAIN_THREAD();
     g_caps_lock = rt_input_query_caps_lock_platform() != 0;
@@ -723,6 +766,8 @@ int8_t rt_keyboard_caps_lock(void) {
 //=============================================================================
 
 /// @brief Get the human-readable name of a key code (e.g., "A", "Space", "F1").
+/// @param key Public key code to describe.
+/// @return Owned stable display name, using `Unknown` for unmapped values.
 rt_string rt_keyboard_key_name(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
 
@@ -836,502 +881,601 @@ rt_string rt_keyboard_key_name(int64_t key) {
 //=============================================================================
 
 /// @brief Key-code constant for the unknown / unmapped key sentinel.
+/// @return `ZANNA_KEY_UNKNOWN`.
 int64_t rt_keyboard_key_unknown(void) {
     return ZANNA_KEY_UNKNOWN;
 }
 
 /// @brief Key-code constant for the A key.
+/// @return `ZANNA_KEY_A`.
 int64_t rt_keyboard_key_a(void) {
     return ZANNA_KEY_A;
 }
 
 /// @brief Key-code constant for the B key.
+/// @return `ZANNA_KEY_B`.
 int64_t rt_keyboard_key_b(void) {
     return ZANNA_KEY_B;
 }
 
 /// @brief Key-code constant for the C key.
+/// @return `ZANNA_KEY_C`.
 int64_t rt_keyboard_key_c(void) {
     return ZANNA_KEY_C;
 }
 
 /// @brief Key-code constant for the D key.
+/// @return `ZANNA_KEY_D`.
 int64_t rt_keyboard_key_d(void) {
     return ZANNA_KEY_D;
 }
 
 /// @brief Key-code constant for the E key.
+/// @return `ZANNA_KEY_E`.
 int64_t rt_keyboard_key_e(void) {
     return ZANNA_KEY_E;
 }
 
 /// @brief Key-code constant for the F key.
+/// @return `ZANNA_KEY_F`.
 int64_t rt_keyboard_key_f(void) {
     return ZANNA_KEY_F;
 }
 
 /// @brief Key-code constant for the G key.
+/// @return `ZANNA_KEY_G`.
 int64_t rt_keyboard_key_g(void) {
     return ZANNA_KEY_G;
 }
 
 /// @brief Key-code constant for the H key.
+/// @return `ZANNA_KEY_H`.
 int64_t rt_keyboard_key_h(void) {
     return ZANNA_KEY_H;
 }
 
 /// @brief Key-code constant for the I key.
+/// @return `ZANNA_KEY_I`.
 int64_t rt_keyboard_key_i(void) {
     return ZANNA_KEY_I;
 }
 
 /// @brief Key-code constant for the J key.
+/// @return `ZANNA_KEY_J`.
 int64_t rt_keyboard_key_j(void) {
     return ZANNA_KEY_J;
 }
 
 /// @brief Key-code constant for the K key.
+/// @return `ZANNA_KEY_K`.
 int64_t rt_keyboard_key_k(void) {
     return ZANNA_KEY_K;
 }
 
 /// @brief Key-code constant for the L key.
+/// @return `ZANNA_KEY_L`.
 int64_t rt_keyboard_key_l(void) {
     return ZANNA_KEY_L;
 }
 
 /// @brief Key-code constant for the M key.
+/// @return `ZANNA_KEY_M`.
 int64_t rt_keyboard_key_m(void) {
     return ZANNA_KEY_M;
 }
 
 /// @brief Key-code constant for the N key.
+/// @return `ZANNA_KEY_N`.
 int64_t rt_keyboard_key_n(void) {
     return ZANNA_KEY_N;
 }
 
 /// @brief Key-code constant for the O key.
+/// @return `ZANNA_KEY_O`.
 int64_t rt_keyboard_key_o(void) {
     return ZANNA_KEY_O;
 }
 
 /// @brief Key-code constant for the P key.
+/// @return `ZANNA_KEY_P`.
 int64_t rt_keyboard_key_p(void) {
     return ZANNA_KEY_P;
 }
 
 /// @brief Key-code constant for the Q key.
+/// @return `ZANNA_KEY_Q`.
 int64_t rt_keyboard_key_q(void) {
     return ZANNA_KEY_Q;
 }
 
 /// @brief Key-code constant for the R key.
+/// @return `ZANNA_KEY_R`.
 int64_t rt_keyboard_key_r(void) {
     return ZANNA_KEY_R;
 }
 
 /// @brief Key-code constant for the S key.
+/// @return `ZANNA_KEY_S`.
 int64_t rt_keyboard_key_s(void) {
     return ZANNA_KEY_S;
 }
 
 /// @brief Key-code constant for the T key.
+/// @return `ZANNA_KEY_T`.
 int64_t rt_keyboard_key_t(void) {
     return ZANNA_KEY_T;
 }
 
 /// @brief Key-code constant for the U key.
+/// @return `ZANNA_KEY_U`.
 int64_t rt_keyboard_key_u(void) {
     return ZANNA_KEY_U;
 }
 
 /// @brief Key-code constant for the V key.
+/// @return `ZANNA_KEY_V`.
 int64_t rt_keyboard_key_v(void) {
     return ZANNA_KEY_V;
 }
 
 /// @brief Key-code constant for the W key.
+/// @return `ZANNA_KEY_W`.
 int64_t rt_keyboard_key_w(void) {
     return ZANNA_KEY_W;
 }
 
 /// @brief Key-code constant for the X key.
+/// @return `ZANNA_KEY_X`.
 int64_t rt_keyboard_key_x(void) {
     return ZANNA_KEY_X;
 }
 
 /// @brief Key-code constant for the Y key.
+/// @return `ZANNA_KEY_Y`.
 int64_t rt_keyboard_key_y(void) {
     return ZANNA_KEY_Y;
 }
 
 /// @brief Key-code constant for the Z key.
+/// @return `ZANNA_KEY_Z`.
 int64_t rt_keyboard_key_z(void) {
     return ZANNA_KEY_Z;
 }
 
 /// @brief Key-code constant for the 0 (zero) row-digit key.
+/// @return `ZANNA_KEY_0`.
 int64_t rt_keyboard_key_0(void) {
     return ZANNA_KEY_0;
 }
 
 /// @brief Key-code constant for the 1 row-digit key.
+/// @return `ZANNA_KEY_1`.
 int64_t rt_keyboard_key_1(void) {
     return ZANNA_KEY_1;
 }
 
 /// @brief Key-code constant for the 2 row-digit key.
+/// @return `ZANNA_KEY_2`.
 int64_t rt_keyboard_key_2(void) {
     return ZANNA_KEY_2;
 }
 
 /// @brief Key-code constant for the 3 row-digit key.
+/// @return `ZANNA_KEY_3`.
 int64_t rt_keyboard_key_3(void) {
     return ZANNA_KEY_3;
 }
 
 /// @brief Key-code constant for the 4 row-digit key.
+/// @return `ZANNA_KEY_4`.
 int64_t rt_keyboard_key_4(void) {
     return ZANNA_KEY_4;
 }
 
 /// @brief Key-code constant for the 5 row-digit key.
+/// @return `ZANNA_KEY_5`.
 int64_t rt_keyboard_key_5(void) {
     return ZANNA_KEY_5;
 }
 
 /// @brief Key-code constant for the 6 row-digit key.
+/// @return `ZANNA_KEY_6`.
 int64_t rt_keyboard_key_6(void) {
     return ZANNA_KEY_6;
 }
 
 /// @brief Key-code constant for the 7 row-digit key.
+/// @return `ZANNA_KEY_7`.
 int64_t rt_keyboard_key_7(void) {
     return ZANNA_KEY_7;
 }
 
 /// @brief Key-code constant for the 8 row-digit key.
+/// @return `ZANNA_KEY_8`.
 int64_t rt_keyboard_key_8(void) {
     return ZANNA_KEY_8;
 }
 
 /// @brief Key-code constant for the 9 row-digit key.
+/// @return `ZANNA_KEY_9`.
 int64_t rt_keyboard_key_9(void) {
     return ZANNA_KEY_9;
 }
 
 /// @brief Key-code constant for the F1 function key.
+/// @return `ZANNA_KEY_F1`.
 int64_t rt_keyboard_key_f1(void) {
     return ZANNA_KEY_F1;
 }
 
 /// @brief Key-code constant for the F2 function key.
+/// @return `ZANNA_KEY_F2`.
 int64_t rt_keyboard_key_f2(void) {
     return ZANNA_KEY_F2;
 }
 
 /// @brief Key-code constant for the F3 function key.
+/// @return `ZANNA_KEY_F3`.
 int64_t rt_keyboard_key_f3(void) {
     return ZANNA_KEY_F3;
 }
 
 /// @brief Key-code constant for the F4 function key.
+/// @return `ZANNA_KEY_F4`.
 int64_t rt_keyboard_key_f4(void) {
     return ZANNA_KEY_F4;
 }
 
 /// @brief Key-code constant for the F5 function key.
+/// @return `ZANNA_KEY_F5`.
 int64_t rt_keyboard_key_f5(void) {
     return ZANNA_KEY_F5;
 }
 
 /// @brief Key-code constant for the F6 function key.
+/// @return `ZANNA_KEY_F6`.
 int64_t rt_keyboard_key_f6(void) {
     return ZANNA_KEY_F6;
 }
 
 /// @brief Key-code constant for the F7 function key.
+/// @return `ZANNA_KEY_F7`.
 int64_t rt_keyboard_key_f7(void) {
     return ZANNA_KEY_F7;
 }
 
 /// @brief Key-code constant for the F8 function key.
+/// @return `ZANNA_KEY_F8`.
 int64_t rt_keyboard_key_f8(void) {
     return ZANNA_KEY_F8;
 }
 
 /// @brief Key-code constant for the F9 function key.
+/// @return `ZANNA_KEY_F9`.
 int64_t rt_keyboard_key_f9(void) {
     return ZANNA_KEY_F9;
 }
 
 /// @brief Key-code constant for the F10 function key.
+/// @return `ZANNA_KEY_F10`.
 int64_t rt_keyboard_key_f10(void) {
     return ZANNA_KEY_F10;
 }
 
 /// @brief Key-code constant for the F11 function key.
+/// @return `ZANNA_KEY_F11`.
 int64_t rt_keyboard_key_f11(void) {
     return ZANNA_KEY_F11;
 }
 
 /// @brief Key-code constant for the F12 function key.
+/// @return `ZANNA_KEY_F12`.
 int64_t rt_keyboard_key_f12(void) {
     return ZANNA_KEY_F12;
 }
 
 /// @brief Key-code constant for the Up arrow key.
+/// @return `ZANNA_KEY_UP`.
 int64_t rt_keyboard_key_up(void) {
     return ZANNA_KEY_UP;
 }
 
 /// @brief Key-code constant for the Down arrow key.
+/// @return `ZANNA_KEY_DOWN`.
 int64_t rt_keyboard_key_down(void) {
     return ZANNA_KEY_DOWN;
 }
 
 /// @brief Key-code constant for the Left arrow key.
+/// @return `ZANNA_KEY_LEFT`.
 int64_t rt_keyboard_key_left(void) {
     return ZANNA_KEY_LEFT;
 }
 
 /// @brief Key-code constant for the Right arrow key.
+/// @return `ZANNA_KEY_RIGHT`.
 int64_t rt_keyboard_key_right(void) {
     return ZANNA_KEY_RIGHT;
 }
 
 /// @brief Key-code constant for the Home navigation key.
+/// @return `ZANNA_KEY_HOME`.
 int64_t rt_keyboard_key_home(void) {
     return ZANNA_KEY_HOME;
 }
 
 /// @brief Key-code constant for the End navigation key.
+/// @return `ZANNA_KEY_END`.
 int64_t rt_keyboard_key_end(void) {
     return ZANNA_KEY_END;
 }
 
 /// @brief Key-code constant for the Page Up navigation key.
+/// @return `ZANNA_KEY_PAGEUP`.
 int64_t rt_keyboard_key_pageup(void) {
     return ZANNA_KEY_PAGEUP;
 }
 
 /// @brief Key-code constant for the Page Down navigation key.
+/// @return `ZANNA_KEY_PAGEDOWN`.
 int64_t rt_keyboard_key_pagedown(void) {
     return ZANNA_KEY_PAGEDOWN;
 }
 
 /// @brief Key-code constant for the Insert editing key.
+/// @return `ZANNA_KEY_INSERT`.
 int64_t rt_keyboard_key_insert(void) {
     return ZANNA_KEY_INSERT;
 }
 
 /// @brief Key-code constant for the Delete editing key (forward delete).
+/// @return `ZANNA_KEY_DELETE`.
 int64_t rt_keyboard_key_delete(void) {
     return ZANNA_KEY_DELETE;
 }
 
 /// @brief Key-code constant for the Backspace editing key (backward delete).
+/// @return `ZANNA_KEY_BACKSPACE`.
 int64_t rt_keyboard_key_backspace(void) {
     return ZANNA_KEY_BACKSPACE;
 }
 
 /// @brief Key-code constant for the Tab key.
+/// @return `ZANNA_KEY_TAB`.
 int64_t rt_keyboard_key_tab(void) {
     return ZANNA_KEY_TAB;
 }
 
 /// @brief Key-code constant for the main Enter / Return key (numpad enter
 ///        is `Key.NumEnter`).
+/// @return `ZANNA_KEY_ENTER`.
 int64_t rt_keyboard_key_enter(void) {
     return ZANNA_KEY_ENTER;
 }
 
 /// @brief Key-code constant for the Space bar.
+/// @return `ZANNA_KEY_SPACE`.
 int64_t rt_keyboard_key_space(void) {
     return ZANNA_KEY_SPACE;
 }
 
 /// @brief Key-code constant for the Escape key.
+/// @return `ZANNA_KEY_ESCAPE`.
 int64_t rt_keyboard_key_escape(void) {
     return ZANNA_KEY_ESCAPE;
 }
 
 /// @brief Key-code constant for the Left Shift modifier specifically.
+/// @return `ZANNA_KEY_LSHIFT`.
 int64_t rt_keyboard_key_lshift(void) {
     return ZANNA_KEY_LSHIFT;
 }
 
 /// @brief Key-code constant for the Right Shift modifier specifically.
+/// @return `ZANNA_KEY_RSHIFT`.
 int64_t rt_keyboard_key_rshift(void) {
     return ZANNA_KEY_RSHIFT;
 }
 
 /// @brief Key-code constant for the Left Ctrl modifier specifically.
+/// @return `ZANNA_KEY_LCTRL`.
 int64_t rt_keyboard_key_lctrl(void) {
     return ZANNA_KEY_LCTRL;
 }
 
 /// @brief Key-code constant for the Right Ctrl modifier specifically.
+/// @return `ZANNA_KEY_RCTRL`.
 int64_t rt_keyboard_key_rctrl(void) {
     return ZANNA_KEY_RCTRL;
 }
 
 /// @brief Key-code constant for the Left Alt modifier specifically.
+/// @return `ZANNA_KEY_LALT`.
 int64_t rt_keyboard_key_lalt(void) {
     return ZANNA_KEY_LALT;
 }
 
 /// @brief Key-code constant for the Right Alt modifier specifically (AltGr
 ///        on European layouts).
+/// @return `ZANNA_KEY_RALT`.
 int64_t rt_keyboard_key_ralt(void) {
     return ZANNA_KEY_RALT;
 }
 
 /// @brief Key-code constant for the Left Super modifier (Command on macOS,
 ///        Windows key on Windows).
+/// @return `ZANNA_KEY_LSUPER`.
 int64_t rt_keyboard_key_lsuper(void) {
     return ZANNA_KEY_LSUPER;
 }
 
 /// @brief Key-code constant for the Right Super modifier (Command on macOS,
 ///        Windows key on Windows).
+/// @return `ZANNA_KEY_RSUPER`.
 int64_t rt_keyboard_key_rsuper(void) {
     return ZANNA_KEY_RSUPER;
 }
 
 /// @brief Key-code constant for the Minus / Hyphen punctuation key.
+/// @return `ZANNA_KEY_MINUS`.
 int64_t rt_keyboard_key_minus(void) {
     return ZANNA_KEY_MINUS;
 }
 
 /// @brief Key-code constant for the Equals / Plus punctuation key.
+/// @return `ZANNA_KEY_EQUALS`.
 int64_t rt_keyboard_key_equals(void) {
     return ZANNA_KEY_EQUALS;
 }
 
 /// @brief Key-code constant for the Left Bracket `[` punctuation key.
+/// @return `ZANNA_KEY_LBRACKET`.
 int64_t rt_keyboard_key_lbracket(void) {
     return ZANNA_KEY_LBRACKET;
 }
 
 /// @brief Key-code constant for the Right Bracket `]` punctuation key.
+/// @return `ZANNA_KEY_RBRACKET`.
 int64_t rt_keyboard_key_rbracket(void) {
     return ZANNA_KEY_RBRACKET;
 }
 
 /// @brief Key-code constant for the Backslash `\\` punctuation key.
+/// @return `ZANNA_KEY_BACKSLASH`.
 int64_t rt_keyboard_key_backslash(void) {
     return ZANNA_KEY_BACKSLASH;
 }
 
 /// @brief Key-code constant for the Semicolon `;` punctuation key.
+/// @return `ZANNA_KEY_SEMICOLON`.
 int64_t rt_keyboard_key_semicolon(void) {
     return ZANNA_KEY_SEMICOLON;
 }
 
 /// @brief Key-code constant for the Quote / Apostrophe `'` punctuation key.
+/// @return `ZANNA_KEY_QUOTE`.
 int64_t rt_keyboard_key_quote(void) {
     return ZANNA_KEY_QUOTE;
 }
 
 /// @brief Key-code constant for the Grave / Backtick `` ` `` punctuation key
 ///        (typically below Esc on US keyboards).
+/// @return `ZANNA_KEY_GRAVE`.
 int64_t rt_keyboard_key_grave(void) {
     return ZANNA_KEY_GRAVE;
 }
 
 /// @brief Key-code constant for the Comma `,` punctuation key.
+/// @return `ZANNA_KEY_COMMA`.
 int64_t rt_keyboard_key_comma(void) {
     return ZANNA_KEY_COMMA;
 }
 
 /// @brief Key-code constant for the Period `.` punctuation key.
+/// @return `ZANNA_KEY_PERIOD`.
 int64_t rt_keyboard_key_period(void) {
     return ZANNA_KEY_PERIOD;
 }
 
 /// @brief Key-code constant for the Slash `/` punctuation key.
+/// @return `ZANNA_KEY_SLASH`.
 int64_t rt_keyboard_key_slash(void) {
     return ZANNA_KEY_SLASH;
 }
 
 /// @brief Key-code constant for the numpad 0 key.
+/// @return `ZANNA_KEY_NUM0`.
 int64_t rt_keyboard_key_num0(void) {
     return ZANNA_KEY_NUM0;
 }
 
 /// @brief Key-code constant for the numpad 1 key.
+/// @return `ZANNA_KEY_NUM1`.
 int64_t rt_keyboard_key_num1(void) {
     return ZANNA_KEY_NUM1;
 }
 
 /// @brief Key-code constant for the numpad 2 key.
+/// @return `ZANNA_KEY_NUM2`.
 int64_t rt_keyboard_key_num2(void) {
     return ZANNA_KEY_NUM2;
 }
 
 /// @brief Key-code constant for the numpad 3 key.
+/// @return `ZANNA_KEY_NUM3`.
 int64_t rt_keyboard_key_num3(void) {
     return ZANNA_KEY_NUM3;
 }
 
 /// @brief Key-code constant for the numpad 4 key.
+/// @return `ZANNA_KEY_NUM4`.
 int64_t rt_keyboard_key_num4(void) {
     return ZANNA_KEY_NUM4;
 }
 
 /// @brief Key-code constant for the numpad 5 key.
+/// @return `ZANNA_KEY_NUM5`.
 int64_t rt_keyboard_key_num5(void) {
     return ZANNA_KEY_NUM5;
 }
 
 /// @brief Key-code constant for the numpad 6 key.
+/// @return `ZANNA_KEY_NUM6`.
 int64_t rt_keyboard_key_num6(void) {
     return ZANNA_KEY_NUM6;
 }
 
 /// @brief Key-code constant for the numpad 7 key.
+/// @return `ZANNA_KEY_NUM7`.
 int64_t rt_keyboard_key_num7(void) {
     return ZANNA_KEY_NUM7;
 }
 
 /// @brief Key-code constant for the numpad 8 key.
+/// @return `ZANNA_KEY_NUM8`.
 int64_t rt_keyboard_key_num8(void) {
     return ZANNA_KEY_NUM8;
 }
 
 /// @brief Key-code constant for the numpad 9 key.
+/// @return `ZANNA_KEY_NUM9`.
 int64_t rt_keyboard_key_num9(void) {
     return ZANNA_KEY_NUM9;
 }
 
 /// @brief Key-code constant for the numpad Add `+` key.
+/// @return `ZANNA_KEY_NUMADD`.
 int64_t rt_keyboard_key_numadd(void) {
     return ZANNA_KEY_NUMADD;
 }
 
 /// @brief Key-code constant for the numpad Subtract `-` key.
+/// @return `ZANNA_KEY_NUMSUB`.
 int64_t rt_keyboard_key_numsub(void) {
     return ZANNA_KEY_NUMSUB;
 }
 
 /// @brief Key-code constant for the numpad Multiply `*` key.
+/// @return `ZANNA_KEY_NUMMUL`.
 int64_t rt_keyboard_key_nummul(void) {
     return ZANNA_KEY_NUMMUL;
 }
 
 /// @brief Key-code constant for the numpad Divide `/` key.
+/// @return `ZANNA_KEY_NUMDIV`.
 int64_t rt_keyboard_key_numdiv(void) {
     return ZANNA_KEY_NUMDIV;
 }
 
 /// @brief Key-code constant for the numpad Enter key (distinct from the
 ///        main Enter key).
+/// @return `ZANNA_KEY_NUMENTER`.
 int64_t rt_keyboard_key_numenter(void) {
     return ZANNA_KEY_NUMENTER;
 }
 
 /// @brief Key-code constant for the numpad Decimal `.` key.
+/// @return `ZANNA_KEY_NUMDOT`.
 int64_t rt_keyboard_key_numdot(void) {
     return ZANNA_KEY_NUMDOT;
 }
@@ -1928,6 +2072,7 @@ int8_t rt_mouse_is_captured(void) {
 /// reported back through `rt_mouse_set_relative_native`; until then the
 /// existing warp-to-center capture path serves the deltas, so mouse-look is
 /// correct either way.
+/// @param enabled Non-zero to request relative mode, zero to release it.
 void rt_mouse_set_relative_mode(int8_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     bool want = enabled != 0;
@@ -1945,6 +2090,7 @@ void rt_mouse_set_relative_mode(int8_t enabled) {
 }
 
 /// @brief Whether relative (raw) mouse mode has been requested.
+/// @return One when relative mode is requested, otherwise zero.
 int8_t rt_mouse_get_relative_mode(void) {
     RT_ASSERT_MAIN_THREAD();
     return g_mouse_relative_requested ? 1 : 0;
@@ -1955,24 +2101,28 @@ int8_t rt_mouse_get_relative_mode(void) {
 /// Called by the Canvas3D poll after applying `vgfx_set_relative_mouse` so
 /// diagnostics (`Mouse.RelativeModeNative`) reflect the truth: `0` means the
 /// warp-to-center fallback is serving the deltas.
+/// @param native Non-zero when the active backend supplies native raw motion.
 void rt_mouse_set_relative_native(int8_t native) {
     RT_ASSERT_MAIN_THREAD();
     g_mouse_relative_native = native != 0;
 }
 
 /// @brief Whether native raw deltas are currently active.
+/// @return One only when relative mode is requested and native raw input is active.
 int8_t rt_mouse_get_relative_native(void) {
     RT_ASSERT_MAIN_THREAD();
     return (g_mouse_relative_requested && g_mouse_relative_native) ? 1 : 0;
 }
 
 /// @brief Sub-pixel horizontal mouse delta for the current frame.
+/// @return Horizontal delta in logical canvas pixels.
 double rt_mouse_delta_xf(void) {
     RT_ASSERT_MAIN_THREAD();
     return g_mouse_delta_fx;
 }
 
 /// @brief Sub-pixel vertical mouse delta for the current frame.
+/// @return Vertical delta in logical canvas pixels.
 double rt_mouse_delta_yf(void) {
     RT_ASSERT_MAIN_THREAD();
     return g_mouse_delta_fy;
@@ -2004,27 +2154,32 @@ void rt_mouse_set_pos(int64_t x, int64_t y) {
 //=============================================================================
 
 /// @brief Button-code constant for the left mouse button.
+/// @return `ZANNA_MOUSE_BUTTON_LEFT`.
 int64_t rt_mouse_button_left(void) {
     return ZANNA_MOUSE_BUTTON_LEFT;
 }
 
 /// @brief Button-code constant for the right mouse button.
+/// @return `ZANNA_MOUSE_BUTTON_RIGHT`.
 int64_t rt_mouse_button_right(void) {
     return ZANNA_MOUSE_BUTTON_RIGHT;
 }
 
 /// @brief Button-code constant for the middle (wheel-click) mouse button.
+/// @return `ZANNA_MOUSE_BUTTON_MIDDLE`.
 int64_t rt_mouse_button_middle(void) {
     return ZANNA_MOUSE_BUTTON_MIDDLE;
 }
 
 /// @brief Button-code constant for the X1 / "back" extended mouse button
 ///        (commonly the lower thumb button on 5-button mice).
+/// @return `ZANNA_MOUSE_BUTTON_X1`.
 int64_t rt_mouse_button_x1(void) {
     return ZANNA_MOUSE_BUTTON_X1;
 }
 
 /// @brief Button-code constant for the X2 / "forward" extended mouse button.
+/// @return `ZANNA_MOUSE_BUTTON_X2`.
 int64_t rt_mouse_button_x2(void) {
     return ZANNA_MOUSE_BUTTON_X2;
 }

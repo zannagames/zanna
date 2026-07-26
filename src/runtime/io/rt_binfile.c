@@ -7,17 +7,16 @@
 //
 // File: src/runtime/io/rt_binfile.c
 // Purpose: Implements binary file stream operations for the Zanna.IO.BinFile
-//          class. Supports random-access read and write of raw bytes, integers,
-//          and floats at 64-bit precision, with multi-byte values in
-//          little-endian byte order.
+//          class. Supports random-access bulk and single-byte I/O, position and
+//          size queries, flushing, and explicit or finalizer-driven closure.
 //
 // Key invariants:
 //   - Open modes: "r" (read-only), "w" (write/truncate), "rw" (read-write),
 //     "a" (append). Invalid modes cause a trap.
 //   - 64-bit seek/tell are used (fseeko/ftello on POSIX, _fseeki64 on Win32)
 //     to support files larger than 2GB.
-//   - EOF flag is set after a read returns zero bytes; it is sticky until seek.
-//   - All multi-byte integer writes use little-endian byte order.
+//   - EOF is set when stdio reports end-of-file and is cleared by a successful
+//     seek, a successful later read, or a transition to writing.
 //   - The closed flag prevents double-close; operations on a closed file trap.
 //
 // Ownership/Lifetime:
@@ -68,10 +67,19 @@ void rt_trap_set_recovery(jmp_buf *buf);
 void rt_trap_clear_recovery(void);
 const char *rt_trap_get_error(void);
 
+/// @brief Determine whether a pointer is a valid runtime BinFile object.
+/// @param obj Candidate pointer; `NULL` and unrelated runtime objects are
+/// accepted.
+/// @return 1 when class ID and payload size match BinFile; otherwise 0.
 int8_t rt_binfile_is_handle(void *obj) {
     return rt_obj_is_instance(obj, RT_BINFILE_CLASS_ID, sizeof(rt_binfile_impl)) ? 1 : 0;
 }
 
+/// @brief Validate and unwrap an opaque BinFile handle.
+/// @param obj Candidate runtime object.
+/// @param context Diagnostic raised for an invalid handle; a generic BinFile
+/// message is used when this pointer is `NULL`.
+/// @return Internal payload on success, or `NULL` after raising a trap.
 static rt_binfile_impl *binfile_require(void *obj, const char *context) {
     if (!rt_binfile_is_handle(obj)) {
         rt_trap(context ? context : "BinFile: invalid file");
@@ -127,6 +135,10 @@ static rt_binfile_impl *binfile_alloc_or_close(FILE *fp, const char *fallback) {
 /// lets us fflush only when actually switching direction, so
 /// sequential reads don't pay the flush cost. Traps on flush
 /// failure so the caller never silently reads stale data.
+///
+/// @param bf Valid, open BinFile payload.
+/// @return 1 when the stream is ready for reading, or 0 for invalid state or
+/// after raising a synchronization trap.
 static int binfile_prepare_read(rt_binfile_impl *bf) {
     if (!bf || !bf->fp)
         return 0;
@@ -147,6 +159,10 @@ static int binfile_prepare_read(rt_binfile_impl *bf) {
 /// buffer, keep position" — cheaper than closing/reopening. Also
 /// clears any EOF flag that could otherwise poison the next write's
 /// error check.
+///
+/// @param bf Valid, open BinFile payload.
+/// @return 1 when the stream is ready for writing, or 0 for invalid state or
+/// after raising a synchronization trap.
 static int binfile_prepare_write(rt_binfile_impl *bf) {
     if (!bf || !bf->fp)
         return 0;
@@ -169,6 +185,10 @@ static int binfile_prepare_write(rt_binfile_impl *bf) {
 /// boolean success for user code. After a successful prep the
 /// direction tracker resets to NONE since seeking leaves the
 /// stream in a neutral state.
+///
+/// @param bf Valid, open BinFile payload.
+/// @return 1 when pending output is flushed and stdio status is cleared;
+/// otherwise 0.
 static int binfile_prepare_seek(rt_binfile_impl *bf) {
     if (!bf || !bf->fp)
         return 0;
@@ -667,8 +687,8 @@ void rt_binfile_write_byte(void *obj, int64_t byte) {
 ///         Traps and returns -1 if obj is NULL, file is closed, or origin is invalid.
 ///
 /// @note Seeking beyond EOF is allowed and extends the file on next write.
-/// @note On 32-bit systems, file positions may be limited to 2GB due to
-///       the use of `long` in the underlying C library.
+/// @note Positions are 64-bit on Windows and use the platform's `off_t` range
+///       on POSIX; offsets not representable by `off_t` are rejected.
 /// @note Thread safety: Not thread-safe for the same BinFile object.
 ///
 /// @see rt_binfile_pos For getting current position without moving
@@ -774,7 +794,8 @@ int64_t rt_binfile_pos(void *obj) {
 ///
 /// @note This function temporarily modifies the file position internally
 ///       but restores it before returning.
-/// @note On 32-bit systems, file sizes may be limited to 2GB.
+/// @note The representable range follows `_ftelli64` on Windows and the
+///       platform's `off_t` on POSIX.
 /// @note Thread safety: Not thread-safe for the same BinFile object.
 ///
 /// @see rt_binfile_pos For getting current position
@@ -826,10 +847,11 @@ int64_t rt_binfile_size(void *obj) {
 /// Note that even after flush, the OS may still buffer data. For maximum
 /// durability, consider using OS-specific sync mechanisms.
 ///
-/// @param obj Pointer to a BinFile object. If NULL or closed, this is a no-op.
+/// @param obj Pointer to a BinFile object. `NULL` or a closed valid object is
+/// a no-op; an unrelated runtime handle traps.
 ///
-/// @note This function does not trap on failure - it silently does nothing
-///       if the file is NULL or closed.
+/// @note A native flush failure raises a trap; this call does not perform an
+/// OS-level durability sync such as `fsync`.
 /// @note Thread safety: Not thread-safe for the same BinFile object.
 ///
 /// @see rt_binfile_close For closing and flushing the file
@@ -859,6 +881,8 @@ void rt_binfile_flush(void *obj) {
 ///
 /// The EOF flag is cleared when:
 /// - rt_binfile_seek successfully moves the position
+/// - a later read successfully obtains data
+/// - the stream transitions to writing
 ///
 /// **Example usage:**
 /// ```
@@ -874,8 +898,8 @@ void rt_binfile_flush(void *obj) {
 ///         is closed. Returns 0 (false) if the file is open and EOF has not
 ///         been encountered.
 ///
-/// @note The EOF flag is "sticky" - once set, it remains set until a seek
-///       clears it. Reading at EOF will continue to return EOF.
+/// @note Repeated reads at the same end position continue to report EOF until
+/// the position or stream direction changes.
 /// @note Thread safety: Not thread-safe for the same BinFile object.
 ///
 /// @see rt_binfile_read For operations that set the EOF flag

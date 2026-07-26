@@ -74,22 +74,30 @@ typedef struct rt_message_bundle {
 } rt_message_bundle_t;
 
 /// @brief Unchecked cast of an opaque handle to the message-bundle struct.
+/// @param obj Opaque handle expected to reference an `rt_message_bundle_t`.
+/// @return @p obj reinterpreted as a message-bundle pointer, including NULL.
 static rt_message_bundle_t *as_bundle(void *obj) {
     return (rt_message_bundle_t *)obj;
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime object handle to release, or NULL for a no-op.
 static void release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief True iff @p obj is a runtime Map handle.
+/// @param obj Opaque runtime handle to inspect.
+/// @return Non-zero when @p obj is a non-NULL Map; otherwise zero.
 static int is_map_object(void *obj) {
     return obj && rt_obj_class_id(obj) == RT_MAP_CLASS_ID;
 }
 
 /// @brief True iff @p obj is a runtime List handle (and not a string).
+/// @param obj Opaque runtime handle to inspect.
+/// @return Non-zero when @p obj is a non-NULL List that is not represented by
+///         a string handle; otherwise zero.
 static int is_list_like_object(void *obj) {
     if (!obj)
         return 0;
@@ -101,6 +109,7 @@ static int is_list_like_object(void *obj) {
 
 /// @brief GC finalizer: release the bundle's locale data, locale handle,
 ///        entries map, and optional fallback bundle, then NULL the fields.
+/// @param obj Message-bundle allocation being finalized. NULL is accepted.
 static void bundle_finalizer(void *obj) {
     rt_message_bundle_t *bundle = (rt_message_bundle_t *)obj;
     if (!bundle)
@@ -116,6 +125,9 @@ static void bundle_finalizer(void *obj) {
 }
 
 /// @brief Validate that every value in @p map is a string handle.
+/// @details Enumerates an owned key sequence, borrows each key long enough to
+///          query the map, and releases the sequence before returning.
+/// @param map Map handle to validate. NULL is invalid.
 /// @return 1 if all values are strings (or the map is empty), 0 otherwise.
 static int validate_message_map(void *map) {
     if (!map)
@@ -136,6 +148,9 @@ static int validate_message_map(void *map) {
 }
 
 /// @brief Validate that every element of @p list is a string handle.
+/// @details Releases the retained element reference returned by `rt_list_get`
+///          after inspecting each entry.
+/// @param list List handle to validate, or NULL to represent an empty list.
 /// @return 1 if all elements are strings (or the list is NULL/empty), else 0.
 static int validate_string_list(void *list) {
     if (!list)
@@ -161,6 +176,8 @@ static int validate_string_list(void *list) {
 /// @param take_map Non-zero transfers ownership of @p map (no extra retain);
 ///                 zero retains it so the caller keeps its own reference.
 /// @details Traps on allocation failure. Installs @ref bundle_finalizer.
+/// @return Newly allocated message-bundle handle, or NULL if allocation fails
+///         and the runtime trap hook returns.
 static void *bundle_alloc(void *locale, void *map, int take_map) {
     rt_message_bundle_t *bundle =
         (rt_message_bundle_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_message_bundle_t));
@@ -181,6 +198,11 @@ static void *bundle_alloc(void *locale, void *map, int take_map) {
     return bundle;
 }
 
+/// @brief Create an empty message bundle bound to the current locale.
+/// @details Obtains the locale manager's retained current-locale handle, gives
+///          the bundle its own reference, and balances the temporary reference.
+/// @return Newly allocated message-bundle handle, or NULL after an allocation
+///         failure if the runtime trap hook returns.
 void *rt_message_bundle_new(void) {
     void *current = rt_locale_manager_current();
     void *bundle = bundle_alloc(current, NULL, 1);
@@ -188,6 +210,13 @@ void *rt_message_bundle_new(void) {
     return bundle;
 }
 
+/// @brief Create a message bundle from an existing string-to-string map.
+/// @details Validates the map kind and every value before retaining @p map for
+///          the new bundle. A NULL map creates an empty backing map.
+/// @param locale Locale handle to retain and use for plural selection.
+/// @param map Runtime Map whose values must all be strings, or NULL.
+/// @return Newly allocated bundle, or NULL after invalid input or allocation
+///         failure if the runtime trap hook returns.
 void *rt_message_bundle_from_map(void *locale, void *map) {
     if (map && !is_map_object(map)) {
         rt_trap("Zanna.Localization.MessageBundle: FromMap requires Map[String, String]");
@@ -200,6 +229,13 @@ void *rt_message_bundle_from_map(void *locale, void *map) {
     return bundle_alloc(locale, map, 0);
 }
 
+/// @brief Load a flat message map from a JSON file.
+/// @details Reads @p path as text, parses its root object, validates that every
+///          value is a string, and transfers the parsed map to the new bundle.
+///          File, parse, schema, and allocation failures raise a runtime trap.
+/// @param locale Locale handle to retain and use for plural selection.
+/// @param path Runtime string naming the JSON file. NULL is rejected.
+/// @return Newly allocated bundle, or NULL on failure if the trap hook returns.
 void *rt_message_bundle_load_from_json(void *locale, rt_string path) {
     if (!path) {
         rt_trap("Zanna.Localization.MessageBundle: LoadFromJson requires a path");
@@ -224,6 +260,14 @@ void *rt_message_bundle_load_from_json(void *locale, rt_string path) {
     return bundle_alloc(locale, map, 1);
 }
 
+/// @brief Load a flat message map from a packaged text asset.
+/// @details Loads the named asset as bytes, decodes it as a runtime string,
+///          parses a JSON root object, validates string values, and transfers
+///          the parsed map to the new bundle. Each temporary handle is released.
+/// @param locale Locale handle to retain and use for plural selection.
+/// @param name Runtime string identifying the packaged asset. NULL is rejected.
+/// @return Newly allocated bundle, or NULL on load, decoding, parse, schema, or
+///         allocation failure if the runtime trap hook returns.
 void *rt_message_bundle_load_from_asset(void *locale, rt_string name) {
     if (!name) {
         rt_trap("Zanna.Localization.MessageBundle: LoadFromAsset requires a name");
@@ -258,10 +302,19 @@ void *rt_message_bundle_load_from_asset(void *locale, rt_string name) {
 // Property accessors
 //===----------------------------------------------------------------------===//
 
+/// @brief Return the locale associated with a message bundle.
+/// @param self Message-bundle handle, or NULL.
+/// @return Borrowed locale handle, or NULL when @p self is NULL. The caller
+///         must not release the returned reference.
 void *rt_message_bundle_get_locale(void *self) {
     return self ? as_bundle(self)->locale : NULL;
 }
 
+/// @brief Count entries stored directly in a message bundle.
+/// @details Entries reachable only through the locale-qualified lookup or
+///          fallback-bundle chain are not included.
+/// @param self Message-bundle handle, or NULL.
+/// @return Direct backing-map entry count, or zero when @p self is NULL.
 int64_t rt_message_bundle_get_count(void *self) {
     if (!self)
         return 0;
@@ -276,6 +329,10 @@ int64_t rt_message_bundle_get_count(void *self) {
 /// @brief Look up @p key in @p self, walking up fallbacks. Returns NULL when
 ///        no bundle in the chain has a matching key. The returned rt_string
 ///        is retained (caller owns the reference and must unref when done).
+/// @param self Bundle whose direct entries map will be queried.
+/// @param key Message key to find.
+/// @return Retained matching value, or NULL when the arguments are invalid or
+///         the bundle has no direct entry for @p key.
 static rt_string bundle_lookup_direct(rt_message_bundle_t *self, rt_string key) {
     if (!self || !key || !rt_map_has(self->entries, key))
         return NULL;
@@ -285,6 +342,8 @@ static rt_string bundle_lookup_direct(rt_message_bundle_t *self, rt_string key) 
 /// @brief Look up @p key prefixed by each locale fallback tag ("tag:key").
 /// @details Tries every entry of the locale's fallback chain in order, building
 ///          the qualified key on the stack (heap only for >255-byte keys).
+/// @param self Bundle whose direct entries map will be queried.
+/// @param key Unqualified message key to append after each locale tag.
 /// @return A retained string the caller owns, or NULL if no qualified key hit.
 static rt_string bundle_lookup_locale_qualified(rt_message_bundle_t *self, rt_string key) {
     if (!self || !self->locale || !key)
@@ -336,6 +395,9 @@ static rt_string bundle_lookup_locale_qualified(rt_message_bundle_t *self, rt_st
 /// @brief Resolve @p key: direct hit, then locale-qualified, then recurse into
 ///        the fallback bundle (bounded by RT_MSG_BUNDLE_MAX_DEPTH to stop
 ///        cyclic fallback chains from recursing without limit).
+/// @param self Bundle at the current point in the fallback walk.
+/// @param key Message key to resolve.
+/// @param depth Zero-based fallback recursion depth.
 /// @return A retained string the caller owns, or NULL if unresolved.
 static rt_string bundle_lookup(rt_message_bundle_t *self, rt_string key, int depth) {
     if (!self || depth >= RT_MSG_BUNDLE_MAX_DEPTH)
@@ -351,6 +413,12 @@ static rt_string bundle_lookup(rt_message_bundle_t *self, rt_string key, int dep
     return NULL;
 }
 
+/// @brief Resolve a required message key through locale and bundle fallbacks.
+/// @details A missing bundle, NULL key, or unresolved key raises a runtime
+///          trap. If the trap hook returns, an owned empty string is supplied.
+/// @param self Message-bundle handle.
+/// @param key Non-NULL message key.
+/// @return Owned resolved string, or an owned empty string after a trapped error.
 rt_string rt_message_bundle_get(void *self, rt_string key) {
     if (!self || !key) {
         rt_trap("Zanna.Localization.MessageBundle: Get requires a non-null key");
@@ -364,6 +432,13 @@ rt_string rt_message_bundle_get(void *self, rt_string key) {
     return r;
 }
 
+/// @brief Resolve a message key without trapping when it is absent.
+/// @details This legacy API represents both an absent key and a present empty
+///          translation as an owned empty string. Use the Option API to
+///          distinguish those cases.
+/// @param self Message-bundle handle, or NULL.
+/// @param key Message key, or NULL.
+/// @return Owned resolved value, or an owned empty string when unresolved.
 rt_string rt_message_bundle_try_get(void *self, rt_string key) {
     if (!self || !key)
         return rt_string_from_bytes("", 0);
@@ -413,6 +488,11 @@ void *rt_message_bundle_try_get_option(void *self, rt_string key) {
     return option;
 }
 
+/// @brief Test whether a key resolves through locale and bundle fallbacks.
+/// @details Balances the retained value returned by the internal lookup.
+/// @param self Message-bundle handle, or NULL.
+/// @param key Message key, or NULL.
+/// @return 1 when a value resolves, including an empty value; otherwise 0.
 int8_t rt_message_bundle_has(void *self, rt_string key) {
     if (!self || !key)
         return 0;
@@ -451,6 +531,10 @@ static int bundle_append_bytes_checked(rt_string_builder *sb, const char *bytes,
 /// @details rt_map_get_str returns an owned reference. This helper releases it
 ///          after appending so interpolation does not leak one string per
 ///          substituted token.
+/// @param sb Initialized destination string builder.
+/// @param name Placeholder-name bytes without surrounding braces.
+/// @param name_len Length of @p name in bytes.
+/// @param vars String-to-string substitution map, or NULL.
 /// @return 1 when a value was found and appended, 0 when absent, or -1 on
 ///         append failure.
 static int append_value(rt_string_builder *sb, const char *name, size_t name_len, void *vars) {
@@ -478,6 +562,13 @@ static int append_value(rt_string_builder *sb, const char *name, size_t name_len
 }
 
 /// @brief Named-placeholder substitution: scans for `{name}` runs.
+/// @details Replaces names present in @p vars, preserves missing or malformed
+///          placeholders literally, and converts doubled braces `{{` / `}}`
+///          to single literal braces. Builder failures trap and return an owned
+///          empty string if the trap hook resumes execution.
+/// @param tmpl Template string to scan, or NULL.
+/// @param vars Validated string-to-string variable map, or NULL.
+/// @return Newly allocated interpolated string.
 static rt_string interp_named(rt_string tmpl, void *vars) {
     if (!tmpl)
         return rt_string_from_bytes("", 0);
@@ -530,6 +621,13 @@ interp_error:
 }
 
 /// @brief Positional substitution: `{N}` where N parses as an integer index.
+/// @details In-range indexes append their string list element. Out-of-range
+///          indexes are preserved literally; an in-range NULL element emits
+///          no bytes. Doubled braces emit one literal brace. Index overflow or
+///          non-decimal brace contents are copied without substitution.
+/// @param tmpl Template string to scan, or NULL.
+/// @param values_list Validated list of string values, or NULL.
+/// @return Newly allocated interpolated string.
 static rt_string interp_positional(rt_string tmpl, void *values_list) {
     if (!tmpl)
         return rt_string_from_bytes("", 0);
@@ -602,6 +700,15 @@ interp_error:
     return rt_string_from_bytes("", 0);
 }
 
+/// @brief Resolve and interpolate a message with named variables.
+/// @details Validates that @p vars is a Map containing only string values,
+///          resolves @p key with the required-key API, and preserves named
+///          placeholders that have no entry in the map.
+/// @param self Message-bundle handle.
+/// @param key Message key to resolve.
+/// @param vars String-to-string variable map, or NULL.
+/// @return Owned interpolated string, or an owned empty string after a trapped
+///         validation, lookup, or builder failure.
 rt_string rt_message_bundle_format(void *self, rt_string key, void *vars) {
     if (vars && !is_map_object(vars)) {
         rt_trap("Zanna.Localization.MessageBundle: Format vars must be a Map[String, String]");
@@ -617,6 +724,14 @@ rt_string rt_message_bundle_format(void *self, rt_string key, void *vars) {
     return r;
 }
 
+/// @brief Resolve and interpolate a message with positional values.
+/// @details Validates that @p values is a List containing only strings before
+///          resolving the required message template.
+/// @param self Message-bundle handle.
+/// @param key Message key to resolve.
+/// @param values List of positional string values, or NULL.
+/// @return Owned interpolated string, or an owned empty string after a trapped
+///         validation, lookup, or builder failure.
 rt_string rt_message_bundle_format_with(void *self, rt_string key, void *values) {
     if (values && !is_list_like_object(values)) {
         rt_trap("Zanna.Localization.MessageBundle: FormatWith values must be a List[String]");
@@ -639,7 +754,14 @@ rt_string rt_message_bundle_format_with(void *self, rt_string key, void *values)
 /// @brief Render an ASCII digit string with the locale's digit glyphs.
 /// @details Walks the locale's 10-code-point digit string (already validated
 ///          at load time) and substitutes each ASCII digit; the '-' sign and
-///          any non-digit bytes pass through unchanged (VDOC-078).
+///          any non-digit bytes pass through unchanged (VDOC-078). The original
+///          ASCII form is returned if digit data is absent, Latin, malformed,
+///          or cannot be appended.
+/// @param data Borrowed locale data containing the ten digit code points.
+/// @param num ASCII number bytes to localize.
+/// @param len Length of @p num in bytes.
+/// @return Newly allocated localized string, or a copy of the original bytes
+///         when localization cannot be completed.
 static rt_string bundle_localize_digits(const rt_locale_data_t *data, const char *num, size_t len) {
     const char *digits = data ? data->numbers.digits : NULL;
     if (!digits || strcmp(digits, "0123456789") == 0)
@@ -683,6 +805,17 @@ static rt_string bundle_localize_digits(const rt_locale_data_t *data, const char
     return out;
 }
 
+/// @brief Select, resolve, and interpolate a cardinal plural message.
+/// @details Selects the category for @p n, tries `<key>.<category>` and then
+///          `<key>.other` through the normal fallback walk, clones @p vars, and
+///          inserts a locale-digit rendering of @p n under the `n` key. The
+///          caller's variables map is never mutated.
+/// @param self Message-bundle handle.
+/// @param key Base plural-message key.
+/// @param n Signed integer used for category selection and `{n}` substitution.
+/// @param vars String-to-string variables map to clone, or NULL.
+/// @return Owned interpolated plural message, or an owned empty string after a
+///         trapped validation, allocation, lookup, or formatting failure.
 rt_string rt_message_bundle_plural(void *self, rt_string key, int64_t n, void *vars) {
     if (!self || !key) {
         rt_trap("Zanna.Localization.MessageBundle: Plural requires a non-null key");
@@ -779,6 +912,14 @@ rt_string rt_message_bundle_plural(void *self, rt_string key, int64_t n, void *v
 // Fallback chain
 //===----------------------------------------------------------------------===//
 
+/// @brief Replace the bundle consulted after local and locale-qualified misses.
+/// @details Walks the complete proposed chain with cycle detection before
+///          retaining @p fallback. On success, releases the previous fallback.
+///          Reassigning the existing fallback is a no-op.
+/// @param self Message bundle to update, or NULL.
+/// @param fallback Message bundle to retain as the fallback, or NULL to clear it.
+/// @return @p self on success, or NULL when @p self is NULL or the proposed
+///         chain contains a cycle. Cycle failures raise a runtime trap.
 void *rt_message_bundle_set_fallback(void *self, void *fallback) {
     if (!self)
         return NULL;
@@ -816,6 +957,12 @@ void *rt_message_bundle_set_fallback(void *self, void *fallback) {
     return self;
 }
 
+/// @brief Copy the keys stored directly in a bundle into a runtime List.
+/// @details Does not include keys available from locale qualification or
+///          fallback bundles. Converts the map's temporary key sequence into a
+///          fresh list and releases that sequence.
+/// @param self Message-bundle handle, or NULL.
+/// @return Newly allocated List of direct keys; an empty List for NULL @p self.
 void *rt_message_bundle_keys(void *self) {
     if (!self)
         return rt_list_new();

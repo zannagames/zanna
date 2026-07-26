@@ -6,17 +6,19 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/io/rt_dir_list.c
-// Purpose: Directory enumeration: list names/paths, full entries, and files-only or
-//   directories-only variants, in both array and lazy-seq forms. Platform path
-//   helpers live in rt_dir_internal.h.
+// Purpose: Immediate-child directory enumeration for all entries, files-only,
+//   or directories-only results, including trapping and empty-on-error Seq
+//   variants. Platform path helpers live in rt_dir_internal.h.
 // Key invariants:
 //   - Synthetic dot entries are excluded and conversion failures never fabricate names.
 //   - A failed platform scan does not expose a partially populated result.
 // Ownership/Lifetime:
 //   - Returned sequences own their retained runtime-string elements.
 //   - Native directory handles and path buffers are released on every exit.
-// Links: rt_dir.h (public API), rt_dir_internal.h (platform helpers),
-//        rt_dir.c (directory operations)
+// Links: src/runtime/io/rt_dir.h,
+//        src/runtime/io/rt_dir_internal.h,
+//        src/runtime/io/rt_dir.c,
+//        src/runtime/io/rt_dir_page.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,6 +31,9 @@
 
 #if RT_PLATFORM_WINDOWS
 /// @brief Convert and append one Win32 directory name without fabricating an empty entry.
+/// @param result Element-owning runtime Seq receiving the converted name.
+/// @param wide_name NUL-terminated UTF-16 directory entry name.
+/// @return 1 after a successful strict conversion and append; otherwise 0.
 static int rt_dir_win_push_name(void *result, const wchar_t *wide_name) {
     rt_string name = NULL;
     if (!result || !rt_dir_win_wide_to_string_checked(wide_name, &name))

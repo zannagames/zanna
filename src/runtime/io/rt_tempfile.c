@@ -100,7 +100,11 @@ static int tempfile_require_fragment(rt_string fragment, const char *what, const
 
 /// @brief Generate a unique identifier using OS-provided entropy (S-21).
 /// @details Fails closed when platform entropy is unavailable so temporary path names are never
-///          derived from predictable process IDs, timestamps, stack addresses, or counters.
+///          derived from predictable process IDs, timestamps, stack addresses, or counters. The
+///          caller supplies room for the 32 lowercase hexadecimal digits plus
+///          the terminating NUL.
+/// @param buffer Destination for the encoded 128-bit identifier.
+/// @param size Capacity of @p buffer in bytes; expected to be at least 33.
 /// @return 1 when @p buffer was filled with a hexadecimal identifier, 0 on entropy failure.
 static int generate_unique_id(char *buffer, size_t size) {
     uint64_t rnd_hi = 0;
@@ -123,6 +127,9 @@ typedef DWORD(WINAPI *tempfile_path_query_fn)(DWORD, LPWSTR);
 /// @brief Return nonzero when a separator-terminated path is a Windows volume root.
 /// @details Covers drive, UNC, extended drive, extended UNC, and volume-GUID roots so
 ///          normalization never turns `\\?\C:\` into the drive-relative `\\?\C:`.
+/// @param path Native path to classify; separators may be slash or backslash.
+/// @param length Number of wide characters before the terminating NUL.
+/// @return 1 when the complete path denotes a recognized root, otherwise 0.
 static int tempfile_windows_path_is_root(const wchar_t *path, size_t length) {
     size_t start = 0;
     size_t required_components = 0;
@@ -165,6 +172,14 @@ static int tempfile_windows_path_is_root(const wchar_t *path, size_t length) {
 }
 
 /// @brief Query, normalize, and validate one native Windows directory provider.
+/// @details The provider is retried with a larger heap buffer when necessary.
+///          Non-root trailing separators are removed, and the resulting path
+///          must name an existing directory before it is converted to a
+///          runtime UTF-8 string.
+/// @param query Windows path-provider function such as GetTempPathW,
+///              GetTempPath2W, or GetCurrentDirectoryW.
+/// @return Fresh runtime string for a usable directory, or NULL when the
+///         provider fails, returns invalid data, or allocation/conversion fails.
 static rt_string tempfile_windows_directory_from_query(tempfile_path_query_fn query) {
     if (!query)
         return NULL;
@@ -236,9 +251,14 @@ static int tempfile_dir_is_usable(const char *path) {
 }
 #endif
 
-/// @brief Atomically attempt to create a file at `cpath` with O_EXCL/CREATE_NEW semantics
-/// (fails if exists). Returns 1=created, 0=collision (caller retries), -1/trap on hard error.
-/// Win32 uses `CreateFileW` with `CREATE_NEW`; POSIX uses `open(O_CREAT | O_EXCL)`.
+/// @brief Atomically attempt to create an empty file at an exact path.
+/// @details Creation fails rather than replacing an existing entry. Windows
+///          uses CreateFileW with CREATE_NEW and closes the non-shared handle;
+///          POSIX uses `open(O_CREAT | O_EXCL, 0600)`, applies close-on-exec
+///          when supported, and closes the descriptor before return.
+/// @param cpath NUL-terminated UTF-8 path to create.
+/// @return 1 when created, 0 for a name collision that the caller may retry,
+///         or -1 after trapping on conversion, creation, or close failure.
 static int tempfile_try_create_path(const char *cpath) {
 #ifdef _WIN32
     wchar_t *wide_path = rt_file_path_utf8_to_wide(cpath);
@@ -295,8 +315,13 @@ static int tempfile_try_create_path(const char *cpath) {
 #endif
 }
 
-/// @brief Same atomic-create pattern as `_try_create_path` but for directories. Win32 `_wmkdir`,
-/// POSIX `mkdir(0700)`. Returns 1=created, 0=collision, -1/trap on hard error.
+/// @brief Atomically attempt to create an empty directory at an exact path.
+/// @details Windows converts the UTF-8 path and calls `_wmkdir`; POSIX uses
+///          `mkdir(0700)` so only the owner receives permissions before umask
+///          restrictions. Existing names are reported as retryable collisions.
+/// @param cpath NUL-terminated UTF-8 path to create.
+/// @return 1 when created, 0 for a name collision that the caller may retry,
+///         or -1 after trapping on conversion or creation failure.
 static int tempfile_try_create_dir(const char *cpath) {
 #ifdef _WIN32
     wchar_t *wide_path = rt_file_path_utf8_to_wide(cpath);
@@ -324,9 +349,14 @@ static int tempfile_try_create_dir(const char *cpath) {
 // Public API
 //=============================================================================
 
-/// @brief Read the platform's temp directory. Win32: `GetTempPathW` (with trailing slash stripped).
-/// POSIX: `$TMPDIR` env var (slash-stripped) or fallback to `/tmp`. Returns "C:\Temp" / "/tmp" if
-/// every probe fails.
+/// @brief Resolve a usable platform temporary directory.
+/// @details Windows prefers GetTempPath2W when available, then GetTempPathW,
+///          and finally the existing process current directory; trailing
+///          separators are removed except on volume roots. POSIX accepts an
+///          absolute, existing, writable/searchable TMPDIR, rejecting unsafe
+///          non-sticky world-writable directories, and otherwise uses `/tmp`.
+/// @return Runtime string reference containing the normalized directory path;
+///         Windows traps and returns the shared empty string if every provider fails.
 rt_string rt_tempfile_dir(void) {
 #ifdef _WIN32
     tempfile_path_query_fn query = NULL;
@@ -373,11 +403,19 @@ rt_string rt_tempfile_dir(void) {
 
 /// @brief Generate a unique temp-file PATH (does NOT create the file). Default prefix "zanna_",
 /// extension ".tmp". Use when you want to atomically open it yourself with specific flags.
+/// @details Path uniqueness is probabilistic and does not reserve the name.
+/// @return Fresh runtime string containing the candidate path, or an empty
+///         string after entropy, validation, or allocation failure.
 rt_string rt_tempfile_path(void) {
     return rt_tempfile_path_with_prefix(rt_const_cstr("zanna_"));
 }
 
-/// @brief Path generator with a custom prefix; uses ".tmp" extension.
+/// @brief Generate an unreserved temporary path with a custom prefix.
+/// @details The generated filename uses the default `.tmp` extension.
+/// @param prefix Filename fragment placed before the random identifier; path
+///               separators, colon, embedded NUL, and invalid strings trap.
+/// @return Fresh runtime string containing the candidate path, or an empty
+///         string after failure.
 rt_string rt_tempfile_path_with_prefix(rt_string prefix) {
     return rt_tempfile_path_with_ext(prefix, rt_const_cstr(".tmp"));
 }
@@ -385,6 +423,14 @@ rt_string rt_tempfile_path_with_prefix(rt_string prefix) {
 /// @brief Path generator with custom prefix AND extension. Format:
 /// `{tempdir}/{prefix}{32-hex-id}{ext}`. The 32-hex random ID gives ~2^128 entropy — collision
 /// chance remains negligible even for high-volume temp-path generation.
+/// @details This function only constructs a path and does not reserve it.
+///          Both caller fragments are restricted to portable filename text
+///          without slash, backslash, colon, embedded NUL, or invalid storage.
+/// @param prefix Filename fragment placed before the random identifier.
+/// @param extension Filename fragment placed after the random identifier,
+///                  commonly including a leading period.
+/// @return Fresh runtime string containing the joined path, or an empty string
+///         after entropy, validation, overflow, or allocation failure.
 rt_string rt_tempfile_path_with_ext(rt_string prefix, rt_string extension) {
     char unique_id[64];
     if (!generate_unique_id(unique_id, sizeof(unique_id)))
@@ -425,14 +471,23 @@ rt_string rt_tempfile_path_with_ext(rt_string prefix, rt_string extension) {
 
 /// @brief Atomically create a temp file (path + filesystem object). Default prefix "zanna_".
 /// Returns the path of the freshly-created (empty) file.
+/// @details The file is closed before return and remains on disk until the
+///          caller removes it.
+/// @return Runtime string reference naming the created file, or an empty
+///         string after a trapped creation failure.
 rt_string rt_tempfile_create(void) {
     return rt_tempfile_create_with_prefix(rt_const_cstr("zanna_"));
 }
 
-/// @brief Atomic temp-file creation with custom prefix. **POSIX fast path:** uses `mkstemp`
-/// which is one-syscall atomic-create-with-unpredictable-name (the gold standard for temp files).
-/// **Win32 + POSIX fallback:** retry up to 128 times with random-id paths until one succeeds
-/// (collision rate is negligible — 2^64 entropy per attempt).
+/// @brief Atomically create an empty temporary file with a custom prefix.
+/// @details POSIX first uses `mkstemp` with a six-character replacement
+///          template and closes the descriptor before returning. Windows, and
+///          POSIX after `mkstemp` failure, try up to 128 independently generated
+///          128-bit names with exclusive-create semantics. No created file is
+///          automatically deleted.
+/// @param prefix Portable filename fragment placed before the generated suffix.
+/// @return Runtime string reference naming the created file, or an empty
+///         string after validation or creation failure.
 rt_string rt_tempfile_create_with_prefix(rt_string prefix) {
 #ifndef _WIN32
     /* S-21: Use mkstemp for atomic, exclusive, unpredictable file creation on POSIX */
@@ -492,12 +547,20 @@ rt_string rt_tempfile_create_with_prefix(rt_string prefix) {
 
 /// @brief Atomically create a temp DIRECTORY (not a file). Default prefix "zanna_". Mode 0700
 /// on POSIX (owner-only access). The directory companion to `_create`.
+/// @details The empty directory persists until the caller removes it.
+/// @return Runtime string reference naming the created directory, or an empty
+///         string after a trapped creation failure.
 rt_string rt_tempdir_create(void) {
     return rt_tempdir_create_with_prefix(rt_const_cstr("zanna_"));
 }
 
 /// @brief Atomic temp-directory creation with custom prefix. Same retry pattern as `_create`
 /// but uses `mkdir`/`_wmkdir` as the atomic primitive.
+/// @details Up to 128 independently generated 128-bit names are attempted.
+///          POSIX requests mode 0700, subject to the process umask.
+/// @param prefix Portable filename fragment placed before the random identifier.
+/// @return Runtime string reference naming the created directory, or an empty
+///         string after validation or creation failure.
 rt_string rt_tempdir_create_with_prefix(rt_string prefix) {
     const char *prefix_cstr = "";
     if (!tempfile_require_fragment(prefix, "TempFile.CreateDir: invalid prefix", &prefix_cstr))

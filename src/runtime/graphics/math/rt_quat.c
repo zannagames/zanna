@@ -29,9 +29,9 @@
 //   - All Quat objects are allocated via rt_obj_new_i64 (GC heap); the struct
 //     contains only four doubles and requires no finalizer.
 //
-// Links: src/runtime/graphics/rt_quat.h (public API),
-//        src/runtime/graphics/rt_vec3.h (axis operand and rotation result type),
-//        src/runtime/graphics/rt_mat4.h (rotation matrix conversion)
+// Links: src/runtime/graphics/math/rt_quat.h (public API),
+//        src/runtime/graphics/math/rt_vec3.h (axis operand and rotation result type),
+//        src/runtime/graphics/math/rt_mat4.h (rotation matrix conversion)
 //
 //===----------------------------------------------------------------------===//
 
@@ -91,6 +91,11 @@ static ZannaQuat *quat_checked(void *q, const char *op) {
 ///          squaring and very small inputs do not underflow to zero prematurely. Non-finite
 ///          components return `INFINITY`, giving callers a deterministic fallback path
 ///          instead of propagating NaN payloads into transform math.
+/// @param x Quaternion x component.
+/// @param y Quaternion y component.
+/// @param z Quaternion z component.
+/// @param w Quaternion scalar component.
+/// @return Euclidean norm, or positive infinity when any component is non-finite.
 static double quat_safe_len4(double x, double y, double z, double w) {
     if (!isfinite(x) || !isfinite(y) || !isfinite(z) || !isfinite(w))
         return INFINITY;
@@ -101,6 +106,10 @@ static double quat_safe_len4(double x, double y, double z, double w) {
 /// @details This is the axis-specific counterpart to quat_safe_len4 and prevents
 ///          `FromAxisAngle` from overflowing while normalizing unusually large but
 ///          otherwise valid direction vectors.
+/// @param x Axis x component.
+/// @param y Axis y component.
+/// @param z Axis z component.
+/// @return Euclidean norm, or positive infinity when any component is non-finite.
 static double quat_safe_len3(double x, double y, double z) {
     if (!isfinite(x) || !isfinite(y) || !isfinite(z))
         return INFINITY;
@@ -108,6 +117,10 @@ static double quat_safe_len3(double x, double y, double z) {
 }
 
 /// @brief Allocate a GC-managed quaternion object and initialize all four components.
+/// @param x Quaternion x component.
+/// @param y Quaternion y component.
+/// @param z Quaternion z component.
+/// @param w Quaternion scalar component.
 /// @return New ZannaQuat with the given (x, y, z, w) components, or NULL on OOM.
 static ZannaQuat *quat_alloc(double x, double y, double z, double w) {
     ZannaQuat *q = (ZannaQuat *)rt_obj_new_i64(RT_QUAT_CLASS_ID, (int64_t)sizeof(ZannaQuat));
@@ -126,20 +139,32 @@ static ZannaQuat *quat_alloc(double x, double y, double z, double w) {
 // Constructors
 //=============================================================================
 
-/// @brief Construct a quaternion from raw components (x, y, z, w). For unit quaternions:
-/// (x, y, z) is the imaginary part, w is the real part. Use `_from_axis_angle` or `_from_euler`
-/// for higher-level construction.
+/// @brief Construct a quaternion from raw vector and scalar components.
+/// @details Stores `(x, y, z, w)` without normalization. For a rotation quaternion, x, y, and z
+///          form the imaginary/vector part and w is the real/scalar part.
+/// @param x Quaternion x component.
+/// @param y Quaternion y component.
+/// @param z Quaternion z component.
+/// @param w Quaternion scalar component.
+/// @return New GC-managed Quat, or NULL after trapping if allocation fails.
 void *rt_quat_new(double x, double y, double z, double w) {
     return quat_alloc(x, y, z, w);
 }
 
-/// @brief Return the identity quaternion (0, 0, 0, 1) — represents "no rotation".
+/// @brief Create the identity quaternion `(0, 0, 0, 1)`.
+/// @return New GC-managed identity Quat, or NULL after trapping if allocation fails.
 void *rt_quat_identity(void) {
     return quat_alloc(0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a unit quaternion representing a rotation of `angle` radians about `axis`. The
-/// axis is normalized internally; a zero-length axis or non-finite angle returns identity.
+/// @brief Create a unit quaternion from an axis-angle rotation.
+/// @details Normalizes @p axis with an overflow-resistant length. A zero-length or non-finite axis,
+///          or a non-finite angle, produces identity. A NULL axis raises a runtime trap and returns
+///          NULL.
+/// @param axis Vec3 rotation axis; it need not be normalized.
+/// @param angle Rotation angle in radians.
+/// @return New rotation Quat, identity for a degenerate value, or NULL after trapping for a NULL
+///         axis or allocation failure.
 void *rt_quat_from_axis_angle(void *axis, double angle) {
     if (!axis) {
         rt_trap("Quat.FromAxisAngle: null axis");
@@ -162,10 +187,13 @@ void *rt_quat_from_axis_angle(void *axis, double angle) {
     return quat_alloc(ax * s, ay * s, az * s, cos(half));
 }
 
-/// @brief Build a unit quaternion from Euler angles (radians). Convention: pitch about X, yaw
-/// about Y, roll about Z, composed in ZYX intrinsic order (yaw, then pitch, then roll). This is
-/// the same convention as Zanna.Graphics3D.Transform3D.SetEuler so every Euler-consuming API in
-/// the engine agrees on axes.
+/// @brief Create a unit quaternion from pitch, yaw, and roll Euler angles.
+/// @details Forms `qz(roll) * qy(yaw) * qx(pitch)`, so column vectors receive the fixed-axis pitch,
+///          yaw, and roll rotations in that order. If any angle is non-finite, returns identity.
+/// @param pitch Rotation about the x axis in radians.
+/// @param yaw Rotation about the y axis in radians.
+/// @param roll Rotation about the z axis in radians.
+/// @return New rotation Quat, identity for non-finite input, or NULL after an allocation trap.
 void *rt_quat_from_euler(double pitch, double yaw, double roll) {
     if (!isfinite(pitch) || !isfinite(yaw) || !isfinite(roll))
         return quat_alloc(0.0, 0.0, 0.0, 1.0);
@@ -187,7 +215,9 @@ void *rt_quat_from_euler(double pitch, double yaw, double roll) {
 // Property Accessors
 //=============================================================================
 
-/// @brief X the quat.
+/// @brief Read a quaternion's x component.
+/// @param q Quat handle to inspect.
+/// @return Stored x component, or 0.0 after trapping for an invalid handle.
 double rt_quat_x(void *q) {
     ZannaQuat *quat = quat_checked(q, "Quat.X: invalid quaternion");
     if (!quat)
@@ -195,7 +225,9 @@ double rt_quat_x(void *q) {
     return quat->x;
 }
 
-/// @brief Y the quat.
+/// @brief Read a quaternion's y component.
+/// @param q Quat handle to inspect.
+/// @return Stored y component, or 0.0 after trapping for an invalid handle.
 double rt_quat_y(void *q) {
     ZannaQuat *quat = quat_checked(q, "Quat.Y: invalid quaternion");
     if (!quat)
@@ -203,7 +235,9 @@ double rt_quat_y(void *q) {
     return quat->y;
 }
 
-/// @brief Z the quat.
+/// @brief Read a quaternion's z component.
+/// @param q Quat handle to inspect.
+/// @return Stored z component, or 0.0 after trapping for an invalid handle.
 double rt_quat_z(void *q) {
     ZannaQuat *quat = quat_checked(q, "Quat.Z: invalid quaternion");
     if (!quat)
@@ -211,7 +245,9 @@ double rt_quat_z(void *q) {
     return quat->z;
 }
 
-/// @brief W the quat.
+/// @brief Read a quaternion's scalar w component.
+/// @param q Quat handle to inspect.
+/// @return Stored w component, or 0.0 after trapping for an invalid handle.
 double rt_quat_w(void *q) {
     ZannaQuat *quat = quat_checked(q, "Quat.W: invalid quaternion");
     if (!quat)
@@ -223,8 +259,12 @@ double rt_quat_w(void *q) {
 // Operations
 //=============================================================================
 
-/// @brief Hamilton product (a × b) — composes rotations: applying `mul(a, b)` rotates the
-/// vector by b first, then by a. Traps on null input.
+/// @brief Compute the Hamilton product of two quaternions.
+/// @details For unit rotation quaternions, `mul(a, b)` composes the rotation of @p b followed by
+///          the rotation of @p a. Invalid operands raise a runtime trap.
+/// @param a Left-hand Quat operand.
+/// @param b Right-hand Quat operand.
+/// @return New product Quat, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_mul(void *a, void *b) {
     ZannaQuat *qa = quat_checked(a, "Quat.Mul: invalid quaternion");
     ZannaQuat *qb = quat_checked(b, "Quat.Mul: invalid quaternion");
@@ -237,8 +277,11 @@ void *rt_quat_mul(void *a, void *b) {
     return quat_alloc(x, y, z, w);
 }
 
-/// @brief Quaternion conjugate (negates the imaginary part: x, y, z → -x, -y, -z; w stays).
-/// For unit quaternions, conjugate equals inverse and represents the opposite rotation.
+/// @brief Create the conjugate of a quaternion.
+/// @details Negates x, y, and z while preserving w. For a unit quaternion, the conjugate is also
+///          its inverse and represents the opposite rotation.
+/// @param q Quat operand.
+/// @return New conjugate Quat, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_conjugate(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.Conjugate: invalid quaternion");
     if (!qv)
@@ -247,8 +290,11 @@ void *rt_quat_conjugate(void *q) {
 }
 
 /// @brief Quaternion inverse (conjugate / |q|²). For unit quaternions matches `_conjugate`.
-/// @details Traps on an invalid receiver or a zero/non-finite length. Squaring an
-///          extreme finite length can still overflow or underflow (VDOC-206).
+/// @details Uses two successive divisions by the overflow-resistant norm instead of explicitly
+///          forming its square. An invalid quaternion or zero/non-finite norm raises a runtime
+///          trap.
+/// @param q Quat operand.
+/// @return New inverse Quat, or NULL after trapping when input is invalid or allocation fails.
 void *rt_quat_inverse(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.Inverse: invalid quaternion");
     if (!qv)
@@ -268,9 +314,12 @@ void *rt_quat_inverse(void *q) {
     return quat_alloc((-qv->x * s) * s, (-qv->y * s) * s, (-qv->z * s) * s, (qv->w * s) * s);
 }
 
-/// @brief Normalize `q` to unit length. Returns the zero quaternion (0,0,0,0) if `q` is zero
-/// to avoid divide-by-zero. Re-normalize periodically when chaining many multiplies to prevent
-/// drift from accumulated floating-point error.
+/// @brief Normalize a quaternion to unit length.
+/// @details A zero or non-finite norm produces the zero quaternion `(0, 0, 0, 0)`. An incompatible
+///          handle raises a runtime trap instead.
+/// @param q Quat operand.
+/// @return New normalized Quat, zero Quat for a degenerate norm, or NULL after trapping for invalid
+///         input or allocation failure.
 void *rt_quat_norm(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.Norm: invalid quaternion");
     if (!qv)
@@ -282,7 +331,12 @@ void *rt_quat_norm(void *q) {
     return quat_alloc(qv->x * inv, qv->y * inv, qv->z * inv, qv->w * inv);
 }
 
-/// @brief Return the number of elements in the quat.
+/// @brief Compute a quaternion's Euclidean norm.
+/// @details Uses chained `hypot` calls to resist intermediate overflow. Non-finite components
+///          produce positive infinity; an invalid handle raises a runtime trap.
+/// @param q Quat operand.
+/// @return Quaternion norm, positive infinity for non-finite components, or 0.0 after an invalid
+///         handle trap.
 double rt_quat_len(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.Len: invalid quaternion");
     if (!qv)
@@ -290,7 +344,11 @@ double rt_quat_len(void *q) {
     return quat_safe_len4(qv->x, qv->y, qv->z, qv->w);
 }
 
-/// @brief Len the sq of the quat.
+/// @brief Compute a quaternion's squared Euclidean norm.
+/// @details Directly sums the squares of all four components, so extreme finite values may
+///          overflow. An invalid handle raises a runtime trap.
+/// @param q Quat operand.
+/// @return Sum `x*x + y*y + z*z + w*w`, or 0.0 after an invalid-handle trap.
 double rt_quat_len_sq(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.LenSq: invalid quaternion");
     if (!qv)
@@ -298,7 +356,10 @@ double rt_quat_len_sq(void *q) {
     return qv->x * qv->x + qv->y * qv->y + qv->z * qv->z + qv->w * qv->w;
 }
 
-/// @brief Dot the quat.
+/// @brief Compute the four-component dot product of two quaternions.
+/// @param a Left-hand Quat operand.
+/// @param b Right-hand Quat operand.
+/// @return Scalar dot product, or 0.0 after trapping when either operand is invalid.
 double rt_quat_dot(void *a, void *b) {
     ZannaQuat *qa = quat_checked(a, "Quat.Dot: invalid quaternion");
     ZannaQuat *qb = quat_checked(b, "Quat.Dot: invalid quaternion");
@@ -311,10 +372,16 @@ double rt_quat_dot(void *a, void *b) {
 // Interpolation
 //=============================================================================
 
-/// @brief Spherical linear interpolation between unit quaternions `a` and `b`. `t` ∈ [0, 1]
-/// (0 = a, 1 = b). Picks the shorter arc by negating one operand if the dot product is < 0.
-/// Falls back to a component-wise linear blend for nearly-aligned inputs to avoid
-/// numerical instability; that branch is not explicitly renormalized.
+/// @brief Spherically interpolate between two unit quaternions.
+/// @details Clamps @p t to [0, 1], chooses the shorter arc by conditionally negating @p b, and
+///          uses a non-normalized linear blend when the inputs are nearly aligned. A non-finite
+///          interpolation parameter traps and returns NULL. A non-finite input dot product traps
+///          and returns identity.
+/// @param a Unit Quat at interpolation parameter zero.
+/// @param b Unit Quat at interpolation parameter one.
+/// @param t Interpolation parameter, clamped to the inclusive range [0, 1].
+/// @return New interpolated Quat, identity after a non-finite-dot trap, or NULL after other input
+///         or allocation failures.
 void *rt_quat_slerp(void *a, void *b, double t) {
     if (!isfinite(t)) {
         rt_trap("Quat.Slerp: non-finite interpolation parameter");
@@ -368,9 +435,15 @@ void *rt_quat_slerp(void *a, void *b, double t) {
         s0 * qa->x + s1 * bx, s0 * qa->y + s1 * by, s0 * qa->z + s1 * bz, s0 * qa->w + s1 * bw);
 }
 
-/// @brief Linear quaternion interpolation (component-wise) between `a` and `b`. Faster than
-/// slerp but constant angular velocity is not preserved — use only for small angle deltas.
-/// The result is re-normalized to unit length (nlerp); a degenerate blend returns identity.
+/// @brief Linearly blend two quaternions and normalize the result.
+/// @details Does not clamp @p t, so values outside [0, 1] extrapolate. Constant angular velocity is
+///          not preserved. A zero or non-finite blend norm produces identity; invalid quaternion
+///          handles raise a runtime trap.
+/// @param a Quat at interpolation parameter zero.
+/// @param b Quat at interpolation parameter one.
+/// @param t Interpolation or extrapolation parameter.
+/// @return New normalized blend, identity for a degenerate blend, or NULL after trapping for
+///         invalid input or allocation failure.
 void *rt_quat_lerp(void *a, void *b, double t) {
     ZannaQuat *qa = quat_checked(a, "Quat.Lerp: invalid quaternion");
     ZannaQuat *qb = quat_checked(b, "Quat.Lerp: invalid quaternion");
@@ -392,8 +465,12 @@ void *rt_quat_lerp(void *a, void *b, double t) {
 // Rotation
 //=============================================================================
 
-/// @brief Apply rotation `q` to vector `v` (returns a new Vec3). Computes `q · v · q*` using
-/// the optimized formula `v + 2 * cross(qxyz, cross(qxyz, v) + qw * v)`.
+/// @brief Rotate a Vec3 with a unit quaternion.
+/// @details Uses the optimized unit-quaternion expansion of `q * v * conjugate(q)` and does not
+///          normalize @p q. A NULL vector or invalid quaternion raises a runtime trap.
+/// @param q Unit Quat rotation.
+/// @param v Vec3 to rotate.
+/// @return New rotated Vec3, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_rotate_vec3(void *q, void *v) {
     if (!v) {
         rt_trap("Quat.RotateVec3: null argument");
@@ -418,8 +495,11 @@ void *rt_quat_rotate_vec3(void *q, void *v) {
     return rt_vec3_new(rx, ry, rz);
 }
 
-/// @brief Convert the quaternion to an equivalent 4×4 rotation matrix (translation = 0,
-/// scale = 1). Useful for shader uniforms that prefer matrix uniforms over quaternion math.
+/// @brief Convert a unit quaternion to a homogeneous 4x4 rotation matrix.
+/// @details Expands the quaternion directly without normalizing it. Non-unit values therefore need
+///          not produce an orthonormal rotation basis.
+/// @param q Quat to convert.
+/// @return New Mat4 representation, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_to_mat4(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.ToMat4: invalid quaternion");
     if (!qv)
@@ -461,9 +541,12 @@ void *rt_quat_to_mat4(void *q) {
                        1.0);
 }
 
-/// @brief Extract the rotation axis (the inverse of `_from_axis_angle`). The axis is the
-/// normalized imaginary part, so the result is correct for non-unit quaternions too.
-/// Returns (0, 0, 1) for an identity-or-degenerate quaternion (no meaningful axis).
+/// @brief Extract the normalized imaginary part as a rotation axis.
+/// @details A non-finite or shorter-than-`1e-12` imaginary-part length has no meaningful axis and
+///          produces the conventional fallback `(0, 0, 1)`.
+/// @param q Quat to inspect.
+/// @return New normalized-axis Vec3, fallback z-axis for a degenerate quaternion, or NULL after
+///         trapping for invalid input or allocation failure.
 void *rt_quat_axis(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.Axis: invalid quaternion");
     if (!qv)
@@ -475,9 +558,12 @@ void *rt_quat_axis(void *q) {
     return rt_vec3_new(qv->x * inv_s, qv->y * inv_s, qv->z * inv_s);
 }
 
-/// @brief Rotation angle in radians (the inverse of `_from_axis_angle`), in [0, 2π].
-/// The scalar part is normalized first so non-unit quaternions report the correct angle;
-/// a zero/degenerate quaternion returns 0.
+/// @brief Extract a quaternion's rotation angle in radians.
+/// @details Normalizes the scalar component by the full quaternion norm and clamps it before
+///          applying `2 * acos(w)`. A non-finite or shorter-than-`1e-12` norm returns zero; an
+///          invalid handle raises a runtime trap.
+/// @param q Quat to inspect.
+/// @return Rotation angle in [0, 2*pi], or 0.0 for a degenerate or invalid quaternion.
 double rt_quat_angle(void *q) {
     ZannaQuat *qv = quat_checked(q, "Quat.Angle: invalid quaternion");
     if (!qv)

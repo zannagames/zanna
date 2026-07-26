@@ -25,7 +25,8 @@
 //   - The final archive reference owns its TOC, read mutex, and file handle.
 //   - Returned entry data buffers are caller-owned (must be freed).
 //
-// Links: ZpakWriter.hpp (build-time writer), rt_asset.h (asset manager)
+// Links: src/tools/common/asset/ZpakWriter.hpp (build-time writer),
+//        src/runtime/io/rt_asset.h (asset manager)
 //
 //===----------------------------------------------------------------------===//
 
@@ -42,6 +43,8 @@ extern "C" {
 #endif
 
 /// @brief A single entry in a ZPAK table of contents.
+/// @details Instances are archive-owned, name-sorted after validation, and
+///          exposed as borrowed pointers by @ref zpak_find.
 typedef struct {
     char *name;           ///< Asset name (heap-allocated, owned by archive).
     uint64_t data_offset; ///< Byte offset of data in blob/file.
@@ -52,6 +55,9 @@ typedef struct {
 } zpak_entry_t;
 
 /// @brief A parsed ZPAK archive (memory-backed or file-backed).
+/// @details Exactly one of @c blob and @c file is populated. Public callers
+///          should manage the structure through the open/retain/close API
+///          rather than mutating these decoded fields.
 typedef struct {
     zpak_entry_t *entries; ///< Array of TOC entries (sorted by name).
     uint32_t count;        ///< Number of entries.
@@ -70,18 +76,19 @@ typedef struct {
 /// @details The buffer must remain valid for the lifetime of the archive. Both
 ///          legacy version 1 and checksummed version 2 are accepted. Header,
 ///          TOC, names, flags, payload ranges, and duplicate names are fully
-///          validated before a result is returned.
-/// @param data  Pointer to ZPAK data (not copied).
-/// @param size  Size of buffer in bytes.
-/// @return Parsed archive, or NULL on error.
+///          validated before a result is returned. Entry metadata and names
+///          are copied, but payload bytes remain borrowed.
+/// @param data Complete ZPAK bytes to borrow without copying.
+/// @param size Number of readable bytes at @p data.
+/// @return Parsed archive with one ownership reference, or NULL on error.
 zpak_archive_t *zpak_open_memory(const uint8_t *data, size_t size);
 
 /// @brief Open a ZPAK archive from a file on disk.
 /// @details The file handle is kept open until zpak_close(). The complete TOC
 ///          is validated at open, while payload bytes are read on demand under
 ///          the archive's positioning lock.
-/// @param path  Path to .zpak file.
-/// @return Parsed archive, or NULL on error.
+/// @param path NUL-terminated native UTF-8 path to a ZPAK file.
+/// @return Parsed archive with one ownership reference, or NULL on error.
 zpak_archive_t *zpak_open_file(const char *path);
 
 /// @brief Open a regular ZPAK file without following its final symlink.
@@ -102,22 +109,24 @@ int zpak_retain(zpak_archive_t *archive);
 
 /// @brief Find an entry by name.
 ///
-/// Uses binary search on the sorted TOC.
+/// Uses a linear scan for small archives and binary search on larger sorted TOCs.
 ///
-/// @param archive  Parsed ZPAK archive.
-/// @param name     Asset name to search for.
-/// @return Pointer to entry (owned by archive), or NULL if not found.
+/// @param archive Live parsed ZPAK archive.
+/// @param name Exact NUL-terminated asset name to search for.
+/// @return Borrowed archive-owned entry pointer, or NULL if not found.
 const zpak_entry_t *zpak_find(const zpak_archive_t *archive, const char *name);
 
 /// @brief Read entry data from the archive.
 /// @details If the entry is compressed, the data is decompressed via DEFLATE.
 ///          Version 2 validates CRC-32 over the uncompressed result before
 ///          returning ownership. Version 1 retains its checksum-free legacy
-///          behavior. Returns a heap-allocated buffer that the caller frees.
-/// @param archive   Parsed ZPAK archive.
-/// @param entry     Entry to read (from zpak_find).
-/// @param out_size  Set to the uncompressed data size on success.
-/// @return Heap-allocated data buffer, or NULL on error.
+///          behavior. A successful empty entry still returns a freeable
+///          non-NULL allocation.
+/// @param archive Live archive that owns @p entry.
+/// @param entry Entry obtained from @ref zpak_find on @p archive.
+/// @param out_size Set to the uncompressed data size on success and zero
+///                 before fallible read work.
+/// @return Malloc-owned data buffer for the caller to free, or NULL on error.
 uint8_t *zpak_read_entry(const zpak_archive_t *archive,
                          const zpak_entry_t *entry,
                          size_t *out_size);

@@ -4,8 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/network/rt_network.h
-// Purpose: TCP and UDP networking for Zanna.Network, providing blocking connection management, data
-// transfer, server listening, and DNS resolution.
+// Purpose: Public C ABI for managed TCP/UDP sockets, TCP listeners, DNS
+//   utilities, simple HTTP requests, request/response objects, and URL parsing
+//   and construction used by Zanna.Network.
 //
 // Key invariants:
 //   - TCP connections use blocking I/O with optional timeouts.
@@ -51,316 +52,389 @@ extern "C" {
 // Tcp Client - Connection Creation
 //=========================================================================
 
-/// @brief Connect to a remote host.
-/// @param host Hostname or IP address.
-/// @param port Port number (1-65535).
-/// @return Tcp connection object.
-/// @note Traps on connection refused, host not found, or network error.
+/// @brief Connect to a remote TCP endpoint with a 30-second timeout.
+/// @details Resolves IPv4 and IPv6 candidates, tries them in resolver order,
+///          and returns a blocking, TCP_NODELAY-enabled managed connection.
+/// @param host Nonempty hostname or numeric address without embedded NUL bytes.
+/// @param port Remote port in [1, 65535].
+/// @return Newly owned Tcp connection, or NULL after a returning trap hook.
+/// @note Traps on invalid input, resolution failure, refusal, timeout,
+///       allocation failure, or another network error.
 void *rt_tcp_connect(rt_string host, int64_t port);
 
-/// @brief Connect to a remote host with timeout.
-/// @param host Hostname or IP address.
-/// @param port Port number (1-65535).
-/// @param timeout_ms Connection timeout in milliseconds.
-/// @return Tcp connection object.
-/// @note Traps on connection refused, host not found, timeout, or error.
+/// @brief Connect to a remote TCP endpoint with an explicit timeout.
+/// @details Applies the timeout independently to each resolved address
+///          candidate. Zero selects the platform blocking-connect behavior.
+/// @param host Nonempty hostname or numeric address without embedded NUL bytes.
+/// @param port Remote port in [1, 65535].
+/// @param timeout_ms Per-candidate timeout in [0, @c INT_MAX] milliseconds.
+/// @return Newly owned Tcp connection, or NULL after a returning trap hook.
+/// @note Traps on invalid input, resolution failure, refusal, timeout,
+///       allocation failure, or another network error.
 void *rt_tcp_connect_for(rt_string host, int64_t port, int64_t timeout_ms);
 
 //=========================================================================
 // Tcp Client - Properties
 //=========================================================================
 
-/// @brief Get the remote host name or IP.
-/// @param obj Tcp connection object.
-/// @return Host name or IP address.
+/// @brief Copy the remote host text recorded when a connection was opened.
+/// @param obj Required Tcp receiver.
+/// @return Newly owned host String; endpoint metadata remains available after
+///         the socket closes.
 rt_string rt_tcp_host(void *obj);
 
-/// @brief Get the remote port number.
-/// @param obj Tcp connection object.
-/// @return Remote port number.
+/// @brief Get the remote port recorded for a connection.
+/// @param obj Required Tcp receiver.
+/// @return Remote port number, or zero after a returning invalid-handle trap.
 int64_t rt_tcp_port(void *obj);
 
-/// @brief Get the local port number.
-/// @param obj Tcp connection object.
-/// @return Local port number.
+/// @brief Get the local port assigned to a connection.
+/// @param obj Required Tcp receiver.
+/// @return Captured local port, or zero when unavailable or after a returning
+///         invalid-handle trap.
 int64_t rt_tcp_local_port(void *obj);
 
-/// @brief Check if connection is open.
-/// @param obj Tcp connection object.
-/// @return 1 if open, 0 if closed.
+/// @brief Check whether a Tcp object's native socket remains open.
+/// @param obj Required Tcp receiver.
+/// @return One while open, otherwise zero.
 int8_t rt_tcp_is_open(void *obj);
 
-/// @brief Get bytes available to read without blocking.
-/// @param obj Tcp connection object.
-/// @return Number of bytes available.
+/// @brief Take a best-effort snapshot of bytes queued for receive.
+/// @details Zero is ambiguous between no queued data, a closed connection, and
+///          an unsupported or failed native availability query.
+/// @param obj Required Tcp receiver.
+/// @return Nonnegative queued-byte count.
 int64_t rt_tcp_available(void *obj);
 
 //=========================================================================
 // Tcp Client - Send Methods
 //=========================================================================
 
-/// @brief Send bytes over the connection.
-/// @param obj Tcp connection object.
-/// @param data Bytes object to send.
-/// @return Number of bytes actually sent.
-/// @note Traps if connection is closed.
+/// @brief Perform one native send from a managed Bytes payload.
+/// @details A normal short write is returned rather than retried, and a payload
+///          larger than @c INT_MAX is limited to one @c INT_MAX-byte call.
+/// @param obj Required open Tcp receiver.
+/// @param data Required managed Bytes payload.
+/// @return Bytes written, zero for an empty payload, or -1 after a returning
+///         validation or socket-error trap.
 int64_t rt_tcp_send(void *obj, void *data);
 
-/// @brief Send string over the connection.
-/// @param obj Tcp connection object.
-/// @param text String to send (as UTF-8 bytes).
-/// @return Number of bytes actually sent.
-/// @note Traps if connection is closed.
+/// @brief Perform one native send from the exact bytes of a managed String.
+/// @details Embedded NUL bytes are sent as data. A normal short write is
+///          returned, and one native call is limited to @c INT_MAX bytes.
+/// @param obj Required open Tcp receiver.
+/// @param text Required managed String payload.
+/// @return Bytes written, zero for an empty String, or -1 after a returning
+///         validation or socket-error trap.
 int64_t rt_tcp_send_str(void *obj, rt_string text);
 
-/// @brief Send all bytes, blocking until complete.
-/// @param obj Tcp connection object.
-/// @param data Bytes object to send.
-/// @note Traps if connection is closed or send fails.
+/// @brief Send an entire managed Bytes payload.
+/// @details Retries partial writes and chunks large buffers until all bytes
+///          have been delivered. A failed or zero write marks the connection
+///          closed and traps.
+/// @param obj Required open Tcp receiver.
+/// @param data Required managed Bytes payload.
 void rt_tcp_send_all(void *obj, void *data);
 
-/// @brief Send a raw memory buffer, blocking until complete.
-/// @param obj Tcp connection object.
-/// @param data Raw byte buffer.
-/// @param len Byte count.
-/// @note Internal runtime helper used to avoid transient Bytes allocations.
+/// @brief Send an entire borrowed raw memory range.
+/// @details Internal HTTP/WebSocket helper with the same retry and connection
+///          failure semantics as @ref rt_tcp_send_all.
+/// @param obj Required open Tcp receiver.
+/// @param data Buffer of at least @p len bytes, or NULL when @p len is zero.
+/// @param len Nonnegative byte count.
 void rt_tcp_send_all_raw(void *obj, const void *data, int64_t len);
 
 //=========================================================================
 // Tcp Client - Receive Methods
 //=========================================================================
 
-/// @brief Receive up to maxBytes from the connection.
-/// @param obj Tcp connection object.
-/// @param max_bytes Maximum bytes to receive.
-/// @return Bytes object with received data (may be less than max).
-/// @note Returns empty Bytes if connection closed by peer.
-/// @note Traps on receive error.
+/// @brief Receive up to a requested number of bytes in one native read.
+/// @details Returns exact-sized Bytes. Empty Bytes represents either timeout
+///          or orderly peer close; only peer close clears the open state.
+/// @param obj Required open Tcp receiver.
+/// @param max_bytes Maximum receive size in [0, @c INT_MAX].
+/// @return Newly owned Bytes, which may be empty, or NULL after a returning
+///         validation, allocation, or non-timeout socket trap.
 void *rt_tcp_recv(void *obj, int64_t max_bytes);
 
-/// @brief Receive up to maxBytes as a string.
-/// @param obj Tcp connection object.
-/// @param max_bytes Maximum bytes to receive.
-/// @return String with received data (UTF-8).
-/// @note Returns empty string if connection closed by peer.
-/// @note Traps on receive error.
+/// @brief Receive once and convert the resulting Bytes to a String.
+/// @param obj Required open Tcp receiver.
+/// @param max_bytes Maximum receive size in [0, @c INT_MAX].
+/// @return Newly owned String; an empty String represents timeout, orderly
+///         close, or a zero-byte request.
 rt_string rt_tcp_recv_str(void *obj, int64_t max_bytes);
 
-/// @brief Receive exactly count bytes, blocking until complete.
-/// @param obj Tcp connection object.
-/// @param count Exact number of bytes to receive.
-/// @return Bytes object with received data.
-/// @note Traps if connection closed before count bytes received.
+/// @brief Block until an exact number of bytes has been received.
+/// @details Timeout and premature peer close are reported as errors rather than
+///          successful empty or partial results.
+/// @param obj Required open Tcp receiver.
+/// @param count Exact receive size in [0, @c INT_MAX].
+/// @return Newly owned Bytes containing exactly @p count bytes.
+/// @note Traps on invalid input, timeout, premature close, allocation failure,
+///       or another receive error.
 void *rt_tcp_recv_exact(void *obj, int64_t count);
 
-/// @brief Receive until newline (LF or CRLF).
-/// @param obj Tcp connection object.
-/// @return Line without trailing newline.
-/// @note Traps if connection closed before newline.
+/// @brief Receive an LF-terminated line of at most 64 KiB.
+/// @details Excludes LF and an immediately preceding CR from the returned
+///          String. No partial line is returned on timeout or peer close.
+/// @param obj Required open Tcp receiver.
+/// @return Newly owned line String.
+/// @note Traps on timeout, premature close, overlong input, allocation failure,
+///       or another receive error.
 rt_string rt_tcp_recv_line(void *obj);
 
 //=========================================================================
 // Tcp Client - Timeout and Close
 //=========================================================================
 
-/// @brief Set receive timeout.
-/// @param obj Tcp connection object.
-/// @param timeout_ms Timeout in milliseconds (0 = no timeout).
+/// @brief Set the persistent native receive timeout.
+/// @param obj Required open Tcp receiver.
+/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds; zero disables it.
+/// @note Traps when the receiver, range, or native socket option is invalid.
 void rt_tcp_set_recv_timeout(void *obj, int64_t timeout_ms);
 
-/// @brief Set send timeout.
-/// @param obj Tcp connection object.
-/// @param timeout_ms Timeout in milliseconds (0 = no timeout).
+/// @brief Set the persistent native send timeout.
+/// @param obj Required open Tcp receiver.
+/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds; zero disables it.
+/// @note Traps when the receiver, range, or native socket option is invalid.
 void rt_tcp_set_send_timeout(void *obj, int64_t timeout_ms);
 
-/// @brief Close the connection.
-/// @param obj Tcp connection object.
+/// @brief Close a Tcp connection idempotently.
+/// @details Endpoint metadata remains readable after the native socket closes.
+///          NULL is accepted as a no-op.
+/// @param obj Tcp receiver, or NULL.
 void rt_tcp_close(void *obj);
 
 //=========================================================================
 // TcpServer - Creation
 //=========================================================================
 
-/// @brief Start listening on a port on all interfaces.
-/// @param port Port number to listen on.
-/// @return TcpServer object.
-/// @note Traps if port is in use or permission denied.
+/// @brief Start a non-blocking TCP listener on all local interfaces.
+/// @param port Port in [0, 65535]; zero requests an OS-selected ephemeral port.
+/// @return Newly owned TcpServer object.
+/// @note Traps on invalid input, bind/listen/configuration failure, permission
+///       denial, or allocation failure.
 void *rt_tcp_server_listen(int64_t port);
 
-/// @brief Start listening on a specific address and port.
-/// @param address Address to bind to (e.g., "127.0.0.1" or "0.0.0.0").
-/// @param port Port number to listen on.
-/// @return TcpServer object.
-/// @note Traps if port is in use, permission denied, or invalid address.
+/// @brief Start a non-blocking TCP listener on a specific local address.
+/// @param address Nonempty hostname or numeric address without embedded NUL.
+/// @param port Port in [0, 65535]; zero requests an OS-selected ephemeral port.
+/// @return Newly owned TcpServer object.
+/// @note Traps on invalid input, resolution, bind/listen/configuration failure,
+///       permission denial, or allocation failure.
 void *rt_tcp_server_listen_at(rt_string address, int64_t port);
 
 //=========================================================================
 // TcpServer - Properties
 //=========================================================================
 
-/// @brief Get the listening port.
-/// @param obj TcpServer object.
-/// @return Port number.
+/// @brief Get a TcpServer's recorded local port.
+/// @param obj Required TcpServer receiver.
+/// @return Bound port, including the actual OS-selected ephemeral port.
 int64_t rt_tcp_server_port(void *obj);
 
-/// @brief Get the bound address.
-/// @param obj TcpServer object.
-/// @return Bound address string.
+/// @brief Copy a TcpServer's recorded bound address.
+/// @details The metadata remains available after the listener closes.
+/// @param obj Required TcpServer receiver.
+/// @return Newly owned bound-address String.
 rt_string rt_tcp_server_address(void *obj);
 
-/// @brief Check if server is listening.
-/// @param obj TcpServer object.
-/// @return 1 if listening, 0 if closed.
+/// @brief Check whether a TcpServer still accepts connections.
+/// @param obj Required TcpServer receiver.
+/// @return One while listening, otherwise zero.
 int8_t rt_tcp_server_is_listening(void *obj);
 
 //=========================================================================
 // TcpServer - Accept and Close
 //=========================================================================
 
-/// @brief Accept a new connection, blocking until client connects.
-/// @param obj TcpServer object.
-/// @return Tcp connection object for the new client.
-/// @note Traps if server is closed or accept fails.
+/// @brief Accept the next client without an application timeout.
+/// @details The listener is polled in bounded slices so a concurrent server
+///          close can safely terminate the wait.
+/// @param obj Required listening TcpServer receiver.
+/// @return Newly owned connected Tcp object, or NULL when concurrently closed
+///         or after a returning trap.
 void *rt_tcp_server_accept(void *obj);
 
-/// @brief Accept a new connection with timeout.
-/// @param obj TcpServer object.
-/// @param timeout_ms Timeout in milliseconds.
-/// @return Tcp connection object, or NULL on timeout.
-/// @note Traps if server is closed or accept fails (except timeout).
+/// @brief Accept the next client with an optional timeout.
+/// @details Safely coordinates concurrent accept and close operations and
+///          returns accepted sockets in blocking, TCP_NODELAY-enabled mode.
+/// @param obj Required listening TcpServer receiver.
+/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds; zero waits
+///        indefinitely.
+/// @return Newly owned connected Tcp object, or NULL on timeout or concurrent
+///         close.
+/// @note Traps on invalid input, closed-at-entry server, accept/configuration
+///       failure, or allocation failure.
 void *rt_tcp_server_accept_for(void *obj, int64_t timeout_ms);
 
-/// @brief Stop listening and close the server.
-/// @param obj TcpServer object.
+/// @brief Stop listening and close a TcpServer idempotently.
+/// @details Waits for registered accept operations to leave before closing the
+///          descriptor, preventing descriptor-reuse races. NULL is a no-op.
+/// @param obj TcpServer receiver, or NULL.
 void rt_tcp_server_close(void *obj);
 
 //=========================================================================
 // Udp - Creation
 //=========================================================================
 
-/// @brief Create an unbound UDP socket.
-/// @return Udp socket object.
-/// @note Prefers a dual-stack IPv6 socket when available so one handle can send to IPv4 and IPv6.
+/// @brief Create an unbound UDP socket for sending datagrams.
+/// @details Prefers a dual-stack IPv6 socket so one handle can reach IPv4 and
+///          IPv6 destinations, and falls back to IPv4 when unavailable.
+/// @return Newly owned Udp object, or NULL after a returning creation or
+///         allocation trap.
 void *rt_udp_new(void);
 
-/// @brief Create a UDP socket bound to a port on all interfaces.
-/// @param port Port number to bind to.
-/// @return Udp socket object.
-/// @note Traps if port is in use or permission denied.
+/// @brief Create a UDP socket bound on all local interfaces.
+/// @param port Local port in [0, 65535]; zero requests an ephemeral port.
+/// @return Newly owned bound Udp object.
+/// @note Traps on invalid input, address/bind failure, permission denial, or
+///       allocation failure.
 void *rt_udp_bind(int64_t port);
 
-/// @brief Create a UDP socket bound to a specific address and port.
-/// @param address Address to bind to (e.g., "127.0.0.1", "0.0.0.0", or "::1").
-/// @param port Port number to bind to.
-/// @return Udp socket object.
-/// @note Traps if port is in use, permission denied, or invalid address.
+/// @brief Create a UDP socket bound to a specific local endpoint.
+/// @details Resolves IPv4, IPv6, or hostname input and records the actual port
+///          selected by the OS for an ephemeral bind.
+/// @param address Nonempty local address without embedded NUL bytes.
+/// @param port Local port in [0, 65535]; zero requests an ephemeral port.
+/// @return Newly owned bound Udp object.
+/// @note Traps on invalid input, resolution/bind failure, permission denial, or
+///       allocation failure.
 void *rt_udp_bind_at(rt_string address, int64_t port);
 
 //=========================================================================
 // Udp - Properties
 //=========================================================================
 
-/// @brief Get the bound port (0 if not bound).
-/// @param obj Udp socket object.
-/// @return Port number or 0.
+/// @brief Get a UDP socket's recorded bound port.
+/// @param obj Required Udp receiver.
+/// @return Bound port, or zero for an unbound or explicitly closed socket.
 int64_t rt_udp_port(void *obj);
 
-/// @brief Get the bound address.
-/// @param obj Udp socket object.
-/// @return Bound address string (empty if not bound).
+/// @brief Copy a UDP socket's recorded bound address.
+/// @param obj Required Udp receiver.
+/// @return Newly owned address String, or an empty String for an unbound
+///         socket. The last address remains available after explicit close.
 rt_string rt_udp_address(void *obj);
 
-/// @brief Check if socket is bound.
-/// @param obj Udp socket object.
-/// @return 1 if bound, 0 if not bound.
+/// @brief Check whether a UDP socket has a fixed local binding.
+/// @param obj Required Udp receiver.
+/// @return One for a socket created through a bind API, otherwise zero.
 int8_t rt_udp_is_bound(void *obj);
 
 //=========================================================================
 // Udp - Send Methods
 //=========================================================================
 
-/// @brief Send a UDP packet to a host and port.
-/// @param obj Udp socket object.
-/// @param host Destination hostname or IP address.
-/// @param port Destination port number.
-/// @param data Bytes object to send.
-/// @return Number of bytes sent.
-/// @note Supports IPv4, IPv6, and DNS hostnames. Traps on host not found or message too large.
+/// @brief Send one managed Bytes payload as a UDP datagram.
+/// @details Resolves IPv4, IPv6, and DNS destinations compatibly with the
+///          socket family. Payloads are capped at 65,507 bytes and a partial
+///          native datagram send is treated as an error.
+/// @param obj Required open Udp receiver.
+/// @param host Nonempty destination hostname or address without embedded NUL.
+/// @param port Destination port in [1, 65535].
+/// @param data Required managed Bytes payload.
+/// @return Exact datagram byte count, or -1 after a returning trap.
+/// @note Traps on invalid input, resolution failure, oversized payload, partial
+///       send, or another socket error.
 int64_t rt_udp_send_to(void *obj, rt_string host, int64_t port, void *data);
 
-/// @brief Send a UDP packet as a string.
-/// @param obj Udp socket object.
-/// @param host Destination hostname or IP address.
-/// @param port Destination port number.
-/// @param text String to send (as UTF-8 bytes).
-/// @return Number of bytes sent.
-/// @note Traps on host not found or message too large.
+/// @brief Send one managed String payload as a UDP datagram.
+/// @details Sends the exact stored bytes without a NUL terminator and otherwise
+///          has the same family resolution, size limit, and atomic-send
+///          semantics as @ref rt_udp_send_to.
+/// @param obj Required open Udp receiver.
+/// @param host Nonempty destination hostname or address without embedded NUL.
+/// @param port Destination port in [1, 65535].
+/// @param text Required managed String payload.
+/// @return Exact datagram byte count, or -1 after a returning trap.
 int64_t rt_udp_send_to_str(void *obj, rt_string host, int64_t port, rt_string text);
 
 //=========================================================================
 // Udp - Receive Methods
 //=========================================================================
 
-/// @brief Receive a UDP packet (blocks until data arrives).
-/// @param obj Udp socket object.
-/// @param max_bytes Maximum bytes to receive.
-/// @return Bytes object with received data.
-/// @note Traps if socket is closed.
+/// @brief Receive one UDP datagram and record its sender.
+/// @details Convenience alias for @ref rt_udp_recv_from. A persistent socket
+///          timeout returns empty Bytes; an oversized datagram traps instead of
+///          silently exposing a truncated packet.
+/// @param obj Required open Udp receiver.
+/// @param max_bytes Receive-buffer size in [0, @c INT_MAX].
+/// @return Newly owned exact-sized Bytes, possibly empty.
 void *rt_udp_recv(void *obj, int64_t max_bytes);
 
-/// @brief Receive a UDP packet and store sender info.
-/// @param obj Udp socket object.
-/// @param max_bytes Maximum bytes to receive.
-/// @return Bytes object with received data.
-/// @note Sender info accessible via rt_udp_sender_host/port.
-/// @note Traps if socket is closed.
+/// @brief Receive one complete UDP datagram and record its sender.
+/// @details Right-sizes the returned Bytes and updates sender metadata only
+///          after a successful receive. Persistent timeout returns empty Bytes;
+///          a datagram larger than @p max_bytes raises @c Err_ProtocolError.
+/// @param obj Required open Udp receiver.
+/// @param max_bytes Receive-buffer size in [0, @c INT_MAX].
+/// @return Newly owned exact-sized Bytes, possibly empty.
+/// @see rt_udp_sender_host
+/// @see rt_udp_sender_port
 void *rt_udp_recv_from(void *obj, int64_t max_bytes);
 
-/// @brief Receive a UDP packet with timeout.
-/// @param obj Udp socket object.
-/// @param max_bytes Maximum bytes to receive.
-/// @param timeout_ms Timeout in milliseconds.
-/// @return Bytes object with received data, or NULL on timeout.
-/// @note Traps if socket is closed (except timeout returns NULL).
+/// @brief Receive one UDP datagram with a one-shot readiness timeout.
+/// @details A positive timeout waits before delegating to
+///          @ref rt_udp_recv_from. This differs from the persistent socket
+///          timeout: readiness expiry returns NULL, while socket-timeout expiry
+///          during receive returns empty Bytes. Zero skips the readiness wait.
+/// @param obj Required open Udp receiver.
+/// @param max_bytes Receive-buffer size in [0, @c INT_MAX].
+/// @param timeout_ms One-shot timeout in [0, @c INT_MAX] milliseconds.
+/// @return Newly owned exact-sized Bytes, or NULL on readiness timeout or after
+///         a returning trap.
 void *rt_udp_recv_for(void *obj, int64_t max_bytes, int64_t timeout_ms);
 
-/// @brief Get the hostname/IP of the last received packet's sender.
-/// @param obj Udp socket object.
-/// @return Sender's host address.
+/// @brief Copy the numeric address of the most recent datagram sender.
+/// @param obj Required Udp receiver.
+/// @return Newly owned IPv4 or IPv6 String, empty before the first successful
+///         receive.
 rt_string rt_udp_sender_host(void *obj);
 
-/// @brief Get the port of the last received packet's sender.
-/// @param obj Udp socket object.
-/// @return Sender's port number.
+/// @brief Get the source port of the most recent datagram.
+/// @param obj Required Udp receiver.
+/// @return Sender port, or zero before the first successful receive.
 int64_t rt_udp_sender_port(void *obj);
 
 //=========================================================================
 // Udp - Options and Close
 //=========================================================================
 
-/// @brief Enable or disable broadcast.
-/// @param obj Udp socket object.
-/// @param enable 1 to enable, 0 to disable.
+/// @brief Enable or disable native UDP broadcast permission.
+/// @details Sets @c SO_BROADCAST, which is required for limited or directed
+///          IPv4 broadcast destinations.
+/// @param obj Required open Udp receiver.
+/// @param enable Nonzero to enable broadcast, zero to disable it.
+/// @note Traps when the socket option cannot be changed.
 void rt_udp_set_broadcast(void *obj, int8_t enable);
 
-/// @brief Join a multicast group.
-/// @param obj Udp socket object.
-/// @param group_addr Multicast group address (224.0.0.0 - 239.255.255.255).
-/// @note Traps if invalid multicast address.
+/// @brief Join an IPv4 or IPv6 multicast group on the default interface.
+/// @param obj Required open Udp receiver.
+/// @param group_addr Numeric IPv4 multicast address in 224.0.0.0/4 or IPv6
+///        multicast address in ff00::/8, without embedded NUL.
+/// @note Traps on invalid input, unsupported IPv6 membership, or native option
+///       failure.
 void rt_udp_join_group(void *obj, rt_string group_addr);
 
-/// @brief Leave a multicast group.
-/// @param obj Udp socket object.
-/// @param group_addr Multicast group address.
+/// @brief Best-effort leave an IPv4 or IPv6 multicast group.
+/// @details Closed sockets, empty or malformed addresses, unsupported IPv6
+///          membership, and native drop-membership errors are silent no-ops.
+/// @param obj Required valid Udp receiver.
+/// @param group_addr Numeric multicast group address.
 void rt_udp_leave_group(void *obj, rt_string group_addr);
 
-/// @brief Set receive timeout.
-/// @param obj Udp socket object.
-/// @param timeout_ms Timeout in milliseconds (0 = no timeout).
+/// @brief Set the persistent native UDP receive timeout.
+/// @details Subsequent receive timeout returns empty Bytes; this differs from
+///          the NULL readiness-timeout result of @ref rt_udp_recv_for.
+/// @param obj Required open Udp receiver.
+/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds; zero disables it.
 void rt_udp_set_recv_timeout(void *obj, int64_t timeout_ms);
 
-/// @brief Close the UDP socket.
-/// @param obj Udp socket object.
+/// @brief Close a UDP socket idempotently.
+/// @details Clears bound state and the port while preserving the last bound
+///          address for diagnostics. NULL is accepted as a no-op.
+/// @param obj Udp receiver, or NULL.
 void rt_udp_close(void *obj);
 
 //=========================================================================
@@ -444,30 +518,35 @@ void *rt_dns_local_addrs(void);
 // Note: "get" in rt_http_get / rt_http_get_bytes is the HTTP GET method,
 // not a property accessor. These perform network requests.
 
-/// @brief HTTP GET request, return body as string.
-/// @param url Full URL (http://host/path).
-/// @return Response body as string.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP GET and return its body as a String.
+/// @details Uses the default timeout and redirect limit. Response bytes are
+///          passed through as UTF-8 without charset detection.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @return Newly owned response-body String.
+/// @note Traps on invalid URL, transport/protocol failure, or allocation error.
 rt_string rt_http_get(rt_string url);
 
-/// @brief HTTP GET request, return body as bytes.
-/// @param url Full URL (http://host/path).
-/// @return Response body as Bytes.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP GET and return its raw body.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @return Newly owned response-body Bytes.
+/// @note Uses the default timeout and redirect limit and traps on invalid URL,
+///       transport/protocol failure, or allocation error.
 void *rt_http_get_bytes(rt_string url);
 
-/// @brief HTTP POST request with string body.
-/// @param url Full URL (http://host/path).
-/// @param body Request body as string.
-/// @return Response body as string.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP POST with a String body.
+/// @details Copies the exact body bytes and supplies `Content-Type:
+///          text/plain; charset=utf-8` for nonempty content.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @param body Required managed request-body String.
+/// @return Newly owned response-body String.
 rt_string rt_http_post(rt_string url, rt_string body);
 
-/// @brief HTTP POST request with bytes body.
-/// @param url Full URL (http://host/path).
-/// @param body Request body as Bytes.
-/// @return Response body as Bytes.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP POST with a Bytes body.
+/// @details Borrows the Bytes for the synchronous request and supplies
+///          `Content-Type: application/octet-stream` for nonempty content.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @param body Required managed request-body Bytes.
+/// @return Newly owned response-body Bytes.
 void *rt_http_post_bytes(rt_string url, void *body);
 
 /// @brief Download a URL transactionally to a local file.
@@ -484,95 +563,120 @@ void *rt_http_post_bytes(rt_string url, void *body);
 /// @return One only after atomic publication; zero on any failure.
 int8_t rt_http_download(rt_string url, rt_string dest_path);
 
-/// @brief HTTP HEAD request, return headers.
-/// @param url Full URL (http://host/path).
-/// @return Map of response headers.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP HEAD and return its headers.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @return Newly owned Map snapshot of response header names to values.
+/// @note Uses the default timeout and redirect limit and traps on invalid URL,
+///       transport/protocol failure, or allocation error.
 void *rt_http_head(rt_string url);
 
-/// @brief HTTP PATCH request with string body.
-/// @param url Full URL (http://host/path).
-/// @param body Request body as string.
-/// @return Response body as string.
+/// @brief Perform a one-shot HTTP PATCH with a String body.
+/// @details Copies the body and supplies `Content-Type: text/plain;
+///          charset=utf-8` for nonempty content.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @param body Required managed request-body String.
+/// @return Newly owned response-body String.
 rt_string rt_http_patch(rt_string url, rt_string body);
 
-/// @brief HTTP OPTIONS request.
-/// @param url Full URL (http://host/path).
-/// @return Response body as string (typically empty or CORS info).
+/// @brief Perform a one-shot HTTP OPTIONS request.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @return Newly owned response-body String, often empty for metadata-only
+///         OPTIONS responses.
 rt_string rt_http_options(rt_string url);
 
-/// @brief HTTP PUT request with string body.
-/// @param url Full URL (http://host/path).
-/// @param body Request body as string.
-/// @return Response body as string.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP PUT with a String body.
+/// @details Copies the body and supplies `Content-Type: text/plain;
+///          charset=utf-8` for nonempty content.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @param body Required managed request-body String.
+/// @return Newly owned response-body String.
 rt_string rt_http_put(rt_string url, rt_string body);
 
-/// @brief HTTP PUT request with bytes body.
-/// @param url Full URL (http://host/path).
-/// @param body Request body as Bytes.
-/// @return Response body as Bytes.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP PUT with a Bytes body.
+/// @details Supplies `Content-Type: application/octet-stream` for nonempty
+///          content and returns the raw response body.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @param body Required managed request-body Bytes.
+/// @return Newly owned response-body Bytes.
 void *rt_http_put_bytes(rt_string url, void *body);
 
-/// @brief HTTP DELETE request, return body as string.
-/// @param url Full URL (http://host/path).
-/// @return Response body as string.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP DELETE and return its body as a String.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @return Newly owned response-body String.
+/// @note Uses the default timeout and redirect limit and traps on invalid URL
+///       or request failure.
 rt_string rt_http_delete(rt_string url);
 
-/// @brief HTTP DELETE request, return body as bytes.
-/// @param url Full URL (http://host/path).
-/// @return Response body as Bytes.
-/// @note Traps on connection error, invalid URL, or HTTP error.
+/// @brief Perform a one-shot HTTP DELETE and return its raw body.
+/// @param url Nonempty absolute HTTP or HTTPS URL.
+/// @return Newly owned response-body Bytes.
+/// @note Uses the default timeout and redirect limit and traps on invalid URL
+///       or request failure.
 void *rt_http_delete_bytes(rt_string url);
 
 //=========================================================================
 // HttpReq - Request Builder (Instance Class)
 //=========================================================================
 
-/// @brief Create new HTTP request.
-/// @param method HTTP method (GET, POST, PUT, DELETE, etc.).
-/// @param url Full URL (http://host/path).
-/// @return HttpReq object.
+/// @brief Create a configurable managed HTTP request.
+/// @details Validates the method as an HTTP token and parses the URL eagerly.
+///          Defaults include a 30-second timeout, TLS verification, gzip
+///          handling, and automatic redirects up to the runtime default cap.
+/// @param method Nonempty HTTP method token without embedded NUL.
+/// @param url Nonempty absolute HTTP or HTTPS URL without embedded NUL.
+/// @return Newly owned HttpReq object.
 void *rt_http_req_new(rt_string method, rt_string url);
 
 /// @brief Set a request header, replacing any existing case-insensitive match.
-/// @param obj HttpReq object.
-/// @param name Header name.
-/// @param value Header value.
-/// @return Same HttpReq object (for chaining).
+/// @details Header names must be valid HTTP tokens and values may not contain
+///          CR or LF. NULL name or value is an intentional no-op.
+/// @param obj Required HttpReq receiver.
+/// @param name Header field name.
+/// @param value Header field value.
+/// @return @p obj for fluent chaining, or NULL after a returning
+///         invalid-receiver trap.
 void *rt_http_req_set_header(void *obj, rt_string name, rt_string value);
 
 /// @brief Append a request header without replacing same-name fields.
-/// @param obj HttpReq object.
-/// @param name Header name.
-/// @param value Header value.
-/// @return Same HttpReq object (for chaining).
+/// @details Intended for repeatable fields. It applies the same token,
+///          embedded-NUL, and CR/LF validation as the replacing setter; NULL
+///          name or value is an intentional no-op.
+/// @param obj Required HttpReq receiver.
+/// @param name Header field name.
+/// @param value Header field value.
+/// @return @p obj for fluent chaining, or NULL after a returning
+///         invalid-receiver trap.
 void *rt_http_req_add_header(void *obj, rt_string name, rt_string value);
 
-/// @brief Set request body as bytes.
-/// @param obj HttpReq object.
-/// @param data Bytes object.
-/// @return Same HttpReq object (for chaining).
+/// @brief Replace a request body with a private copy of managed Bytes.
+/// @details Frees the previous body. NULL clears the body without error, and
+///          later mutation or release of @p data cannot affect the request.
+/// @param obj Required HttpReq receiver.
+/// @param data Managed Bytes body, or NULL to clear it.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_body(void *obj, void *data);
 
-/// @brief Set request body as string.
-/// @param obj HttpReq object.
-/// @param text String body.
-/// @return Same HttpReq object (for chaining).
+/// @brief Replace a request body with a private copy of a String's bytes.
+/// @details Copies the exact logical length, including embedded NUL bytes.
+///          NULL clears the previous body without error.
+/// @param obj Required HttpReq receiver.
+/// @param text Managed String body, or NULL to clear it.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_body_str(void *obj, rt_string text);
 
-/// @brief Set request timeout.
-/// @param obj HttpReq object.
-/// @param timeout_ms Timeout in milliseconds.
-/// @return Same HttpReq object (for chaining).
+/// @brief Set the per-request network timeout.
+/// @param obj Required HttpReq receiver.
+/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_timeout(void *obj, int64_t timeout_ms);
 
 /// @brief Enable or disable TLS certificate verification for this request.
-/// @param obj HttpReq object.
-/// @param verify 1 to verify the peer certificate and hostname, 0 to skip verification.
-/// @return Same HttpReq object (for chaining).
+/// @details Verification is enabled by default and should remain enabled for
+///          production HTTPS traffic.
+/// @param obj Required HttpReq receiver.
+/// @param verify Nonzero to verify the certificate chain and hostname, zero to
+///        skip both checks.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_tls_verify(void *obj, int8_t verify);
 
 /// @brief Disable HTTPS certificate and hostname verification for a local test request.
@@ -580,40 +684,49 @@ void *rt_http_req_set_tls_verify(void *obj, int8_t verify);
 ///          same request flag as `rt_http_req_set_tls_verify(obj, 0)` while making
 ///          the insecure behavior visible in code review and generated API docs.
 ///          Production HTTPS requests should leave verification enabled.
-/// @param obj HttpReq object.
-/// @return Same HttpReq object (for chaining).
+/// @param obj Required HttpReq receiver.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_allow_insecure_certificates_for_testing(void *obj);
 
 /// @brief Enable or disable keep-alive on this request.
-/// @param obj HttpReq object.
-/// @param keep_alive 1 to allow pooled reuse, 0 to close after the response.
-/// @return Same HttpReq object (for chaining).
+/// @details Standalone requests attach the process-wide default pool when
+///          sending with keep-alive enabled, allowing actual socket reuse.
+/// @param obj Required HttpReq receiver.
+/// @param keep_alive Nonzero to permit pooled reuse, zero to close afterward.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_keep_alive(void *obj, int8_t keep_alive);
 
 /// @brief Restrict this request to HTTP/1.1 transport even over TLS.
-/// @param obj HttpReq object.
-/// @param force 1 to advertise only `http/1.1` via ALPN (forces HTTP/1.1
+/// @param obj Required HttpReq receiver.
+/// @param force Nonzero to advertise only `http/1.1` via ALPN (forcing HTTP/1.1
 ///        framing, including the `Connection: keep-alive` header), 0 for
 ///        the default `h2,http/1.1` negotiation.
-/// @return Same HttpReq object (for chaining).
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_force_http1(void *obj, int8_t force);
 
 /// @brief Enable or disable automatic redirect following for this request.
-/// @param obj HttpReq object.
-/// @param follow 1 to follow redirects, 0 to return the redirect response as-is.
-/// @return Same HttpReq object (for chaining).
+/// @param obj Required HttpReq receiver.
+/// @param follow Nonzero to follow supported redirects, zero to return the
+///        redirect response itself.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_follow_redirects(void *obj, int8_t follow);
 
 /// @brief Set the maximum number of redirects to follow for this request.
-/// @param obj HttpReq object.
-/// @param max_redirects Maximum redirects (0 = none).
-/// @return Same HttpReq object (for chaining).
+/// @details Negative values clamp to zero; values above @c INT_MAX trap and
+///          leave the previous cap unchanged.
+/// @param obj Required HttpReq receiver.
+/// @param max_redirects Maximum redirect hops; zero disables following.
+/// @return @p obj for fluent chaining.
 void *rt_http_req_set_max_redirects(void *obj, int64_t max_redirects);
 
-/// @brief Execute HTTP request.
-/// @param obj HttpReq object.
-/// @return HttpRes response object.
-/// @note Traps on connection error or timeout.
+/// @brief Execute a configured HTTP request.
+/// @details Adds `Content-Type: application/octet-stream` for a nonempty body
+///          when no content type was supplied and attaches the default pool for
+///          standalone keep-alive requests.
+/// @param obj Required HttpReq receiver.
+/// @return Newly owned HttpRes object, or NULL after a returning trap.
+/// @note Traps on invalid state, connection/TLS/protocol failure, timeout, or
+///       allocation error.
 void *rt_http_req_send(void *obj);
 
 /// @brief Execute HTTP request and return a Result-wrapped response.
@@ -621,57 +734,61 @@ void *rt_http_req_send(void *obj);
 ///          traps are captured as `Result.ErrStr`; successful HTTP exchanges,
 ///          including non-2xx status codes, return `Result.Ok(HttpRes)` so the
 ///          caller can inspect status, headers, and body explicitly.
-/// @param obj HttpReq object.
-/// @return Opaque `Zanna.Result` containing `Ok(HttpRes)` or `Err(String)`.
+/// @param obj HttpReq receiver to execute.
+/// @return Newly owned opaque `Zanna.Result` containing `Ok(HttpRes)` or
+///         `Err(String)`.
 void *rt_http_req_send_result(void *obj);
 
 //=========================================================================
 // HttpRes - Response (Instance Class)
 //=========================================================================
 
-/// @brief Get response status code.
-/// @param obj HttpRes object.
+/// @brief Get an HTTP response status code.
+/// @param obj HttpRes receiver, or NULL.
 /// @return HTTP status code (e.g., 200, 404).
 /// @note NULL returns zero; any other invalid managed handle traps.
 int64_t rt_http_res_status(void *obj);
 
-/// @brief Get response status text.
-/// @param obj HttpRes object.
-/// @return Status text (e.g., "OK", "Not Found").
+/// @brief Copy an HTTP response reason phrase.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned status text (e.g. `OK`), or an empty String when absent.
 /// @note NULL returns an empty String; any other invalid managed handle traps.
 rt_string rt_http_res_status_text(void *obj);
 
-/// @brief Get all response headers.
-/// @param obj HttpRes object.
-/// @return Map of header name -> value.
+/// @brief Copy all response headers into a fresh Map.
+/// @details Keys are the parser's lower-case canonical names. Mutating the
+///          returned Map cannot alter the response.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned Map of header name to String value.
 /// @note The returned Map is an independent snapshot. NULL returns an empty
 ///       Map; any other invalid managed handle traps.
 void *rt_http_res_headers(void *obj);
 
-/// @brief Get response body as bytes.
-/// @param obj HttpRes object.
-/// @return Response body as Bytes.
+/// @brief Copy an HTTP response body as raw Bytes.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned response-body Bytes.
 /// @note The returned Bytes owns a copy. NULL returns empty Bytes; any other
 ///       invalid managed handle traps.
 void *rt_http_res_body(void *obj);
 
-/// @brief Get response body as string.
-/// @param obj HttpRes object.
-/// @return Response body as string.
+/// @brief Copy an HTTP response body as a String.
+/// @details Performs no content-type, charset, or UTF-8 validation.
+/// @param obj HttpRes receiver, or NULL.
+/// @return Newly owned response-body String.
 /// @note NULL returns an empty String; any other invalid managed handle traps.
 rt_string rt_http_res_body_str(void *obj);
 
-/// @brief Get specific response header.
-/// @param obj HttpRes object.
-/// @param name Header name (case-insensitive).
-/// @return Header value, or empty string if not found.
+/// @brief Copy one response header using a case-insensitive name.
+/// @param obj HttpRes receiver, or NULL.
+/// @param name Header field name without embedded NUL.
+/// @return Newly owned header value, or an empty String when absent.
 /// @note The returned String is an independent copy. A non-NULL invalid
 ///       receiver or header-name handle traps before native payload access.
 rt_string rt_http_res_header(void *obj, rt_string name);
 
-/// @brief Check if response is success (2xx status).
-/// @param obj HttpRes object.
-/// @return 1 if status 200-299, 0 otherwise.
+/// @brief Check whether an HTTP response has a successful 2xx status.
+/// @param obj HttpRes receiver, or NULL.
+/// @return One for status 200 through 299, otherwise zero.
 /// @note NULL returns zero; any other invalid managed handle traps.
 int8_t rt_http_res_is_ok(void *obj);
 
@@ -679,179 +796,223 @@ int8_t rt_http_res_is_ok(void *obj);
 // Url - URL Parsing and Construction
 //=========================================================================
 
-/// @brief Parse URL string into Url object.
-/// @param url_str URL string to parse.
-/// @return Url object.
-/// @note Traps on invalid URL format.
+/// @brief Parse the runtime URL-reference grammar into a Url object.
+/// @details Accepts network URLs, authority-less schemes such as `mailto:`,
+///          and relative references, while rejecting embedded NUL, whitespace,
+///          controls, backslashes, and malformed components. Use
+///          @ref rt_url_is_valid_absolute when a network endpoint is required.
+/// @param url_str Managed String containing a URL reference.
+/// @return Newly owned Url object, or NULL after a returning trap.
 void *rt_url_parse(rt_string url_str);
 
-/// @brief Create empty Url object for building.
-/// @return Empty Url object.
+/// @brief Create an empty Url object for component-by-component construction.
+/// @return Newly owned Url with every component unset.
 void *rt_url_new(void);
 
-/// @brief Get URL scheme (http, https, ftp, etc.).
-/// @param obj Url object.
-/// @return Scheme string.
+/// @brief Copy a URL's lower-case scheme component.
+/// @param obj Required Url receiver.
+/// @return Newly owned scheme String, or an empty String when unset.
 rt_string rt_url_scheme(void *obj);
 
-/// @brief Set URL scheme.
-/// @param obj Url object.
-/// @param scheme Scheme string.
+/// @brief Replace and ASCII-lowercase a URL's scheme.
+/// @param obj Required Url receiver.
+/// @param scheme Valid RFC 3986 scheme String, or NULL/empty to clear it.
+/// @note Traps with @c Err_InvalidUrl for invalid scheme syntax.
 void rt_url_set_scheme(void *obj, rt_string scheme);
 
-/// @brief Get URL host.
-/// @param obj Url object.
-/// @return Host string.
+/// @brief Copy the stored host without adding IPv6 brackets.
+/// @param obj Required Url receiver.
+/// @return Newly owned host String, or an empty String when unset.
 rt_string rt_url_host(void *obj);
 
-/// @brief Set URL host.
-/// @param obj Url object.
-/// @param host Host string.
+/// @brief Replace a URL's host after validating component safety.
+/// @param obj Required Url receiver.
+/// @param host Host text without `/`, `?`, `#`, `@`, unsafe bytes, or embedded
+///        NUL; NULL clears it.
 void rt_url_set_host(void *obj, rt_string host);
 
-/// @brief Get URL port (0 if not specified).
-/// @param obj Url object.
-/// @return Port number.
+/// @brief Get a URL's explicit numeric port.
+/// @param obj Required Url receiver.
+/// @return Stored port in [0, 65535]; zero means unspecified.
 int64_t rt_url_port(void *obj);
 
-/// @brief Set URL port.
-/// @param obj Url object.
-/// @param port Port number.
+/// @brief Set or clear a URL's explicit port.
+/// @param obj Required Url receiver.
+/// @param port Port in [0, 65535]; zero clears explicit port formatting.
 void rt_url_set_port(void *obj, int64_t port);
 
-/// @brief Get URL path.
-/// @param obj Url object.
-/// @return Path string.
+/// @brief Copy a URL's stored path component.
+/// @param obj Required Url receiver.
+/// @return Newly owned path String, or an empty String when unset.
 rt_string rt_url_path(void *obj);
 
-/// @brief Set URL path.
-/// @param obj Url object.
-/// @param path Path string.
+/// @brief Replace a URL's encoded path component.
+/// @param obj Required Url receiver.
+/// @param path Path text without raw query/fragment delimiters or unsafe
+///        bytes; NULL clears it.
 void rt_url_set_path(void *obj, rt_string path);
 
-/// @brief Get URL query string (without leading ?).
-/// @param obj Url object.
-/// @return Query string.
+/// @brief Copy a URL's query without the leading question mark.
+/// @param obj Required Url receiver.
+/// @return Newly owned query String, or an empty String when unset.
 rt_string rt_url_query(void *obj);
 
-/// @brief Set URL query string.
-/// @param obj Url object.
-/// @param query Query string.
+/// @brief Replace a URL's encoded query component.
+/// @param obj Required Url receiver.
+/// @param query Query text without a leading `?`, raw `#`, unsafe bytes, or
+///        embedded NUL; NULL clears it.
 void rt_url_set_query(void *obj, rt_string query);
 
-/// @brief Get URL fragment (without leading #).
-/// @param obj Url object.
-/// @return Fragment string.
+/// @brief Copy a URL's fragment without the leading hash.
+/// @param obj Required Url receiver.
+/// @return Newly owned fragment String, or an empty String when unset.
 rt_string rt_url_fragment(void *obj);
 
-/// @brief Set URL fragment.
-/// @param obj Url object.
-/// @param fragment Fragment string.
+/// @brief Replace a URL's encoded fragment component.
+/// @param obj Required Url receiver.
+/// @param fragment Fragment text without unsafe bytes or embedded NUL; NULL
+///        clears it.
 void rt_url_set_fragment(void *obj, rt_string fragment);
 
-/// @brief Get URL username.
-/// @param obj Url object.
-/// @return Username string.
+/// @brief Copy the user portion of URL userinfo.
+/// @param obj Required Url receiver.
+/// @return Newly owned user String, or an empty String when unset.
 rt_string rt_url_user(void *obj);
 
-/// @brief Set URL username.
-/// @param obj Url object.
-/// @param user Username string.
+/// @brief Replace the user portion of URL userinfo.
+/// @param obj Required Url receiver.
+/// @param user Encoded user text without authority delimiters or unsafe bytes;
+///        NULL clears it.
 void rt_url_set_user(void *obj, rt_string user);
 
-/// @brief Get URL password.
-/// @param obj Url object.
-/// @return Password string.
+/// @brief Copy the password portion of URL userinfo.
+/// @param obj Required Url receiver.
+/// @return Newly owned password String, or an empty String when unset.
 rt_string rt_url_pass(void *obj);
 
-/// @brief Set URL password.
-/// @param obj Url object.
-/// @param pass Password string.
+/// @brief Replace the password portion of URL userinfo.
+/// @param obj Required Url receiver.
+/// @param pass Encoded password text without authority delimiters or unsafe
+///        bytes; NULL clears it.
 void rt_url_set_pass(void *obj, rt_string pass);
 
-/// @brief Get URL authority (user:pass@host:port).
-/// @param obj Url object.
-/// @return Authority string.
+/// @brief Compose a URL's userinfo, host, and explicit port.
+/// @details Includes only set components and brackets a colon-containing IPv6
+///          host.
+/// @param obj Required Url receiver.
+/// @return Newly owned authority String, or empty when all components are unset.
 rt_string rt_url_authority(void *obj);
 
-/// @brief Get host:port (port omitted if default for scheme).
-/// @param obj Url object.
-/// @return HostPort string.
+/// @brief Compose a URL's host and nondefault port.
+/// @details Omits userinfo and scheme, brackets IPv6 hosts, and suppresses a
+///          port that is the default for the stored scheme.
+/// @param obj Required Url receiver.
+/// @return Newly owned host/port String, or empty when the host is unset.
 rt_string rt_url_host_port(void *obj);
 
-/// @brief Get complete URL string.
-/// @param obj Url object.
-/// @return Full URL string.
+/// @brief Serialize every set URL component.
+/// @details Produces a reference that round-trips through @ref rt_url_parse and
+///          includes scheme, authority, path, query, and fragment only when set.
+/// @param obj Required Url receiver.
+/// @return Newly owned serialized URL String.
 rt_string rt_url_full(void *obj);
 
-/// @brief Set or update query parameter.
-/// @param obj Url object.
-/// @param name Parameter name.
-/// @param value Parameter value.
-/// @return Same Url object for chaining.
+/// @brief Set or replace one URL query parameter.
+/// @details Decodes the current query into a temporary Map, replaces the key,
+///          and percent-encodes the complete query again. NULL value stores an
+///          empty String.
+/// @param obj Required Url receiver.
+/// @param name Query parameter name.
+/// @param value Query parameter value, or NULL for an empty value.
+/// @return @p obj for fluent chaining.
 void *rt_url_set_query_param(void *obj, rt_string name, rt_string value);
 
-/// @brief Get query parameter value.
-/// @param obj Url object.
-/// @param name Parameter name.
-/// @return Parameter value, or empty string if not found.
+/// @brief Read one decoded URL query parameter.
+/// @param obj Required Url receiver.
+/// @param name Query parameter name.
+/// @return Newly owned decoded value, or an empty String when absent.
 rt_string rt_url_get_query_param(void *obj, rt_string name);
 
-/// @brief Check if query parameter exists.
-/// @param obj Url object.
-/// @param name Parameter name.
-/// @return 1 if exists, 0 otherwise.
+/// @brief Check whether a decoded URL query contains a named parameter.
+/// @param obj Required Url receiver.
+/// @param name Query parameter name.
+/// @return One when present, otherwise zero.
 int8_t rt_url_has_query_param(void *obj, rt_string name);
 
-/// @brief Remove query parameter.
-/// @param obj Url object.
-/// @param name Parameter name.
-/// @return Same Url object for chaining.
+/// @brief Remove one URL query parameter.
+/// @details Missing parameters are a no-op; the remaining query is encoded
+///          again from a temporary Map.
+/// @param obj Required Url receiver.
+/// @param name Query parameter name to remove.
+/// @return @p obj for fluent chaining.
 void *rt_url_del_query_param(void *obj, rt_string name);
 
-/// @brief Get all query parameters as Map.
-/// @param obj Url object.
-/// @return Map of query parameters.
+/// @brief Decode all URL query parameters into a fresh Map.
+/// @details Keys and values are decoded Strings; later duplicate keys replace
+///          earlier occurrences.
+/// @param obj Required Url receiver.
+/// @return Newly owned Map, empty when the query is unset.
 void *rt_url_query_map(void *obj);
 
-/// @brief Resolve relative URL against this base URL.
-/// @param obj Base Url object.
-/// @param relative Relative URL string.
-/// @return New Url object with resolved URL.
+/// @brief Resolve a URL reference against a base URL.
+/// @details Implements RFC 3986 reference resolution for schemed, authority,
+///          absolute-path, relative-path, and same-document references. NULL or
+///          empty input clones the base.
+/// @param obj Required base Url receiver.
+/// @param relative URL-reference String.
+/// @return Newly owned independent resolved Url.
 void *rt_url_resolve(void *obj, rt_string relative);
 
-/// @brief Clone URL object.
-/// @param obj Url object.
-/// @return New Url object with same values.
+/// @brief Deep-copy a URL object.
+/// @param obj Required Url receiver.
+/// @return Newly owned Url whose component storage is independent of @p obj.
 void *rt_url_clone(void *obj);
 
-/// @brief Percent-encode text for URL.
-/// @param text Text to encode.
-/// @return Encoded string.
+/// @brief Percent-encode exact String bytes for URL use.
+/// @details RFC 3986 unreserved bytes pass through; all other bytes, including
+///          non-ASCII bytes, become uppercase `%XX` triples.
+/// @param text Managed String to encode; NULL is treated as empty.
+/// @return Newly owned encoded String.
 rt_string rt_url_encode(rt_string text);
 
-/// @brief Decode percent-encoded text.
-/// @param text Encoded text.
-/// @return Decoded string.
+/// @brief Decode percent-encoded String bytes.
+/// @details Valid `%XX` triples are decoded and malformed escapes pass through
+///          verbatim, preserving the exact resulting byte length.
+/// @param text Managed encoded String; NULL is treated as empty.
+/// @return Newly owned decoded String.
 rt_string rt_url_decode(rt_string text);
 
-/// @brief Encode Map as query string.
-/// @param map Map of key-value pairs.
-/// @return Query string.
+/// @brief Encode a managed Map as a URL query string.
+/// @details Percent-encodes keys and supported values and joins them as
+///          `name=value`. String and boxed String values are used verbatim;
+///          boxed integer, double, and Boolean values use canonical runtime
+///          formatting; NULL becomes empty. Unsupported object values trap.
+/// @param map Managed Map with String keys and supported scalar values, or NULL.
+/// @return Newly owned encoded query String, empty for NULL or an empty Map.
 rt_string rt_url_encode_query(void *map);
 
-/// @brief Parse query string to Map.
-/// @param query Query string.
-/// @return Map of key-value pairs.
+/// @brief Decode a query string into a Map of Strings.
+/// @details Splits on ampersands and the first equals sign, decodes percent
+///          escapes and form-style plus characters, and lets later duplicate
+///          keys replace earlier values.
+/// @param query Encoded query without a leading question mark; NULL is empty.
+/// @return Newly owned Map of decoded String keys and values.
 void *rt_url_decode_query(rt_string query);
 
-/// @brief Check if URL string is valid/parseable.
-/// @param url_str URL string to validate.
-/// @return 1 if valid, 0 otherwise.
+/// @brief Check whether a String matches the runtime URL-reference grammar.
+/// @details Rejects empty input, embedded NUL, unencoded whitespace, malformed
+///          scheme markers, and invalid component syntax. Relative references
+///          and authority-less schemes are allowed.
+/// @param url_str Candidate URL-reference String.
+/// @return One when parseable, otherwise zero.
 int8_t rt_url_is_valid(rt_string url_str);
 
-/// @brief Strict absolute NETWORK URL check: requires a scheme and a
-///        non-empty host in addition to rt_url_is_valid's reference rules.
+/// @brief Check for a strict absolute network URL.
+/// @details Requires @ref rt_url_is_valid plus a nonempty scheme and host.
+///          Relative references, scheme-less text, and authority-less forms
+///          such as `mailto:` return zero.
+/// @param url_str Candidate absolute network URL String.
+/// @return One when parsing yields both a scheme and host, otherwise zero.
 int8_t rt_url_is_valid_absolute(rt_string url_str);
 
 #ifdef __cplusplus

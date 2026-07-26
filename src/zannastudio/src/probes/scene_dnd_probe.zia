@@ -209,6 +209,56 @@ func main() {
         Fail(shell, harness, tempDir, "non-image drop was not refused");
         return;
     }
+    // Rect-tool rotate: drag the rotation handle a quarter turn around the
+    // dropped sprite's pivot and commit exactly one undoable transaction.
+    editor2d.SetToolMode(scene_editor_2d.MODE_SELECT);
+    editor2d.SelectSceneObjects([dropped], dropped);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    var undoBeforeRotate = editor2d.undoStack.count();
+    var rotateHandle = editor2d.RectHandlePoint(dropped, 4);
+    var canvasOriginX = editor2d.canvasImage.GetScreenX();
+    var canvasOriginY = editor2d.canvasImage.GetScreenY();
+    var handleX = HarnessCoordinate(shell, canvasOriginX + rotateHandle.x);
+    var handleY = HarnessCoordinate(shell, canvasOriginY + rotateHandle.y);
+    harness.SendMouse("move", handleX, handleY, 0);
+    harness.SendMouse("down", handleX, handleY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    // A diagonal drag swings the handle about the pivot by a nonzero angle.
+    var quarterX = HarnessCoordinate(
+        shell, canvasOriginX + rotateHandle.x + 40.0);
+    var quarterY = HarnessCoordinate(
+        shell, canvasOriginY + rotateHandle.y + 40.0);
+    harness.SendMouse("move", quarterX, quarterY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("up", quarterX, quarterY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    if editor2d.scene.ObjectRotation(dropped) == 0.0
+       or editor2d.undoStack.count() != undoBeforeRotate + 1 {
+        Fail(shell, harness, tempDir,
+             "rotate handle drag did not commit one rotation: rot="
+             + editor2d.scene.ObjectRotation(dropped)
+             + " undo=" + editor2d.undoStack.count()
+             + "/" + (undoBeforeRotate + 1));
+        return;
+    }
+    if editor2d.Undo() == false
+       or editor2d.scene.ObjectRotation(dropped) != 0.0 {
+        Fail(shell, harness, tempDir,
+             "undoing the rotation did not restore the default");
+        return;
+    }
+
     harness.UnbindApp();
     shell.Destroy();
 

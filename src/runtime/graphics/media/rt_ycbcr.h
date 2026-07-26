@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_ycbcr.h
+// File: src/runtime/graphics/media/rt_ycbcr.h
 // Purpose: YCbCr planar -> RGBA conversion for video decoders (Theora, etc.)
 //   Uses BT.601 matrix coefficients (standard for SD video).
 //
@@ -15,7 +15,10 @@
 //   - Output: 0xRRGGBBAA packed uint32_t array (Zanna Pixels format).
 //   - Clamping: output values clamped to [0, 255].
 //
-// Links: rt_theora.h, rt_videoplayer.h
+// Ownership/Lifetime:
+//   - All plane and output buffers are caller-owned and borrowed only for the call.
+//
+// Links: src/runtime/graphics/media/rt_theora.h, src/runtime/graphics/media/rt_videoplayer.h
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -27,11 +30,13 @@ extern "C" {
 #endif
 
 /// @brief Convert YCbCr 4:2:0 planes to RGBA pixel array.
+/// @details Uses nearest-neighbor chroma upsampling and limited-range BT.601 conversion. Invalid
+///          pointers, dimensions, or strides are treated as a no-op.
 /// @param y_plane   Luma plane (width × height).
-/// @param cb_plane  Cb chroma plane (width/2 × height/2).
-/// @param cr_plane  Cr chroma plane (width/2 × height/2).
-/// @param width     Frame width in pixels (must be even).
-/// @param height    Frame height in pixels (must be even).
+/// @param cb_plane  Cb chroma plane (ceil(width/2) × ceil(height/2)).
+/// @param cr_plane  Cr chroma plane (ceil(width/2) × ceil(height/2)).
+/// @param width     Positive visible frame width in pixels.
+/// @param height    Positive visible frame height in pixels.
 /// @param y_stride  Bytes per row in Y plane.
 /// @param c_stride  Bytes per row in Cb/Cr planes.
 /// @param rgba_out  Output array (width × height uint32_t, 0xRRGGBBAA).

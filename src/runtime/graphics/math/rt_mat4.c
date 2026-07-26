@@ -63,6 +63,7 @@ static _Thread_local int mat4_pool_top_ = 0;
 ///   returns without resurrecting, allowing the GC to complete the free.
 ///   This avoids repeated heap allocation for short-lived intermediate matrices
 ///   that arise in transform chains and animation blending.
+/// @param p Mat4 payload whose finalizer is running.
 static void mat4_pool_return(void *p) {
     if (mat4_pool_top_ < MAT4_POOL_CAPACITY) {
         rt_obj_resurrect(p);
@@ -82,7 +83,10 @@ typedef struct mat4_impl {
 
 #define M(mat, r, c) ((mat)->m[(r) * 4 + (c)])
 
-/// @brief Allocate a Mat4 from pool or heap.
+/// @brief Acquire storage for a Mat4 from the current thread's pool or the GC heap.
+/// @details Reuses the most recently pooled payload when available. A newly allocated payload is
+///          registered with @ref mat4_pool_return so it can enter the pool when reclaimed.
+/// @return Writable Mat4 payload, or NULL if a required heap allocation fails.
 static mat4_impl *mat4_alloc(void) {
     mat4_impl *mat;
     if (mat4_pool_top_ > 0) {
@@ -100,6 +104,8 @@ static mat4_impl *mat4_alloc(void) {
 /// @details With RT_MAT4_INTERNAL_ASSUME_STRUCT_HANDLE the pointer is trusted
 ///          directly (fast path); otherwise the object's class id is validated
 ///          against RT_MAT4_CLASS_ID, returning NULL on mismatch or NULL input.
+/// @param m Candidate Mat4 runtime handle.
+/// @return Typed Mat4 payload, or NULL when validation is enabled and @p m is incompatible.
 static mat4_impl *mat4_checked(void *m) {
 #ifdef RT_MAT4_INTERNAL_ASSUME_STRUCT_HANDLE
     return (mat4_impl *)m;
@@ -114,6 +120,10 @@ static mat4_impl *mat4_checked(void *m) {
 /// @details Matrix factory functions normalize axes and basis vectors before using them in
 ///          transform construction. Chained `hypot` avoids overflow in `sqrt(x*x + y*y + z*z)`;
 ///          non-finite input returns `INFINITY` so callers can fall back to identity.
+/// @param x Vector x component.
+/// @param y Vector y component.
+/// @param z Vector z component.
+/// @return Euclidean length, or positive infinity when any component is non-finite.
 static double mat4_safe_len3(double x, double y, double z) {
     if (!isfinite(x) || !isfinite(y) || !isfinite(z))
         return INFINITY;
@@ -124,8 +134,26 @@ static double mat4_safe_len3(double x, double y, double z) {
 // Construction
 //=============================================================================
 
-/// @brief Construct a 4×4 matrix from 16 row-major scalars (m00 = row 0 col 0, m01 = row 0 col 1,
-/// ..., m33 = row 3 col 3). Returns NULL on allocation failure.
+/// @brief Construct a 4x4 matrix from sixteen row-major scalar values.
+/// @details Stores the supplied values without normalization or affine-layout validation. Storage
+///          is acquired from the current thread's Mat4 pool when possible.
+/// @param m00 Element at row 0, column 0.
+/// @param m01 Element at row 0, column 1.
+/// @param m02 Element at row 0, column 2.
+/// @param m03 Element at row 0, column 3.
+/// @param m10 Element at row 1, column 0.
+/// @param m11 Element at row 1, column 1.
+/// @param m12 Element at row 1, column 2.
+/// @param m13 Element at row 1, column 3.
+/// @param m20 Element at row 2, column 0.
+/// @param m21 Element at row 2, column 1.
+/// @param m22 Element at row 2, column 2.
+/// @param m23 Element at row 2, column 3.
+/// @param m30 Element at row 3, column 0.
+/// @param m31 Element at row 3, column 1.
+/// @param m32 Element at row 3, column 2.
+/// @param m33 Element at row 3, column 3.
+/// @return Newly acquired Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_new(double m00,
                   double m01,
                   double m02,
@@ -166,13 +194,15 @@ void *rt_mat4_new(double m00,
     return mat;
 }
 
-/// @brief Return the 4×4 identity matrix.
+/// @brief Create a 4x4 identity matrix.
+/// @return Newly acquired identity Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_identity(void) {
     return rt_mat4_new(
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Return the 4×4 zero matrix (all entries 0). Useful as an accumulator base.
+/// @brief Create a 4x4 matrix whose elements are all zero.
+/// @return Newly acquired zero Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_zero(void) {
     return rt_mat4_new(
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -182,22 +212,35 @@ void *rt_mat4_zero(void) {
 // 3D Transformation Factories
 //=============================================================================
 
-/// @brief Build a 4×4 translation matrix that moves points by (tx, ty, tz).
+/// @brief Create a homogeneous 3D translation matrix.
+/// @param tx Translation applied along the x axis.
+/// @param ty Translation applied along the y axis.
+/// @param tz Translation applied along the z axis.
+/// @return Newly acquired affine Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_translate(double tx, double ty, double tz) {
     return rt_mat4_new(1.0, 0.0, 0.0, tx, 0.0, 1.0, 0.0, ty, 0.0, 0.0, 1.0, tz, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 4×4 non-uniform scaling matrix with per-axis factors (sx, sy, sz).
+/// @brief Create a homogeneous 3D non-uniform scaling matrix.
+/// @param sx Scale factor applied along the x axis.
+/// @param sy Scale factor applied along the y axis.
+/// @param sz Scale factor applied along the z axis.
+/// @return Newly acquired affine Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_scale(double sx, double sy, double sz) {
     return rt_mat4_new(sx, 0.0, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 0.0, sz, 0.0, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 4×4 uniform scaling matrix (same factor on every axis).
+/// @brief Create a homogeneous 3D uniform scaling matrix.
+/// @param s Scale factor applied along all three axes.
+/// @return Newly acquired affine Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_scale_uniform(double s) {
     return rt_mat4_scale(s, s, s);
 }
 
-/// @brief Build a 4×4 right-handed rotation matrix about the X axis (angle in radians).
+/// @brief Create a right-handed rotation matrix about the x axis.
+/// @details A non-finite angle is treated as zero and produces an identity matrix.
+/// @param angle Rotation angle in radians.
+/// @return Newly acquired affine Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_rotate_x(double angle) {
     if (!isfinite(angle))
         return rt_mat4_identity();
@@ -206,7 +249,10 @@ void *rt_mat4_rotate_x(double angle) {
     return rt_mat4_new(1.0, 0.0, 0.0, 0.0, 0.0, c, -s, 0.0, 0.0, s, c, 0.0, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 4×4 right-handed rotation matrix about the Y axis (angle in radians).
+/// @brief Create a right-handed rotation matrix about the y axis.
+/// @details A non-finite angle is treated as zero and produces an identity matrix.
+/// @param angle Rotation angle in radians.
+/// @return Newly acquired affine Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_rotate_y(double angle) {
     if (!isfinite(angle))
         return rt_mat4_identity();
@@ -215,7 +261,10 @@ void *rt_mat4_rotate_y(double angle) {
     return rt_mat4_new(c, 0.0, s, 0.0, 0.0, 1.0, 0.0, 0.0, -s, 0.0, c, 0.0, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 4×4 right-handed rotation matrix about the Z axis (angle in radians).
+/// @brief Create a right-handed rotation matrix about the z axis.
+/// @details A non-finite angle is treated as zero and produces an identity matrix.
+/// @param angle Rotation angle in radians.
+/// @return Newly acquired affine Mat4 handle, or NULL if allocation fails.
 void *rt_mat4_rotate_z(double angle) {
     if (!isfinite(angle))
         return rt_mat4_identity();
@@ -224,8 +273,12 @@ void *rt_mat4_rotate_z(double angle) {
     return rt_mat4_new(c, -s, 0.0, 0.0, s, c, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 4×4 rotation matrix about an arbitrary axis (Rodrigues' rotation formula).
-/// `axis` is normalized internally; degenerate axes or non-finite angles return identity.
+/// @brief Create a right-handed rotation matrix about an arbitrary axis.
+/// @details Normalizes @p axis and applies Rodrigues' rotation formula. A NULL, non-finite, or
+///          near-zero axis, or a non-finite angle, produces an identity matrix.
+/// @param axis Vec3 rotation axis.
+/// @param angle Rotation angle in radians.
+/// @return Newly acquired rotation Mat4, or an identity Mat4 for invalid input.
 void *rt_mat4_rotate_axis(void *axis, double angle) {
     if (!axis || !isfinite(angle))
         return rt_mat4_identity();
@@ -268,9 +321,15 @@ void *rt_mat4_rotate_axis(void *axis, double angle) {
 // Projection Matrices
 //=============================================================================
 
-/// @brief Build a right-handed perspective projection matrix. `fov` is vertical FOV in radians,
-/// `aspect` = width/height. Maps view-space Z to NDC Z in [-1, 1] (OpenGL convention). Returns
-/// identity for invalid params (fov ≤ 0, aspect ≤ 0, or near ≥ far).
+/// @brief Create a right-handed perspective projection matrix.
+/// @details Maps view-space depth to normalized device coordinates in [-1, 1]. All arguments must
+///          be finite, @p fov must lie strictly between zero and pi, @p aspect and @p near_val must
+///          be positive, and @p far_val must exceed @p near_val. Invalid input produces identity.
+/// @param fov Vertical field of view in radians.
+/// @param aspect Viewport width divided by viewport height.
+/// @param near_val Positive distance to the near clipping plane.
+/// @param far_val Distance to the far clipping plane, greater than @p near_val.
+/// @return Newly acquired projection Mat4, or an identity Mat4 for invalid input.
 void *rt_mat4_perspective(double fov, double aspect, double near_val, double far_val) {
     if (!isfinite(fov) || !isfinite(aspect) || !isfinite(near_val) || !isfinite(far_val) ||
         fov <= 0.0 || fov >= 3.14159265358979323846 || aspect <= 0.0 || near_val <= 0.0 ||
@@ -301,8 +360,17 @@ void *rt_mat4_perspective(double fov, double aspect, double near_val, double far
                        0.0);
 }
 
-/// @brief Build an orthographic projection matrix mapping the box [(left, bottom, near),
-/// (right, top, far)] to NDC. Returns identity if any axis range is degenerate.
+/// @brief Create an orthographic projection from a view-space box.
+/// @details Maps the box defined by the supplied planes to normalized device coordinates. All
+///          arguments must be finite and each opposing plane pair must differ; otherwise an
+///          identity matrix is returned.
+/// @param left View-space coordinate of the left clipping plane.
+/// @param right View-space coordinate of the right clipping plane.
+/// @param bottom View-space coordinate of the bottom clipping plane.
+/// @param top View-space coordinate of the top clipping plane.
+/// @param near_val View-space coordinate of the near clipping plane.
+/// @param far_val View-space coordinate of the far clipping plane.
+/// @return Newly acquired projection Mat4, or an identity Mat4 for invalid input.
 void *rt_mat4_ortho(
     double left, double right, double bottom, double top, double near_val, double far_val) {
     if (!isfinite(left) || !isfinite(right) || !isfinite(bottom) || !isfinite(top) ||
@@ -332,9 +400,14 @@ void *rt_mat4_ortho(
                        1.0);
 }
 
-/// @brief Build a right-handed view matrix that places the camera at `eye` looking toward
-/// `target` with `up` as the world up direction. Standard "look at" formulation. Returns
-/// identity if any input is NULL.
+/// @brief Create a right-handed view matrix for a camera pose.
+/// @details Builds an orthonormal basis from the eye-to-target direction and @p up. NULL vectors,
+///          non-finite components, a coincident eye and target, or an up vector parallel to the
+///          viewing direction produce an identity matrix.
+/// @param eye Vec3 camera position in world space.
+/// @param target Vec3 world-space point toward which the camera looks.
+/// @param up Vec3 reference up direction.
+/// @return Newly acquired view Mat4, or an identity Mat4 for invalid or degenerate input.
 void *rt_mat4_look_at(void *eye, void *target, void *up) {
     if (!eye || !target || !up)
         return rt_mat4_identity();
@@ -400,8 +473,11 @@ void *rt_mat4_look_at(void *eye, void *target, void *up) {
 // Element Access
 //=============================================================================
 
-/// @brief Read a single matrix element by (row, col) — both in [0, 3]. Returns 0 for null
-/// matrix or out-of-range indices.
+/// @brief Read one matrix element by zero-based row and column.
+/// @param m Mat4 handle to inspect.
+/// @param row Zero-based row index in the inclusive range [0, 3].
+/// @param col Zero-based column index in the inclusive range [0, 3].
+/// @return Selected element, or 0.0 for an invalid matrix or out-of-range coordinate.
 double rt_mat4_get(void *m, int64_t row, int64_t col) {
     if (!m || row < 0 || row > 3 || col < 0 || col > 3)
         return 0.0;
@@ -416,7 +492,10 @@ double rt_mat4_get(void *m, int64_t row, int64_t col) {
 // Arithmetic
 //=============================================================================
 
-/// @brief Element-wise addition (a + b). Returns zero for invalid inputs.
+/// @brief Add two matrices element by element.
+/// @param a Left-hand Mat4 operand.
+/// @param b Right-hand Mat4 operand.
+/// @return Newly acquired sum, or a zero Mat4 when either operand is invalid.
 void *rt_mat4_add(void *a, void *b) {
     mat4_impl *ma = mat4_checked(a);
     mat4_impl *mb = mat4_checked(b);
@@ -445,7 +524,10 @@ void *rt_mat4_add(void *a, void *b) {
                        r[15]);
 }
 
-/// @brief Element-wise subtraction (a - b). Returns zero for invalid inputs.
+/// @brief Subtract one matrix from another element by element.
+/// @param a Mat4 minuend.
+/// @param b Mat4 subtrahend.
+/// @return Newly acquired difference, or a zero Mat4 when either operand is invalid.
 void *rt_mat4_sub(void *a, void *b) {
     mat4_impl *ma = mat4_checked(a);
     mat4_impl *mb = mat4_checked(b);
@@ -474,8 +556,12 @@ void *rt_mat4_sub(void *a, void *b) {
                        r[15]);
 }
 
-/// @brief Standard matrix multiplication (a × b) — composes transforms in left-to-right order:
-/// `mul(A, B)` then applied to a point gives `A·B·p`. Returns identity for NULL inputs.
+/// @brief Multiply two matrices using standard row-by-column multiplication.
+/// @details For column-vector transforms, `mul(A, B)` applies B first and A second. Invalid
+///          operands produce an identity matrix.
+/// @param a Left-hand Mat4 operand.
+/// @param b Right-hand Mat4 operand.
+/// @return Newly acquired product, or an identity Mat4 when either operand is invalid.
 void *rt_mat4_mul(void *a, void *b) {
     mat4_impl *ma = mat4_checked(a);
     mat4_impl *mb = mat4_checked(b);
@@ -509,7 +595,10 @@ void *rt_mat4_mul(void *a, void *b) {
                        r[15]);
 }
 
-/// @brief Multiply every entry of `m` by scalar `s`. Returns zero for invalid `m`.
+/// @brief Multiply every matrix element by a scalar.
+/// @param m Mat4 operand.
+/// @param s Scalar multiplier.
+/// @return Newly acquired scaled matrix, or a zero Mat4 for an invalid matrix.
 void *rt_mat4_mul_scalar(void *m, double s) {
     mat4_impl *mat = mat4_checked(m);
     if (!mat)
@@ -537,8 +626,13 @@ void *rt_mat4_mul_scalar(void *m, double s) {
                        r[15]);
 }
 
-/// @brief Transform a 3D point through `m` (treats v as homogeneous (x, y, z, 1)). Returns
-/// (0,0,0) for NULL inputs. Use `_transform_vec` for direction vectors (no translation).
+/// @brief Transform a 3D point and perform its homogeneous perspective divide.
+/// @details Treats @p v as `(x, y, z, 1)`. When the resulting w differs from one, divides x, y,
+///          and z by w. Invalid or non-finite input, non-finite output, or a result with
+///          `|w| <= 1e-15` produces a zero vector.
+/// @param m Mat4 transform.
+/// @param v Vec3 point to transform.
+/// @return Newly allocated transformed Vec3, or a zero Vec3 when transformation is invalid.
 void *rt_mat4_transform_point(void *m, void *v) {
     if (!m || !v)
         return rt_vec3_zero();
@@ -572,8 +666,12 @@ void *rt_mat4_transform_point(void *m, void *v) {
     return rt_vec3_new(rx, ry, rz);
 }
 
-/// @brief Transform a 3D direction vector through `m` (treats v as homogeneous (x, y, z, 0) —
-/// translation is ignored). Use for normals/directions, not absolute positions.
+/// @brief Transform a 3D direction using the upper-left 3x3 matrix block.
+/// @details Treats @p v as `(x, y, z, 0)`, so translation and the bottom matrix row do not
+///          contribute. NULL or incompatible inputs produce a zero vector.
+/// @param m Mat4 transform.
+/// @param v Vec3 direction to transform.
+/// @return Newly allocated transformed Vec3, or a zero Vec3 for invalid input.
 void *rt_mat4_transform_vec(void *m, void *v) {
     if (!m || !v)
         return rt_vec3_zero();
@@ -597,7 +695,9 @@ void *rt_mat4_transform_vec(void *m, void *v) {
 // Matrix Operations
 //=============================================================================
 
-/// @brief Return the mathematical transpose of `m` (rows become columns).
+/// @brief Create the mathematical transpose of a matrix.
+/// @param m Mat4 operand.
+/// @return Newly acquired transpose, or an identity Mat4 for an invalid matrix.
 void *rt_mat4_transpose(void *m) {
     mat4_impl *mat = mat4_checked(m);
     if (!mat)
@@ -621,8 +721,9 @@ void *rt_mat4_transpose(void *m) {
                        mat->m[15]);
 }
 
-/// @brief Compute the 4×4 determinant via cofactor expansion. Returns 0 for NULL input. A
-/// near-zero determinant indicates a singular matrix that has no well-defined inverse.
+/// @brief Compute a 4x4 matrix determinant from paired 2x2 minors.
+/// @param m Mat4 operand.
+/// @return Determinant of @p m, or 0.0 for an invalid matrix.
 double rt_mat4_det(void *m) {
     mat4_impl *mat = mat4_checked(m);
     if (!mat)
@@ -653,6 +754,8 @@ double rt_mat4_det(void *m) {
 /// @details Shared core for the trapping public `rt_mat4_inverse` and the
 ///          non-trapping internal `rt_mat4_try_inverse` (VDOC-208). Never
 ///          fabricates an identity result on failure.
+/// @param a Pointer to sixteen row-major matrix elements.
+/// @return Newly acquired inverse Mat4, or NULL for a singular matrix or allocation failure.
 static void *mat4_inverse_or_null(const double *a) {
     double inv[16];
     double det;
@@ -717,11 +820,13 @@ static void *mat4_inverse_or_null(const double *a) {
                        inv[15]);
 }
 
-/// @brief Compute the 4×4 inverse via the cofactor / adjugate formula. Traps on a null/invalid
-/// receiver or a singular matrix (non-finite determinant or `|det| < 1e-15`) rather than returning
-/// identity — identity is a valid transform and would silently move geometry, so failure must be
-/// explicit and consistent with `Mat3.Inverse` (VDOC-208). For affine-only transforms, often faster
-/// to invert the rotation+translation directly.
+/// @brief Invert a matrix using the cofactor and adjugate formula.
+/// @details A NULL or incompatible handle, or a matrix whose determinant is non-finite or has
+///          magnitude below `1e-15`, raises a runtime trap. Failure never fabricates an identity
+///          transform. An allocation failure in the shared inversion routine also yields NULL and
+///          follows the singular-result trap path.
+/// @param m Mat4 operand.
+/// @return Newly acquired inverse Mat4, or NULL after trapping when inversion fails.
 void *rt_mat4_inverse(void *m) {
     if (!m) {
         rt_trap("Mat4.Inverse: null matrix");
@@ -744,6 +849,9 @@ void *rt_mat4_inverse(void *m) {
 ///        null/invalid/singular matrix instead of trapping, so callers can
 ///        degrade gracefully (e.g. treat an uninvertible parent transform as
 ///        the identity frame) rather than crashing (VDOC-208).
+/// @param m Mat4 operand.
+/// @return Newly acquired inverse Mat4, or NULL for invalid input, a singular matrix, or allocation
+///         failure.
 void *rt_mat4_try_inverse(void *m) {
     if (!m)
         return NULL;
@@ -753,7 +861,9 @@ void *rt_mat4_try_inverse(void *m) {
     return mat4_inverse_or_null(mat->m);
 }
 
-/// @brief Element-wise negation (-m). Returns zero for invalid input.
+/// @brief Negate every matrix element.
+/// @param m Mat4 operand.
+/// @return Newly acquired negated matrix, or a zero Mat4 for an invalid matrix.
 void *rt_mat4_neg(void *m) {
     mat4_impl *mat = mat4_checked(m);
     if (!mat)
@@ -785,8 +895,15 @@ void *rt_mat4_neg(void *m) {
 // Comparison
 //=============================================================================
 
-/// @brief Returns 1 if every element of `a` and `b` differs by no more than `epsilon`. Use a
-/// small epsilon (e.g., 1e-6) for floating-point tolerance comparison.
+/// @brief Compare two matrices using an absolute per-element tolerance.
+/// @details Two NULL handles compare equal, while exactly one NULL handle compares unequal. A
+///          non-positive or non-finite tolerance is replaced with `1e-9`. Any NaN element causes
+///          the matrices to compare unequal, and incompatible non-NULL handles also compare
+///          unequal.
+/// @param a Left-hand Mat4 operand.
+/// @param b Right-hand Mat4 operand.
+/// @param epsilon Maximum permitted absolute difference for each corresponding element.
+/// @return 1 when all sixteen elements compare within tolerance, otherwise 0.
 int8_t rt_mat4_eq(void *a, void *b, double epsilon) {
     if (!a || !b)
         return (!a && !b) ? 1 : 0;

@@ -181,11 +181,15 @@ static int contains_crlf(const char *text);
 static int is_server_managed_header_name(const char *name);
 static int response_forces_close(const server_res_t *res);
 
+/// @brief Acquire the mutex protecting HTTPS running state and active sessions.
+/// @param server Initialized server payload; null or partial payloads are no-ops.
 static void https_server_state_lock(rt_http_server_impl *server) {
     if (server && server->state_lock_initialized)
         HTTPS_SERVER_MUTEX_LOCK(&server->state_lock);
 }
 
+/// @brief Release the HTTPS state mutex.
+/// @param server Server whose initialized state mutex is held by the caller.
 static void https_server_state_unlock(rt_http_server_impl *server) {
     if (server && server->state_lock_initialized)
         HTTPS_SERVER_MUTEX_UNLOCK(&server->state_lock);
@@ -225,6 +229,9 @@ static rt_http_server_impl *https_server_checked(void *obj, const char *message)
     return server;
 }
 
+/// @brief Read the HTTPS server's published running flag under its state mutex.
+/// @param server Server to inspect.
+/// @return One while the accept loop is running; zero for stopped or null servers.
 static int https_server_is_running(rt_http_server_impl *server) {
     int running = 0;
     if (!server)
@@ -252,6 +259,13 @@ static int https_server_configuration_blocked(rt_http_server_impl *server) {
     return blocked;
 }
 
+/// @brief Add a TLS session to the synchronized active-connection registry.
+/// @details Duplicate registration succeeds without adding a second entry;
+///          storage grows geometrically up to the implementation cap.
+/// @param server Server that owns the registry.
+/// @param conn Managed TLS session to record.
+/// @return 1 when already or newly registered; 0 for invalid input, capacity exhaustion, or
+///         allocation failure.
 static int https_server_register_active_conn(rt_http_server_impl *server, void *conn) {
     int ok = 1;
     if (!server || !conn)
@@ -283,6 +297,9 @@ static int https_server_register_active_conn(rt_http_server_impl *server, void *
     return ok;
 }
 
+/// @brief Remove a TLS session from the active registry using unordered compaction.
+/// @param server Server that owns the registry.
+/// @param conn TLS session to remove.
 static void https_server_unregister_active_conn(rt_http_server_impl *server, void *conn) {
     if (!server || !conn)
         return;
@@ -298,6 +315,11 @@ static void https_server_unregister_active_conn(rt_http_server_impl *server, voi
     https_server_state_unlock(server);
 }
 
+/// @brief Capture retained references to all active TLS sessions.
+/// @param server Server whose registry is snapshotted.
+/// @param count_out Optional receiver for the number of returned handles.
+/// @return Malloc-owned array of retained session references, or null when empty or allocation
+///         fails.
 static void **https_server_snapshot_active_conns(rt_http_server_impl *server, int *count_out) {
     void **snapshot = NULL;
     int count = 0;
@@ -323,6 +345,8 @@ static void **https_server_snapshot_active_conns(rt_http_server_impl *server, in
     return snapshot;
 }
 
+/// @brief Interrupt blocking I/O on a TLS session's underlying socket.
+/// @param conn TLS session whose native socket is shut down in both directions.
 static void https_server_interrupt_conn(void *conn) {
     socket_t fd = (socket_t)rt_tls_get_socket((rt_tls_session_t *)conn);
     if (fd == INVALID_SOCK)
@@ -891,38 +915,73 @@ static HTTPS_MAYBE_UNUSED char *rt_https_server_test_build_response(int status_c
 // Request Handler
 //=============================================================================
 
+/// @brief Test whether a TLS session still owns a valid native socket.
+/// @param tls TLS session to inspect.
+/// @return Nonzero when a valid socket is attached.
 static int https_conn_is_open(rt_tls_session_t *tls) {
     return tls && rt_tls_get_socket(tls) >= 0;
 }
 
+/// @brief Apply a receive timeout to a TLS session's underlying socket.
+/// @param tls TLS session to configure.
+/// @param timeout_ms Timeout in milliseconds.
 static void https_conn_set_recv_timeout(rt_tls_session_t *tls, int timeout_ms) {
     socket_t fd = tls ? (socket_t)rt_tls_get_socket(tls) : INVALID_SOCK;
     if (fd != INVALID_SOCK)
         set_socket_timeout(fd, timeout_ms, true);
 }
 
+/// @brief Apply a send timeout to a TLS session's underlying socket.
+/// @param tls TLS session to configure.
+/// @param timeout_ms Timeout in milliseconds.
 static void https_conn_set_send_timeout(rt_tls_session_t *tls, int timeout_ms) {
     socket_t fd = tls ? (socket_t)rt_tls_get_socket(tls) : INVALID_SOCK;
     if (fd != INVALID_SOCK)
         set_socket_timeout(fd, timeout_ms, false);
 }
 
+/// @brief Receive decrypted application bytes from a TLS session.
+/// @param tls Source TLS session.
+/// @param buf Destination buffer.
+/// @param len Maximum bytes to receive.
+/// @return Positive byte count on success, or a non-positive TLS transport result.
 static long https_conn_recv(rt_tls_session_t *tls, uint8_t *buf, size_t len) {
     return rt_tls_recv(tls, buf, len);
 }
 
+/// @brief Send a complete plaintext range through a TLS session.
+/// @param tls Destination TLS session.
+/// @param buf Source bytes.
+/// @param len Number of bytes to send.
+/// @return Nonzero only when the TLS layer reports the full requested length.
 static int https_conn_send_all(rt_tls_session_t *tls, const void *buf, size_t len) {
     return rt_tls_send(tls, buf, len) == (long)len;
 }
 
+/// @brief Adapt TLS receive semantics to the HTTP/2 read callback.
+/// @param ctx TLS session context.
+/// @param buf Destination buffer.
+/// @param len Maximum bytes requested.
+/// @return TLS receive byte count or failure result.
 static long https_http2_read(void *ctx, uint8_t *buf, size_t len) {
     return https_conn_recv((rt_tls_session_t *)ctx, buf, len);
 }
 
+/// @brief Adapt TLS whole-range send semantics to the HTTP/2 write callback.
+/// @param ctx TLS session context.
+/// @param buf Source bytes.
+/// @param len Number of bytes to send.
+/// @return Nonzero only when the complete range is sent.
 static int https_http2_write(void *ctx, const uint8_t *buf, size_t len) {
     return https_conn_send_all((rt_tls_session_t *)ctx, buf, len);
 }
 
+/// @brief Convert a decoded HTTP/2 request into the shared handler request representation.
+/// @details Splits query text from the path, copies headers and exact body bytes,
+///          and marks the request as HTTP/2. Failure clears every partial field.
+/// @param src Decoded HTTP/2 request.
+/// @param dst Output shared request payload.
+/// @return 1 on success; 0 for invalid input or allocation failure.
 static int http2_request_to_server_req(const rt_http2_request_t *src, server_req_t *dst) {
     char *path_copy = NULL;
     char *qmark = NULL;
@@ -1149,6 +1208,12 @@ static void https_connection_state_cleanup(rt_http_server_impl *server,
     }
 }
 
+/// @brief Serve sequential HTTP/2 requests over one negotiated TLS session.
+/// @details Builds callback-backed HTTP/2 state, converts requests into shared
+///          handler objects, normalizes response headers, and sends each
+///          response until protocol failure, explicit close, or server stop.
+/// @param server Server owning routes, handlers, and active-session bookkeeping.
+/// @param state Heap-resident connection transaction containing the TLS session.
 static void handle_connection_http2(rt_http_server_impl *server, https_connection_state_t *state) {
     rt_tls_session_t *tls = state->tls;
     rt_http2_io_t io;
@@ -1377,6 +1442,8 @@ typedef struct {
     void *tcp;
 } http_conn_task_t;
 
+/// @brief Close and release an accepted TCP handle that has not transferred its socket to TLS.
+/// @param tcp Managed accepted connection; may be null.
 static void close_accepted_tcp_handle(void *tcp) {
     if (!tcp)
         return;
@@ -1522,7 +1589,9 @@ static void *accept_loop(void *arg)
 /// Traps on invalid port (`<0` or `>65535`) or allocation failure.
 ///
 /// @param port TCP port number, 0..65535; zero requests an ephemeral port at Start().
-/// @return GC-managed `HttpsServer` handle.
+/// @param cert_file Managed path to the PEM certificate chain.
+/// @param key_file Managed path to the PEM private key.
+/// @return Caller-owned managed HttpsServer handle, or null after a returning trap hook.
 void *rt_https_server_new(int64_t port, rt_string cert_file, rt_string key_file) {
     if (port < 0 || port > 65535) {
         rt_trap("HttpsServer: invalid port");
@@ -1705,16 +1774,25 @@ void rt_https_server_get(void *obj, rt_string pattern, rt_string handler_tag) {
 }
 
 /// @brief `HttpsServer.Post(pattern, handler_tag)` — register a POST route.
+/// @param obj HttpsServer handle.
+/// @param pattern URL pattern.
+/// @param handler_tag Handler tag resolved by `BindHandler`.
 void rt_https_server_post(void *obj, rt_string pattern, rt_string handler_tag) {
     add_route_binding(obj, pattern, handler_tag, rt_http_router_post);
 }
 
 /// @brief `HttpsServer.Put(pattern, handler_tag)` — register a PUT route.
+/// @param obj HttpsServer handle.
+/// @param pattern URL pattern.
+/// @param handler_tag Handler tag resolved by `BindHandler`.
 void rt_https_server_put(void *obj, rt_string pattern, rt_string handler_tag) {
     add_route_binding(obj, pattern, handler_tag, rt_http_router_put);
 }
 
 /// @brief `HttpsServer.Delete(pattern, handler_tag)` — register a DELETE route.
+/// @param obj HttpsServer handle.
+/// @param pattern URL pattern.
+/// @param handler_tag Handler tag resolved by `BindHandler`.
 void rt_https_server_del(void *obj, rt_string pattern, rt_string handler_tag) {
     add_route_binding(obj, pattern, handler_tag, rt_http_router_delete);
 }
@@ -2140,6 +2218,13 @@ static void https_sync_request_cleanup(rt_http_server_impl *server,
     https_sync_request_release_managed(server, state);
 }
 
+/// @brief Process one complete HTTP/1 request synchronously without TLS transport.
+/// @details Uses the same parser, router, handler dispatch, and serializer as
+///          live HTTPS HTTP/1 connections while registering an activity slot
+///          that blocks concurrent configuration mutation.
+/// @param obj HttpsServer handle; null returns an empty String.
+/// @param raw_request Complete request bytes in a managed String.
+/// @return Caller-owned wire-response String, or null after a returning trap hook.
 HTTPS_MAYBE_UNUSED void *rt_https_server_process_request(void *obj, rt_string raw_request) {
     if (!obj)
         return rt_string_from_bytes("", 0);

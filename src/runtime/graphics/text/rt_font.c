@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_font.c
+// File: src/runtime/graphics/text/rt_font.c
 // Purpose: Embedded 8×8 bitmap font for software text rendering in Zanna.
 //   Provides a statically compiled monospace glyph table covering printable
 //   ASCII (code points 32–126). Glyphs are drawn by rt_pixels_draw_text() and
@@ -25,16 +25,16 @@
 //     level; callers scale by repeating pixels or using a zoom factor).
 //   - Coverage: ASCII 32 (space) through 126 (~). Glyphs outside this range
 //     map to the space glyph (all-zero bytes) to avoid out-of-bounds access.
-//   - The font table is a plain C array with internal linkage (not exported).
-//     It is the only content of this file — all rendering logic lives in
-//     rt_pixels.c and rt_drawing.c.
+//   - The font table has internal linkage; consumers access it only through
+//     rt_font_get_glyph(). All rendering logic lives in the drawing modules.
 //
 // Ownership/Lifetime:
 //   - Static read-only data (no allocation, no cleanup needed).
 //
-// Links: src/runtime/graphics/rt_font.h (extern declaration of the table),
-//        src/runtime/graphics/rt_pixels.c (rt_pixels_draw_text consumer),
-//        src/runtime/graphics/rt_graphics.c (Canvas.Text implementation)
+// Links: src/runtime/graphics/text/rt_font.h,
+//        src/runtime/graphics/2d/rt_pixels_draw.c,
+//        src/runtime/graphics/2d/rt_drawing.c,
+//        src/runtime/graphics/3d/render/rt_canvas3d_overlay.c
 //
 //===----------------------------------------------------------------------===//
 /// @brief Embedded 8x8 bitmap font data and accessors.
@@ -251,8 +251,9 @@ static const uint8_t empty_glyph[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 /// @brief Retrieve the bitmap glyph for a character.
 /// @details Returns a pointer to the glyph data for printable ASCII characters
 ///          (32-126). Characters outside that range return @ref empty_glyph.
-/// @param c ASCII character code.
-/// @return Pointer to 8 bytes of glyph data.
+/// @param c Integer codepoint to look up.
+/// @return A borrowed pointer to exactly eight immutable, process-lifetime row
+/// bytes. Unsupported values return the all-zero fallback glyph.
 const uint8_t *rt_font_get_glyph(int c) {
     if (c >= 32 && c <= 126)
         return font_data[c - 32];
@@ -261,14 +262,14 @@ const uint8_t *rt_font_get_glyph(int c) {
 
 /// @brief Return the width of a font glyph in pixels.
 /// @details The font is fixed-width and always 8 pixels wide.
-/// @return Glyph width in pixels (8).
+/// @return The constant glyph width, 8 pixels.
 int rt_font_char_width(void) {
     return 8;
 }
 
 /// @brief Return the height of a font glyph in pixels.
 /// @details The font is fixed-height and always 8 pixels tall.
-/// @return Glyph height in pixels (8).
+/// @return The constant glyph height, 8 pixels.
 int rt_font_char_height(void) {
     return 8;
 }

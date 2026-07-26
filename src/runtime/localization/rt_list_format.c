@@ -20,6 +20,8 @@
 //
 // Ownership/Lifetime:
 //   - Handles are rt_obj_new_i64-allocated; GC-managed.
+//   - Each instance retains its Locale handle and immutable locale-data snapshot.
+//   - Every format operation returns a fresh runtime string reference.
 //
 // Links: src/runtime/localization/rt_list_format.h (interface),
 //        src/runtime/localization/rt_locale_data.h (template storage).
@@ -52,17 +54,23 @@ typedef struct rt_list_format_inst {
 } rt_list_format_inst_t;
 
 /// @brief Unchecked cast of an opaque handle to the ListFormat instance.
+/// @param obj Valid ListFormat payload.
+/// @return The same pointer interpreted as @ref rt_list_format_inst_t.
 static rt_list_format_inst_t *as_fmt(void *obj) {
     return (rt_list_format_inst_t *)obj;
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Owned runtime-managed handle reference; NULL is a no-op.
 static void lf_release_handle(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief GC finalizer: release the formatter's locale data and locale handle.
+/// @details The Locale and data snapshot were retained independently at
+///          construction and are each released exactly once.
+/// @param obj ListFormat payload being finalized; NULL is a no-op.
 static void lf_finalizer(void *obj) {
     rt_list_format_inst_t *f = (rt_list_format_inst_t *)obj;
     if (!f)
@@ -80,6 +88,8 @@ static void lf_finalizer(void *obj) {
 /// @brief Allocate and initialize a GC-managed ListFormat for @p locale.
 /// @details Retains the locale handle + its data. Traps on allocation failure;
 ///          installs @ref lf_finalizer.
+/// @param locale Optional Locale handle to retain; NULL selects invariant fallback data.
+/// @return Fresh GC-managed ListFormat, or NULL after an allocation trap.
 static void *lf_alloc(void *locale) {
     rt_list_format_inst_t *f =
         (rt_list_format_inst_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_list_format_inst_t));
@@ -96,6 +106,10 @@ static void *lf_alloc(void *locale) {
     return f;
 }
 
+/// @brief Create a ListFormat bound to the process's current Locale snapshot.
+/// @details The locale manager's temporary reference is released after the
+///          formatter acquires its own Locale and data references.
+/// @return Fresh GC-managed ListFormat, or NULL after an allocation trap.
 void *rt_list_format_new(void) {
     void *current = rt_locale_manager_current();
     void *fmt = lf_alloc(current);
@@ -103,10 +117,16 @@ void *rt_list_format_new(void) {
     return fmt;
 }
 
+/// @brief Create a ListFormat bound to a specified Locale.
+/// @param locale Locale retained by the result; may be NULL for invariant data.
+/// @return Fresh GC-managed ListFormat, or NULL after an allocation trap.
 void *rt_list_format_for_locale(void *locale) {
     return lf_alloc(locale);
 }
 
+/// @brief Get the Locale retained by a ListFormat.
+/// @param self Valid ListFormat handle; may be NULL.
+/// @return Borrowed Locale handle, or NULL when absent.
 void *rt_list_format_get_locale(void *self) {
     return self ? as_fmt(self)->locale : NULL;
 }
@@ -128,7 +148,13 @@ static int lf_append_bytes_checked(rt_string_builder *sb, const char *bytes, siz
 }
 
 /// @brief Substitute {0}→@p a and {1}→@p b into @p tmpl (default "{0}, {1}").
-/// @return A new string; NULL operands contribute empty text.
+/// @details Placeholders may appear repeatedly and any other template byte is
+///          copied literally. NULL operands contribute empty text. Builder or
+///          invalid-string failure discards partial output and returns empty.
+/// @param tmpl NUL-terminated template, or NULL for the comma-separated fallback.
+/// @param a First runtime string operand; may be NULL.
+/// @param b Second runtime string operand; may be NULL.
+/// @return Fresh expanded runtime string.
 static rt_string expand_pair(const char *tmpl, rt_string a, rt_string b) {
     if (!tmpl)
         tmpl = "{0}, {1}";
@@ -173,6 +199,11 @@ expand_error:
 /// @details 0/1 items are trivial; 2 use the "pair" template; 3+ fold from the
 ///          right ("end", then "middle"s, then "start") so nested expansions
 ///          place separators exactly as CLDR specifies. Returns a new string.
+///          Each retained reference returned by List.Get is either transferred
+///          for the single-item result or released after expansion.
+/// @param items Runtime List containing strings or NULL elements; may be NULL.
+/// @param style Locale template set containing pair/start/middle/end patterns.
+/// @return Fresh formatted runtime string; empty for NULL/empty input.
 static rt_string join_with_style(void *items, const rt_locdata_list_style_t *style) {
     if (!items)
         return rt_string_from_bytes("", 0);
@@ -221,24 +252,42 @@ static rt_string join_with_style(void *items, const rt_locdata_list_style_t *sty
 // Public API
 //===----------------------------------------------------------------------===//
 
+/// @brief Join a string List with the Locale's conjunction templates.
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted runtime string, or a fresh empty string for NULL self/list.
 rt_string rt_list_format_and(void *self, void *items) {
     if (!self)
         return rt_string_from_bytes("", 0);
     return join_with_style(items, &as_fmt(self)->data->list_format.and_p);
 }
 
+/// @brief Join a string List with the Locale's disjunction templates.
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted runtime string, or a fresh empty string for NULL self/list.
 rt_string rt_list_format_or(void *self, void *items) {
     if (!self)
         return rt_string_from_bytes("", 0);
     return join_with_style(items, &as_fmt(self)->data->list_format.or_p);
 }
 
+/// @brief Join a string List with the Locale's unit-list templates.
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted runtime string, or a fresh empty string for NULL self/list.
 rt_string rt_list_format_unit(void *self, void *items) {
     if (!self)
         return rt_string_from_bytes("", 0);
     return join_with_style(items, &as_fmt(self)->data->list_format.unit_p);
 }
 
+/// @brief Join a string List using the current short-form behavior.
+/// @details The present locale schema has no separate short template set, so
+///          this delegates exactly to @ref rt_list_format_and.
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted runtime string.
 rt_string rt_list_format_short(void *self, void *items) {
     // Phase 4: baked en-US has a single set of and_p templates used for both
     // the default and the short form. A future phase will introduce

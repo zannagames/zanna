@@ -20,7 +20,10 @@
 //   - parse_central_directory fills the archive's entry array (owned by it);
 //     read_entry_data returns a fresh Bytes object owned by the caller.
 //
-// Links: src/runtime/io/rt_archive.c (core/API/write), rt_archive_internal.h
+// Links: src/runtime/io/rt_archive.c,
+//        src/runtime/io/rt_archive_internal.h,
+//        src/runtime/io/rt_compress.h,
+//        src/runtime/core/rt_crc32.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,16 +44,22 @@
 #include <string.h>
 
 /// @brief Read a little-endian uint16 from `p` (file-local copy).
+/// @param p Pointer to at least two accessible encoded bytes.
+/// @return Decoded host-order 16-bit value.
 static inline uint16_t read_u16(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 
 /// @brief Read a little-endian uint32 from `p` (file-local copy).
+/// @param p Pointer to at least four accessible encoded bytes.
+/// @return Decoded host-order 32-bit value.
 static inline uint32_t read_u32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /// @brief Direct pointer to a Bytes GC object's buffer (file-local copy).
+/// @param obj Runtime Bytes handle.
+/// @return Borrowed pointer to the object's writable byte storage.
 static inline uint8_t *bytes_data(void *obj) {
     return rt_bytes_data(obj);
 }

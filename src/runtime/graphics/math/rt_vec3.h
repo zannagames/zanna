@@ -3,7 +3,7 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
-// File: src/runtime/graphics/rt_vec3.h
+// File: src/runtime/graphics/math/rt_vec3.h
 // Purpose: 3D vector math utilities for Zanna.Vec3 with pure arithmetic helpers and explicit
 // in-place mutators for hot script paths.
 //
@@ -11,14 +11,16 @@
 //   - Pure arithmetic operations return new Vec3 objects.
 //   - Mutator functions are explicitly named Set*/CopyFrom and update the receiver in place.
 //   - All operations are done in double-precision floating point.
-//   - Normalize returns Vec3(0,0,0) for zero-length vectors.
+//   - Normalize returns Vec3(0,0,0) for zero or non-finite length.
 //   - Cross product follows the right-hand rule.
 //
 // Ownership/Lifetime:
 //   - Vec3 objects are runtime-managed (heap-allocated, GC'd via thread-local pool).
 //   - The thread-local pool (P2-3.6) resurrects Vec3 objects on finalization for reuse.
 //
-// Links: src/runtime/graphics/rt_vec3.c (implementation)
+// Links: src/runtime/graphics/math/rt_vec3.c (implementation),
+//        src/runtime/graphics/math/rt_mat4.h (3D matrix transforms),
+//        src/runtime/graphics/math/rt_quat.h (quaternion rotations)
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -35,48 +37,52 @@ extern "C" {
 /// @param x The x component.
 /// @param y The y component.
 /// @param z The z component.
-/// @return A new Vec3 object with the specified components.
+/// @return New runtime-managed Vec3, or NULL after trapping if allocation fails.
 void *rt_vec3_new(double x, double y, double z);
 
 /// @brief Create a new Vec3 at origin (0, 0, 0).
-/// @return A new Vec3 object with all components set to zero.
+/// @return New zero Vec3, or NULL after trapping if allocation fails.
 void *rt_vec3_zero(void);
 
 /// @brief Create a new Vec3 (1, 1, 1).
-/// @return A new Vec3 object with all components set to one.
+/// @return New `(1, 1, 1)` Vec3, or NULL after trapping if allocation fails.
 void *rt_vec3_one(void);
 
 /// @brief Get the X component.
 /// @param v The Vec3 object.
-/// @return The x component of the vector.
+/// @return Stored x component, or 0.0 after trapping for an invalid handle.
 double rt_vec3_x(void *v);
 
 /// @brief Get the Y component.
 /// @param v The Vec3 object.
-/// @return The y component of the vector.
+/// @return Stored y component, or 0.0 after trapping for an invalid handle.
 double rt_vec3_y(void *v);
 
 /// @brief Get the Z component.
 /// @param v The Vec3 object.
-/// @return The z component of the vector.
+/// @return Stored z component, or 0.0 after trapping for an invalid handle.
 double rt_vec3_z(void *v);
 
 /// @brief Set the X component in place.
+/// @details An invalid handle raises a runtime trap and is left untouched.
 /// @param v The Vec3 object.
 /// @param x New X component.
 void rt_vec3_set_x(void *v, double x);
 
 /// @brief Set the Y component in place.
+/// @details An invalid handle raises a runtime trap and is left untouched.
 /// @param v The Vec3 object.
 /// @param y New Y component.
 void rt_vec3_set_y(void *v, double y);
 
 /// @brief Set the Z component in place.
+/// @details An invalid handle raises a runtime trap and is left untouched.
 /// @param v The Vec3 object.
 /// @param z New Z component.
 void rt_vec3_set_z(void *v, double z);
 
 /// @brief Set all components in place.
+/// @details An invalid handle raises a runtime trap and is left untouched.
 /// @param v The Vec3 object.
 /// @param x New X component.
 /// @param y New Y component.
@@ -84,6 +90,7 @@ void rt_vec3_set_z(void *v, double z);
 void rt_vec3_set(void *v, double x, double y, double z);
 
 /// @brief Copy all components from another Vec3 into @p v.
+/// @details Both handles are validated before assignment; invalid input traps without copying.
 /// @param v Destination Vec3 object.
 /// @param other Source Vec3 object.
 void rt_vec3_copy_from(void *v, void *other);
@@ -110,8 +117,8 @@ void *rt_vec3_mul(void *v, double s);
 
 /// @brief Divide vector by scalar: v / s.
 /// @param v The Vec3 operand.
-/// @param s The scalar divisor (must not be zero).
-/// @return A new Vec3 with each component divided by @p s.
+/// @param s The scalar divisor; it must be finite and nonzero.
+/// @return New quotient Vec3, or NULL after trapping for invalid input or allocation failure.
 void *rt_vec3_div(void *v, double s);
 
 /// @brief Dot product of two vectors.
@@ -129,7 +136,8 @@ void *rt_vec3_cross(void *a, void *b);
 
 /// @brief Length (magnitude) of vector.
 /// @param v The Vec3 object.
-/// @return The Euclidean length sqrt(x^2 + y^2 + z^2).
+/// @return Overflow-resistant Euclidean length, positive infinity for non-finite components, or
+///         0.0 after an invalid-handle trap.
 double rt_vec3_len(void *v);
 
 /// @brief Squared length of vector (avoids sqrt).
@@ -138,10 +146,11 @@ double rt_vec3_len(void *v);
 ///         distance comparisons without the cost of a square root.
 double rt_vec3_len_sq(void *v);
 
-/// @brief Normalize vector to unit length (returns zero vector if length is zero).
+/// @brief Normalize a vector to unit length.
 /// @param v The Vec3 object.
 /// @return A new unit-length Vec3 pointing in the same direction as @p v,
-///         or the zero vector if the input length is zero.
+///         the zero vector if its length is zero or non-finite, or NULL after an invalid-handle
+///         or allocation trap.
 void *rt_vec3_norm(void *v);
 
 /// @brief Distance between two points (vectors).
@@ -163,19 +172,60 @@ void *rt_vec3_lerp(void *a, void *b, double t);
 void *rt_vec3_neg(void *v);
 
 /* Game math helpers */
-/// @brief Reflect @p v about a surface @p normal (normal assumed unit length).
+/// @brief Reflect a vector across a surface normal.
+/// @details Normalizes @p normal internally. NULL, non-finite, or degenerate inputs produce a zero
+///          vector; incompatible non-NULL handles also raise a runtime trap.
+/// @param v Vec3 incident vector.
+/// @param normal Vec3 surface normal; it need not be normalized.
+/// @return New reflected Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_reflect(void *v, void *normal);
-/// @brief Vector projection of @p v onto @p onto.
+
+/// @brief Project a vector onto the line spanned by another vector.
+/// @details NULL, non-finite, or degenerate inputs produce a zero vector; incompatible non-NULL
+///          handles also raise a runtime trap.
+/// @param v Vec3 to project.
+/// @param onto Vec3 defining the target line.
+/// @return New projected Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_project(void *v, void *onto);
-/// @brief Return @p v scaled down so its length does not exceed @p max_len.
+
+/// @brief Clamp a vector's magnitude to a maximum length.
+/// @details Vectors within the limit are copied unchanged. Invalid, non-positive, or non-finite
+///          input produces zero; an incompatible vector handle also traps.
+/// @param v Vec3 to clamp.
+/// @param max_len Maximum permitted positive magnitude.
+/// @return New clamped Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_clamp_len(void *v, double max_len);
-/// @brief Step from @p current toward @p target by at most @p max_delta units.
+
+/// @brief Move a point toward a target by at most a specified distance.
+/// @details Snaps to the target when reachable. Negative/non-finite deltas or non-finite
+///          separations return a copy of @p current; invalid vector handles produce zero.
+/// @param current Vec3 starting point.
+/// @param target Vec3 destination point.
+/// @param max_delta Maximum distance to move.
+/// @return New moved Vec3, a current-position copy for an unusable delta, or zero for invalid
+///         vector handles.
 void *rt_vec3_move_towards(void *current, void *target, double max_delta);
-/// @brief Unsigned angle (radians) between vectors @p a and @p b.
+
+/// @brief Compute the unsigned angle between two vectors.
+/// @param a First Vec3 direction.
+/// @param b Second Vec3 direction.
+/// @return Angle in [0, pi] radians, or 0.0 for invalid, non-finite, or near-zero input.
 double rt_vec3_angle(void *a, void *b);
-/// @brief Component-wise minimum of @p a and @p b.
+
+/// @brief Compute the component-wise minimum of two vectors.
+/// @details Uses `fmin` per component. Invalid handles produce zero; incompatible non-NULL handles
+///          also trap.
+/// @param a First Vec3 operand.
+/// @param b Second Vec3 operand.
+/// @return New component-wise minimum Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_min(void *a, void *b);
-/// @brief Component-wise maximum of @p a and @p b.
+
+/// @brief Compute the component-wise maximum of two vectors.
+/// @details Uses `fmax` per component. Invalid handles produce zero; incompatible non-NULL handles
+///          also trap.
+/// @param a First Vec3 operand.
+/// @param b Second Vec3 operand.
+/// @return New component-wise maximum Vec3, or a zero Vec3 for invalid input.
 void *rt_vec3_max(void *a, void *b);
 
 #ifdef __cplusplus

@@ -41,11 +41,10 @@ rt_inputmgr rt_inputmgr_new(void);
 /// @param mgr The input manager to destroy. Passing NULL is a no-op.
 void rt_inputmgr_destroy(rt_inputmgr mgr);
 
-/// @brief Advances the input manager by one frame, latching edge states.
-///
-/// Must be called exactly once per frame after the platform has polled its
-/// input events (e.g., after Canvas.Poll()). This snapshots the current
-/// input state and computes just-pressed / just-released edges.
+/// @brief Advance per-manager debounce timers by one frame.
+/// @details Call once per frame after platform event polling. Keyboard, mouse, and gamepad edges
+///          are owned by the lower input layer; this manager update only decrements positive
+///          debounce timers. Skipping an update therefore delays debounce expiry.
 /// @param mgr The input manager to update.
 void rt_inputmgr_update(rt_inputmgr mgr);
 
@@ -159,9 +158,13 @@ int64_t rt_inputmgr_scroll_y(rt_inputmgr mgr);
 int64_t rt_inputmgr_scroll_x(rt_inputmgr mgr);
 
 /// @brief Retrieves the vertical scroll wheel delta for this frame with full precision.
+/// @param mgr The input manager; global mouse state is queried directly.
+/// @return Fractional vertical scroll amount (positive = up).
 double rt_inputmgr_scroll_yf(rt_inputmgr mgr);
 
 /// @brief Retrieves the horizontal scroll wheel delta for this frame with full precision.
+/// @param mgr The input manager; global mouse state is queried directly.
+/// @return Fractional horizontal scroll amount (positive = right).
 double rt_inputmgr_scroll_xf(rt_inputmgr mgr);
 
 //=============================================================================

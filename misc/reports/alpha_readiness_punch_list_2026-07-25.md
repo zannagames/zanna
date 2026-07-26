@@ -8,6 +8,8 @@ editors, reliable packaging, quality installers, functionally complete zannalib)
 from this list and tracked separately (see "Deferred: security hardening track"). Memory-safety
 defects that manifest as crashes or corruption are retained regardless of which module they
 live in.
+**Execution plan:** `misc/plans/alpha_push_1/README.md` sequences these findings into phases and
+records the owner's scope decisions. This document is the backlog; that one is the schedule.
 
 Severity legend:
 

@@ -14,8 +14,9 @@
 //
 // Key invariants:
 //   - Every field pointer is a string literal with static storage duration;
-//     the record is fully immutable and shareable across threads without
-//     synchronization.
+//     semantic locale content is immutable and shareable across threads.
+//   - `formatter_refs` is the sole mutable field and is updated atomically by
+//     LocaleManager when formatters capture/release this record.
 //   - arena is NULL; LocaleManager treats this as "do not free on Unload".
 //   - Plural rules match CLDR 44 cardinal/ordinal for en: cardinal (one:
 //     i=1 and v=0, other), ordinal (one: n mod 10 = 1 and n mod 100 != 11,

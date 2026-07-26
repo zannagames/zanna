@@ -123,16 +123,79 @@ typedef struct {
 // Shared lookup table + decode helpers (defined in rt_theora.c)
 //=============================================================================
 
+/// @brief Spec-defined mapping from coefficient scan order to raster coefficient index.
 extern const uint8_t theora_zigzag[64];
 
+/// @brief Initialize a sticky-failure MSB-first packet bit reader.
+/// @param br Writable reader state.
+/// @param data Borrowed packet bytes.
+/// @param len Accessible packet length.
 void br_init(bitreader_t *br, const uint8_t *data, size_t len);
+
+/// @brief Clamp an integer to inclusive bounds.
+/// @param v Value to clamp.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return Bounded value.
 int clampi(int v, int lo, int hi);
+
+/// @brief Wrap a signed value to the low sixteen bits without signed-overflow behavior.
+/// @param v Value to truncate.
+/// @return Low sixteen bits interpreted as int16_t.
 int16_t trunc_i16(int32_t v);
+
+/// @brief Map a macroblock prediction mode to its reference-frame slot.
+/// @param mode Decoded Theora macroblock mode.
+/// @return 0 for previous, 1 for last, or 2 for golden reference.
 int theora_ref_index_for_mode(int mode);
+
+/// @brief Decode frame type and one to three quantizer indices.
+/// @param dec Decoder whose state determines whether an inter frame is currently legal.
+/// @param br Bit reader positioned at a video packet.
+/// @param fh Output frame-header state.
+/// @return 0 on success, otherwise -1.
 int decode_frame_header(theora_decoder_t *dec, bitreader_t *br, theora_frame_header_t *fh);
+
+/// @brief Decode per-block coded flags for an intra or inter frame.
+/// @param dec Decoder geometry.
+/// @param priv Private block/superblock state receiving flags.
+/// @param br Bit reader positioned at block flags.
+/// @param frame_type 0 for intra or 1 for inter.
+/// @return 0 on success, otherwise -1.
 int decode_block_flags(theora_decoder_t *dec, theora_priv_t *priv, bitreader_t *br, int frame_type);
+
+/// @brief Decode the prediction mode of every macroblock.
+/// @param dec Decoder context.
+/// @param priv Private macroblock state receiving modes.
+/// @param br Bit reader positioned at the mode scheme.
+/// @param frame_type 0 for intra or 1 for inter.
+/// @return 0 on success, otherwise -1.
 int decode_mb_modes(theora_decoder_t *dec, theora_priv_t *priv, bitreader_t *br, int frame_type);
+
+/// @brief Decode and distribute motion vectors for all coded macroblocks.
+/// @param dec Decoder supplying chroma geometry.
+/// @param priv Private block state receiving vectors.
+/// @param br Bit reader positioned at motion-vector data.
+/// @param frame_type 0 for intra or 1 for inter.
+/// @return 0 on success, otherwise -1.
 int decode_motion_vectors(theora_decoder_t *dec, theora_priv_t *priv, bitreader_t *br, int frame_type);
+
+/// @brief Decode each coded block's frame-quantizer selector.
+/// @param priv Private block state receiving QII values.
+/// @param br Bit reader positioned at QII runs.
+/// @param nqi Number of available frame quantizer indices.
+/// @return 0 on success, otherwise -1.
 int decode_qiis(theora_priv_t *priv, bitreader_t *br, int nqi);
+
+/// @brief Decode all Huffman-coded transform coefficients for coded blocks.
+/// @param priv Private Huffman and coefficient state.
+/// @param br Bit reader positioned at coefficient data.
+/// @return 0 on success, otherwise -1.
 int decode_coefficients(theora_priv_t *priv, bitreader_t *br);
+
+/// @brief Predict one block's absolute DC coefficient from compatible neighbors.
+/// @param priv Private block layout, mode, and coefficient state.
+/// @param lastdc Last DC value for each reference-frame slot.
+/// @param bi Coded-order block index.
+/// @return Predicted DC coefficient.
 int compute_dc_pred(const theora_priv_t *priv, const int16_t lastdc[3], int bi);

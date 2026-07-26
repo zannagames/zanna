@@ -15,8 +15,8 @@
 //   - macOS: uses _NSGetExecutablePath + realpath + dirname.
 //   - Windows: uses a growing GetModuleFileNameW buffer + strict UTF-8 conversion.
 //   - Linux: uses readlink("/proc/self/exe") + dirname.
-//   - Windows and macOS grow their probe buffers; Linux uses PATH_MAX for the
-//     procfs symlink. The runtime wrapper falls back to "." after probe errors.
+//   - Windows, macOS, and Linux size or grow probe buffers with explicit truncation handling.
+//     The runtime wrapper falls back to "." after probe errors.
 //   - Returned C strings are malloc'd; caller must free.
 //   - Returned runtime strings are GC-managed.
 //
@@ -24,7 +24,8 @@
 //   - rt_path_exe_dir_cstr() returns a malloc'd string (caller frees).
 //   - rt_path_exe_dir_str() returns a GC-managed runtime string.
 //
-// Links: rt_asset.c (consumer), rt_path.c (path utilities)
+// Links: src/runtime/io/rt_asset.c (consumer),
+//        src/runtime/io/rt_path.c and src/runtime/io/rt_path.h (path API)
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,8 +50,10 @@
 // ─── dirname helper ─────────────────────────────────────────────────────────
 
 /// @brief Strip the last path component from a path string (in-place).
-/// @param path  Mutable null-terminated string. Modified to contain only the
-///              directory portion.
+/// @details Recognizes both slash spellings because Windows paths may contain either. When no
+///          separator exists, replaces the input with `"."`.
+/// @param[in,out] path Mutable null-terminated string changed to its directory prefix; NULL is
+///                     ignored.
 static void strip_filename(char *path) {
     if (!path)
         return;
@@ -71,8 +74,11 @@ static void strip_filename(char *path) {
 // ─── rt_path_exe_dir_cstr ───────────────────────────────────────────────────
 
 /// @brief Get the directory of the running executable as a C string.
-/// @return malloc'd string (caller must free), NULL for Windows/Linux probe failure,
-///         or "." for macOS/unknown-platform fallback.
+/// @details Uses native wide paths on Windows, dynamically resolved `_NSGetExecutablePath` plus
+///          `realpath` on macOS, and the `/proc/self/exe` symlink on Linux. Probe buffers grow
+///          until the full executable path fits, subject to a defensive upper bound.
+/// @return Malloc-owned directory string for the caller to free; NULL on supported-platform probe,
+///         conversion, or allocation failure. Unknown platforms return an allocated `"."`.
 char *rt_path_exe_dir_cstr(void) {
 #if defined(_WIN32)
     // Windows: GetModuleFileNameW into a growing buffer so long paths and paths
@@ -195,7 +201,10 @@ char *rt_path_exe_dir_cstr(void) {
 // ─── rt_path_exe_dir_str (runtime API) ──────────────────────────────────────
 
 /// @brief Zanna.IO.Path.ExeDir() — returns directory of the running executable.
-/// @return Runtime string (GC-managed). Returns "." if detection fails.
+/// @details Copies and frees the native C-string result. A failed native probe is converted to the
+///          current-directory fallback.
+/// @return Caller-owned runtime string containing the executable directory, or `"."` when
+///         detection fails.
 rt_string rt_path_exe_dir_str(void) {
     char *dir = rt_path_exe_dir_cstr();
     if (!dir)

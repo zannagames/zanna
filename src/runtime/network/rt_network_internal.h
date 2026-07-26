@@ -50,6 +50,9 @@
 // Typed Network Trap
 //=============================================================================
 
+/// @brief Raise a network trap with a typed public error code.
+/// @param msg NUL-terminated diagnostic text.
+/// @param err_code Public @c Err_* classification.
 extern void rt_trap_net(const char *msg, int err_code);
 
 /// @brief Map a captured native socket error to an `Err_*` network code.
@@ -109,12 +112,20 @@ static inline int net_classify_errno(void) {
 // Internal Bytes Access
 //=============================================================================
 
+/// @brief Borrow mutable payload storage from a managed Bytes object.
+/// @details Calls through a local function pointer to preserve the internal ABI
+///          boundary used across networking translation units.
+/// @param obj Managed Bytes receiver.
+/// @return Borrowed byte pointer, or NULL when unavailable.
 static inline uint8_t *bytes_data(void *obj) {
     uint8_t *(*bytes_data_fn)(void *) = rt_bytes_data;
     uint8_t *data = bytes_data_fn(obj);
     return data;
 }
 
+/// @brief Read the logical length of a managed Bytes object.
+/// @param obj Managed Bytes receiver.
+/// @return Logical byte count reported by the runtime Bytes API.
 static inline int64_t bytes_len(void *obj) {
     int64_t (*bytes_len_fn)(void *) = rt_bytes_len;
     int64_t len = bytes_len_fn(obj);
@@ -130,6 +141,10 @@ static inline int64_t bytes_len(void *obj) {
 /// inet_pton, and similar APIs stop at the first NUL. Return 0 for NULL,
 /// invalid, oversized, or embedded-NUL strings so public wrappers can reject
 /// them before they reach the OS.
+/// @param value Candidate managed String.
+/// @param out Receives a borrowed NUL-terminated pointer on success.
+/// @param len_out Receives the logical byte length on success.
+/// @return One for a valid NUL-free String and complete outputs, otherwise zero.
 int rt_net_cstr_no_embedded_nul(rt_string value, const char **out, size_t *len_out);
 
 //=============================================================================
@@ -137,10 +152,14 @@ int rt_net_cstr_no_embedded_nul(rt_string value, const char **out, size_t *len_o
 //=============================================================================
 
 /// @brief Convert a public int64 millisecond timeout to the socket helper range.
+/// @param timeout_ms Candidate nonnegative timeout.
+/// @param out_timeout_ms Receives the narrowed timeout on success.
 /// @return 1 on success, 0 if negative or larger than INT_MAX.
 int rt_net_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms);
 
-/// @brief Convert a positive byte count to an int-sized socket API length.
+/// @brief Convert a nonnegative byte count to an int-sized socket API length.
+/// @param byte_count Candidate count.
+/// @param out_len Receives the narrowed count on success.
 /// @return 1 on success, 0 if the count is larger than INT_MAX.
 int rt_net_i64_len_to_int(int64_t byte_count, int *out_len);
 
@@ -154,6 +173,7 @@ int rt_net_i64_len_to_int(int64_t byte_count, int *out_len);
 int wait_socket(socket_t sock, int timeout_ms, bool for_write);
 
 /// @brief Access the raw socket owned by a Tcp object.
+/// @param obj Candidate Tcp handle.
 /// @return Socket descriptor, or INVALID_SOCK for NULL/invalid objects.
 socket_t rt_tcp_socket_fd(void *obj);
 
@@ -202,4 +222,5 @@ uint64_t rt_tcp_pool_owner(void *obj);
 
 /// @brief Detach the raw socket from a Tcp object without closing it.
 /// @details Marks the Tcp object closed and returns ownership of the socket to the caller.
+/// @param obj Tcp handle whose descriptor ownership was obtained by the caller.
 void rt_tcp_detach_socket(void *obj);

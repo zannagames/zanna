@@ -37,9 +37,9 @@
 //     finalizer path; non-pooled Vec2s are collected by the standard GC.
 //     Callers must not free Vec2s manually.
 //
-// Links: src/runtime/graphics/rt_vec2.h (public API),
-//        src/runtime/graphics/rt_vec3.c (3D counterpart),
-//        src/runtime/graphics/rt_mat3.c (matrix–vector transform consumer)
+// Links: src/runtime/graphics/math/rt_vec2.h (public API),
+//        src/runtime/graphics/math/rt_vec3.c (3D counterpart),
+//        src/runtime/graphics/math/rt_mat3.c (matrix-vector transform consumer)
 //
 //===----------------------------------------------------------------------===//
 
@@ -79,6 +79,7 @@ static _Thread_local int vec2_pool_top_ = 0;
 /// push it back onto the pool, where the next `rt_vec2_new` can
 /// claim it for free. Cap is `VEC2_POOL_CAPACITY` per thread; once
 /// full, excess Vec2s fall through to normal heap free.
+/// @param p Vec2 payload whose finalizer is running.
 static void vec2_pool_return(void *p) {
     if (vec2_pool_top_ < VEC2_POOL_CAPACITY) {
         rt_obj_resurrect(p);                       // refcount 0 → 1
@@ -138,6 +139,9 @@ static ZannaVec2 *vec2_checked(void *v, const char *op) {
 /// @details Uses `hypot` instead of `sqrt(x*x + y*y)` so large finite components
 ///          do not overflow while squaring. Non-finite inputs return `INFINITY`,
 ///          letting normalization callers fall back deterministically.
+/// @param x Vector x component.
+/// @param y Vector y component.
+/// @return Euclidean length, or positive infinity when either component is non-finite.
 static double vec2_safe_len(double x, double y) {
     if (!isfinite(x) || !isfinite(y))
         return INFINITY;
@@ -483,13 +487,13 @@ void *rt_vec2_mul(void *v, double s) {
 /// ```
 ///
 /// @param v Vector to divide. Must not be NULL.
-/// @param s Scalar divisor. Must not be zero.
+/// @param s Scalar divisor. Must be finite and nonzero.
 ///
 /// @return A new Vec2 with components divided by s.
 ///
 /// @note O(1) time complexity.
 /// @note Traps with "Vec2.Div: null vector" if v is NULL.
-/// @note Traps with "Vec2.Div: division by zero" if s is 0.
+/// @note Traps with "Vec2.Div: invalid divisor" if s is zero or non-finite.
 ///
 /// @see rt_vec2_mul For scalar multiplication
 /// @see rt_vec2_norm For normalizing to unit length
@@ -769,7 +773,7 @@ double rt_vec2_len_sq(void *v) {
 ///
 /// @note O(1) time complexity (involves sqrt).
 /// @note For comparisons, prefer rt_vec2_len_sq to avoid sqrt.
-/// @note Traps if v is NULL (via rt_vec2_len_sq).
+/// @note Traps if v is not a compatible Vec2 handle.
 ///
 /// @see rt_vec2_len_sq For squared length (faster for comparisons)
 /// @see rt_vec2_norm For getting a unit-length vector
@@ -861,8 +865,8 @@ double rt_vec2_dist(void *a, void *b) {
 /// ```
 ///
 /// **Special Case:**
-/// If the input vector has zero length, returns a zero vector (0, 0) rather
-/// than trapping. This prevents division by zero.
+/// If the input vector has zero or non-finite length, returns a zero vector
+/// (0, 0) rather than dividing by an unusable magnitude.
 ///
 /// **Usage example:**
 /// ```
@@ -880,11 +884,11 @@ double rt_vec2_dist(void *a, void *b) {
 ///
 /// @param v Vector to normalize. Must not be NULL.
 ///
-/// @return A new unit vector (length = 1), or zero vector if input has zero length.
+/// @return A new unit vector, or zero vector if the input length is zero or non-finite.
 ///
 /// @note O(1) time complexity.
 /// @note Traps with "Vec2.Norm: null vector" if v is NULL.
-/// @note Safe for zero-length vectors (returns zero vector).
+/// @note Safe for zero-length and non-finite vectors (returns zero vector).
 ///
 /// @see rt_vec2_len For getting the length
 /// @see rt_vec2_div For manual normalization
@@ -1063,7 +1067,8 @@ double rt_vec2_angle(void *v) {
 ///
 /// @note O(1) time complexity.
 /// @note Traps with "Vec2.Rotate: null vector" if v is NULL.
-/// @note The magnitude of the vector is preserved.
+/// @note The magnitude is preserved for finite components and a finite angle, subject to
+///       floating-point rounding.
 ///
 /// @see rt_vec2_angle For getting the current angle of a vector
 /// @see rt_vec2_norm For unit vectors (often used with rotation)

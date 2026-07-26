@@ -52,6 +52,9 @@ static void ecdsa_secure_zero(void *ptr, size_t len) {
         *p++ = 0;
 }
 
+/// @brief Count leading zero bits in a 64-bit word.
+/// @param value Word to inspect.
+/// @return Value in 0 through 64; zero input returns 64.
 static int ecdsa_clz64(uint64_t value) {
     if (value == 0)
         return 64;
@@ -91,6 +94,10 @@ typedef uint64_t u256[4];
 typedef uint64_t u512[8];
 
 /// @brief Add two 64-bit values with an incoming carry and write the result to *out.
+/// @param a First addend.
+/// @param b Second addend.
+/// @param carry Incoming carry bit.
+/// @param out Receives the wrapped 64-bit sum.
 /// @return 1 if the addition overflowed (carry out), 0 otherwise.
 static uint64_t u64_add_with_carry(uint64_t a, uint64_t b, uint64_t carry, uint64_t *out) {
     uint64_t sum = a + b;
@@ -102,6 +109,10 @@ static uint64_t u64_add_with_carry(uint64_t a, uint64_t b, uint64_t carry, uint6
 }
 
 /// @brief Subtract b + borrow from a, write the result to *out.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @param borrow Incoming borrow bit.
+/// @param out Receives the wrapped 64-bit difference.
 /// @return 1 if the subtraction underflowed (borrow out), 0 otherwise.
 static uint64_t u64_sub_with_borrow(uint64_t a, uint64_t b, uint64_t borrow, uint64_t *out) {
     uint64_t subtrahend = b + borrow;
@@ -112,6 +123,8 @@ static uint64_t u64_sub_with_borrow(uint64_t a, uint64_t b, uint64_t borrow, uin
 }
 
 /// @brief Subtract a small 64-bit value from a 256-bit integer in-place, propagating borrow.
+/// @param value Mutable 256-bit big-endian-limb integer.
+/// @param small 64-bit value to subtract.
 static void u256_sub_small_inplace(u256 value, uint64_t small) {
     uint64_t borrow = u64_sub_with_borrow(value[3], small, 0, &value[3]);
     for (int i = 2; i >= 0 && borrow; i--)
@@ -151,11 +164,14 @@ static const u256 P256_GY = {
 //=============================================================================
 
 /// @brief Zero-fill a 256-bit integer (4 × 64-bit big-endian limbs).
+/// @param r Output integer to clear.
 static void u256_zero(u256 r) {
     r[0] = r[1] = r[2] = r[3] = 0;
 }
 
 /// @brief Copy a 256-bit integer limb-by-limb.
+/// @param r Output integer.
+/// @param a Input integer.
 static void u256_copy(u256 r, const u256 a) {
     r[0] = a[0];
     r[1] = a[1];
@@ -167,6 +183,8 @@ static void u256_copy(u256 r, const u256 a) {
 /// @details Constant-time: same instruction count regardless of value.
 ///          A short-circuit `||` would leak which limb was non-zero
 ///          through branch timing.
+/// @param a Integer to inspect.
+/// @return Non-zero only when every limb is zero.
 static int u256_is_zero(const u256 a) {
     return (a[0] | a[1] | a[2] | a[3]) == 0;
 }
@@ -179,6 +197,9 @@ static int u256_is_zero(const u256 a) {
 ///          needed. Not constant-time on purpose — the caller
 ///          uses it only on intermediate field-element comparisons,
 ///          not on secret values.
+/// @param a First integer.
+/// @param b Second integer.
+/// @return -1 when @p a is smaller, 0 when equal, or 1 when greater.
 static int u256_cmp(const u256 a, const u256 b) {
     for (int i = 0; i < 4; i++) {
         if (a[i] < b[i])
@@ -195,6 +216,8 @@ static int u256_cmp(const u256 a, const u256 b) {
 ///          packs them into the internal 4×64-bit limb representation
 ///          while preserving big-endian limb ordering (limb 0 = most
 ///          significant 8 bytes).
+/// @param r Output 256-bit limb representation.
+/// @param b Input 32-byte big-endian encoding.
 static void u256_from_bytes(u256 r, const uint8_t b[32]) {
     for (int i = 0; i < 4; i++) {
         r[i] = 0;
@@ -207,6 +230,8 @@ static void u256_from_bytes(u256 r, const uint8_t b[32]) {
 /// @details Inverse of `u256_from_bytes`. Used to emit signature
 ///          components (`r`, `s`) and public-key coordinates back
 ///          out to wire format.
+/// @param out Output 32-byte big-endian encoding.
+/// @param a Input 256-bit limb representation.
 static void u256_to_bytes(uint8_t out[32], const u256 a) {
     for (int i = 0; i < 4; i++) {
         uint64_t limb = a[i];
@@ -221,6 +246,10 @@ static void u256_to_bytes(uint8_t out[32], const u256 a) {
 /// @details Uses plain unsigned wraparound so this works on compilers and
 ///          architectures without 128-bit integers or x86 carry intrinsics,
 ///          including MSVC ARM64.
+/// @param r Output wrapped sum.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return Carry-out bit.
 static uint64_t u256_add(u256 r, const u256 a, const u256 b) {
     uint64_t carry = 0;
     for (int i = 3; i >= 0; i--)
@@ -231,6 +260,10 @@ static uint64_t u256_add(u256 r, const u256 a, const u256 b) {
 /// @brief Subtract two 256-bit integers with borrow: `r = a - b`, returns the borrow-out (0 or 1).
 /// @details Mirror of `u256_add`, implemented with portable unsigned
 ///          wraparound instead of compiler-specific borrow intrinsics.
+/// @param r Output wrapped difference.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @return Borrow-out bit.
 static uint64_t u256_sub(u256 r, const u256 a, const u256 b) {
     uint64_t borrow = 0;
     for (int i = 3; i >= 0; i--)
@@ -250,6 +283,9 @@ static uint64_t u256_sub(u256 r, const u256 a, const u256 b) {
 ///          digits it's ~64 multiplies which the optimizer keeps in
 ///          registers. Used by `fp_reduce_512` and the modular-mul
 ///          helpers when a true 512-bit intermediate is needed.
+/// @param r Output eight-limb product.
+/// @param a First four-limb factor.
+/// @param b Second four-limb factor.
 static ECDSA_P256_MAYBE_UNUSED void u256_mul_wide(u512 r, const u256 a, const u256 b) {
     uint32_t aw[8], bw[8];
     uint64_t acc[16];
@@ -281,6 +317,7 @@ static ECDSA_P256_MAYBE_UNUSED void u256_mul_wide(u512 r, const u256 a, const u2
 }
 
 /// @brief Compute the bit-length of a 512-bit little-endian integer (index 0 = LSW).
+/// @param limbs Eight-limb little-endian value.
 /// @return Position of the highest set bit + 1; 0 if the value is zero.
 static ECDSA_P256_MAYBE_UNUSED int u512_bit_length_le(const uint64_t limbs[8]) {
     for (int i = 7; i >= 0; i--) {
@@ -292,6 +329,10 @@ static ECDSA_P256_MAYBE_UNUSED int u512_bit_length_le(const uint64_t limbs[8]) {
 
 /// @brief Return the 64-bit limb at position limb_index of a 256-bit little-endian value after
 ///        left-shifting it by shift bits.  Used by the bitwise long-division in u512_mod_u256.
+/// @param mod_le Four-limb little-endian source value.
+/// @param shift Left shift in bits.
+/// @param limb_index Requested limb index in the shifted result.
+/// @return Requested 64-bit limb, with out-of-range source portions treated as zero.
 static ECDSA_P256_MAYBE_UNUSED uint64_t u256_shifted_limb_le(const uint64_t mod_le[4],
                                                              int shift,
                                                              int limb_index) {
@@ -309,6 +350,9 @@ static ECDSA_P256_MAYBE_UNUSED uint64_t u256_shifted_limb_le(const uint64_t mod_
 
 /// @brief Compare a 512-bit little-endian value against a 256-bit modulus shifted left by shift
 /// bits.
+/// @param value_le Eight-limb value to compare.
+/// @param mod_le Four-limb modulus.
+/// @param shift Modulus left shift in bits.
 /// @return -1 / 0 / 1 (value < shifted_mod / equal / greater).
 static ECDSA_P256_MAYBE_UNUSED int u512_cmp_shifted_u256_le(const uint64_t value_le[8],
                                                             const uint64_t mod_le[4],
@@ -324,6 +368,9 @@ static ECDSA_P256_MAYBE_UNUSED int u512_cmp_shifted_u256_le(const uint64_t value
 }
 
 /// @brief Subtract (mod << shift) from a 512-bit little-endian value in-place; propagates borrow.
+/// @param value_le Mutable eight-limb value.
+/// @param mod_le Four-limb modulus.
+/// @param shift Modulus left shift in bits.
 static ECDSA_P256_MAYBE_UNUSED void u512_sub_shifted_u256_le(uint64_t value_le[8],
                                                              const uint64_t mod_le[4],
                                                              int shift) {
@@ -336,6 +383,9 @@ static ECDSA_P256_MAYBE_UNUSED void u512_sub_shifted_u256_le(uint64_t value_le[8
 
 /// @brief Compute wide mod mod using binary long division (generic fallback for any modulus).
 ///        Converts between big-endian and little-endian limb order for the shift helpers.
+/// @param out Output four-limb remainder.
+/// @param wide Input eight-limb dividend.
+/// @param mod Four-limb modulus.
 static ECDSA_P256_MAYBE_UNUSED void u512_mod_u256(u256 out, const u512 wide, const u256 mod) {
     uint64_t value_le[8];
     uint64_t mod_le[4];
@@ -368,6 +418,8 @@ static ECDSA_P256_MAYBE_UNUSED void u512_mod_u256(u256 out, const u512 wide, con
 ///          `p` so we keep the original. Otherwise the difference is
 ///          the reduced value. Used after every field addition: the
 ///          sum is in `[0, 2p)`, this brings it back into `[0, p)`.
+/// @param r Output reduced field element.
+/// @param a Input in the range `[0, 2p)`.
 static void fp_reduce_once(u256 r, const u256 a) {
     u256 tmp;
     uint64_t borrow = u256_sub(tmp, a, P256_P);
@@ -385,6 +437,9 @@ static void fp_reduce_once(u256 r, const u256 a) {
 ///          - **No carry** → result is in `[0, 2p)`, so reduce once.
 ///          Used by every elliptic-curve point operation
 ///          (doubling, addition).
+/// @param r Output field element.
+/// @param a First reduced field element.
+/// @param b Second reduced field element.
 static void fp_add(u256 r, const u256 a, const u256 b) {
     uint64_t carry = u256_add(r, a, b);
     if (carry) {
@@ -399,6 +454,9 @@ static void fp_add(u256 r, const u256 a, const u256 b) {
 /// @details If the unsigned subtraction borrows (`a < b`), we add
 ///          `p` back to wrap into the positive residue. Otherwise
 ///          the result is already in `[0, p)`.
+/// @param r Output field element.
+/// @param a Minuend field element.
+/// @param b Subtrahend field element.
 static void fp_sub(u256 r, const u256 a, const u256 b) {
     uint64_t borrow = u256_sub(r, a, b);
     if (borrow) {
@@ -408,6 +466,10 @@ static void fp_sub(u256 r, const u256 a, const u256 b) {
 }
 
 /// @brief r = (a + b) mod mod — generic version for any modulus (assumes a, b < mod).
+/// @param r Output residue.
+/// @param a First reduced operand.
+/// @param b Second reduced operand.
+/// @param mod Modulus.
 static void u256_mod_add_generic(u256 r, const u256 a, const u256 b, const u256 mod) {
     uint64_t carry = u256_add(r, a, b);
     if (carry || u256_cmp(r, mod) >= 0)
@@ -415,12 +477,19 @@ static void u256_mod_add_generic(u256 r, const u256 a, const u256 b, const u256 
 }
 
 /// @brief r = (2 * a) mod mod — generic version for any modulus.
+/// @param r Output residue.
+/// @param a Reduced operand.
+/// @param mod Modulus.
 static void u256_mod_double_generic(u256 r, const u256 a, const u256 mod) {
     u256_mod_add_generic(r, a, a, mod);
 }
 
 /// @brief r = (a * b) mod mod — generic double-and-add multiplication (any modulus).
 ///        Used for order-n scalar arithmetic where Solinas reduction doesn't apply.
+/// @param r Output residue.
+/// @param a First operand.
+/// @param b Second operand.
+/// @param mod Modulus.
 static void u256_mod_mul_generic(u256 r, const u256 a, const u256 b, const u256 mod) {
     u256 result, base;
     u256_zero(result);
@@ -444,8 +513,15 @@ static void u256_mod_mul_generic(u256 r, const u256 a, const u256 b, const u256 
 ///        Implements the NIST FIPS 186-4 formula for p = 2^256 - 2^224 + 2^192 + 2^96 - 1.
 ///        Input: t[0..7] big-endian 512-bit; output: r = t mod p, 256-bit.
 #if defined(__GNUC__) || defined(__clang__)
+/// @brief Reduce a 512-bit product modulo the P-256 field prime on compilers that support the
+///        optimized implementation.
+/// @param r Output reduced field element.
+/// @param t Input eight-limb product.
 static ECDSA_P256_MAYBE_UNUSED void fp_reduce_512(u256 r, const u512 t) {
 #else
+/// @brief Reduce a 512-bit product modulo the P-256 field prime on other supported compilers.
+/// @param r Output reduced field element.
+/// @param t Input eight-limb product.
 static void fp_reduce_512(u256 r, const u512 t) {
 #endif
     // Extract 32-bit words from the 512-bit value (c0=MSW, c15=LSW)
@@ -619,21 +695,31 @@ static void fp_reduce_512(u256 r, const u512 t) {
 
 /// @brief Generic fallback reduction: r = t mod P256_P via binary long division.
 ///        Used when the Solinas fast path is unavailable (e.g., non-GCC/Clang compilers).
+/// @param r Output reduced field element.
+/// @param t Input eight-limb product.
 static ECDSA_P256_MAYBE_UNUSED void fp_reduce_512_generic(u256 r, const u512 t) {
     u512_mod_u256(r, t, P256_P);
 }
 
 /// @brief r = a * b mod p — field multiplication with Solinas reduction.
+/// @param r Output product reduced modulo the P-256 field prime.
+/// @param a First field element.
+/// @param b Second field element.
 static void fp_mul(u256 r, const u256 a, const u256 b) {
     u256_mod_mul_generic(r, a, b, P256_P);
 }
 
 /// @brief r = a^2 mod p — field squaring.
+/// @param r Output square reduced modulo the P-256 field prime.
+/// @param a Field element to square.
 static void fp_sqr(u256 r, const u256 a) {
     fp_mul(r, a, a);
 }
 
 /// @brief r = a^exp mod p — binary square-and-multiply exponentiation over the P-256 field.
+/// @param r Output exponentiation result.
+/// @param a Field element used as the base.
+/// @param exp Unsigned 256-bit exponent.
 static void fp_pow(u256 r, const u256 a, const u256 exp) {
     u256 base, result;
     u256_copy(base, a);
@@ -653,6 +739,8 @@ static void fp_pow(u256 r, const u256 a, const u256 exp) {
 }
 
 /// @brief r = a^(-1) mod p — field inversion via Fermat's little theorem: a^(p-2) mod p.
+/// @param r Output multiplicative inverse.
+/// @param a Field element to invert.
 static void fp_inv(u256 r, const u256 a) {
     u256 exp;
     u256_copy(exp, P256_P);
@@ -667,6 +755,8 @@ static void fp_inv(u256 r, const u256 a) {
 //=============================================================================
 
 /// @brief r = a mod n — conditional subtraction of the curve order (assumes a < 2n).
+/// @param r Output scalar reduced modulo the P-256 group order.
+/// @param a Input integer in the range `[0, 2n)`.
 static void sn_reduce_once(u256 r, const u256 a) {
     u256 tmp;
     uint64_t borrow = u256_sub(tmp, a, P256_N);
@@ -677,6 +767,9 @@ static void sn_reduce_once(u256 r, const u256 a) {
 }
 
 /// @brief r = (a + b) mod n — scalar addition modulo the curve order.
+/// @param r Output scalar sum.
+/// @param a First reduced scalar.
+/// @param b Second reduced scalar.
 static void sn_add(u256 r, const u256 a, const u256 b) {
     uint64_t carry = u256_add(r, a, b);
     if (carry || u256_cmp(r, P256_N) >= 0)
@@ -684,11 +777,16 @@ static void sn_add(u256 r, const u256 a, const u256 b) {
 }
 
 /// @brief r = (a * b) mod n — scalar multiplication modulo the curve order.
+/// @param r Output scalar product.
+/// @param a First scalar operand.
+/// @param b Second scalar operand.
 static void sn_mul(u256 r, const u256 a, const u256 b) {
     u256_mod_mul_generic(r, a, b, P256_N);
 }
 
 /// @brief r = a^(-1) mod n — scalar inversion modulo the curve order via Fermat: a^(n-2) mod n.
+/// @param r Output multiplicative inverse modulo the group order.
+/// @param a Scalar to invert.
 static void sn_inv(u256 r, const u256 a) {
     u256 exp;
     u256_copy(exp, P256_N);
@@ -726,6 +824,7 @@ typedef struct {
 ///          discriminator that `jpoint_is_infinity` checks. We set
 ///          Y=1 (not 0) by convention so the point isn't all-zero,
 ///          though most callers don't read X/Y when Z=0.
+/// @param P Output point initialized to the identity representation.
 static void jpoint_set_infinity(jpoint *P) {
     u256_zero(P->X);
     u256_zero(P->Y);
@@ -734,6 +833,8 @@ static void jpoint_set_infinity(jpoint *P) {
 }
 
 /// @brief Test whether a Jacobian point is the point at infinity (Z component is zero).
+/// @param P Point to inspect.
+/// @return Nonzero when `P` is the point at infinity; zero otherwise.
 static int jpoint_is_infinity(const jpoint *P) {
     return u256_is_zero(P->Z);
 }
@@ -744,6 +845,9 @@ static int jpoint_is_infinity(const jpoint *P) {
 ///          division step in `jpoint_to_affine` until we actually
 ///          need affine output. Used to load the generator G and
 ///          parsed public-key points into Jacobian form.
+/// @param P Output Jacobian point.
+/// @param x Affine X coordinate.
+/// @param y Affine Y coordinate.
 static void jpoint_from_affine(jpoint *P, const u256 x, const u256 y) {
     u256_copy(P->X, x);
     u256_copy(P->Y, y);
@@ -751,11 +855,17 @@ static void jpoint_from_affine(jpoint *P, const u256 x, const u256 y) {
     P->Z[3] = 1; // Z = 1
 }
 
+/// @brief Convert a Jacobian point to affine coordinates.
+/// @param x Output affine X coordinate.
+/// @param y Output affine Y coordinate.
+/// @param P Jacobian point to convert.
 static void jpoint_to_affine(u256 x, u256 y, const jpoint *P);
 
 /// @brief Double a Jacobian point: R = 2P (affine formula with one field inversion).
 ///        Deliberately trades speed for simpler, auditable arithmetic — acceptable because
 ///        TLS only needs a small number of scalar multiplications per handshake.
+/// @param R Output doubled point.
+/// @param P Point to double.
 static void jpoint_double(jpoint *R, const jpoint *P) {
     static const u256 THREE = {0, 0, 0, 3};
 
@@ -796,6 +906,9 @@ static void jpoint_double(jpoint *R, const jpoint *P) {
 /// @brief Add two Jacobian curve points: Res = P + Q (affine formula with one field inversion).
 ///        Handles point-at-infinity identity cases and the equal-point case by delegating to
 ///        jpoint_double.
+/// @param Res Output sum.
+/// @param P First point.
+/// @param Q Second point.
 static void jpoint_add(jpoint *Res, const jpoint *P, const jpoint *Q) {
     if (jpoint_is_infinity(P)) {
         memcpy(Res, Q, sizeof(jpoint));
@@ -850,6 +963,9 @@ static void jpoint_add(jpoint *Res, const jpoint *P, const jpoint *Q) {
 ///          never on the secret signing scalar.** A signing path would
 ///          need a constant-time variant (Montgomery ladder, regular
 ///          windowing).
+/// @param R Output scalar multiple.
+/// @param k Public 256-bit scalar.
+/// @param P Curve point to multiply.
 static void jpoint_scalar_mul(jpoint *R, const u256 k, const jpoint *P) {
     jpoint_set_infinity(R);
 
@@ -873,12 +989,20 @@ static void jpoint_scalar_mul(jpoint *R, const u256 k, const jpoint *P) {
     }
 }
 
+/// @brief Read one bit from a 256-bit scalar using least-significant-bit numbering.
+/// @param k Scalar to inspect.
+/// @param bit Bit index in the inclusive range 0 through 255.
+/// @return Zero or one according to the selected bit.
 static int u256_bit_at(const u256 k, int bit) {
     int limb = 3 - (bit / 64);
     int shift = bit & 63;
     return (int)((k[limb] >> shift) & 1u);
 }
 
+/// @brief Conditionally copy a Jacobian point using a full-limb selection mask.
+/// @param dst Destination point, retained where mask bits are zero.
+/// @param src Source point, selected where mask bits are one.
+/// @param mask Selection mask; callers pass zero to retain `dst` or `UINT64_MAX` to select `src`.
 static void jpoint_cmov(jpoint *dst, const jpoint *src, uint64_t mask) {
     for (int i = 0; i < 4; i++) {
         dst->X[i] = (dst->X[i] & ~mask) | (src->X[i] & mask);
@@ -892,6 +1016,9 @@ static void jpoint_cmov(jpoint *dst, const jpoint *src, uint64_t mask) {
 ///          conditionally selects the add result with a mask. Point formulas
 ///          still contain exceptional-case branches, so this is a hardening
 ///          step rather than a complete constant-time implementation.
+/// @param R Output scalar multiple.
+/// @param k Private 256-bit scalar.
+/// @param P Curve point to multiply.
 static void jpoint_scalar_mul_fixed(jpoint *R, const u256 k, const jpoint *P) {
     jpoint_set_infinity(R);
     for (int bit = 255; bit >= 0; bit--) {
@@ -906,6 +1033,9 @@ static void jpoint_scalar_mul_fixed(jpoint *R, const u256 k, const jpoint *P) {
 
 /// @brief Convert a Jacobian projective point to affine coordinates: x = X/Z^2, y = Y/Z^3.
 ///        Returns (0, 0) for the point at infinity.
+/// @param x Output affine X coordinate.
+/// @param y Output affine Y coordinate.
+/// @param P Jacobian point to convert.
 static void jpoint_to_affine(u256 x, u256 y, const jpoint *P) {
     if (jpoint_is_infinity(P)) {
         u256_zero(x);
@@ -922,6 +1052,10 @@ static void jpoint_to_affine(u256 x, u256 y, const jpoint *P) {
     fp_mul(y, P->Y, z_inv3);
 }
 
+/// @brief Validate that affine coordinates canonically encode a finite point on P-256.
+/// @param x Candidate affine X coordinate.
+/// @param y Candidate affine Y coordinate.
+/// @return Nonzero when both coordinates are in the field and satisfy the curve equation.
 static int p256_point_valid(const u256 x, const u256 y) {
     if (u256_cmp(x, P256_P) >= 0 || u256_cmp(y, P256_P) >= 0)
         return 0;
@@ -946,7 +1080,12 @@ static int p256_point_valid(const u256 x, const u256 y) {
 /// per FIPS 186-4 / SEC1 §4.1.4. Performs full input validation (1 ≤ r, s < n; public key on
 /// curve), then computes R = s^-1·(e·G + r·Q) and checks that R.x ≡ r (mod n). All internal
 /// scalar math runs against the built-in u256/fp/sn helpers — no external crypto deps.
-/// Returns 1 on a valid signature, 0 on any failure (bad input, point at infinity, mismatch).
+/// @param pubkey_x Public key's 32-byte big-endian affine X coordinate.
+/// @param pubkey_y Public key's 32-byte big-endian affine Y coordinate.
+/// @param digest 32-byte message digest interpreted as a big-endian scalar.
+/// @param sig_r Signature's 32-byte big-endian R component.
+/// @param sig_s Signature's 32-byte big-endian S component.
+/// @return 1 on a valid signature; 0 on bad input, a point at infinity, or a signature mismatch.
 int ecdsa_p256_verify(const uint8_t pubkey_x[32],
                       const uint8_t pubkey_y[32],
                       const uint8_t digest[32],
@@ -1010,9 +1149,11 @@ int ecdsa_p256_verify(const uint8_t pubkey_x[32],
 ///          to validate that a loaded EC private key matches the
 ///          public key in the loaded certificate (or to surface
 ///          the public key when only the private is provided).
-///          Validates `1 ≤ d < n` per FIPS 186-4. Returns 0 on
-///          out-of-range private key or on the (cryptographically
-///          impossible) scalar-mul producing the point at infinity.
+///          Validates `1 ≤ d < n` per FIPS 186-4.
+/// @param privkey 32-byte big-endian private scalar `d`.
+/// @param pubkey_x Output buffer for the 32-byte big-endian affine X coordinate.
+/// @param pubkey_y Output buffer for the 32-byte big-endian affine Y coordinate.
+/// @return 1 on success; 0 for null buffers, an out-of-range private key, or an identity result.
 int ecdsa_p256_public_from_private(const uint8_t privkey[32],
                                    uint8_t pubkey_x[32],
                                    uint8_t pubkey_y[32]) {
@@ -1049,8 +1190,13 @@ done:
 /// @brief Compute P-256 ECDH shared point x-coordinate.
 /// @details Validates both the private scalar and the peer public key, then
 ///          computes `S = d * Q_peer` and returns S.x. This is the primitive
-///          needed by a TLS 1.3 secp256r1 key-share implementation. The
-///          Uses the fixed-schedule scalar-multiply path for the private scalar.
+///          needed by a TLS 1.3 secp256r1 key-share implementation. Uses the
+///          fixed-schedule scalar-multiply path for the private scalar.
+/// @param privkey 32-byte big-endian private scalar `d`.
+/// @param peer_x Peer's 32-byte big-endian affine X coordinate.
+/// @param peer_y Peer's 32-byte big-endian affine Y coordinate.
+/// @param shared_x Output buffer for the shared point's 32-byte big-endian X coordinate.
+/// @return 1 on success; 0 for null buffers, invalid key material, or an identity result.
 int ecdsa_p256_ecdh(const uint8_t privkey[32],
                     const uint8_t peer_x[32],
                     const uint8_t peer_y[32],
@@ -1107,9 +1253,12 @@ done:
 ///             — some validators reject high-S signatures as
 ///             malleable.
 ///          The 32-attempt cap is paranoia against pathological
-///          RNG output. Returns 1 on success with `sig_r` / `sig_s`
-///          filled, 0 if all 32 attempts failed (essentially never
-///          happens).
+///          RNG output.
+/// @param privkey 32-byte big-endian private scalar `d`.
+/// @param digest 32-byte message digest interpreted as a big-endian scalar.
+/// @param sig_r Output buffer for the 32-byte big-endian R component.
+/// @param sig_s Output buffer for the 32-byte big-endian S component.
+/// @return 1 on success; 0 for null buffers, an invalid private scalar, or repeated nonce failure.
 int ecdsa_p256_sign(const uint8_t privkey[32],
                     const uint8_t digest[32],
                     uint8_t sig_r[32],

@@ -56,21 +56,29 @@
 //===----------------------------------------------------------------------===//
 
 /// @brief Check whether @p c is ASCII alpha. BCP-47 only accepts ASCII.
+/// @param c Byte to classify.
+/// @return 1 for `A`-`Z` or `a`-`z`, otherwise 0.
 static int loc_is_alpha(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
 /// @brief Check whether @p c is an ASCII decimal digit ('0'–'9').
+/// @param c Byte to classify.
+/// @return 1 for `0` through `9`, otherwise 0.
 static int loc_is_digit(char c) {
     return c >= '0' && c <= '9';
 }
 
 /// @brief Check whether @p c is ASCII alphanumeric (alpha or digit).
+/// @param c Byte to classify.
+/// @return 1 for an ASCII letter or decimal digit, otherwise 0.
 static int loc_is_alnum(char c) {
     return loc_is_alpha(c) || loc_is_digit(c);
 }
 
 /// @brief Convert an ASCII uppercase letter to lowercase; pass through everything else.
+/// @param c Byte to normalize.
+/// @return Lowercase ASCII equivalent or the unchanged byte.
 static char loc_to_lower(char c) {
     if (c >= 'A' && c <= 'Z')
         return (char)(c - 'A' + 'a');
@@ -78,6 +86,8 @@ static char loc_to_lower(char c) {
 }
 
 /// @brief Convert an ASCII lowercase letter to uppercase; pass through everything else.
+/// @param c Byte to normalize.
+/// @return Uppercase ASCII equivalent or the unchanged byte.
 static char loc_to_upper(char c) {
     if (c >= 'a' && c <= 'z')
         return (char)(c - 'a' + 'A');
@@ -85,11 +95,16 @@ static char loc_to_upper(char c) {
 }
 
 /// @brief Check whether @p c is a BCP-47 subtag separator ('-' or '_').
+/// @param c Byte to classify.
+/// @return 1 for hyphen or underscore, otherwise 0.
 static int loc_is_separator(char c) {
     return c == '-' || c == '_';
 }
 
 /// @brief True when the byte span contains any subtag separator.
+/// @param s Bounded input bytes.
+/// @param len Number of readable bytes at @p s.
+/// @return 1 when any byte is hyphen or underscore, otherwise 0.
 static int loc_str_has_separator(const char *s, size_t len) {
     for (size_t i = 0; i < len; ++i)
         if (loc_is_separator(s[i]))
@@ -109,9 +124,22 @@ static int loc_str_has_separator(const char *s, size_t len) {
 ///          extensions, and optional private-use tail. Variant / extension
 ///          subtags are preserved in `tag` but do not affect Locale's
 ///          language/script/region behavioural queries.
+/// @param input Bounded candidate tag bytes; no terminating NUL is required.
+/// @param input_len Number of readable bytes at @p input.
+/// @param out Destination zeroed before parsing and populated only as parsing advances.
 /// @return 0 on success, -1 on structural failure.
 int rt_locale_internal_parse_into(const char *input, size_t input_len, rt_locale_t *out);
 
+/// @brief Parse and canonicalize the runtime's supported BCP-47 tag shape.
+/// @details Accepts hyphen or underscore separators and canonicalizes language,
+///          script, region, variants, extensions, and private use. Empty
+///          subtags, invalid characters/shapes, duplicate variants or
+///          extension singletons, over-capacity output, and incomplete
+///          extensions are rejected.
+/// @param input Bounded candidate tag bytes; no terminating NUL is required.
+/// @param input_len Number of readable bytes at @p input.
+/// @param out Destination zeroed before parsing and populated on success.
+/// @return 0 on success, or -1 on structural/capacity failure.
 int rt_locale_internal_parse_into(const char *input, size_t input_len, rt_locale_t *out) {
     if (!out)
         return -1;
@@ -353,6 +381,8 @@ int rt_locale_internal_parse_into(const char *input, size_t input_len, rt_locale
 /// @param obj Pointer to the rt_locale_t being collected; NULL is safe.
 void rt_locale_internal_finalizer(void *obj);
 
+/// @brief Release the locale-data record retained by a Locale payload.
+/// @param obj Locale being finalized; NULL is a no-op.
 void rt_locale_internal_finalizer(void *obj) {
     rt_locale_t *l = (rt_locale_t *)obj;
     if (!l)
@@ -384,6 +414,9 @@ static void loc_release_handle(void *obj) {
 }
 
 /// @brief Produce the canonical invariant ("root") locale handle.
+/// @details Language/script/region remain empty, the tag is `root`, and the
+///          data pointer references the baked invariant en-US record.
+/// @return Fresh GC-managed Locale; allocation failure traps.
 static void *loc_make_invariant(void) {
     rt_locale_t *loc = (rt_locale_t *)loc_alloc();
     memcpy(loc->tag, "root", 5);

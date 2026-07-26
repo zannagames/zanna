@@ -7,9 +7,9 @@
 //
 // File: src/runtime/io/rt_archive_internal.h
 // Purpose: Internal contract between the archive core (rt_archive.c) and the
-//          filesystem / atomic-write adapter layer (rt_archive_fs.c). Carries
-//          the small Bytes accessors plus the platform (Win32/POSIX) file I/O
-//          helpers shared across the two translation units.
+//          filesystem, atomic-write, and ZIP parser companion units. Carries
+//          shared archive/entry state, format constants, cleanup helpers, and
+//          the platform-specific file I/O surface.
 //
 // Key invariants:
 //   - Engine-internal; must not be included outside the io/ directory.
@@ -41,7 +41,15 @@
 // names are generic) or be mis-parsed by rtgen's header scan.
 
 // Core-defined helpers consumed by the fs adapter (defined in rt_archive.c).
+/// @brief Release one reference to a temporary runtime object eagerly.
+/// @param obj Temporary object; `NULL` is accepted. Storage is reclaimed only
+/// when the released reference was the last.
 void archive_release_temp_object(void *obj);
+
+/// @brief Copy the active trap diagnostic or a fallback into a fixed buffer.
+/// @param buffer Writable output buffer.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Message used when the trap subsystem has no non-empty text.
 void archive_save_trap_error(char *buffer, size_t buffer_size, const char *fallback);
 
 //=============================================================================
@@ -54,26 +62,96 @@ void archive_save_trap_error(char *buffer, size_t buffer_size, const char *fallb
 #endif
 #include <windows.h>
 
+/// @brief Open a UTF-8 Windows path through `CreateFileW`.
+/// @param cpath NUL-terminated UTF-8 filesystem path.
+/// @param access Requested Win32 access mask.
+/// @param share Requested Win32 share mask.
+/// @param create_disp Win32 creation disposition.
+/// @return Open native handle, or `INVALID_HANDLE_VALUE` on failure.
 HANDLE archive_open_win_path(const char *cpath, DWORD access, DWORD share, DWORD create_disp);
+
+/// @brief Read exactly @p total bytes, close the handle, and free the buffer on failure.
+/// @param h Open Windows handle positioned for input.
+/// @param dst Heap buffer of at least @p total bytes.
+/// @param total Exact byte count to read.
+/// @param trap_msg Fallback diagnostic for failure.
+/// @return 1 on success; otherwise 0 after cleanup and trap propagation.
 int archive_read_exact_win_or_free(HANDLE h, uint8_t *dst, size_t total, const char *trap_msg);
+
+/// @brief Read exactly into a Bytes object and release it if the operation fails.
+/// @param h Open Windows handle; the helper closes it on every path.
+/// @param bytes Temporary Bytes object receiving the payload.
+/// @param total Exact byte count to read.
+/// @param trap_msg Fallback diagnostic for failure.
+/// @return 1 on success; otherwise 0 after cleanup and trap propagation.
 int archive_read_exact_win_or_release_object(HANDLE h,
                                              void *bytes,
                                              size_t total,
                                              const char *trap_msg);
+
+/// @brief Allocate Bytes while ensuring an open Windows handle is closed on failure.
+/// @param h Handle retained by the caller on success and closed on failure.
+/// @param len Requested Bytes length.
+/// @param fallback Diagnostic used if allocation traps without a message.
+/// @return Fresh Bytes handle on success, or `NULL` after failure cleanup.
 void *archive_bytes_new_win_or_close(HANDLE h, int64_t len, const char *fallback);
 #else
 #include <sys/types.h>
 
+/// @brief Open a POSIX path with close-on-exec semantics when supported.
+/// @param path NUL-terminated filesystem path.
+/// @param flags POSIX `open` flags.
+/// @param mode Creation mode used when required by @p flags.
+/// @return Open descriptor, or -1 with `errno` set.
 int archive_open_posix(const char *path, int flags, mode_t mode);
+
+/// @brief Read exactly @p total bytes, close the descriptor, and free the buffer on failure.
+/// @param fd Open descriptor positioned for input.
+/// @param dst Heap buffer of at least @p total bytes.
+/// @param total Exact byte count to read.
+/// @param trap_msg Fallback diagnostic for failure.
+/// @return 1 on success; otherwise 0 after cleanup and trap propagation.
 int archive_read_exact_posix_or_free(int fd, uint8_t *dst, size_t total, const char *trap_msg);
+
+/// @brief Read exactly into a Bytes object and release it if the operation fails.
+/// @param fd Open descriptor; the helper closes it on every path.
+/// @param bytes Temporary Bytes object receiving the payload.
+/// @param total Exact byte count to read.
+/// @param trap_msg Fallback diagnostic for failure.
+/// @return 1 on success; otherwise 0 after cleanup and trap propagation.
 int archive_read_exact_posix_or_release_object(int fd,
                                                void *bytes,
                                                size_t total,
                                                const char *trap_msg);
+
+/// @brief Allocate Bytes while ensuring an open descriptor is closed on failure.
+/// @param fd Descriptor retained by the caller on success and closed on failure.
+/// @param len Requested Bytes length.
+/// @param fallback Diagnostic used if allocation traps without a message.
+/// @return Fresh Bytes handle on success, or `NULL` after failure cleanup.
 void *archive_bytes_new_posix_or_close(int fd, int64_t len, const char *fallback);
+
+/// @brief Create and verify a normalized directory path beneath a trusted root.
+/// @param root_fd Descriptor for the trusted extraction root.
+/// @param path Forward-slash-separated relative path.
 void archive_make_dirs_posix_at(int root_fd, const char *path);
+
+/// @brief Open a file entry's verified parent directory and split out its leaf.
+/// @param root_fd Descriptor for the trusted extraction root.
+/// @param name Normalized relative file-entry name.
+/// @param out_leaf Receives a heap-allocated leaf name owned by the caller.
+/// @return Open parent descriptor, or -1 after raising a trap.
 int archive_open_parent_for_file_posix(int root_fd, const char *name, char **out_leaf);
+
+/// @brief Atomically write Bytes relative to a verified parent descriptor.
+/// @param parent_fd Open destination-parent descriptor.
+/// @param leaf Single destination filename.
+/// @param data Runtime Bytes handle containing the payload.
 void archive_write_bytes_to_dirfd_posix(int parent_fd, const char *leaf, void *data);
+
+/// @brief Open and verify a POSIX extraction-root directory.
+/// @param cdir UTF-8 path to the root.
+/// @return Open root descriptor, or -1 after raising a trap.
 int archive_open_root_dir_posix(const char *cdir);
 #endif
 
@@ -111,14 +189,47 @@ void archive_rwlock_write_enter(void *lock);
 /// @brief Leave an exclusive archive lock acquisition.
 /// @param lock Valid lock currently held once for writing by this thread.
 void archive_rwlock_write_exit(void *lock);
+
+/// @brief Construct an exclusive sidecar path adjacent to a destination.
+/// @param path Destination path whose parent directory is reused.
+/// @param attempt Collision-retry number incorporated in the sidecar name.
+/// @return Heap-allocated UTF-8 path owned by the caller, or `NULL` on length
+/// or allocation failure. Entropy failure raises a trap.
 char *archive_make_temp_path(const char *path, unsigned attempt);
+
+/// @brief Best-effort removal of a file identified by a UTF-8 path.
+/// @param path NUL-terminated path; deletion errors are ignored.
 void archive_unlink_utf8(const char *path);
+
+/// @brief Durably replace a destination with an exact byte buffer.
+/// @details Writes and flushes an exclusive adjacent sidecar before an atomic
+/// rename/replacement so observers never see a partial file.
+/// @param cpath UTF-8 destination path.
+/// @param src Source buffer containing @p total bytes.
+/// @param total Number of bytes to write.
+/// @param trap_msg Diagnostic raised on any failure.
+/// @return 1 after durable replacement; otherwise 0 after raising a trap.
 int archive_write_file_all_utf8(const char *cpath,
                                 const uint8_t *src,
                                 size_t total,
                                 const char *trap_msg);
+
+/// @brief Atomically write a runtime Bytes payload to a UTF-8 path.
+/// @param cpath Non-empty destination path.
+/// @param data Runtime Bytes handle.
 void archive_write_bytes_to_path(const char *cpath, void *data);
+
+/// @brief Compute a path length with trailing slash characters removed.
+/// @param path Path buffer containing at least @p len bytes.
+/// @param len Initial byte length.
+/// @return Trimmed length, never reduced below one when @p len is nonzero.
 size_t archive_trim_trailing_seps(const char *path, size_t len);
+
+/// @brief Reject symlink or Windows reparse-point components in a destination path.
+/// @param path Full UTF-8 destination path.
+/// @param root_len Trusted leading-byte count.
+/// @param include_leaf Nonzero to inspect the final component as well as its
+/// parents.
 void archive_reject_symlink_components(const char *path, size_t root_len, int include_leaf);
 
 //=============================================================================
@@ -202,9 +313,33 @@ typedef enum archive_parse_error {
 } archive_parse_error_t;
 
 // Read-parser entry points (defined in rt_archive_read.c).
+/// @brief Parse and validate an Archive's in-memory ZIP central directory.
+/// @param ar Read-mode Archive containing encoded bytes and configured limits.
+/// @return `true` on success; otherwise `false` with @p ar parse state reset
+/// and `parse_error` set.
 bool parse_central_directory(rt_archive_t *ar);
+
+/// @brief Find an exact normalized entry name in a parsed archive.
+/// @param ar Archive with a populated entry table and optional name index.
+/// @param name NUL-terminated normalized entry name.
+/// @return Borrowed entry metadata, or `NULL` when absent.
 zip_entry_t *find_entry(rt_archive_t *ar, const char *name);
+
+/// @brief Decode and CRC-validate one parsed ZIP entry.
+/// @param ar Archive owning the encoded data buffer.
+/// @param e Borrowed metadata for the entry to read.
+/// @return Fresh runtime Bytes object containing uncompressed data, or `NULL`
+/// after raising a validation, resource-limit, compression, or allocation trap.
 void *read_entry_data(rt_archive_t *ar, zip_entry_t *e);
 // Shared helpers (defined in rt_archive.c).
+
+/// @brief Detect malformed extra-field framing or unsupported ZIP64 metadata.
+/// @param extra Encoded extra-field bytes.
+/// @param extra_len Accessible buffer length.
+/// @return `true` when malformed or ZIP64; otherwise `false`.
 bool archive_extra_is_malformed_or_zip64(const uint8_t *extra, size_t extra_len);
+
+/// @brief Free an entry array constructed by the ZIP parser.
+/// @param entries Heap array whose initialized names are owned by the entries.
+/// @param count Number of initialized elements to release.
 void archive_free_entry_array(zip_entry_t *entries, int count);

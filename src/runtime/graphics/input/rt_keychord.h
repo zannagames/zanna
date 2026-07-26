@@ -8,13 +8,15 @@
 // named input patterns and reports which pattern fired each frame.
 //
 // Key invariants:
-//   - Chord detection fires when all registered keys are pressed simultaneously.
+//   - Chord detection fires when all registered keys become held and at least one
+//     member key was pressed during the current frame.
 //   - Combo detection fires when keys are pressed in the registered sequence within a time window.
-//   - rt_keychord_update must be called once per frame with the current key state.
+//   - rt_keychord_update must be called once per frame after global keyboard polling.
 //   - Named patterns are unique; registering the same name twice replaces the previous binding.
 //
 // Ownership/Lifetime:
-//   - Detector objects are GC-managed opaque runtime handles.
+//   - Detector objects are GC-managed opaque runtime handles. Their finalizer owns
+//     and frees the growable entry array and copied pattern names.
 //
 // Links: src/runtime/graphics/input/rt_keychord.c (implementation), src/runtime/core/rt_string.h
 //
@@ -33,12 +35,16 @@ extern "C" {
 void *rt_keychord_new(void);
 
 /// @brief Register a chord (simultaneous key press).
+/// @details Accepts one to 16 boxed key codes. A matching name replaces its prior definition after
+///          all fallible allocation succeeds.
 /// @param obj Detector handle.
 /// @param name Name for this chord (e.g., "copy").
 /// @param keys Seq of key codes (int64_t) that must be held together.
 void rt_keychord_define(void *obj, rt_string name, void *keys);
 
 /// @brief Register a combo (sequential key press with timing window).
+/// @details Accepts one to 16 boxed key codes. Non-positive windows normalize to 15 frames, and a
+///          matching name replaces its prior definition.
 /// @param obj Detector handle.
 /// @param name Name for this combo (e.g., "hadouken").
 /// @param keys Seq of key codes in order.
@@ -46,6 +52,8 @@ void rt_keychord_define(void *obj, rt_string name, void *keys);
 void rt_keychord_define_combo(void *obj, rt_string name, void *keys, int64_t window_frames);
 
 /// @brief Update detector state. Call once per frame after Canvas.Poll().
+/// @details Clears prior trigger edges, evaluates held chord state, advances ordered combo
+///          progress, and resets combos that time out or receive a member key out of order.
 /// @param obj Detector handle.
 void rt_keychord_update(void *obj);
 
@@ -62,6 +70,7 @@ int8_t rt_keychord_active(void *obj, rt_string name);
 int8_t rt_keychord_triggered(void *obj, rt_string name);
 
 /// @brief Get combo progress (number of keys matched so far).
+/// @details Chords report their full key count while active and zero otherwise.
 /// @param obj Detector handle.
 /// @param name Combo name.
 /// @return Number of keys matched (0 to N).

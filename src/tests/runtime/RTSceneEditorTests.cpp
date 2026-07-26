@@ -1929,5 +1929,71 @@ int main() {
     assert(rt_map_get_int(hit, rt_const_cstr("tileX")) == 1);
     assert(rt_map_get_int(hit, rt_const_cstr("tileY")) == 1);
     assert(rt_map_get_int(hit, rt_const_cstr("tile")) == 29);
+
+    // ADR 0192: optional object transforms. Defaults serialize nothing, so
+    // an untransformed document's bytes are identical before and after the
+    // fields existed; authored values round-trip with sanitization.
+    {
+        void *transform_scene = rt_game_scene_new(4, 3, 16, 16);
+        int64_t plain =
+            rt_game_scene_add_object(transform_scene, rt_const_cstr("entity"),
+                                     rt_const_cstr("plain"), 5, 6);
+        assert(plain == 0);
+        assert(rt_game_scene_object_rotation(transform_scene, plain) == 0.0);
+        assert(rt_game_scene_object_scale_x(transform_scene, plain) == 1.0);
+        assert(rt_game_scene_object_scale_y(transform_scene, plain) == 1.0);
+        assert(rt_game_scene_object_flip_x(transform_scene, plain) == 0);
+        assert(rt_game_scene_object_flip_y(transform_scene, plain) == 0);
+        assert(rt_game_scene_object_tint(transform_scene, plain) == 0xFFFFFFFF);
+        assert(rt_game_scene_object_pivot_x(transform_scene, plain) == 0.5);
+        assert(rt_game_scene_object_pivot_y(transform_scene, plain) == 0.5);
+        std::string default_json = scene_json(transform_scene);
+        assert(default_json.find("rotation") == std::string::npos);
+        assert(default_json.find("scaleX") == std::string::npos);
+        assert(default_json.find("flipX") == std::string::npos);
+        assert(default_json.find("tint") == std::string::npos);
+        assert(default_json.find("pivotX") == std::string::npos);
+        // Round-tripping the default document keeps its exact bytes.
+        void *default_reload = load_text(default_json);
+        assert(scene_json(default_reload) == default_json);
+
+        rt_game_scene_set_object_rotation(transform_scene, plain, -90.0);
+        assert(rt_game_scene_object_rotation(transform_scene, plain) == 270.0);
+        rt_game_scene_set_object_scale(transform_scene, plain, 2.0, 0.0);
+        assert(rt_game_scene_object_scale_x(transform_scene, plain) == 2.0);
+        assert(rt_game_scene_object_scale_y(transform_scene, plain) == 1.0);
+        rt_game_scene_set_object_scale(transform_scene, plain, 2.0, -3.5);
+        rt_game_scene_set_object_flip(transform_scene, plain, 1, 0);
+        rt_game_scene_set_object_tint(transform_scene, plain,
+                                      static_cast<int64_t>(0x11223344));
+        rt_game_scene_set_object_pivot(transform_scene, plain, -0.5, 2.0);
+        assert(rt_game_scene_object_pivot_x(transform_scene, plain) == 0.0);
+        assert(rt_game_scene_object_pivot_y(transform_scene, plain) == 1.0);
+
+        std::string authored_json = scene_json(transform_scene);
+        void *authored_reload = load_text(authored_json);
+        assert(authored_reload);
+        assert(rt_game_scene_object_rotation(authored_reload, 0) == 270.0);
+        assert(rt_game_scene_object_scale_x(authored_reload, 0) == 2.0);
+        assert(rt_game_scene_object_scale_y(authored_reload, 0) == -3.5);
+        assert(rt_game_scene_object_flip_x(authored_reload, 0) == 1);
+        assert(rt_game_scene_object_flip_y(authored_reload, 0) == 0);
+        assert(rt_game_scene_object_tint(authored_reload, 0) == 0x11223344);
+        assert(rt_game_scene_object_pivot_x(authored_reload, 0) == 0.0);
+        assert(rt_game_scene_object_pivot_y(authored_reload, 0) == 1.0);
+        // The authored document round-trips byte-stably too.
+        assert(scene_json(authored_reload) == authored_json);
+
+        // Duplication copies the transform; transform keys never leak into
+        // the property bag.
+        int64_t copy = rt_game_scene_duplicate_object(
+            transform_scene, plain, rt_const_cstr("copy"));
+        assert(copy == 1);
+        assert(rt_game_scene_object_rotation(transform_scene, copy) == 270.0);
+        assert(rt_game_scene_object_flip_x(transform_scene, copy) == 1);
+        rt_string rotation_key = rt_const_cstr("rotation");
+        assert(rt_game_scene_object_has(transform_scene, plain, rotation_key) == 0);
+        rt_string_unref(rotation_key);
+    }
     return 0;
 }

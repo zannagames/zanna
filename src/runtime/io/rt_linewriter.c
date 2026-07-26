@@ -63,6 +63,12 @@ void rt_trap_set_recovery(jmp_buf *buf);
 void rt_trap_clear_recovery(void);
 const char *rt_trap_get_error(void);
 
+/// @brief Validate and unwrap an opaque LineWriter receiver.
+/// @details Checks the runtime class identifier and complete inline payload size before casting;
+///          invalid receivers trap.
+/// @param obj Borrowed opaque runtime receiver.
+/// @param context Trap diagnostic for an invalid receiver; may be NULL.
+/// @return Pointer to the validated implementation payload, or NULL as trap-control fallback.
 static rt_linewriter_impl *linewriter_require(void *obj, const char *context) {
     if (!rt_obj_is_instance(obj, RT_LINEWRITER_CLASS_ID, sizeof(rt_linewriter_impl))) {
         rt_trap(context ? context : "LineWriter: invalid writer");
@@ -71,6 +77,12 @@ static rt_linewriter_impl *linewriter_require(void *obj, const char *context) {
     return (rt_linewriter_impl *)obj;
 }
 
+/// @brief Accept a null or valid runtime string and reject other object kinds.
+/// @details Null is permitted for optional-string callers such as newline reset; operations that
+///          require text reject null before invoking this helper.
+/// @param text Borrowed runtime string candidate.
+/// @param context Trap diagnostic used for a non-string object.
+/// @return 1 for null or a valid runtime string handle; otherwise traps and returns 0.
 static int linewriter_require_string(rt_string text, const char *context) {
     if (!text || rt_string_is_handle(text))
         return 1;
@@ -355,7 +367,7 @@ void rt_linewriter_close(void *obj) {
 /// ```
 ///
 /// @param obj Pointer to a LineWriter object. Must not be NULL and writer must be open.
-/// @param text The Zanna string to write. If NULL, nothing is written (no error).
+/// @param text The Zanna string to write. A NULL or non-string value traps.
 ///
 /// @note Empty strings write nothing (no error).
 /// @note Data may be buffered by the OS. Use rt_linewriter_flush for immediate writes.
@@ -545,9 +557,9 @@ void rt_linewriter_write_char(void *obj, int64_t ch) {
 
 /// @brief Flushes buffered data to disk without closing the file.
 ///
-/// Forces any data that has been written but is still in memory buffers
-/// to be written to the underlying storage device. Use this when you need
-/// to ensure data durability at specific points without closing the file.
+/// Forces data in the C stdio buffer to the host file descriptor. This makes
+/// output visible to the operating system and peer readers but does not issue
+/// a platform durability primitive such as `fsync`.
 ///
 /// **When to use flush:**
 /// - After writing critical data that must not be lost

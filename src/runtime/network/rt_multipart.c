@@ -90,10 +90,16 @@ static void generate_boundary(char *buf, size_t buf_len) {
     buf[len] = '\0';
 }
 
+/// @brief Borrow the mutable payload pointer from a managed Bytes object.
+/// @param obj Bytes handle.
+/// @return Borrowed payload pointer, or null for invalid/empty storage as defined by Bytes.
 static inline uint8_t *bytes_data(void *obj) {
     return rt_bytes_data(obj);
 }
 
+/// @brief Read a managed Bytes object's logical length.
+/// @param obj Bytes handle.
+/// @return Byte length, or the Bytes layer's invalid-handle sentinel.
 static inline int64_t bytes_len_impl(void *obj) {
     return rt_bytes_len(obj);
 }
@@ -144,6 +150,10 @@ static int multipart_is_handle(void *obj) {
     return rt_obj_is_instance(obj, RT_MULTIPART_CLASS_ID, sizeof(rt_multipart_impl));
 }
 
+/// @brief Add a serialized multipart size component with overflow checking.
+/// @param total Running size to update.
+/// @param value Number of bytes to add.
+/// @return 1 on success; 0 for a null accumulator or `size_t` overflow.
 static int multipart_size_add(size_t *total, size_t value) {
     if (!total || *total > SIZE_MAX - value)
         return 0;
@@ -151,6 +161,9 @@ static int multipart_size_add(size_t *total, size_t value) {
     return 1;
 }
 
+/// @brief Detect embedded null bytes across a runtime String's exact length.
+/// @param value Runtime String to inspect; null is treated as empty.
+/// @return Nonzero when a null occurs before the logical end; zero otherwise.
 static int multipart_string_has_embedded_nul(rt_string value) {
     if (!value)
         return 0;
@@ -301,6 +314,12 @@ static int multipart_append_bytes(
     return 1;
 }
 
+/// @brief Find the first exact byte-subsequence occurrence in a bounded range.
+/// @param haystack Bytes to search.
+/// @param haystack_len Number of searchable bytes.
+/// @param needle Nonempty byte sequence to find.
+/// @param needle_len Number of bytes in @p needle.
+/// @return Borrowed pointer to the first match, or null when absent or invalid.
 static const uint8_t *find_bytes(const uint8_t *haystack,
                                  size_t haystack_len,
                                  const uint8_t *needle,
@@ -352,6 +371,11 @@ static const uint8_t *multipart_find_boundary_line(const uint8_t *haystack,
     return NULL;
 }
 
+/// @brief Compare two equal-length ASCII spans case-insensitively.
+/// @param a First span.
+/// @param b Second span.
+/// @param len Number of bytes to compare.
+/// @return 1 when all bytes match after ASCII case folding; 0 otherwise.
 static int multipart_ascii_ieq_n(const char *a, const char *b, size_t len) {
     for (size_t i = 0; i < len; i++) {
         unsigned char ca = (unsigned char)a[i];
@@ -366,6 +390,11 @@ static int multipart_ascii_ieq_n(const char *a, const char *b, size_t len) {
     return 1;
 }
 
+/// @brief Compute the serialized length of a quoted multipart parameter value.
+/// @details Quotes and backslashes each require one additional escape byte.
+/// @param value Null-terminated parameter value; null has length zero.
+/// @param len_out Optional receiver for the escaped length.
+/// @return 1 on success; 0 on `size_t` overflow.
 static int multipart_escaped_quoted_length(const char *value, size_t *len_out) {
     size_t len = 0;
     if (len_out)
@@ -418,11 +447,19 @@ static int multipart_append_escaped_quoted(uint8_t *buffer,
     return 1;
 }
 
+/// @brief Advance a parser cursor past optional spaces and horizontal tabs.
+/// @param cursor Address of the input cursor; null cursors are no-ops.
 static void multipart_skip_ows(const char **cursor) {
     while (cursor && *cursor && (**cursor == ' ' || **cursor == '\t'))
         (*cursor)++;
 }
 
+/// @brief Parse a quoted parameter value while removing backslash escapes.
+/// @param cursor In/out cursor initially pointing at the opening quote.
+/// @param out Optional destination for a truncated, null-terminated copy.
+/// @param out_cap Capacity of @p out including its terminator.
+/// @param closed_out Optional receiver set when a closing quote is consumed.
+/// @return Full unescaped value length, even when the destination is smaller.
 static size_t multipart_copy_unescaped_quoted(const char **cursor,
                                               char *out,
                                               size_t out_cap,
@@ -456,6 +493,11 @@ static size_t multipart_copy_unescaped_quoted(const char **cursor,
     return len;
 }
 
+/// @brief Parse an unquoted parameter token up to whitespace, semicolon, or line ending.
+/// @param cursor In/out parser cursor.
+/// @param out Optional destination for a truncated, null-terminated copy.
+/// @param out_cap Capacity of @p out including its terminator.
+/// @return Full token length, even when the destination is smaller.
 static size_t multipart_copy_token_value(const char **cursor, char *out, size_t out_cap) {
     size_t len = 0;
     const char *p = cursor ? *cursor : NULL;
@@ -478,6 +520,15 @@ static size_t multipart_copy_token_value(const char **cursor, char *out, size_t 
     return len;
 }
 
+/// @brief Extract one case-insensitive semicolon parameter from header text.
+/// @details Supports quoted values with backslash escapes and unquoted tokens,
+///          rejecting unterminated quotes or values that do not fit the caller's
+///          output buffer.
+/// @param text Parameter-list text.
+/// @param target_name Parameter name to locate.
+/// @param out Optional output buffer for the decoded value.
+/// @param out_cap Capacity of @p out including its terminator.
+/// @return 1 when a complete fitting value is found; 0 otherwise.
 static int multipart_extract_param_value(const char *text,
                                          const char *target_name,
                                          char *out,
@@ -535,6 +586,12 @@ static int multipart_extract_param_value(const char *text,
     return 0;
 }
 
+/// @brief Extract one case-insensitive field value from CRLF-delimited part headers.
+/// @param headers Null-terminated part-header block.
+/// @param header_name Field name to locate.
+/// @param out Optional output buffer.
+/// @param out_cap Capacity of @p out including its terminator.
+/// @return 1 when a complete fitting value is found; 0 otherwise.
 static int multipart_extract_header_value(const char *headers,
                                           const char *header_name,
                                           char *out,
@@ -576,6 +633,8 @@ static int multipart_extract_header_value(const char *headers,
 // Finalizer
 //=============================================================================
 
+/// @brief Finalize a Multipart by releasing all native part copies and storage.
+/// @param obj Multipart payload being finalized; may be null.
 static void rt_multipart_finalize(void *obj) {
     if (!obj)
         return;
@@ -632,6 +691,10 @@ void *rt_multipart_new(void) {
 /// @brief Append a text field (`Content-Disposition: form-data; name="..."`).
 /// @details Returns the builder for fluent chaining. Part storage grows on demand and traps on
 ///          null input, invalid names, integer overflow, or allocation failure.
+/// @param obj Multipart receiver.
+/// @param name Nonempty field-name String without embedded nulls.
+/// @param value Field bytes copied by exact runtime String length.
+/// @return The original Multipart for chaining, or null for an invalid receiver.
 void *rt_multipart_add_field(void *obj, rt_string name, rt_string value) {
     rt_multipart_impl *mp = multipart_require(obj, "Multipart.AddField: invalid receiver");
     if (!mp)
@@ -680,7 +743,13 @@ void *rt_multipart_add_field(void *obj, rt_string name, rt_string value) {
 
 /// @brief Append a file part (`Content-Disposition: form-data; name="..."; filename="..."`,
 /// `Content-Type: application/octet-stream`). `data` is a Bytes object (the raw file contents).
-/// Returns the builder for chaining. NULL filename defaults to "file".
+/// @details Returns the builder for chaining. A null filename defaults to `file`
+///          and null data represents an empty file.
+/// @param obj Multipart receiver.
+/// @param name Nonempty file field name without embedded nulls.
+/// @param filename Optional filename String.
+/// @param data Optional Bytes payload.
+/// @return The original Multipart for chaining, or null for an invalid receiver.
 void *rt_multipart_add_file(void *obj, rt_string name, rt_string filename, void *data) {
     rt_multipart_impl *mp = multipart_require(obj, "Multipart.AddFile: invalid receiver");
     if (!mp)
@@ -886,6 +955,8 @@ void *rt_multipart_build(void *obj) {
 }
 
 /// @brief Return the count of elements in a validated Multipart.
+/// @param obj Multipart receiver; null reports zero.
+/// @return Nonnegative appended or parsed part count.
 int64_t rt_multipart_count(void *obj) {
     if (!obj)
         return 0;
@@ -910,6 +981,9 @@ int64_t rt_multipart_count(void *obj) {
 ///          failures all trap instead of returning an empty or partial object,
 ///          so a returned Multipart always represents the complete input. Use
 ///          `ParseResult` for a non-trapping `Result`-returning variant.
+/// @param content_type Content-Type String containing a valid boundary parameter.
+/// @param body Bytes containing the complete bounded multipart body.
+/// @return Caller-owned complete Multipart, or null after a returning parse trap.
 void *rt_multipart_parse(rt_string content_type, void *body) {
     if (!body || !rt_bytes_is_bytes(body)) {
         rt_trap("Multipart: invalid body");
@@ -1193,6 +1267,9 @@ void *rt_multipart_parse_result(rt_string content_type, void *body) {
 
 /// @brief True when a non-file field with @p name exists (distinguishes a
 ///        present-but-empty field from a missing one, VDOC-146).
+/// @param obj Candidate Multipart receiver.
+/// @param name Exact case-sensitive field name.
+/// @return One when a matching non-file part exists; zero otherwise.
 int8_t rt_multipart_has_field(void *obj, rt_string name) {
     if (!multipart_is_handle(obj) || !name || !rt_string_is_handle(name))
         return 0;
@@ -1209,6 +1286,9 @@ int8_t rt_multipart_has_field(void *obj, rt_string name) {
 
 /// @brief True when a file part with @p name exists (distinguishes a present
 ///        zero-byte file from a missing one, VDOC-146).
+/// @param obj Candidate Multipart receiver.
+/// @param name Exact case-sensitive file field name.
+/// @return One when a matching file part exists; zero otherwise.
 int8_t rt_multipart_has_file(void *obj, rt_string name) {
     if (!multipart_is_handle(obj) || !name || !rt_string_is_handle(name))
         return 0;
@@ -1224,7 +1304,10 @@ int8_t rt_multipart_has_file(void *obj, rt_string name) {
 }
 
 /// @brief Look up a non-file field by name and return its value, or empty if not found.
-/// Use `HasField` to distinguish a missing field from a present empty one.
+/// @details Use `HasField` to distinguish a missing field from a present empty one.
+/// @param obj Candidate Multipart receiver.
+/// @param name Exact case-sensitive field name.
+/// @return Caller-owned exact-value String, or an owned empty String when absent or invalid.
 rt_string rt_multipart_get_field(void *obj, rt_string name) {
     if (!multipart_is_handle(obj) || !name || !rt_string_is_handle(name))
         return rt_str_empty();
@@ -1243,6 +1326,9 @@ rt_string rt_multipart_get_field(void *obj, rt_string name) {
 
 /// @brief Look up a file part by name and return its raw contents as Bytes. Returns empty Bytes
 /// if the name doesn't match any file part (use `_get_field` for non-file parts).
+/// @param obj Candidate Multipart receiver.
+/// @param name Exact case-sensitive file field name.
+/// @return Caller-owned Bytes copy, empty when absent or invalid.
 void *rt_multipart_get_file(void *obj, rt_string name) {
     if (!multipart_is_handle(obj) || !name || !rt_string_is_handle(name))
         return rt_bytes_new(0);

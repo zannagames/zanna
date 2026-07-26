@@ -44,9 +44,9 @@
 //   - Mat3 objects are GC-managed (rt_obj_new_i64). They hold only the 9
 //     double fields inline (no external allocations) so no finalizer is needed.
 //
-// Links: src/runtime/graphics/rt_mat3.h (public API),
-//        src/runtime/graphics/rt_vec2.h, rt_vec3.h (operand types),
-//        src/runtime/graphics/rt_camera.c (consumer for viewport transforms)
+// Links: src/runtime/graphics/math/rt_mat3.h (public API),
+//        src/runtime/graphics/math/rt_vec2.h, rt_vec3.h (operand types),
+//        src/runtime/graphics/2d/rt_camera.c (consumer for viewport transforms)
 //
 //===----------------------------------------------------------------------===//
 
@@ -110,9 +110,20 @@ static mat3_impl *mat3_checked(void *m, const char *op) {
 // Construction
 //=============================================================================
 
-/// @brief Construct a 3×3 matrix from 9 row-major scalars (m00 = top-left, m22 = bottom-right).
-/// Used for 2D affine transforms (translate/rotate/scale) where the third row provides the
-/// homogeneous coordinate. Returns NULL on allocation failure.
+/// @brief Construct a 3x3 matrix from nine row-major scalar values.
+/// @details Stores the supplied values without normalization or affine-layout validation. The
+///          resulting GC-managed object may therefore represent either a 2D homogeneous transform
+///          or an arbitrary 3x3 matrix.
+/// @param m00 Element at row 0, column 0.
+/// @param m01 Element at row 0, column 1.
+/// @param m02 Element at row 0, column 2.
+/// @param m10 Element at row 1, column 0.
+/// @param m11 Element at row 1, column 1.
+/// @param m12 Element at row 1, column 2.
+/// @param m20 Element at row 2, column 0.
+/// @param m21 Element at row 2, column 1.
+/// @param m22 Element at row 2, column 2.
+/// @return Newly allocated Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_new(double m00,
                   double m01,
                   double m02,
@@ -139,12 +150,14 @@ void *rt_mat3_new(double m00,
     return mat;
 }
 
-/// @brief Return the 3×3 identity matrix.
+/// @brief Create a 3x3 identity matrix.
+/// @return Newly allocated identity Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_identity(void) {
     return rt_mat3_new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Return the 3×3 zero matrix.
+/// @brief Create a 3x3 matrix whose elements are all zero.
+/// @return Newly allocated zero Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_zero(void) {
     return rt_mat3_new(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 }
@@ -153,22 +166,33 @@ void *rt_mat3_zero(void) {
 // 2D Transformation Factories
 //=============================================================================
 
-/// @brief Build a 2D translation matrix that moves points by (tx, ty).
+/// @brief Create a homogeneous 2D translation matrix.
+/// @param tx Translation applied along the x axis.
+/// @param ty Translation applied along the y axis.
+/// @return Newly allocated affine Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_translate(double tx, double ty) {
     return rt_mat3_new(1.0, 0.0, tx, 0.0, 1.0, ty, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 2D non-uniform scaling matrix with axis factors (sx, sy).
+/// @brief Create a homogeneous 2D non-uniform scaling matrix.
+/// @param sx Scale factor applied along the x axis.
+/// @param sy Scale factor applied along the y axis.
+/// @return Newly allocated affine Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_scale(double sx, double sy) {
     return rt_mat3_new(sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 2D uniform scaling matrix (same factor on both axes).
+/// @brief Create a homogeneous 2D uniform scaling matrix.
+/// @param s Scale factor applied along both axes.
+/// @return Newly allocated affine Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_scale_uniform(double s) {
     return rt_mat3_scale(s, s);
 }
 
-/// @brief Build a 2D rotation matrix (counter-clockwise, angle in radians).
+/// @brief Create a homogeneous 2D counter-clockwise rotation matrix.
+/// @details A non-finite angle is treated as zero and produces an identity matrix.
+/// @param angle Rotation angle in radians.
+/// @return Newly allocated affine Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_rotate(double angle) {
     if (!isfinite(angle))
         return rt_mat3_identity();
@@ -177,8 +201,11 @@ void *rt_mat3_rotate(double angle) {
     return rt_mat3_new(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0);
 }
 
-/// @brief Build a 2D shear matrix: `sx` shears X by Y, `sy` shears Y by X. Useful for slant
-/// effects (italic text, parallelogram skew).
+/// @brief Create a homogeneous 2D shear matrix.
+/// @details The transformed coordinates are `x' = x + sx * y` and `y' = sy * x + y`.
+/// @param sx Amount by which the y coordinate contributes to the output x coordinate.
+/// @param sy Amount by which the x coordinate contributes to the output y coordinate.
+/// @return Newly allocated affine Mat3 handle, or NULL if allocation fails.
 void *rt_mat3_shear(double sx, double sy) {
     return rt_mat3_new(1.0, sx, 0.0, sy, 1.0, 0.0, 0.0, 0.0, 1.0);
 }
@@ -187,8 +214,13 @@ void *rt_mat3_shear(double sx, double sy) {
 // Element Access
 //=============================================================================
 
-/// @brief Read a single matrix element by (row, col), both in [0, 2]. Returns 0 for null
-/// matrix or out-of-range indices.
+/// @brief Read one matrix element by zero-based row and column.
+/// @details Out-of-range coordinates return zero without inspecting @p m. An invalid matrix handle
+///          raises a runtime trap and returns zero if execution resumes.
+/// @param m Mat3 handle to inspect.
+/// @param row Zero-based row index in the inclusive range [0, 2].
+/// @param col Zero-based column index in the inclusive range [0, 2].
+/// @return Selected element, or 0.0 for invalid coordinates or an invalid matrix.
 double rt_mat3_get(void *m, int64_t row, int64_t col) {
     mat3_impl *mat;
     if (row < 0 || row > 2 || col < 0 || col > 2)
@@ -200,7 +232,12 @@ double rt_mat3_get(void *m, int64_t row, int64_t col) {
     return M(mat, row, col);
 }
 
-/// @brief Extract the i-th row as a fresh Vec3. Returns (0,0,0) for invalid input.
+/// @brief Extract one matrix row into a new Vec3.
+/// @details A NULL handle or out-of-range row returns a zero vector. A non-NULL incompatible handle
+///          also raises a runtime trap before returning the zero-vector fallback.
+/// @param m Mat3 handle to inspect.
+/// @param row Zero-based row index in the inclusive range [0, 2].
+/// @return Newly allocated Vec3 containing the row, or a zero Vec3 for invalid input.
 void *rt_mat3_row(void *m, int64_t row) {
     if (!m || row < 0 || row > 2)
         return rt_vec3_zero();
@@ -211,7 +248,12 @@ void *rt_mat3_row(void *m, int64_t row) {
     return rt_vec3_new(M(mat, row, 0), M(mat, row, 1), M(mat, row, 2));
 }
 
-/// @brief Extract the i-th column as a fresh Vec3. Returns (0,0,0) for invalid input.
+/// @brief Extract one matrix column into a new Vec3.
+/// @details A NULL handle or out-of-range column returns a zero vector. A non-NULL incompatible
+///          handle also raises a runtime trap before returning the zero-vector fallback.
+/// @param m Mat3 handle to inspect.
+/// @param col Zero-based column index in the inclusive range [0, 2].
+/// @return Newly allocated Vec3 containing the column, or a zero Vec3 for invalid input.
 void *rt_mat3_col(void *m, int64_t col) {
     if (!m || col < 0 || col > 2)
         return rt_vec3_zero();
@@ -226,7 +268,12 @@ void *rt_mat3_col(void *m, int64_t col) {
 // Arithmetic
 //=============================================================================
 
-/// @brief Element-wise addition (a + b). Returns zero for NULL inputs.
+/// @brief Add two matrices element by element.
+/// @details NULL operands return a zero matrix. Non-NULL incompatible operands raise a runtime trap
+///          before the same fallback is returned.
+/// @param a Left-hand Mat3 operand.
+/// @param b Right-hand Mat3 operand.
+/// @return Newly allocated sum, or a zero Mat3 when either operand is invalid.
 void *rt_mat3_add(void *a, void *b) {
     if (!a || !b)
         return rt_mat3_zero();
@@ -247,7 +294,12 @@ void *rt_mat3_add(void *a, void *b) {
                        ma->m[8] + mb->m[8]);
 }
 
-/// @brief Element-wise subtraction (a - b). Returns zero for NULL inputs.
+/// @brief Subtract one matrix from another element by element.
+/// @details NULL operands return a zero matrix. Non-NULL incompatible operands raise a runtime trap
+///          before the same fallback is returned.
+/// @param a Mat3 minuend.
+/// @param b Mat3 subtrahend.
+/// @return Newly allocated difference, or a zero Mat3 when either operand is invalid.
 void *rt_mat3_sub(void *a, void *b) {
     if (!a || !b)
         return rt_mat3_zero();
@@ -268,8 +320,13 @@ void *rt_mat3_sub(void *a, void *b) {
                        ma->m[8] - mb->m[8]);
 }
 
-/// @brief Standard matrix multiplication (a × b). Composes 2D affine transforms left-to-right:
-/// `mul(translate, rotate)` applied to a point first rotates then translates. NULL→identity.
+/// @brief Multiply two matrices using standard row-by-column multiplication.
+/// @details For column-vector transforms, `mul(translate, rotate)` first rotates a point and then
+///          translates it. NULL operands return an identity matrix; non-NULL incompatible operands
+///          raise a runtime trap before the same fallback is returned.
+/// @param a Left-hand Mat3 operand.
+/// @param b Right-hand Mat3 operand.
+/// @return Newly allocated product, or an identity Mat3 when either operand is invalid.
 void *rt_mat3_mul(void *a, void *b) {
     if (!a || !b)
         return rt_mat3_identity();
@@ -291,7 +348,12 @@ void *rt_mat3_mul(void *a, void *b) {
     return rt_mat3_new(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]);
 }
 
-/// @brief Multiply every entry of `m` by scalar `s`.
+/// @brief Multiply every matrix element by a scalar.
+/// @details A NULL matrix returns a zero matrix. A non-NULL incompatible handle raises a runtime
+///          trap before the same fallback is returned.
+/// @param m Mat3 operand.
+/// @param s Scalar multiplier.
+/// @return Newly allocated scaled matrix, or a zero Mat3 for an invalid matrix.
 void *rt_mat3_mul_scalar(void *m, double s) {
     if (!m)
         return rt_mat3_zero();
@@ -311,8 +373,13 @@ void *rt_mat3_mul_scalar(void *m, double s) {
                        mat->m[8] * s);
 }
 
-/// @brief Transform a 2D point (x, y) through the first two rows of `m`, treating v as
-/// homogeneous (x, y, 1), and return a Vec2. The bottom row is not evaluated.
+/// @brief Transform a 2D point using the first two rows of a matrix.
+/// @details Treats @p v as the homogeneous column vector `(x, y, 1)`, so the matrix translation
+///          terms contribute to the result. The bottom matrix row is not evaluated. NULL inputs
+///          return a zero vector; an incompatible matrix also raises a runtime trap.
+/// @param m Mat3 transform.
+/// @param v Vec2 point to transform.
+/// @return Newly allocated transformed Vec2, or a zero Vec2 for invalid input.
 void *rt_mat3_transform_point(void *m, void *v) {
     if (!m || !v)
         return rt_vec2_zero();
@@ -330,8 +397,13 @@ void *rt_mat3_transform_point(void *m, void *v) {
     return rt_vec2_new(rx, ry);
 }
 
-/// @brief Transform a 2D direction through `m` (treats v as homogeneous (x, y, 0) — translation
-/// is ignored). Use for normals/directions, not absolute positions.
+/// @brief Transform a 2D direction using the linear portion of a matrix.
+/// @details Treats @p v as the homogeneous column vector `(x, y, 0)`, ignoring translation and the
+///          bottom matrix row. NULL inputs return a zero vector; an incompatible matrix also raises
+///          a runtime trap.
+/// @param m Mat3 transform.
+/// @param v Vec2 direction to transform.
+/// @return Newly allocated transformed Vec2, or a zero Vec2 for invalid input.
 void *rt_mat3_transform_vec(void *m, void *v) {
     if (!m || !v)
         return rt_vec2_zero();
@@ -353,7 +425,11 @@ void *rt_mat3_transform_vec(void *m, void *v) {
 // Matrix Operations
 //=============================================================================
 
-/// @brief Return the transpose of `m` (rows become columns).
+/// @brief Create the transpose of a matrix.
+/// @details Exchanges rows and columns. A NULL matrix returns an identity matrix; a non-NULL
+///          incompatible handle raises a runtime trap before the same fallback is returned.
+/// @param m Mat3 operand.
+/// @return Newly allocated transpose, or an identity Mat3 for an invalid matrix.
 void *rt_mat3_transpose(void *m) {
     if (!m)
         return rt_mat3_identity();
@@ -373,7 +449,11 @@ void *rt_mat3_transpose(void *m) {
                        mat->m[8]);
 }
 
-/// @brief Compute the 3x3 determinant via cofactor expansion. 0 indicates a singular matrix.
+/// @brief Compute a matrix determinant by cofactor expansion along its first row.
+/// @details A NULL matrix returns zero. A non-NULL incompatible handle raises a runtime trap before
+///          zero is returned.
+/// @param m Mat3 operand.
+/// @return Determinant of @p m, or 0.0 for an invalid matrix.
 double rt_mat3_det(void *m) {
     mat3_impl *mat;
     if (!m)
@@ -389,7 +469,12 @@ double rt_mat3_det(void *m) {
            mat->m[2] * (mat->m[3] * mat->m[7] - mat->m[4] * mat->m[6]);
 }
 
-/// @brief Compute the 3x3 inverse via the cofactor / adjugate formula.
+/// @brief Invert a matrix using the adjugate and determinant.
+/// @details A matrix is treated as singular when its determinant is non-finite or has magnitude
+///          below `1e-15`. NULL, incompatible, and singular matrices raise a runtime trap and do
+///          not produce a fallback matrix.
+/// @param m Mat3 operand.
+/// @return Newly allocated inverse, or NULL after trapping for invalid or singular input.
 void *rt_mat3_inverse(void *m) {
     mat3_impl *mat;
     double det;
@@ -434,7 +519,11 @@ void *rt_mat3_inverse(void *m) {
                        c22 * invDet);
 }
 
-/// @brief Element-wise negation (-m).
+/// @brief Negate every matrix element.
+/// @details A NULL matrix returns a zero matrix. A non-NULL incompatible handle raises a runtime
+///          trap before the same fallback is returned.
+/// @param m Mat3 operand.
+/// @return Newly allocated negated matrix, or a zero Mat3 for an invalid matrix.
 void *rt_mat3_neg(void *m) {
     if (!m)
         return rt_mat3_zero();
@@ -458,7 +547,14 @@ void *rt_mat3_neg(void *m) {
 // Comparison
 //=============================================================================
 
-/// @brief Returns 1 if every element of `a` and `b` differs by no more than `epsilon`.
+/// @brief Compare two matrices using an absolute per-element tolerance.
+/// @details Two NULL handles compare equal, while exactly one NULL handle compares unequal. A
+///          non-positive or non-finite tolerance is replaced with `1e-9`. Any NaN element causes
+///          the matrices to compare unequal. Incompatible non-NULL handles raise a runtime trap.
+/// @param a Left-hand Mat3 operand.
+/// @param b Right-hand Mat3 operand.
+/// @param epsilon Maximum permitted absolute difference for each corresponding element.
+/// @return 1 when all nine elements compare within tolerance, otherwise 0.
 int8_t rt_mat3_eq(void *a, void *b, double epsilon) {
     if (!a || !b)
         return (!a && !b) ? 1 : 0;

@@ -14,9 +14,8 @@
 //          diacritic composite characters.
 //
 // Key invariants:
-//   - Primary weights use a sparse 16-bit space organized so base Latin
-//     letters sort before punctuation and punctuation sorts before digits.
-//     This matches Unicode default collation order at the primary level.
+//   - Primary weights use a sparse 32-bit space ordered as whitespace/control,
+//     punctuation, digits, base Latin letters, then codepoint fallback.
 //   - Secondary weight 0 means "no diacritic"; 1..7 encode the common
 //     Latin diacritic families (grave/acute/circumflex/tilde/diaeresis/
 //     ring/cedilla) so strength-2 comparisons distinguish accented forms.
@@ -50,7 +49,7 @@
 //   0x0200..0x020F    digits 0-9
 //   0x0300..0x031F    base Latin letters (a/A = 0x0300, b/B = 0x0301, …)
 //   0x0400..           Latin Extended / other
-//   0x8000..          codepoint-order fallback: primary = cp itself
+//   0x8000..          codepoint-order fallback: primary = 0x8000 + cp
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,6 +65,10 @@
 /// @brief Resolve the base Latin letter (lowercase, A-Z primary column) and
 ///        the diacritic family for a Latin-1 Supplement / Extended-A
 ///        composite codepoint.
+/// @param cp Unicode code point to decompose.
+/// @param base_out Optional destination for the lowercase ASCII base letter.
+/// @param sec_out Optional destination for the stable secondary variant weight.
+/// @return 1 when the compact Latin-1 table covers @p cp, otherwise 0.
 static int decompose_latin(uint32_t cp, char *base_out, uint16_t *sec_out) {
     char base = 0;
     uint16_t sec = 0;
@@ -372,6 +375,8 @@ static int decompose_latin_extended_a(uint32_t cp, char *base_out, uint16_t *sec
 /// @brief Return whether a Latin Extended-A codepoint is uppercase for tertiary ordering.
 /// @details Most Extended-A letters are encoded as uppercase/lowercase pairs with the uppercase
 ///          value first. This helper handles singleton and ligature exceptions explicitly.
+/// @param cp Latin Extended-A code point covered by the decomposition table.
+/// @return 1 for an uppercase form, otherwise 0.
 static int latin_extended_a_is_upper(uint32_t cp) {
     if (cp == 0x0130 || cp == 0x0132 || cp == 0x014A || cp == 0x0178)
         return 1;
@@ -381,6 +386,17 @@ static int latin_extended_a_is_upper(uint32_t cp) {
     return (cp & 1u) == 0;
 }
 
+/// @brief Classify one code point into deterministic collation weights.
+/// @details ASCII structure, digits, and Latin letters use ordered sparse
+///          bands. Latin-1 and Extended-A composites share base-letter
+///          primaries with secondary variant and tertiary case weights.
+///          Everything else receives @c 0x8000+cp as a codepoint-order
+///          fallback. Any output pointer may be NULL.
+/// @param cp Unicode code point to classify.
+/// @param primary Optional destination for the 32-bit primary weight.
+/// @param secondary Optional destination for the accent/variant weight.
+/// @param tertiary Optional destination for the case weight.
+/// @return 0 for explicitly classified input, or 1 when fallback ordering was used.
 int rt_collator_codepoint_weights(uint32_t cp,
                                   uint32_t *primary,
                                   uint16_t *secondary,
@@ -491,16 +507,21 @@ static const rt_collator_locale_patch_t g_patches_sv[] = {
     {0x00D6u, PRI_LETTER0 + 28u, 0, 1},
 };
 
-// German phonebook-style: ä/ö/ü treated as ae/oe/ue (folded); ß as ss.
-// For Phase 5 we just give them equal-to-base primary with elevated
-// secondary so case-sensitive sort still distinguishes but strength-1
-// treats ä and a as equivalent. The decompose_latin default already does
-// this; the patch array is therefore empty to document that the default
-// applies.
+// German currently uses the invariant Latin decomposition: umlauts share
+// their base-letter primary with an elevated secondary, and ß uses the
+// special s primary. No locale-specific override is required, so this
+// sentinel table intentionally reports zero entries.
 static const rt_collator_locale_patch_t g_patches_de[] = {
     {0, 0, 0, 0}, // Sentinel; count returns 0 below.
 };
 
+/// @brief Select immutable locale-specific collation overrides by language tag.
+/// @details Swedish tags (`sv` or `sv-*`) receive six å/ä/ö case patches.
+///          German and all other tags currently use invariant classifier
+///          weights and return no patch table.
+/// @param tag Non-empty canonical NUL-terminated locale tag.
+/// @param out_count Optional destination reset to zero and set to the returned table size.
+/// @return Borrowed static patch array, or NULL when no override applies.
 const rt_collator_locale_patch_t *rt_collator_locale_patches(const char *tag, size_t *out_count) {
     if (out_count)
         *out_count = 0;

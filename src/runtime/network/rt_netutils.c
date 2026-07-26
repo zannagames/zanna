@@ -38,6 +38,10 @@
 /// Uses non-blocking connect plus the shared socket readiness adapter for the timeout.
 /// Default timeout 1000 ms if non-positive supplied. Useful for service health-checks and
 /// "wait for port to come up" patterns during testing.
+/// @param host Host name or numeric address to resolve.
+/// @param port TCP port in the inclusive range 1 through 65535.
+/// @param timeout_ms Shared probe deadline in milliseconds; non-positive values use 1000.
+/// @return One when any resolved address accepts a connection before the deadline; zero otherwise.
 int8_t rt_netutils_is_port_open(rt_string host, int64_t port, int64_t timeout_ms) {
     rt_net_init_wsa();
 
@@ -116,6 +120,7 @@ int8_t rt_netutils_is_port_open(rt_string host, int64_t port, int64_t timeout_ms
 /// means "you pick"), read back the assigned port via `getsockname`, then close the socket.
 /// **Race window:** another process can grab the port between this call and the user's actual
 /// bind. Acceptable for tests; not for production servers where you should bind directly to 0.
+/// @return Ephemeral loopback TCP port selected by the OS, or zero on socket failure.
 int64_t rt_netutils_get_free_port(void) {
     rt_net_init_wsa();
 
@@ -150,6 +155,9 @@ int64_t rt_netutils_get_free_port(void) {
 //=============================================================================
 
 /// @brief Parse an IPv4 address string to a uint32_t in host byte order.
+/// @param str Null-terminated dotted-decimal IPv4 text.
+/// @param out Receives the host-order 32-bit address.
+/// @return True on successful IPv4 parsing; false otherwise.
 static bool parse_ipv4_addr(const char *str, uint32_t *out) {
     struct in_addr addr;
     if (inet_pton(AF_INET, str, &addr) != 1)
@@ -158,11 +166,10 @@ static bool parse_ipv4_addr(const char *str, uint32_t *out) {
     return true;
 }
 
-/// @brief Test whether `ip` falls within `cidr` (e.g. `192.168.1.5` ∈ `192.168.0.0/16`). Parses
-/// the prefix length, builds the mask via `~((1u << (32 - prefix)) - 1)`, and compares masked
-/// halves. Returns 1 for `/0` (match-all). IPv4 only — for IPv6 ranges use a separate path.
 /// @brief True when @p value has an embedded NUL (its C-string view would
 ///        classify a prefix different from the caller's runtime string).
+/// @param value Runtime String to inspect.
+/// @return Nonzero when an embedded null occurs before the logical end.
 static int netutils_string_has_embedded_nul(rt_string value) {
     const char *cstr = value ? rt_string_cstr(value) : NULL;
     int64_t len = value ? rt_str_len(value) : 0;
@@ -171,6 +178,13 @@ static int netutils_string_has_embedded_nul(rt_string value) {
     return memchr(cstr, '\0', (size_t)len) != NULL;
 }
 
+/// @brief Test whether an IPv4 address belongs to a CIDR range.
+/// @details Parses an optional prefix length, builds a host-order mask, and
+///          compares masked address values. `/0` matches every valid IPv4
+///          address; absent prefixes default to `/32`.
+/// @param ip IPv4 address String.
+/// @param cidr IPv4 network String with an optional `/0` through `/32` prefix.
+/// @return One on a match; zero for no match, malformed input, or embedded nulls.
 int8_t rt_netutils_match_cidr(rt_string ip, rt_string cidr) {
     const char *ip_str = rt_string_cstr(ip);
     const char *cidr_str = rt_string_cstr(cidr);
@@ -215,6 +229,8 @@ int8_t rt_netutils_match_cidr(rt_string ip, rt_string cidr) {
 
 /// @brief Returns 1 if `ip` is in an RFC 1918 private range (10/8, 172.16/12, 192.168/16) or
 /// loopback (127/8). This is classification only, not a complete trust or special-use check.
+/// @param ip IPv4 address String.
+/// @return One for RFC 1918 or loopback addresses; zero for public or invalid input.
 int8_t rt_netutils_is_private_ip(rt_string ip) {
     const char *ip_str = rt_string_cstr(ip);
     if (!ip_str || netutils_string_has_embedded_nul(ip))
@@ -247,6 +263,7 @@ int8_t rt_netutils_is_private_ip(rt_string ip) {
 /// just a routing table lookup), then `getsockname` to read which local IP the kernel assigned.
 /// Returns "127.0.0.1" if anything fails (e.g. a completely offline machine). This chooses the
 /// route for one destination rather than enumerating interfaces or defining a stable primary IP.
+/// @return Caller-owned selected IPv4 String, or loopback on failure.
 rt_string rt_netutils_local_ipv4(void) {
     rt_net_init_wsa();
 

@@ -366,6 +366,59 @@ Every menu action routes through the same editor transactions as the
 toolbar and shortcuts, so validation, history, and dirty state are
 identical.
 
+Tile editing gained region operations: a completed canvas box-select also
+records an inclusive tile region on the active layer (drawn as a persistent
+amber rectangle), and the canvas context menu offers Copy/Cut/Delete Tiles
+plus Paste Tiles Here — cut, delete, and paste are each one undoable
+transaction, paste clips at the scene edges and re-marks the pasted region,
+and blocks travel through a validated tile-block clipboard envelope.
+Holding Alt in any paint-family tool (paint, erase, rectangle, fill) turns
+the next click into a transient eyedropper that picks the clicked tile
+without switching tools. The recorded region also becomes a multi-tile stamp
+through "Paint with Region Stamp": the Paint tool then writes the whole
+block per stroke, grid-anchored so drags tile it seamlessly, with a green
+ghost frame showing the footprint the next click writes; Escape or any
+tool switch returns to single-tile painting. Stamps capture from the
+canvas region rather than a palette marquee deliberately — the palette's
+8-column display grid does not match arbitrary atlas layouts, so the
+region is the arrangement-true source. Line and Ellipse joined the tile
+toolbar: each drag previews its exact rasterized cells (integer-walk lines;
+per-column/per-row boundary-sampled ellipse outlines) and commits them as
+one undoable transaction on release, with Escape cancelling. Palette zoom
+and search, autotile-live painting, and image-true (rather than frame)
+ghost previews are not yet implemented.
+
+Scene objects carry optional transforms (ADR 0192): rotation about a
+normalized pivot, per-axis scale, horizontal/vertical mirroring, an RGBA
+tint, and the pivot itself — first-class document fields that serialize
+only away from their defaults, so untransformed documents keep their exact
+legacy bytes. The canvas renders `editor.sprite` objects sprite-true: the
+native frame at the current zoom with the full transform applied, with the
+legacy one-cell draw as the bounded fallback; selection outlines follow the
+transformed footprint, and canvas picking tests the exact rotated sprite
+rectangle top-down instead of the origin cell alone. The single-object
+inspector edits rotation and scale through the same live-commit gesture as
+X/Y (one undoable transaction on unfocus or scrub release, Escape
+restores), flip toggles commit immediately, pivot components share the
+live-commit gesture, and the tint edits as RRGGBBAA hex committing on
+Enter (FFFFFFFF clears it; invalid text is refused with a message). The
+single-selected sprite also carries on-canvas rect-tool handles: white
+corner squares scale per-axis about the pivot in the sprite's own rotated
+frame, and the floating rotation handle above the top edge swings the
+sprite about its pivot — each drag is one undoable transaction and Escape
+cancels the gesture without touching the selection.
+
+Creation is cursor-aware: the 3D viewport context menu's create items spawn
+at the precise triangle hit under the right-click point, at the ground-plane
+intersection when the ray misses geometry, or at the view target when it
+misses both; toolbar primitive buttons spawn at the view target rather than
+the world origin, and Cylinder joins Box/Sphere/Plane in the toolbar and
+both create menus. Context-menu creates arm the inline hierarchy rename so
+the name is typed immediately. The 2D canvas menu gains "Add Object Here",
+which creates one selected, rename-armed entity at the right-click cell as
+one transaction, and holding Ctrl/Cmd while dragging objects drops the tile
+grid for exact scene-pixel placement.
+
 Assets drag onto scene surfaces as typed payloads through the widget
 drag-and-drop system: dragging a project image row from an asset browser
 onto the 2D canvas creates one sprite object at the drop cell — with a

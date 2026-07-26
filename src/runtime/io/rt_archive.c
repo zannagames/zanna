@@ -99,11 +99,16 @@ const char *rt_trap_get_error(void);
 // header scan, which would otherwise mis-generate their dispatch signatures.
 
 /// @brief Return a direct pointer to the raw byte buffer of a Bytes GC object.
+/// @param obj Runtime Bytes handle.
+/// @return Borrowed pointer to the object's byte storage, or `NULL` when the
+/// Bytes API reports no storage.
 static inline uint8_t *bytes_data(void *obj) {
     return rt_bytes_data(obj);
 }
 
 /// @brief Return the byte count of a Bytes GC object.
+/// @param obj Runtime Bytes handle.
+/// @return Signed byte length reported by the Bytes API.
 static inline int64_t bytes_len(void *obj) {
     return rt_bytes_len(obj);
 }
@@ -113,16 +118,34 @@ static inline int64_t bytes_len(void *obj) {
 /// Used after we've materialized intermediate buffers (decompressed
 /// data, throw-away byte arrays) and want to release them eagerly
 /// instead of waiting for the next GC sweep.
+///
+/// @param obj Temporary runtime object; `NULL` is accepted. The helper
+/// relinquishes one reference and frees immediately only when it was the last.
 void archive_release_temp_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Snapshot the active runtime trap message into caller-owned storage.
+/// @details Copies the current non-empty trap text when available, otherwise
+/// copies @p fallback. The result is always formatted through `snprintf` and
+/// is therefore NUL-terminated when @p buffer_size is nonzero.
+/// @param buffer Writable destination buffer.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Message used when the trap subsystem has no active text.
 void archive_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Add an entry backed by a temporary Bytes object and then release it.
+/// @details Installs a trap-recovery boundary so @p data is released on both
+/// success and failure. A trapped Add diagnostic is copied before recovery is
+/// cleared and then raised again, using @p fallback if no message was set.
+/// @param obj Write-mode Archive handle.
+/// @param name Runtime entry name forwarded to rt_archive_add().
+/// @param data Temporary Bytes object whose reference this helper consumes.
+/// @param fallback Diagnostic used if the trapped operation supplied none.
 static void archive_add_with_temp_data(void *obj,
                                        rt_string name,
                                        void *data,
@@ -192,6 +215,11 @@ static const char *archive_entry_name_cstr(rt_string name) {
 
 /// @brief Internal state for an open ZIP archive (read or write mode).
 
+/// @brief Validate and unwrap a public Archive handle.
+/// @param obj Candidate runtime object.
+/// @param context Diagnostic raised when @p obj is invalid; a generic Archive
+/// diagnostic is used when this pointer is `NULL`.
+/// @return Internal Archive state on success, or `NULL` after raising a trap.
 static rt_archive_t *archive_require(void *obj, const char *context) {
     if (!obj || !rt_obj_is_instance(obj, RT_ARCHIVE_CLASS_ID, sizeof(rt_archive_t))) {
         rt_trap(context ? context : "Archive: invalid archive");
@@ -209,22 +237,30 @@ static rt_archive_t *archive_require(void *obj, const char *context) {
 // on big-endian hosts and avoids strict-aliasing pitfalls.
 
 /// @brief Read a little-endian uint16 from `p` (no alignment required).
+/// @param p Pointer to at least two accessible encoded bytes.
+/// @return Decoded host-order 16-bit value.
 static inline uint16_t read_u16(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 
 /// @brief Read a little-endian uint32 from `p` (no alignment required).
+/// @param p Pointer to at least four accessible encoded bytes.
+/// @return Decoded host-order 32-bit value.
 static inline uint32_t read_u32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /// @brief Write `v` to `p` as little-endian uint16.
+/// @param p Pointer to at least two writable bytes.
+/// @param v Host-order value to encode.
 static inline void write_u16(uint8_t *p, uint16_t v) {
     p[0] = (uint8_t)(v & 0xFF);
     p[1] = (uint8_t)((v >> 8) & 0xFF);
 }
 
 /// @brief Write `v` to `p` as little-endian uint32.
+/// @param p Pointer to at least four writable bytes.
+/// @param v Host-order value to encode.
 static inline void write_u32(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)(v & 0xFF);
     p[1] = (uint8_t)((v >> 8) & 0xFF);
@@ -232,6 +268,14 @@ static inline void write_u32(uint8_t *p, uint32_t v) {
     p[3] = (uint8_t)((v >> 24) & 0xFF);
 }
 
+/// @brief Reject a malformed ZIP extra-field stream or any ZIP64 record.
+/// @details Walks the standard `(header ID, data size, payload)` sequence,
+/// requiring every payload and the final cursor to fit exactly within the
+/// supplied buffer.
+/// @param extra Encoded extra-field bytes.
+/// @param extra_len Number of accessible bytes in @p extra.
+/// @return `true` for a truncated record, trailing partial header, or ZIP64
+/// field; otherwise `false`.
 bool archive_extra_is_malformed_or_zip64(const uint8_t *extra, size_t extra_len) {
     size_t pos = 0;
     while (pos + 4 <= extra_len) {
@@ -365,6 +409,14 @@ static rt_archive_t *archive_alloc(void) {
     return ar;
 }
 
+/// @brief Allocate Archive state while preserving ownership of an input buffer.
+/// @details If archive allocation traps, this helper frees @p data, restores
+/// the captured diagnostic (or @p fallback), and transfers no ownership.
+/// Successful allocation leaves @p data for the caller to attach to the new
+/// Archive object.
+/// @param data Heap buffer to free if allocation fails; may be `NULL`.
+/// @param fallback Diagnostic used if allocation traps without a message.
+/// @return Fresh Archive state on success, or `NULL` after propagating failure.
 static rt_archive_t *archive_alloc_or_free_data(uint8_t *data, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -387,6 +439,13 @@ static rt_archive_t *archive_alloc_or_free_data(uint8_t *data, const char *fallb
     return ar;
 }
 
+/// @brief Retain an Archive path with rollback if string retention traps.
+/// @details On failure the Archive reference is released before the captured
+/// diagnostic is raised again.
+/// @param ar Newly allocated Archive state that will own the path reference.
+/// @param path Runtime path string to retain.
+/// @param fallback Diagnostic used if retention traps without a message.
+/// @return 1 when @p path was retained, or 0 after propagating failure.
 static int archive_retain_path_or_release(rt_archive_t *ar, rt_string path, const char *fallback) {
     if (!ar)
         return 0;
@@ -412,6 +471,9 @@ static int archive_retain_path_or_release(rt_archive_t *ar, rt_string path, cons
 /// containing array. Resets all counters to zero so the archive can
 /// be re-parsed without leaking. Safe to call on a half-initialized
 /// archive.
+///
+/// @param ar Archive whose read/write entry tables and name indexes are
+/// released; `NULL` is accepted.
 static void archive_free_entries(rt_archive_t *ar) {
     if (!ar)
         return;
@@ -510,6 +572,11 @@ static void archive_finalize(void *obj) {
 /// We don't yet implement ZIP64 (which uses 64-bit fields in extra
 /// records), so any oversized payload is rejected up front with a
 /// caller-provided message.
+///
+/// @param size Candidate byte size or offset.
+/// @param context Diagnostic raised when @p size exceeds `UINT32_MAX`.
+/// @return 1 when representable by classic ZIP fields; otherwise 0 after
+/// raising a trap.
 static int archive_require_zip32_size(size_t size, const char *context) {
     if (size > UINT32_MAX) {
         rt_trap(context);
@@ -522,6 +589,12 @@ static int archive_require_zip32_size(size_t size, const char *context) {
 ///
 /// The pre-ZIP64 EOCD record stores total entry count in a uint16, so
 /// archives with more than 65,535 entries are rejected.
+///
+/// @param count Candidate number of entries.
+/// @param context Diagnostic raised when @p count is negative or exceeds
+/// `UINT16_MAX`.
+/// @return 1 when representable by the classic EOCD; otherwise 0 after
+/// raising a trap.
 static int archive_require_zip16_count(int count, const char *context) {
     if (count < 0 || count > UINT16_MAX) {
         rt_trap(context);
@@ -536,9 +609,15 @@ static int archive_require_zip16_count(int count, const char *context) {
 
 /// @brief Grow the in-memory write buffer so `need` more bytes will fit.
 ///
-/// Doubles the capacity (or jumps to `len + need + 4096` if doubling
-/// is still too small) using `realloc`. Traps on OOM. Cheap when the
-/// buffer is already large enough.
+/// Doubles capacity geometrically until the required length fits, falling
+/// back to the exact required length near `SIZE_MAX`. The configured encoded
+/// archive limit may also cap the allocation at the exact requirement.
+/// Traps on OOM and is a cheap no-op when existing capacity is sufficient.
+///
+/// @param ar Write-mode Archive owning the output buffer.
+/// @param need Additional byte count the caller intends to append.
+/// @return 1 when the buffer has sufficient capacity; otherwise 0 after
+/// raising an invalid-state, overflow, resource-limit, or allocation trap.
 static int write_ensure(rt_archive_t *ar, size_t need) {
     if (!ar) {
         rt_trap("Archive: invalid archive");
@@ -581,6 +660,11 @@ static int write_ensure(rt_archive_t *ar, size_t need) {
 /// Single-call wrapper around `write_ensure` + memcpy. Used as the
 /// only path for appending bytes during archive construction so the
 /// growth policy is centralized.
+///
+/// @param ar Write-mode Archive receiving the encoded bytes.
+/// @param data Source buffer; may be `NULL` only when @p len is zero.
+/// @param len Number of bytes to append.
+/// @return 1 after appending all bytes; otherwise 0 after raising a trap.
 static int write_bytes(rt_archive_t *ar, const uint8_t *data, size_t len) {
     if (len > 0 && !data) {
         rt_trap("Archive: invalid write source");
@@ -689,6 +773,12 @@ static int archive_write_index_ensure(rt_archive_t *ar, int needed_entries) {
 /// (or traps with a ZIP64 message), then doubles the capacity of
 /// `write_entries` if full. The supplied `*e` is copied by value —
 /// the caller may reuse the source struct after the call.
+///
+/// @param ar Write-mode Archive whose entry table and name index are updated.
+/// @param e Fully initialized entry metadata; its owned name pointer transfers
+/// into the table only on success.
+/// @return 1 when the entry was indexed and appended; otherwise 0 after
+/// raising a limit, duplicate-name, overflow, or allocation trap.
 static int add_write_entry(rt_archive_t *ar, zip_entry_t *e) {
     if (!ar || !e) {
         rt_trap("Archive: invalid archive entry");
@@ -744,7 +834,12 @@ static int add_write_entry(rt_archive_t *ar, zip_entry_t *e) {
     return 1;
 }
 
-/// @brief Return 1 if the write-side entry table already contains an entry with the given name.
+/// @brief Test whether the write-side table already contains an exact name.
+/// @details Uses the open-addressed index when initialized and falls back to a
+/// linear scan for half-constructed or legacy state.
+/// @param ar Archive whose pending write entries are searched.
+/// @param name Normalized, NUL-terminated entry name.
+/// @return 1 for an exact match; otherwise 0, including invalid input.
 static int archive_write_has_entry(rt_archive_t *ar, const char *name) {
     if (!ar || !name)
         return 0;
@@ -846,6 +941,10 @@ static name_result_t normalize_name(const char *name, char **out) {
 ///
 /// Used to disambiguate `Has("foo")` (file) from `Has("foo/")`
 /// (directory entry) since ZIP records the trailing slash.
+///
+/// @param name NUL-terminated entry name to inspect.
+/// @return `true` when the final byte is `/` or `\\`; otherwise `false`,
+/// including for `NULL` or empty strings.
 static bool name_ends_with_sep(const char *name) {
     if (!name)
         return false;
@@ -999,6 +1098,9 @@ static int archive_parse_epoch_seconds(const char *text, time_t *out_epoch) {
 /// Defaults to a fixed `2001-01-01 00:00:00` timestamp so archives remain
 /// byte-for-byte reproducible for identical inputs. `SOURCE_DATE_EPOCH` is honored when set for
 /// reproducible-build integrations; `ZANNA_ARCHIVE_TIMESTAMP=now` opts into the current UTC time.
+///
+/// @param dos_time Receives the encoded FAT time word.
+/// @param dos_date Receives the encoded FAT date word.
 static void get_dos_time(uint16_t *dos_time, uint16_t *dos_date) {
     const char *mode = getenv("ZANNA_ARCHIVE_TIMESTAMP");
     const char *source_date_epoch = getenv("SOURCE_DATE_EPOCH");
@@ -1022,6 +1124,10 @@ static void get_dos_time(uint16_t *dos_time, uint16_t *dos_date) {
 }
 
 /// @brief Compute a proleptic Gregorian day number from a civil (year, month, day) triple.
+/// @param year Full signed calendar year.
+/// @param month One-based month.
+/// @param day One-based day of month.
+/// @return Signed number of days relative to 1970-01-01.
 static int64_t archive_days_from_civil(int year, unsigned month, unsigned day) {
     year -= month <= 2;
     const int era = (year >= 0 ? year : year - 399) / 400;
@@ -1033,6 +1139,11 @@ static int64_t archive_days_from_civil(int year, unsigned month, unsigned day) {
 }
 
 /// @brief Convert a DOS (FAT) time+date pair to a Unix timestamp (seconds since epoch).
+/// @param dos_time Encoded FAT time word.
+/// @param dos_date Encoded FAT date word.
+/// @return Seconds since 1970-01-01 UTC, or 0 when any encoded calendar field
+/// is invalid. The valid DOS epoch date 1980-01-01 also yields a positive
+/// value, so zero is an unambiguous invalid sentinel for DOS inputs.
 static int64_t archive_dos_datetime_to_unix(uint16_t dos_time, uint16_t dos_date) {
     int year = ((dos_date >> 9) & 0x7F) + 1980;
     unsigned month = (unsigned)((dos_date >> 5) & 0xF);

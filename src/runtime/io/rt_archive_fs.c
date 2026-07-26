@@ -72,11 +72,15 @@ const char *rt_trap_get_error(void);
 // Trivial Bytes accessors — defined per-TU as static inline (not shared via the
 // internal header) to avoid generic-name link collisions and rtgen header scan.
 /// @brief Direct pointer to the raw byte buffer of a Bytes GC object.
+/// @param obj Runtime Bytes handle.
+/// @return Borrowed pointer to the object's byte storage.
 static inline uint8_t *bytes_data(void *obj) {
     return rt_bytes_data(obj);
 }
 
 /// @brief Byte count of a Bytes GC object.
+/// @param obj Runtime Bytes handle.
+/// @return Signed byte length reported by the Bytes API.
 static inline int64_t bytes_len(void *obj) {
     return rt_bytes_len(obj);
 }
@@ -208,6 +212,7 @@ HANDLE archive_open_win_path(const char *cpath, DWORD access, DWORD share, DWORD
 /// @param dst      Destination buffer of at least `total` bytes.
 /// @param total    Total number of bytes to read.
 /// @param trap_msg Trap message used on read failure / premature EOF.
+/// @return 1 after reading exactly @p total bytes, or 0 after raising a trap.
 static int archive_read_exact_win(HANDLE h, uint8_t *dst, size_t total, const char *trap_msg) {
     size_t read_total = 0;
     while (read_total < total) {
@@ -223,6 +228,15 @@ static int archive_read_exact_win(HANDLE h, uint8_t *dst, size_t total, const ch
     return 1;
 }
 
+/// @brief Read a complete Windows file payload and close its handle.
+/// @details On any read trap, captures the diagnostic, closes @p h, frees
+/// @p dst, and re-raises. Successful completion closes the handle but leaves
+/// @p dst owned by the caller.
+/// @param h Open Windows handle positioned at the first requested byte.
+/// @param dst Heap buffer of at least @p total bytes; freed on failure.
+/// @param total Exact number of bytes to read.
+/// @param trap_msg Fallback diagnostic for read failure.
+/// @return 1 on success, or 0 after cleanup and trap propagation.
 int archive_read_exact_win_or_free(HANDLE h, uint8_t *dst, size_t total, const char *trap_msg) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -247,6 +261,14 @@ int archive_read_exact_win_or_free(HANDLE h, uint8_t *dst, size_t total, const c
     return 1;
 }
 
+/// @brief Fill a Bytes object from a Windows handle with transactional cleanup.
+/// @details Always closes @p h. Failure also releases @p bytes before the
+/// captured read diagnostic is raised again.
+/// @param h Open Windows handle positioned at the first requested byte.
+/// @param bytes Temporary Bytes object receiving the file contents.
+/// @param total Exact number of bytes to read into the object.
+/// @param trap_msg Fallback diagnostic for read failure.
+/// @return 1 on success, or 0 after cleanup and trap propagation.
 int archive_read_exact_win_or_release_object(HANDLE h,
                                              void *bytes,
                                              size_t total,
@@ -274,6 +296,14 @@ int archive_read_exact_win_or_release_object(HANDLE h,
     return 1;
 }
 
+/// @brief Allocate a Bytes object while protecting an already-open Windows handle.
+/// @details If allocation fails or traps, closes @p h before propagating the
+/// diagnostic. On success the handle remains open for the caller to read into
+/// the returned object.
+/// @param h Open Windows handle to close only on allocation failure.
+/// @param len Requested Bytes length.
+/// @param fallback Diagnostic used if allocation traps without a message.
+/// @return Fresh Bytes handle on success, or `NULL` after cleanup on failure.
 void *archive_bytes_new_win_or_close(HANDLE h, int64_t len, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -302,6 +332,12 @@ void *archive_bytes_new_win_or_close(HANDLE h, int64_t len, const char *fallback
 /// WriteFile, chunking by DWORD_MAX, and traps on any short write or
 /// failure. It deliberately does not trap while @p h is live: callers first
 /// close the handle and unlink the sidecar, then raise @p trap_msg.
+/// @param h Open Windows handle positioned for output.
+/// @param src Source buffer containing @p total bytes.
+/// @param total Exact number of bytes to write.
+/// @param trap_msg Reserved caller diagnostic; cleanup code raises it after
+/// this helper reports failure.
+/// @return 1 after all bytes are written; otherwise 0.
 static int archive_write_exact_win(HANDLE h,
                                    const uint8_t *src,
                                    size_t total,
@@ -319,6 +355,11 @@ static int archive_write_exact_win(HANDLE h,
     return 1;
 }
 #else
+/// @brief Open a POSIX path with close-on-exec semantics when available.
+/// @param path NUL-terminated filesystem path.
+/// @param flags POSIX `open` flags; `O_CLOEXEC` may be added.
+/// @param mode Creation mode used when required by @p flags.
+/// @return Open file descriptor, or -1 with `errno` set.
 int archive_open_posix(const char *path, int flags, mode_t mode) {
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
@@ -339,6 +380,12 @@ int archive_open_posix(const char *path, int flags, mode_t mode) {
 /// Loops over `read(2)` retrying EINTR. A zero return is treated as
 /// EOF and triggers the trap so partial archive reads cannot succeed
 /// silently. The fd is left positioned just after the last byte read.
+///
+/// @param fd Open descriptor positioned at the first requested byte.
+/// @param dst Destination buffer of at least @p total bytes.
+/// @param total Exact byte count to read.
+/// @param trap_msg Diagnostic raised on error or premature EOF.
+/// @return 1 after reading all bytes, or 0 after raising a trap.
 static int archive_read_exact_posix(int fd, uint8_t *dst, size_t total, const char *trap_msg) {
     size_t read_total = 0;
     while (read_total < total) {
@@ -358,6 +405,15 @@ static int archive_read_exact_posix(int fd, uint8_t *dst, size_t total, const ch
     return 1;
 }
 
+/// @brief Read a complete POSIX file payload and close its descriptor.
+/// @details On any read trap, captures the diagnostic, closes @p fd, frees
+/// @p dst, and re-raises. Success closes the descriptor but leaves @p dst
+/// owned by the caller.
+/// @param fd Open descriptor positioned at the first requested byte.
+/// @param dst Heap buffer of at least @p total bytes; freed on failure.
+/// @param total Exact number of bytes to read.
+/// @param trap_msg Fallback diagnostic for read failure.
+/// @return 1 on success, or 0 after cleanup and trap propagation.
 int archive_read_exact_posix_or_free(int fd, uint8_t *dst, size_t total, const char *trap_msg) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -382,6 +438,14 @@ int archive_read_exact_posix_or_free(int fd, uint8_t *dst, size_t total, const c
     return 1;
 }
 
+/// @brief Fill a Bytes object from a POSIX descriptor with transactional cleanup.
+/// @details Always closes @p fd. Failure also releases @p bytes before the
+/// captured read diagnostic is raised again.
+/// @param fd Open descriptor positioned at the first requested byte.
+/// @param bytes Temporary Bytes object receiving the file contents.
+/// @param total Exact number of bytes to read into the object.
+/// @param trap_msg Fallback diagnostic for read failure.
+/// @return 1 on success, or 0 after cleanup and trap propagation.
 int archive_read_exact_posix_or_release_object(int fd,
                                                void *bytes,
                                                size_t total,
@@ -409,6 +473,14 @@ int archive_read_exact_posix_or_release_object(int fd,
     return 1;
 }
 
+/// @brief Allocate a Bytes object while protecting an already-open POSIX descriptor.
+/// @details If allocation fails or traps, closes @p fd before propagating the
+/// diagnostic. On success the descriptor remains open for the caller to read
+/// into the returned object.
+/// @param fd Open descriptor to close only on allocation failure.
+/// @param len Requested Bytes length.
+/// @param fallback Diagnostic used if allocation traps without a message.
+/// @return Fresh Bytes handle on success, or `NULL` after cleanup on failure.
 void *archive_bytes_new_posix_or_close(int fd, int64_t len, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -438,6 +510,12 @@ void *archive_bytes_new_posix_or_close(int fd, int64_t len, const char *fallback
 /// zero on a regular file write unless the disk is full). It deliberately
 /// does not trap while @p fd is live, allowing callers to close and unlink
 /// their sidecar before raising @p trap_msg.
+/// @param fd Open descriptor positioned for output.
+/// @param src Source buffer containing @p total bytes.
+/// @param total Exact number of bytes to write.
+/// @param trap_msg Reserved caller diagnostic; cleanup code raises it after
+/// this helper reports failure.
+/// @return 1 after all bytes are written; otherwise 0.
 static int archive_write_exact_posix(int fd,
                                      const uint8_t *src,
                                      size_t total,
@@ -643,6 +721,8 @@ static int archive_sync_parent_dir(const char *path) {
 /// @param src      Source byte buffer.
 /// @param total    Number of bytes to write.
 /// @param trap_msg Trap message used on any failure.
+/// @return 1 after the durable atomic replacement succeeds; otherwise 0
+/// after raising @p trap_msg.
 int archive_write_file_all_utf8(const char *cpath,
                                 const uint8_t *src,
                                 size_t total,
@@ -776,6 +856,12 @@ void archive_write_bytes_to_path(const char *cpath, void *data) {
 }
 
 #if !defined(_WIN32)
+/// @brief Open a child path relative to a directory descriptor.
+/// @param parent_fd Directory descriptor used as the `openat` base.
+/// @param name Relative child name.
+/// @param flags POSIX open flags; close-on-exec may be added.
+/// @param mode Creation mode used when required by @p flags.
+/// @return Open descriptor, or -1 with `errno` set.
 static int archive_openat_posix(int parent_fd, const char *name, int flags, mode_t mode) {
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
@@ -791,6 +877,9 @@ static int archive_openat_posix(int parent_fd, const char *name, int flags, mode
     return fd;
 }
 
+/// @brief Duplicate a POSIX descriptor with close-on-exec semantics.
+/// @param fd Descriptor to duplicate.
+/// @return Independent descriptor on success, or -1 on failure.
 static int archive_dup_fd_posix(int fd) {
     int dup_fd = -1;
 #ifdef F_DUPFD_CLOEXEC
@@ -809,6 +898,13 @@ static int archive_dup_fd_posix(int fd) {
     return dup_fd;
 }
 
+/// @brief Open one verified, non-symlink directory component.
+/// @details Optionally creates the component, checks it without following
+/// symlinks, then opens and revalidates the resulting descriptor.
+/// @param parent_fd Descriptor for the trusted parent directory.
+/// @param name Single non-empty child component.
+/// @param create Nonzero to create a missing directory.
+/// @return Open child-directory descriptor, or -1 after raising a trap.
 static int archive_open_child_dir_posix(int parent_fd, const char *name, int create) {
     if (!name || *name == '\0') {
         rt_trap("Archive: invalid directory entry");
@@ -845,6 +941,12 @@ static int archive_open_child_dir_posix(int parent_fd, const char *name, int cre
     return fd;
 }
 
+/// @brief Traverse a normalized relative directory path from a trusted root.
+/// @param root_fd Descriptor for the trusted extraction root.
+/// @param path Forward-slash-separated relative directory path; empty selects
+/// the root itself.
+/// @param create Nonzero to create missing components.
+/// @return Open descriptor for the final directory, or -1 after a trap.
 static int archive_open_dir_path_posix(int root_fd, const char *path, int create) {
     int current = archive_dup_fd_posix(root_fd);
     if (current < 0) {
@@ -885,12 +987,22 @@ static int archive_open_dir_path_posix(int root_fd, const char *path, int create
     return current;
 }
 
+/// @brief Create and verify every component of a relative directory path.
+/// @param root_fd Descriptor for the trusted extraction root.
+/// @param path Normalized relative path to create.
 void archive_make_dirs_posix_at(int root_fd, const char *path) {
     int fd = archive_open_dir_path_posix(root_fd, path, 1);
     if (fd >= 0)
         close(fd);
 }
 
+/// @brief Open the verified parent of an archive file entry.
+/// @details Creates missing parent directories and returns the final path
+/// component separately so callers can use descriptor-relative file APIs.
+/// @param root_fd Descriptor for the trusted extraction root.
+/// @param name Normalized relative file-entry name.
+/// @param out_leaf Receives a heap-allocated leaf name owned by the caller.
+/// @return Open parent-directory descriptor, or -1 after raising a trap.
 int archive_open_parent_for_file_posix(int root_fd, const char *name, char **out_leaf) {
     if (out_leaf)
         *out_leaf = NULL;
@@ -931,6 +1043,13 @@ int archive_open_parent_for_file_posix(int root_fd, const char *name, char **out
     return parent_fd;
 }
 
+/// @brief Atomically write Bytes beneath a verified directory descriptor.
+/// @details Creates an exclusive randomized sidecar, preserves an existing
+/// regular file's permission bits, flushes it, renames it over @p leaf, and
+/// synchronizes the parent directory.
+/// @param parent_fd Descriptor for the already verified destination parent.
+/// @param leaf Single destination filename relative to @p parent_fd.
+/// @param data Runtime Bytes handle containing the output payload.
 void archive_write_bytes_to_dirfd_posix(int parent_fd, const char *leaf, void *data) {
     if (parent_fd < 0 || !leaf || !data) {
         rt_trap("Archive: failed to write destination file");
@@ -1000,6 +1119,9 @@ void archive_write_bytes_to_dirfd_posix(int parent_fd, const char *leaf, void *d
     }
 }
 
+/// @brief Open and verify a POSIX extraction root without following symlinks.
+/// @param cdir UTF-8 path to the destination directory.
+/// @return Open root-directory descriptor, or -1 after raising a trap.
 int archive_open_root_dir_posix(const char *cdir) {
     int flags = O_RDONLY;
 #ifdef O_DIRECTORY
@@ -1024,6 +1146,8 @@ int archive_open_root_dir_posix(const char *cdir) {
 #endif
 
 /// @brief Return 1 if `c` is a path separator (`/` or `\`), 0 otherwise.
+/// @param c Character to classify.
+/// @return 1 for either slash direction; otherwise 0.
 static int archive_is_sep(char c) {
     return c == '/' || c == '\\';
 }

@@ -22,8 +22,7 @@
 //   - RtFile handles are owned by the channel table managed in rt_file.c.
 //   - Callers must not retain raw file descriptors beyond the owning RtFile.
 //
-// Links: src/runtime/io/rt_file_io.h (public API),
-//        src/runtime/io/rt_file.h (channel table and RtFile type),
+// Links: src/runtime/io/rt_file.h (public declarations, channel table, and RtFile type),
 //        src/runtime/io/rt_file_path.h (mode string helpers)
 //
 //===----------------------------------------------------------------------===//
@@ -349,6 +348,8 @@ void rt_file_init(RtFile *file) {
 /// @param file Handle receiving the descriptor.
 /// @param path File path to open.
 /// @param mode BASIC mode string (e.g., "r", "w", "a").
+/// @param basic_mode BASIC OPEN mode enumerator used to refine binary and access flags, or
+///                   `RT_F_UNSPECIFIED` when @p mode alone defines the operation.
 /// @param out_err Optional error destination.
 /// @return `true` on success; otherwise `false` with @p out_err populated.
 int8_t rt_file_open(

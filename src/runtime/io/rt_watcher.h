@@ -60,13 +60,16 @@ typedef enum {
 void *rt_watcher_new(rt_string path);
 
 /// @brief Get the watched path.
-/// @details Traps unless called from the construction thread.
+/// @details Traps unless called from the construction thread. The retained
+///          result remains valid independently of the Watcher reference.
 /// @param obj Opaque Watcher object pointer.
-/// @return Owned retained reference to the path being watched.
+/// @return Owned retained reference to the path being watched, or a fresh
+///         empty string after invalid use.
 rt_string rt_watcher_get_path(void *obj);
 
 /// @brief Check if the watcher is actively watching.
-/// @details Traps unless called from the construction thread.
+/// @details Traps unless called from the construction thread. Terminal backend
+///          events may retire the native watch before Stop is called.
 /// @param obj Opaque Watcher object pointer.
 /// @return 1 if watching, 0 otherwise.
 int8_t rt_watcher_get_is_watching(void *obj);
@@ -87,15 +90,17 @@ void rt_watcher_start(void *obj);
 void rt_watcher_stop(void *obj);
 
 /// @brief Poll for a file system event (non-blocking).
-/// @details Traps unless called from the construction thread.
+/// @details Returns the oldest queued event before consulting the native
+///          backend and traps unless called from the construction thread.
 /// @param obj Opaque Watcher object pointer.
-/// @return Event type (RT_WATCH_EVENT_*), or 0 if no event.
+/// @return Event type (RT_WATCH_EVENT_*), including OVERFLOW, or NONE if unavailable.
 int64_t rt_watcher_poll(void *obj);
 
 /// @brief Poll for a file system event with timeout.
 /// @details A negative timeout waits indefinitely, zero is non-blocking, and a
 ///          positive timeout is a monotonic upper bound across interrupted
-///          POSIX waits. Traps unless called from the construction thread.
+///          POSIX waits. A queued event returns immediately. Traps unless
+///          called from the construction thread.
 /// @param obj Opaque Watcher object pointer.
 /// @param ms Maximum milliseconds to wait.
 /// @return Event type (RT_WATCH_EVENT_*), or 0 if timeout.
@@ -111,7 +116,7 @@ rt_string rt_watcher_event_path(void *obj);
 /// @brief Get the type of the last polled event.
 /// @details Traps unless called from the construction thread.
 /// @param obj Opaque Watcher object pointer.
-/// @return Event type (RT_WATCH_EVENT_*).
+/// @return Event type (RT_WATCH_EVENT_*), or NONE when no event has been polled.
 int64_t rt_watcher_event_type(void *obj);
 
 /// @brief Get the number of dropped events represented by the last overflow event.
@@ -124,17 +129,29 @@ int64_t rt_watcher_event_type(void *obj);
 /// @return Coalesced dropped event count for the last overflow marker.
 int64_t rt_watcher_event_overflow_count(void *obj);
 
-/// @brief Return RT_WATCH_EVENT_NONE; receiver parameter is unused (property dispatch shim).
+/// @brief Return RT_WATCH_EVENT_NONE through the property-dispatch ABI.
+/// @param self Unused receiver.
+/// @return @ref RT_WATCH_EVENT_NONE.
 int64_t rt_watcher_event_none(void *self);
-/// @brief Return RT_WATCH_EVENT_CREATED; receiver parameter is unused (property dispatch shim).
+/// @brief Return RT_WATCH_EVENT_CREATED through the property-dispatch ABI.
+/// @param self Unused receiver.
+/// @return @ref RT_WATCH_EVENT_CREATED.
 int64_t rt_watcher_event_created(void *self);
-/// @brief Return RT_WATCH_EVENT_MODIFIED; receiver parameter is unused (property dispatch shim).
+/// @brief Return RT_WATCH_EVENT_MODIFIED through the property-dispatch ABI.
+/// @param self Unused receiver.
+/// @return @ref RT_WATCH_EVENT_MODIFIED.
 int64_t rt_watcher_event_modified(void *self);
-/// @brief Return RT_WATCH_EVENT_DELETED; receiver parameter is unused (property dispatch shim).
+/// @brief Return RT_WATCH_EVENT_DELETED through the property-dispatch ABI.
+/// @param self Unused receiver.
+/// @return @ref RT_WATCH_EVENT_DELETED.
 int64_t rt_watcher_event_deleted(void *self);
-/// @brief Return RT_WATCH_EVENT_RENAMED; receiver parameter is unused (property dispatch shim).
+/// @brief Return RT_WATCH_EVENT_RENAMED through the property-dispatch ABI.
+/// @param self Unused receiver.
+/// @return @ref RT_WATCH_EVENT_RENAMED.
 int64_t rt_watcher_event_renamed(void *self);
-/// @brief Return RT_WATCH_EVENT_OVERFLOW; receiver parameter is unused (property dispatch shim).
+/// @brief Return RT_WATCH_EVENT_OVERFLOW through the property-dispatch ABI.
+/// @param self Unused receiver.
+/// @return @ref RT_WATCH_EVENT_OVERFLOW.
 int64_t rt_watcher_event_overflow(void *self);
 
 #ifdef __cplusplus

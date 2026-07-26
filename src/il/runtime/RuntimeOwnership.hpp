@@ -340,6 +340,8 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.SoundSource3D.get_Velocity" ||
            name == "Zanna.Graphics3D.PhysicsHit3D.get_Point" ||
            name == "Zanna.Graphics3D.PhysicsHit3D.get_Normal" ||
+           name == "Zanna.Graphics3D.RayHit3D.get_Point" ||
+           name == "Zanna.Graphics3D.RayHit3D.get_Normal" ||
            name == "Zanna.Graphics3D.LedgeHit3D.get_GrabPoint" ||
            name == "Zanna.Graphics3D.LedgeHit3D.get_SurfaceNormal" ||
            name == "Zanna.Graphics3D.LedgeHit3D.get_WallNormal" ||
@@ -385,7 +387,8 @@ template <std::size_t N>
            name == "rt_soundlistener3d_get_forward" || name == "rt_soundlistener3d_get_up" ||
            name == "rt_soundlistener3d_get_velocity" || name == "rt_soundsource3d_get_position" ||
            name == "rt_soundsource3d_get_velocity" || name == "rt_physics_hit3d_get_point" ||
-           name == "rt_physics_hit3d_get_normal" || name == "rt_ledge_hit3d_get_grab_point" ||
+           name == "rt_physics_hit3d_get_normal" || name == "rt_ray3d_hit_point" ||
+           name == "rt_ray3d_hit_normal" || name == "rt_ledge_hit3d_get_grab_point" ||
            name == "rt_ledge_hit3d_get_surface_normal" ||
            name == "rt_ledge_hit3d_get_wall_normal" || name == "rt_ledge_hit3d_get_landing_point" ||
            name == "rt_body3d_get_position" || name == "rt_body3d_get_scale" ||

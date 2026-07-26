@@ -11,8 +11,10 @@
 //
 // Key invariants:
 //   - No external dependencies; implements DEFLATE internally.
-//   - Compression level is an integer in [0, 9]; 0 = no compression, 9 = maximum.
-//   - Decompression returns NULL on invalid or corrupt input.
+//   - Public compression levels are integers in [1, 9]; level 1 favors speed
+//     and level 9 searches more deeply for matches.
+//   - Managed decompression APIs trap on invalid, corrupt, truncated, or
+//     over-limit input; native helpers report failure with a zero status.
 //   - GZIP adds a standard header/trailer; raw DEFLATE does not.
 //
 // Ownership/Lifetime:
@@ -67,6 +69,13 @@ void *rt_compress_inflate_limit(void *data, int64_t max_output);
 /// @brief Internal helper: decompress raw DEFLATE data into malloc-owned bytes.
 /// @details Worker-safe path for decoders that must not allocate runtime Bytes. The returned
 ///          buffer is owned by the caller and must be freed with free().
+/// @param data Borrowed complete raw RFC 1951 stream.
+/// @param len Number of accessible encoded bytes.
+/// @param max_output Maximum allowed decoded byte count.
+/// @param out_data Receives a `malloc`-owned buffer on success and `NULL` on
+/// failure.
+/// @param out_len Receives the decoded byte count on success and zero on
+/// failure.
 /// @return 1 on success, 0 on invalid input, corrupt data, or allocation failure.
 int rt_compress_inflate_raw(
     const uint8_t *data, size_t len, size_t max_output, uint8_t **out_data, size_t *out_len);

@@ -24,7 +24,10 @@
 //   - Active loads retain their selected archive through read/decompression.
 //   - Data buffers from zpak_read_entry are freed after creating GC objects.
 //
-// Links: rt_zpak_reader.h, rt_path_exe.c, rt_compress.h
+// Links: src/runtime/io/rt_asset.h,
+//        src/runtime/io/rt_asset_decode.c,
+//        src/runtime/io/rt_zpak_reader.h,
+//        src/runtime/io/rt_path_exe.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -51,6 +54,11 @@ static INIT_ONCE g_asset_compare_once = INIT_ONCE_STATIC_INIT;
 static asset_compare_string_ordinal_fn g_asset_compare_string_ordinal = NULL;
 
 /// @brief Resolve CompareStringOrdinal without extending the native import table.
+/// @param once Windows one-time initialization token.
+/// @param param Unused callback parameter.
+/// @param context Unused callback result slot.
+/// @return `TRUE`; an unavailable symbol is recorded as a supported fallback
+/// condition rather than initialization failure.
 static BOOL CALLBACK asset_resolve_compare_ordinal(PINIT_ONCE once, PVOID param, PVOID *context) {
     (void)once;
     (void)param;
@@ -64,6 +72,10 @@ static BOOL CALLBACK asset_resolve_compare_ordinal(PINIT_ONCE once, PVOID param,
 }
 
 /// @brief Compare two NUL-terminated paths with Windows ordinal case folding.
+/// @param left First UTF-16 path.
+/// @param right Second UTF-16 path.
+/// @return `CSTR_EQUAL` when the paths compare equal ignoring case; otherwise
+/// a non-equal value.
 static int asset_compare_path_ordinal(const wchar_t *left, const wchar_t *right) {
     (void)InitOnceExecuteOnce(&g_asset_compare_once, asset_resolve_compare_ordinal, NULL, NULL);
     if (!g_asset_compare_string_ordinal)
@@ -71,6 +83,10 @@ static int asset_compare_path_ordinal(const wchar_t *left, const wchar_t *right)
     return g_asset_compare_string_ordinal(left, -1, right, -1, TRUE);
 }
 
+/// @brief Convert a NUL-terminated UTF-16 string to strict UTF-8.
+/// @param wide UTF-16 input string.
+/// @return Heap-allocated UTF-8 string owned by the caller, or `NULL` for
+/// invalid input, conversion failure, or allocation failure.
 static char *asset_wide_to_utf8_dup(const wchar_t *wide) {
     if (!wide)
         return NULL;
@@ -91,6 +107,8 @@ static char *asset_wide_to_utf8_dup(const wchar_t *wide) {
 /// @brief Resolve one UTF-16 path through the Unicode Win32 full-path API.
 /// @details Retries when the process current directory changes between the
 ///          sizing and conversion calls and grows the required buffer.
+/// @param path Non-empty UTF-16 path to resolve.
+/// @return Heap-allocated full path owned by the caller, or `NULL` on failure.
 static wchar_t *asset_full_path_wide_dup(const wchar_t *path) {
     if (!path || !*path)
         return NULL;
@@ -116,6 +134,11 @@ static wchar_t *asset_full_path_wide_dup(const wchar_t *path) {
     return NULL;
 }
 
+/// @brief Join a UTF-16 directory and leaf with one Windows separator.
+/// @param dir NUL-terminated directory path.
+/// @param leaf NUL-terminated leaf name.
+/// @return Heap-allocated joined path, or `NULL` on overflow/allocation
+/// failure.
 static wchar_t *asset_win_join_wide(const wchar_t *dir, const wchar_t *leaf) {
     size_t dir_len = wcslen(dir);
     size_t leaf_len = wcslen(leaf);
@@ -159,7 +182,13 @@ extern int rt_asset_extension_is_typed(const char *name);
 // Exe directory detection
 extern char *rt_path_exe_dir_cstr(void);
 
-/// @brief Resolve `path` to its canonical form and return a heap-allocated copy.
+/// @brief Duplicate a path in canonical/full form when the platform can resolve it.
+/// @details POSIX uses `realpath`; Windows uses `GetFullPathNameW`. If the
+/// platform resolver fails, the original non-empty path is duplicated so
+/// callers still receive stable owned storage.
+/// @param path Non-empty UTF-8 path.
+/// @return Heap-allocated path owned by the caller, or `NULL` for invalid
+/// input or allocation/conversion failure.
 static char *asset_canonical_path_dup(const char *path) {
     if (!path || !*path)
         return NULL;
@@ -183,6 +212,10 @@ static char *asset_canonical_path_dup(const char *path) {
 }
 
 /// @brief Case-sensitive (POSIX) or case-insensitive (Windows) path comparison.
+/// @param a First canonical or candidate UTF-8 path.
+/// @param b Second canonical or candidate UTF-8 path.
+/// @return 1 when the platform-appropriate comparison considers the paths
+/// equal; otherwise 0.
 static int asset_path_equal(const char *a, const char *b) {
     if (!a || !b)
         return 0;
@@ -244,6 +277,10 @@ static CRITICAL_SECTION g_asset_lock;
 static CONDITION_VARIABLE g_asset_init_condition = CONDITION_VARIABLE_INIT;
 
 /// @brief `InitOnce` callback that initializes the asset manager critical section.
+/// @param once Windows one-time initialization token.
+/// @param parameter Unused callback parameter.
+/// @param context Unused callback result slot.
+/// @return `TRUE` after initializing the process-lifetime critical section.
 static BOOL CALLBACK asset_init_lock(PINIT_ONCE once, PVOID parameter, PVOID *context) {
     (void)once;
     (void)parameter;
@@ -328,6 +365,10 @@ static const char *asset_name_cstr(rt_string name) {
     return (const char *)data;
 }
 
+/// @brief Borrow an asset lookup name with an optional URI scheme removed.
+/// @param name Runtime asset-name string.
+/// @return Borrowed pointer after stripping a leading `asset://`, or `NULL`
+/// when the runtime string cannot be used as a C string.
 static const char *asset_logical_name_cstr(rt_string name) {
     const char *cname = asset_name_cstr(name);
     if (!cname)
@@ -337,10 +378,16 @@ static const char *asset_logical_name_cstr(rt_string name) {
     return cname;
 }
 
+/// @brief Classify slash characters accepted in asset paths.
+/// @param ch Character to inspect.
+/// @return 1 for `/` or `\\`; otherwise 0.
 static int asset_is_separator(char ch) {
     return ch == '/' || ch == '\\';
 }
 
+/// @brief Test whether a path contains either supported separator.
+/// @param path NUL-terminated path; `NULL` is accepted.
+/// @return 1 when any separator is present; otherwise 0.
 static int asset_path_has_separator(const char *path) {
     if (!path)
         return 0;
@@ -351,6 +398,10 @@ static int asset_path_has_separator(const char *path) {
     return 0;
 }
 
+/// @brief Borrow the final component of a slash-agnostic path.
+/// @param path NUL-terminated path.
+/// @return Pointer within @p path immediately after its last separator, or an
+/// empty static string when @p path is `NULL`.
 static const char *asset_path_basename(const char *path) {
     if (!path)
         return "";
@@ -362,6 +413,12 @@ static const char *asset_path_basename(const char *path) {
     return base;
 }
 
+/// @brief Validate a logical asset name for pack and filesystem lookup.
+/// @details Rejects empty names, absolute paths, drive prefixes, colons, empty
+/// components, and `.` or `..` components. Both slash directions delimit
+/// components on every platform.
+/// @param name NUL-terminated logical name after scheme removal.
+/// @return 1 when the name is safe and relative; otherwise 0.
 static int asset_name_is_safe(const char *name) {
     if (!name || name[0] == '\0')
         return 0;
@@ -389,6 +446,12 @@ static int asset_name_is_safe(const char *name) {
 }
 
 #if RT_PLATFORM_WINDOWS
+/// @brief Read a non-directory, non-reparse Windows file into native memory.
+/// @param path UTF-8 filesystem path.
+/// @param out_size Receives the exact file size on success and zero on failure;
+/// may be `NULL`.
+/// @return Heap buffer owned by the caller, including for an empty file, or
+/// `NULL` on validation, I/O, size, or allocation failure.
 static uint8_t *asset_read_regular_file(const char *path, size_t *out_size) {
     if (out_size)
         *out_size = 0;
@@ -469,6 +532,12 @@ static int asset_regular_file_size(const char *path, uint64_t *out_size) {
     return 1;
 }
 #else
+/// @brief Read a non-symlink POSIX regular file into native memory.
+/// @param path Filesystem path passed to `lstat` and `open`.
+/// @param out_size Receives the exact file size on success and zero on failure;
+/// may be `NULL`.
+/// @return Heap buffer owned by the caller, including for an empty file, or
+/// `NULL` on validation, I/O, size, or allocation failure.
 static uint8_t *asset_read_regular_file(const char *path, size_t *out_size) {
     if (out_size)
         *out_size = 0;
@@ -635,6 +704,10 @@ static uint8_t *asset_read_packed_source(asset_packed_source_t source, size_t *o
 ///      without rebuilding a ZPAK.
 /// Returns a heap-allocated buffer (caller frees) or NULL if not found
 /// or on any read error.
+/// @param name Validated logical asset name.
+/// @param out_size Receives the decoded or file byte count on success.
+/// @return Heap-allocated payload owned by the caller, or `NULL` when no source
+/// succeeds.
 static uint8_t *asset_find_data(const char *name, size_t *out_size) {
     asset_packed_source_t source;
     asset_lock();
@@ -798,6 +871,9 @@ static void ensure_init(void) {
 ///          stage outside the registry lock. The complete stage is published
 ///          atomically, and concurrent callers wait rather than observing a
 ///          partial registry. Idempotent: only the first caller's blob is used.
+/// @param blob Optional borrowed pointer to a complete embedded ZPAK image.
+/// @param size Byte length of @p blob; ignored when the blob is absent, too
+/// short, or not representable by `size_t`.
 void rt_asset_init(const uint8_t *blob, uint64_t size) {
     asset_lock();
     if (g_asset_mgr.init_state == ASSET_INIT_COMPLETE) {
@@ -871,6 +947,9 @@ void rt_asset_init(const uint8_t *blob, uint64_t size) {
 ///          downgrades a recognized-but-corrupt asset to Bytes, so each
 ///          recognized suffix has one stable result type (VDOC-181). Only
 ///          UNRECOGNIZED extensions return raw Bytes.
+/// @param name Safe relative asset name, optionally prefixed by `asset://`.
+/// @return Fresh GC-managed typed object or Bytes value, or `NULL` when the
+/// name is invalid, no source exists, reading fails, or typed decoding fails.
 void *rt_asset_load(rt_string name) {
     if (!name)
         return NULL;
@@ -908,6 +987,9 @@ void *rt_asset_load(rt_string name) {
 // ─── rt_asset_load_bytes ────────────────────────────────────────────────────
 
 /// @brief Load an asset as raw Bytes (no type dispatch, always returns Bytes or NULL).
+/// @param name Safe relative asset name, optionally prefixed by `asset://`.
+/// @return Fresh GC-managed Bytes object, or `NULL` when the name is invalid,
+/// absent, unreadable, or cannot be allocated.
 void *rt_asset_load_bytes(rt_string name) {
     if (!name)
         return NULL;
@@ -927,6 +1009,11 @@ void *rt_asset_load_bytes(rt_string name) {
 }
 
 /// @brief Load an asset into a malloc-owned raw byte buffer.
+/// @param name Safe relative asset name, optionally prefixed by `asset://`.
+/// @param out_size Receives the payload length on success and zero on failure;
+/// may be `NULL`.
+/// @return Heap buffer owned by the caller and released with `free`, or `NULL`
+/// when the asset cannot be resolved.
 uint8_t *rt_asset_load_raw(rt_string name, size_t *out_size) {
     if (out_size)
         *out_size = 0;
@@ -945,6 +1032,8 @@ uint8_t *rt_asset_load_raw(rt_string name, size_t *out_size) {
 // ─── rt_asset_exists ────────────────────────────────────────────────────────
 
 /// @brief Check whether an asset exists in any source (embedded, packs, or filesystem).
+/// @param name Safe relative asset name, optionally prefixed by `asset://`.
+/// @return 1 when a packed entry or regular loose file exists; otherwise 0.
 int64_t rt_asset_exists(rt_string name) {
     if (!name)
         return 0;
@@ -976,6 +1065,9 @@ int64_t rt_asset_exists(rt_string name) {
 // ─── rt_asset_size ──────────────────────────────────────────────────────────
 
 /// @brief Get the byte size of an asset without loading it.
+/// @param name Safe relative asset name, optionally prefixed by `asset://`.
+/// @return Uncompressed pack-entry size or loose-file size, or -1 when the
+/// name is invalid, absent, or too large for `int64_t`.
 int64_t rt_asset_size(rt_string name) {
     if (!name)
         return -1;
@@ -1043,6 +1135,10 @@ static void asset_release_archive_snapshot(zpak_archive_t **archives, size_t cou
 }
 
 /// @brief List all available asset names from embedded and mounted sources as a sequence.
+/// @details Filesystem fallback assets are not enumerated. Names retain source
+/// order (embedded first, then packs in mount order), and duplicates are not
+/// removed.
+/// @return Fresh element-owning `seq<str>`, or `NULL` on allocation failure.
 void *rt_asset_list(void) {
     ensure_init();
 
@@ -1096,6 +1192,9 @@ void *rt_asset_list(void) {
 // ─── rt_asset_mount ─────────────────────────────────────────────────────────
 
 /// @brief Mount an additional ZPAK pack file at runtime (assets become available immediately).
+/// @param path Runtime filesystem path to a valid ZPAK file.
+/// @return 1 when mounted or already present, or 0 for invalid input, open or
+/// canonicalization failure, or the 32-pack capacity limit.
 int64_t rt_asset_mount(rt_string path) {
     if (!path)
         return 0;
@@ -1139,6 +1238,11 @@ int64_t rt_asset_mount(rt_string path) {
 // ─── rt_asset_unmount ───────────────────────────────────────────────────────
 
 /// @brief Unmount a previously-mounted ZPAK pack file.
+/// @details An exact canonical path is preferred. A separator-free basename
+/// is accepted only when it uniquely identifies one mounted pack. Active
+/// readers remain safe through retained archive references.
+/// @param path Runtime path or unique basename of the mounted pack.
+/// @return 1 when a pack was removed; otherwise 0.
 int64_t rt_asset_unmount(rt_string path) {
     if (!path)
         return 0;

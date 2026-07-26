@@ -14,12 +14,14 @@
 // Key invariants:
 //   - Empty list -> empty string; single-item list -> the item verbatim;
 //     two items -> the pair template; three or more items -> start template
-//     applied left-to-right with the end template consuming the last item.
+//     wrapped around a right-fold of middle/end templates.
 //   - Templates use {0} and {1} positional placeholders; any other
 //     placeholder syntax is emitted literally.
 //
 // Ownership/Lifetime:
 //   - Handles are rt_obj_new_i64-allocated; GC-managed.
+//   - Each formatter retains its Locale handle and immutable data snapshot.
+//   - GetLocale is borrowed; each join result is a fresh string reference.
 //
 // Links: src/runtime/localization/rt_list_format.c (implementation),
 //        src/runtime/localization/rt_locale_data.h (list_format tables),
@@ -35,20 +37,37 @@ extern "C" {
 #endif
 
 /// @brief Create a list formatter bound to the process's current locale.
+/// @return Fresh GC-managed ListFormat, or NULL after an allocation trap.
 void *rt_list_format_new(void);
 /// @brief Create a list formatter bound to the given @p locale handle.
+/// @param locale Locale retained by the result; may be NULL for invariant data.
+/// @return Fresh GC-managed ListFormat, or NULL after an allocation trap.
 void *rt_list_format_for_locale(void *locale);
 /// @brief Return the Locale handle this formatter was built with (borrowed).
+/// @param self Valid ListFormat handle; may be NULL.
+/// @return Borrowed Locale handle, or NULL when absent.
 void *rt_list_format_get_locale(void *self);
 
 /// @brief Join with conjunction ("A, B, and C" style).
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted string, empty for NULL/empty input.
 rt_string rt_list_format_and(void *self, void *items);
 /// @brief Join with disjunction ("A, B, or C").
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted string, empty for NULL/empty input.
 rt_string rt_list_format_or(void *self, void *items);
 /// @brief Plain unit-style join (no conjunction, locale's `unit` template).
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted string, empty for NULL/empty input.
 rt_string rt_list_format_unit(void *self, void *items);
 /// @brief Short form — in v1 shares And's templates; future locales may
 ///        provide distinct ampersand-style short patterns.
+/// @param self Valid ListFormat handle.
+/// @param items Runtime List of strings; may be NULL.
+/// @return Fresh formatted string using the conjunction template set.
 rt_string rt_list_format_short(void *self, void *items);
 
 #ifdef __cplusplus

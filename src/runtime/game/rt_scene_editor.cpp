@@ -371,14 +371,72 @@ struct Layer {
 };
 
 /// @brief Editable scene object with absolute position and typed properties.
+/// @brief Default RGBA tint meaning "no tint applied".
+constexpr int64_t kObjectTintNone = 0xFFFFFFFF;
+
 struct Object {
     std::string type;
     std::string id;
     int64_t x{0};
     int64_t y{0};
     int64_t parent{-1};
+    // Optional transform fields (ADR 0192); serialized only when they
+    // differ from these defaults so legacy documents stay byte-stable.
+    double rotation{0.0};
+    double scaleX{1.0};
+    double scaleY{1.0};
+    bool flipX{false};
+    bool flipY{false};
+    int64_t tint{kObjectTintNone};
+    double pivotX{0.5};
+    double pivotY{0.5};
     std::map<std::string, SceneScalar> properties;
 };
+
+/// @brief Normalize an authored rotation into [0, 360) degrees.
+/// @param value Candidate rotation in degrees.
+/// @return Canonical finite rotation; non-finite input becomes 0.
+double sanitizeObjectRotation(double value) {
+    if (!std::isfinite(value))
+        return 0.0;
+    value = std::fmod(value, 360.0);
+    if (value < 0.0)
+        value += 360.0;
+    return value;
+}
+
+/// @brief Clamp an authored scale factor into the supported envelope.
+/// @param value Candidate scale factor.
+/// @return Finite non-zero factor in [-10000, 10000]; degenerate input becomes 1.
+double sanitizeObjectScale(double value) {
+    if (!std::isfinite(value) || value == 0.0)
+        return 1.0;
+    if (value > 10000.0)
+        return 10000.0;
+    if (value < -10000.0)
+        return -10000.0;
+    return value;
+}
+
+/// @brief Clamp an authored normalized pivot component into [0, 1].
+/// @param value Candidate pivot component.
+/// @return Clamped finite pivot; non-finite input becomes centered 0.5.
+double sanitizeObjectPivot(double value) {
+    if (!std::isfinite(value))
+        return 0.5;
+    if (value < 0.0)
+        return 0.0;
+    if (value > 1.0)
+        return 1.0;
+    return value;
+}
+
+/// @brief Mask an authored tint to its canonical 32-bit RGBA range.
+/// @param value Candidate tint.
+/// @return Value masked to 32 bits.
+int64_t sanitizeObjectTint(int64_t value) {
+    return value & kObjectTintNone;
+}
 
 /// @brief Structured load/edit diagnostic retained by a scene.
 struct Diagnostic {
@@ -1848,6 +1906,28 @@ void parseObjects(SceneState &s, void *root) {
         jsonInt(objMap, "x", obj.x);
         jsonInt(objMap, "y", obj.y);
 
+        // Optional transform fields (ADR 0192): claimed before the
+        // property catch-all exactly like x/y; absent keys keep defaults.
+        double transformValue = 0.0;
+        if (jsonDouble(objMap, "rotation", transformValue))
+            obj.rotation = sanitizeObjectRotation(transformValue);
+        if (jsonDouble(objMap, "scaleX", transformValue))
+            obj.scaleX = sanitizeObjectScale(transformValue);
+        if (jsonDouble(objMap, "scaleY", transformValue))
+            obj.scaleY = sanitizeObjectScale(transformValue);
+        bool transformFlag = false;
+        if (jsonBool(objMap, "flipX", transformFlag, true))
+            obj.flipX = transformFlag;
+        if (jsonBool(objMap, "flipY", transformFlag, true))
+            obj.flipY = transformFlag;
+        int64_t tintValue = 0;
+        if (jsonInt(objMap, "tint", tintValue))
+            obj.tint = sanitizeObjectTint(tintValue);
+        if (jsonDouble(objMap, "pivotX", transformValue))
+            obj.pivotX = sanitizeObjectPivot(transformValue);
+        if (jsonDouble(objMap, "pivotY", transformValue))
+            obj.pivotY = sanitizeObjectPivot(transformValue);
+
         void *props = mapGet(objMap, "properties");
         if (isMap(props))
             parseScalarMap(s,
@@ -1863,7 +1943,10 @@ void parseObjects(SceneState &s, void *root) {
             std::string key = toStd(keyStr);
             void *value = rt_map_get(objMap, keyStr);
             rt_string_unref(keyStr);
-            if (key == "type" || key == "id" || key == "x" || key == "y" || key == "properties")
+            if (key == "type" || key == "id" || key == "x" || key == "y" ||
+                key == "properties" || key == "rotation" || key == "scaleX" ||
+                key == "scaleY" || key == "flipX" || key == "flipY" || key == "tint" ||
+                key == "pivotX" || key == "pivotY")
                 continue;
             if (obj.properties.size() >= static_cast<size_t>(kMaxObjectProperties)) {
                 addDiagnostic(s,
@@ -2304,6 +2387,24 @@ void writeCanonicalJson(std::ostringstream &out, const SceneState &s) {
         out << "      \"id\": " << jsonEscape(obj.id) << ",\n";
         out << "      \"x\": " << obj.x << ",\n";
         out << "      \"y\": " << obj.y << ",\n";
+        // Transform fields serialize only away from their defaults so
+        // untransformed documents keep their exact legacy bytes (ADR 0192).
+        if (obj.rotation != 0.0)
+            out << "      \"rotation\": " << jsonNumber(obj.rotation) << ",\n";
+        if (obj.scaleX != 1.0)
+            out << "      \"scaleX\": " << jsonNumber(obj.scaleX) << ",\n";
+        if (obj.scaleY != 1.0)
+            out << "      \"scaleY\": " << jsonNumber(obj.scaleY) << ",\n";
+        if (obj.flipX)
+            out << "      \"flipX\": true,\n";
+        if (obj.flipY)
+            out << "      \"flipY\": true,\n";
+        if (obj.tint != kObjectTintNone)
+            out << "      \"tint\": " << obj.tint << ",\n";
+        if (obj.pivotX != 0.5)
+            out << "      \"pivotX\": " << jsonNumber(obj.pivotX) << ",\n";
+        if (obj.pivotY != 0.5)
+            out << "      \"pivotY\": " << jsonNumber(obj.pivotY) << ",\n";
         out << "      \"properties\": ";
         std::map<std::string, SceneScalar> properties = obj.properties;
         if (obj.parent >= 0)
@@ -3630,7 +3731,12 @@ if (static_cast<int64_t>(s.objects.size()) >= kMaxObjects) {
     addDiagnostic(s, "scene.edit.rejected", "warning", "too many scene objects");
     return -1;
 }
-s.objects.push_back(Object{toStd(type), toStd(id), x, y, -1, {}});
+Object added;
+added.type = toStd(type);
+added.id = toStd(id);
+added.x = x;
+added.y = y;
+s.objects.push_back(std::move(added));
 return static_cast<int64_t>(s.objects.size()) - 1;
 }
 SCENE_CATCH(-1)
@@ -3781,6 +3887,138 @@ void rt_game_scene_set_object_position(void *scene, int64_t index, int64_t x, in
     if (validObjectIndex(s, index)) {
         s.objects[static_cast<size_t>(index)].x = x;
         s.objects[static_cast<size_t>(index)].y = y;
+    }
+}
+
+/// @brief Return an object's rotation in canonical [0, 360) degrees.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored rotation, or `0` for an invalid index.
+double rt_game_scene_object_rotation(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].rotation : 0.0;
+}
+
+/// @brief Set an object's rotation about its pivot.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param degrees Rotation normalized into [0, 360); non-finite input becomes 0.
+void rt_game_scene_set_object_rotation(void *scene, int64_t index, double degrees) {
+    SceneState &s = *requireScene(scene)->state;
+    if (validObjectIndex(s, index))
+        s.objects[static_cast<size_t>(index)].rotation = sanitizeObjectRotation(degrees);
+}
+
+/// @brief Return an object's horizontal scale factor.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored factor, or `1` for an invalid index.
+double rt_game_scene_object_scale_x(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].scaleX : 1.0;
+}
+
+/// @brief Return an object's vertical scale factor.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored factor, or `1` for an invalid index.
+double rt_game_scene_object_scale_y(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].scaleY : 1.0;
+}
+
+/// @brief Set an object's scale factors about its pivot.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param scale_x Horizontal factor clamped to [-10000, 10000]; 0 becomes 1.
+/// @param scale_y Vertical factor with the same envelope.
+void rt_game_scene_set_object_scale(void *scene, int64_t index, double scale_x, double scale_y) {
+    SceneState &s = *requireScene(scene)->state;
+    if (validObjectIndex(s, index)) {
+        s.objects[static_cast<size_t>(index)].scaleX = sanitizeObjectScale(scale_x);
+        s.objects[static_cast<size_t>(index)].scaleY = sanitizeObjectScale(scale_y);
+    }
+}
+
+/// @brief Return whether an object mirrors horizontally about its pivot.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored flag, or `0` for an invalid index.
+int8_t rt_game_scene_object_flip_x(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) && s.objects[static_cast<size_t>(index)].flipX ? 1 : 0;
+}
+
+/// @brief Return whether an object mirrors vertically about its pivot.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored flag, or `0` for an invalid index.
+int8_t rt_game_scene_object_flip_y(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) && s.objects[static_cast<size_t>(index)].flipY ? 1 : 0;
+}
+
+/// @brief Set an object's mirroring flags.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param flip_x Nonzero mirrors horizontally about the pivot.
+/// @param flip_y Nonzero mirrors vertically about the pivot.
+void rt_game_scene_set_object_flip(void *scene, int64_t index, int8_t flip_x, int8_t flip_y) {
+    SceneState &s = *requireScene(scene)->state;
+    if (validObjectIndex(s, index)) {
+        s.objects[static_cast<size_t>(index)].flipX = flip_x != 0;
+        s.objects[static_cast<size_t>(index)].flipY = flip_y != 0;
+    }
+}
+
+/// @brief Return an object's RGBA multiply tint.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored 32-bit tint, or opaque white for an invalid index.
+int64_t rt_game_scene_object_tint(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].tint
+                                      : kObjectTintNone;
+}
+
+/// @brief Set an object's RGBA multiply tint.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param rgba Tint masked to 32 bits; opaque white means "no tint".
+void rt_game_scene_set_object_tint(void *scene, int64_t index, int64_t rgba) {
+    SceneState &s = *requireScene(scene)->state;
+    if (validObjectIndex(s, index))
+        s.objects[static_cast<size_t>(index)].tint = sanitizeObjectTint(rgba);
+}
+
+/// @brief Return an object's normalized horizontal pivot component.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored pivot in [0, 1], or centered `0.5` for an invalid index.
+double rt_game_scene_object_pivot_x(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].pivotX : 0.5;
+}
+
+/// @brief Return an object's normalized vertical pivot component.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index.
+/// @return Stored pivot in [0, 1], or centered `0.5` for an invalid index.
+double rt_game_scene_object_pivot_y(void *scene, int64_t index) {
+    SceneState &s = *requireScene(scene)->state;
+    return validObjectIndex(s, index) ? s.objects[static_cast<size_t>(index)].pivotY : 0.5;
+}
+
+/// @brief Set an object's normalized pivot within its sprite footprint.
+/// @param scene SceneDocument handle.
+/// @param index Zero-based object index; invalid indices are ignored.
+/// @param pivot_x Horizontal component clamped to [0, 1].
+/// @param pivot_y Vertical component clamped to [0, 1].
+void rt_game_scene_set_object_pivot(void *scene, int64_t index, double pivot_x, double pivot_y) {
+    SceneState &s = *requireScene(scene)->state;
+    if (validObjectIndex(s, index)) {
+        s.objects[static_cast<size_t>(index)].pivotX = sanitizeObjectPivot(pivot_x);
+        s.objects[static_cast<size_t>(index)].pivotY = sanitizeObjectPivot(pivot_y);
     }
 }
 

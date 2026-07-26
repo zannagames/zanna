@@ -8,6 +8,24 @@
 // File: src/runtime/network/rt_http2.c
 // Purpose: Internal HTTP/2 + HPACK transport used by the HTTPS runtime.
 //
+// Key invariants:
+//   - Frame lengths, stream identifiers, flow-control windows, and decoded
+//     header sizes are validated before use.
+//   - Client streams are odd-numbered and the synchronous server path handles
+//     one active request stream at a time.
+//   - Any connection-level protocol or I/O failure records a diagnostic and
+//     permanently marks the connection closed.
+//
+// Ownership/Lifetime:
+//   - Frame payloads and growable buffers are owned by their containing value.
+//   - Connection objects own HPACK state but borrow the transport context.
+//   - Public request and response results transfer owned headers and body bytes
+//     to the caller on success.
+//
+// Links: src/runtime/network/rt_http2.h,
+//        src/runtime/network/rt_http2_internal.h,
+//        src/runtime/network/rt_hpack.c
+//
 //===----------------------------------------------------------------------===//
 
 #include "rt_http2.h"
@@ -102,17 +120,26 @@ struct rt_http2_conn {
 
 static const char kClientPreface[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+/// @brief Store a 16-bit integer in HTTP/2 network-byte order.
+/// @param dst Writable two-byte destination.
+/// @param v Value to encode.
 static void h2_write_u16(uint8_t *dst, uint16_t v) {
     dst[0] = (uint8_t)(v >> 8);
     dst[1] = (uint8_t)(v);
 }
 
+/// @brief Store the low 24 bits of an integer in HTTP/2 network-byte order.
+/// @param dst Writable three-byte destination.
+/// @param v Value whose low 24 bits are encoded.
 static void h2_write_u24(uint8_t *dst, uint32_t v) {
     dst[0] = (uint8_t)(v >> 16);
     dst[1] = (uint8_t)(v >> 8);
     dst[2] = (uint8_t)(v);
 }
 
+/// @brief Store a 32-bit integer in network-byte order.
+/// @param dst Writable four-byte destination.
+/// @param v Value to encode.
 static void h2_write_u32(uint8_t *dst, uint32_t v) {
     dst[0] = (uint8_t)(v >> 24);
     dst[1] = (uint8_t)(v >> 16);
@@ -120,25 +147,41 @@ static void h2_write_u32(uint8_t *dst, uint32_t v) {
     dst[3] = (uint8_t)(v);
 }
 
+/// @brief Decode a network-order 16-bit integer.
+/// @param src Readable two-byte source.
+/// @return Decoded host-order value.
 static uint16_t h2_read_u16(const uint8_t *src) {
     return (uint16_t)(((uint16_t)src[0] << 8) | src[1]);
 }
 
+/// @brief Decode a network-order 24-bit integer.
+/// @param src Readable three-byte source.
+/// @return Decoded host-order value in the low 24 bits.
 static uint32_t h2_read_u24(const uint8_t *src) {
     return ((uint32_t)src[0] << 16) | ((uint32_t)src[1] << 8) | (uint32_t)src[2];
 }
 
+/// @brief Decode a network-order 32-bit integer.
+/// @param src Readable four-byte source.
+/// @return Decoded host-order value.
 static uint32_t h2_read_u32(const uint8_t *src) {
     return ((uint32_t)src[0] << 24) | ((uint32_t)src[1] << 16) | ((uint32_t)src[2] << 8) |
            (uint32_t)src[3];
 }
 
+/// @brief Replace a connection's diagnostic text without changing its open state.
+/// @param conn Connection to update; may be null.
+/// @param msg Message to copy, or null for a generic HTTP/2 error.
 static void h2_conn_set_error(rt_http2_conn_t *conn, const char *msg) {
     if (!conn)
         return;
     snprintf(conn->error, sizeof(conn->error), "%s", msg ? msg : "HTTP/2 error");
 }
 
+/// @brief Record a fatal connection error and mark the connection closed.
+/// @param conn Connection to fail.
+/// @param msg Diagnostic message, or null for a generic message.
+/// @return Always 0, allowing direct propagation from failure branches.
 static int h2_conn_fail(rt_http2_conn_t *conn, const char *msg) {
     if (!conn)
         return 0;
@@ -147,6 +190,13 @@ static int h2_conn_fail(rt_http2_conn_t *conn, const char *msg) {
     return 0;
 }
 
+/// @brief Ensure a growable HTTP/2 buffer can hold at least a requested capacity.
+/// @details Capacity grows geometrically up to `H2_MAX_BUFFER_BYTES`; existing
+///          data and logical length are preserved.
+/// @param buf Buffer to grow.
+/// @param needed Minimum required capacity.
+/// @return 1 when the capacity is available; 0 on invalid input, overflow,
+///         implementation-limit violation, or allocation failure.
 static int h2_buf_reserve(h2_buf_t *buf, size_t needed) {
     size_t new_cap = 0;
     uint8_t *grown = NULL;
@@ -172,6 +222,11 @@ static int h2_buf_reserve(h2_buf_t *buf, size_t needed) {
     return 1;
 }
 
+/// @brief Append a byte range to a growable HTTP/2 buffer.
+/// @param buf Destination buffer.
+/// @param src Source bytes; may be null only when @p len is zero.
+/// @param len Number of bytes to append.
+/// @return 1 on success; 0 on invalid input, size overflow, limit violation, or allocation failure.
 int h2_buf_append(h2_buf_t *buf, const void *src, size_t len) {
     if (!buf || (!src && len > 0))
         return 0;
@@ -186,10 +241,16 @@ int h2_buf_append(h2_buf_t *buf, const void *src, size_t len) {
     return 1;
 }
 
+/// @brief Append one byte to a growable HTTP/2 buffer.
+/// @param buf Destination buffer.
+/// @param b Byte to append.
+/// @return 1 on success; 0 when the buffer cannot grow.
 int h2_buf_append_byte(h2_buf_t *buf, uint8_t b) {
     return h2_buf_append(buf, &b, 1);
 }
 
+/// @brief Release a growable HTTP/2 buffer and reset all fields to zero.
+/// @param buf Buffer to release; may be null.
 void h2_buf_free(h2_buf_t *buf) {
     if (!buf)
         return;
@@ -199,6 +260,10 @@ void h2_buf_free(h2_buf_t *buf) {
     buf->cap = 0;
 }
 
+/// @brief Validate a length-delimited HTTP/2 header name.
+/// @param name Header-name bytes.
+/// @param len Number of bytes to validate.
+/// @return Nonzero for a nonempty lowercase name containing no spaces or control bytes.
 int h2_header_name_bytes_is_valid(const char *name, size_t len) {
     if (!name || len == 0)
         return 0;
@@ -212,10 +277,17 @@ int h2_header_name_bytes_is_valid(const char *name, size_t len) {
     return 1;
 }
 
+/// @brief Validate a null-terminated HTTP/2 header name.
+/// @param name Header name to validate.
+/// @return Nonzero when the complete name satisfies the transport's HTTP/2 rules.
 int h2_header_name_is_valid(const char *name) {
     return name && h2_header_name_bytes_is_valid(name, strlen(name));
 }
 
+/// @brief Validate a length-delimited HTTP/2 header value.
+/// @param value Header-value bytes.
+/// @param len Number of bytes to validate.
+/// @return Nonzero when the range contains no null, carriage-return, or line-feed bytes.
 int h2_header_value_bytes_is_valid(const char *value, size_t len) {
     if (!value)
         return 0;
@@ -227,10 +299,17 @@ int h2_header_value_bytes_is_valid(const char *value, size_t len) {
     return 1;
 }
 
+/// @brief Validate a null-terminated HTTP/2 header value.
+/// @param value Header value to validate.
+/// @return Nonzero when the complete value satisfies the transport's value rules.
 int h2_header_value_is_valid(const char *value) {
     return value && h2_header_value_bytes_is_valid(value, strlen(value));
 }
 
+/// @brief Parse an HTTP/2 `:status` pseudo-header value.
+/// @param value Three-character decimal status text.
+/// @param status_out Receives the parsed status code.
+/// @return 1 for a decimal value in the range 100 through 599; 0 otherwise.
 static int h2_parse_status_code(const char *value, int *status_out) {
     if (!value || !status_out || strlen(value) != 3)
         return 0;
@@ -244,6 +323,10 @@ static int h2_parse_status_code(const char *value, int *status_out) {
     return 1;
 }
 
+/// @brief Allocate a null-terminated copy of a byte range.
+/// @param src Source bytes; must be readable when @p len is nonzero.
+/// @param len Number of bytes to copy.
+/// @return Newly allocated string, or null on length overflow or allocation failure.
 char *h2_strdup_range(const uint8_t *src, size_t len) {
     if (len == SIZE_MAX)
         return NULL;
@@ -256,6 +339,9 @@ char *h2_strdup_range(const uint8_t *src, size_t len) {
     return out;
 }
 
+/// @brief Allocate an ASCII-lowercase copy of a string.
+/// @param src Source string; null is treated as an empty string.
+/// @return Newly allocated copy, or null on allocation failure.
 char *h2_strdup_lower(const char *src) {
     size_t len = src ? strlen(src) : 0;
     if (len == SIZE_MAX)
@@ -271,6 +357,11 @@ char *h2_strdup_lower(const char *src) {
     return out;
 }
 
+/// @brief Identify header fields forbidden in HTTP/2 because they are connection-specific.
+/// @details Also rejects `te` except for the sole permitted value `trailers`.
+/// @param name Header name; null is treated as not connection-specific.
+/// @param value Header value used to validate `te`; may be null.
+/// @return Nonzero when the field must not appear in HTTP/2.
 static int h2_header_is_connection_specific(const char *name, const char *value) {
     if (!name)
         return 0;
@@ -284,6 +375,11 @@ static int h2_header_is_connection_specific(const char *name, const char *value)
     return 0;
 }
 
+/// @brief Append an owned copy of a header field to the end of a linked list.
+/// @param list Address of the list head.
+/// @param name Null-terminated header name to copy.
+/// @param value Null-terminated header value to copy.
+/// @return 1 on success; 0 for invalid input or allocation failure.
 int rt_http2_header_append_copy(rt_http2_header_t **list, const char *name, const char *value) {
     rt_http2_header_t *node = NULL;
     rt_http2_header_t **tail = list;
@@ -306,6 +402,10 @@ int rt_http2_header_append_copy(rt_http2_header_t **list, const char *name, cons
     return 1;
 }
 
+/// @brief Find the first case-insensitive header-name match.
+/// @param list Header list to search; may be null.
+/// @param name Header name to find.
+/// @return Borrowed value pointer for the first match, or null when absent.
 const char *rt_http2_header_get(const rt_http2_header_t *list, const char *name) {
     for (const rt_http2_header_t *it = list; it; it = it->next) {
         if (it->name && name && strcasecmp(it->name, name) == 0)
@@ -314,6 +414,8 @@ const char *rt_http2_header_get(const rt_http2_header_t *list, const char *name)
     return NULL;
 }
 
+/// @brief Release an entire owned HTTP/2 header list.
+/// @param headers First list node; may be null.
 void rt_http2_headers_free(rt_http2_header_t *headers) {
     while (headers) {
         rt_http2_header_t *next = headers->next;
@@ -380,6 +482,8 @@ static int h2_header_list_add_field(size_t *total_io, const char *name, const ch
     return 1;
 }
 
+/// @brief Release every allocation in a decoded request and reset it to zero.
+/// @param req Request to clear; may be null.
 void rt_http2_request_free(rt_http2_request_t *req) {
     if (!req)
         return;
@@ -392,6 +496,8 @@ void rt_http2_request_free(rt_http2_request_t *req) {
     memset(req, 0, sizeof(*req));
 }
 
+/// @brief Release every allocation in a decoded response and reset it to zero.
+/// @param res Response to clear; may be null.
 void rt_http2_response_free(rt_http2_response_t *res) {
     if (!res)
         return;
@@ -400,6 +506,12 @@ void rt_http2_response_free(rt_http2_response_t *res) {
     memset(res, 0, sizeof(*res));
 }
 
+/// @brief Fill a buffer by repeatedly invoking the connection's read callback.
+/// @param conn Connection providing transport I/O and error storage.
+/// @param buf Destination buffer; must be non-null even for a zero-length request.
+/// @param len Exact number of bytes required.
+/// @return 1 after all bytes are read; 0 after invalid input, EOF, or callback failure closes the
+///         connection.
 static int h2_io_read_exact(rt_http2_conn_t *conn, uint8_t *buf, size_t len) {
     size_t total = 0;
     if (!conn || !buf || !conn->io.read)
@@ -413,6 +525,14 @@ static int h2_io_read_exact(rt_http2_conn_t *conn, uint8_t *buf, size_t len) {
     return 1;
 }
 
+/// @brief Write an entire byte range through the connection's whole-range callback.
+/// @details Splits requests at `INT_MAX` so callback implementations backed by
+///          signed platform lengths can handle large buffers safely.
+/// @param conn Connection providing transport I/O and error storage.
+/// @param buf Source bytes; may be null only when @p len is zero.
+/// @param len Number of bytes to write.
+/// @return 1 after all chunks are written; 0 after invalid input or callback failure closes the
+///         connection.
 static int h2_io_write_all(rt_http2_conn_t *conn, const uint8_t *buf, size_t len) {
     size_t total = 0;
     if (!conn || (!buf && len > 0) || !conn->io.write)
@@ -428,6 +548,8 @@ static int h2_io_write_all(rt_http2_conn_t *conn, const uint8_t *buf, size_t len
     return 1;
 }
 
+/// @brief Release a parsed frame's owned payload and reset the frame to zero.
+/// @param frame Frame to clear; may be null.
 static void h2_frame_free(h2_frame_t *frame) {
     if (!frame)
         return;
@@ -435,6 +557,14 @@ static void h2_frame_free(h2_frame_t *frame) {
     memset(frame, 0, sizeof(*frame));
 }
 
+/// @brief Serialize and write one HTTP/2 frame.
+/// @param conn Destination connection.
+/// @param type Frame type octet.
+/// @param flags Frame flags octet.
+/// @param stream_id 31-bit stream identifier, or zero for a connection frame.
+/// @param payload Optional payload bytes.
+/// @param payload_len Number of payload bytes, limited to the protocol's 24-bit maximum.
+/// @return 1 on success; 0 after invalid parameters or I/O failure closes the connection.
 static int h2_send_frame(rt_http2_conn_t *conn,
                          uint8_t type,
                          uint8_t flags,
@@ -458,6 +588,12 @@ static int h2_send_frame(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Read one HTTP/2 frame header and its complete payload.
+/// @details Enforces the locally advertised maximum frame size and masks the
+///          reserved stream-ID bit. On success, @p frame owns any allocated payload.
+/// @param conn Source connection.
+/// @param frame Output frame, reset before parsing.
+/// @return 1 on success; 0 on invalid input, oversized input, allocation failure, or I/O failure.
 static int h2_read_frame(rt_http2_conn_t *conn, h2_frame_t *frame) {
     uint8_t header[9];
     size_t payload_len = 0;
@@ -485,6 +621,11 @@ static int h2_read_frame(rt_http2_conn_t *conn, h2_frame_t *frame) {
     return 1;
 }
 
+/// @brief Send this endpoint's initial non-ACK SETTINGS frame.
+/// @details Advertises the local header-list limit and, for clients, disables
+///          server push.
+/// @param conn Connection whose endpoint role and limits are advertised.
+/// @return 1 on success; 0 for invalid input or I/O failure.
 static int h2_send_settings(rt_http2_conn_t *conn) {
     uint8_t payload[12];
     size_t pos = 0;
@@ -501,6 +642,16 @@ static int h2_send_settings(rt_http2_conn_t *conn) {
     return h2_send_frame(conn, H2_FRAME_SETTINGS, 0, 0, payload, pos);
 }
 
+/// @brief Validate and apply one peer SETTINGS parameter.
+/// @details Unknown identifiers are ignored as required by HTTP/2. Changes to
+///          the initial stream window optionally adjust an active stream's
+///          current send window by the same signed delta.
+/// @param conn Connection whose peer limits are updated.
+/// @param id SETTINGS identifier.
+/// @param value Peer-advertised value.
+/// @param stream_window_io Optional active stream send window to adjust.
+/// @return 1 when the setting is valid or unknown; 0 for a recognized value outside its legal
+///         range.
 static int h2_apply_setting(rt_http2_conn_t *conn,
                             uint16_t id,
                             uint32_t value,
@@ -540,6 +691,11 @@ static int h2_apply_setting(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Return consumed receive-window credit with a WINDOW_UPDATE frame.
+/// @param conn Destination connection.
+/// @param stream_id Stream identifier, or zero for connection-level credit.
+/// @param increment Positive 31-bit flow-control increment.
+/// @return 1 on success; 0 after an invalid increment or I/O failure.
 static int h2_send_window_update(rt_http2_conn_t *conn, uint32_t stream_id, uint32_t increment) {
     uint8_t payload[4];
     if (increment == 0 || increment > 0x7fffffffu)
@@ -551,6 +707,11 @@ static int h2_send_window_update(rt_http2_conn_t *conn, uint32_t stream_id, uint
     return h2_send_frame(conn, H2_FRAME_WINDOW_UPDATE, 0, stream_id, payload, sizeof(payload));
 }
 
+/// @brief Send an RST_STREAM frame with a protocol error code.
+/// @param conn Destination connection.
+/// @param stream_id Stream to reset.
+/// @param error_code HTTP/2 error code.
+/// @return 1 on success; 0 on invalid frame parameters or I/O failure.
 static int h2_send_rst_stream(rt_http2_conn_t *conn, uint32_t stream_id, uint32_t error_code) {
     uint8_t payload[4];
     payload[0] = (uint8_t)(error_code >> 24);
@@ -560,6 +721,14 @@ static int h2_send_rst_stream(rt_http2_conn_t *conn, uint32_t stream_id, uint32_
     return h2_send_frame(conn, H2_FRAME_RST_STREAM, 0, stream_id, payload, sizeof(payload));
 }
 
+/// @brief Extract the HPACK fragment and END_STREAM state from a HEADERS payload.
+/// @details Skips optional pad-length and priority fields and verifies that
+///          declared padding fits within the payload.
+/// @param frame HEADERS frame to inspect.
+/// @param fragment_out Optional receiver for a borrowed pointer into the frame payload.
+/// @param fragment_len_out Optional receiver for the fragment length excluding padding.
+/// @param end_stream_out Optional receiver for the END_STREAM flag state.
+/// @return 1 for a structurally valid HEADERS payload; 0 otherwise.
 static int h2_parse_headers_payload(const h2_frame_t *frame,
                                     const uint8_t **fragment_out,
                                     size_t *fragment_len_out,
@@ -590,6 +759,12 @@ static int h2_parse_headers_payload(const h2_frame_t *frame,
     return 1;
 }
 
+/// @brief Extract application bytes and END_STREAM state from a DATA payload.
+/// @param frame DATA frame to inspect.
+/// @param data_out Optional receiver for a borrowed pointer into the frame payload.
+/// @param data_len_out Optional receiver for the application byte count excluding padding.
+/// @param end_stream_out Optional receiver for the END_STREAM flag state.
+/// @return 1 for a structurally valid DATA payload; 0 otherwise.
 static int h2_parse_data_payload(const h2_frame_t *frame,
                                  const uint8_t **data_out,
                                  size_t *data_len_out,
@@ -615,6 +790,15 @@ static int h2_parse_data_payload(const h2_frame_t *frame,
     return 1;
 }
 
+/// @brief Collect a HEADERS fragment and its required CONTINUATION sequence.
+/// @details Rejects interleaved frames, mismatched stream identifiers, and
+///          aggregate blocks above `H2_MAX_HEADER_BLOCK`.
+/// @param conn Connection used to read continuation frames and record failures.
+/// @param first Initial HEADERS frame.
+/// @param block_out Receives an owned contiguous HPACK block.
+/// @param end_stream_out Optional receiver for END_STREAM from the initial HEADERS frame.
+/// @return 1 after END_HEADERS is reached; 0 on malformed input, allocation failure, or I/O
+///         failure.
 static int h2_collect_header_block(rt_http2_conn_t *conn,
                                    const h2_frame_t *first,
                                    h2_buf_t *block_out,
@@ -666,6 +850,15 @@ static int h2_collect_header_block(rt_http2_conn_t *conn,
     }
 }
 
+/// @brief Collect and HPACK-decode one header sequence under local list limits.
+/// @details Enforces both the RFC header-list byte accounting and a structural
+///          limit of 256 fields after decompression.
+/// @param conn Connection providing decode-table state and configured limits.
+/// @param first Initial HEADERS frame.
+/// @param decoded_out Receives an owned decoded header list on success.
+/// @param end_stream_out Optional receiver for END_STREAM from the initial frame.
+/// @param decode_error Diagnostic text recorded when HPACK decoding fails.
+/// @return 1 on success; 0 on collection, decompression, size, or allocation failure.
 static int h2_decode_header_list(rt_http2_conn_t *conn,
                                  const h2_frame_t *first,
                                  rt_http2_header_t **decoded_out,
@@ -697,6 +890,11 @@ static int h2_decode_header_list(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Append copied regular trailer fields to an existing header list.
+/// @param dest Address of the destination list head.
+/// @param decoded Borrowed decoded trailer list.
+/// @return 1 when every trailer is regular and copied; 0 on pseudo-headers,
+///         connection-specific fields, or allocation failure.
 static int h2_append_trailer_headers(rt_http2_header_t **dest, const rt_http2_header_t *decoded) {
     for (const rt_http2_header_t *it = decoded; it; it = it->next) {
         if (it->name[0] == ':' || h2_header_is_connection_specific(it->name, it->value) ||
@@ -707,6 +905,13 @@ static int h2_append_trailer_headers(rt_http2_header_t **dest, const rt_http2_he
     return 1;
 }
 
+/// @brief Consume enough of an unsupported concurrent request frame to preserve framing and reset
+///        its stream.
+/// @details Header continuations are collected and discarded; DATA bytes
+///          restore connection-level receive credit before REFUSED_STREAM is sent.
+/// @param conn Server connection currently processing another request.
+/// @param frame Initial HEADERS or DATA frame on the concurrent odd-numbered stream.
+/// @return 1 after sending REFUSED_STREAM; 0 on invalid input, malformed framing, or I/O failure.
 static int h2_refuse_concurrent_request_stream(rt_http2_conn_t *conn, const h2_frame_t *frame) {
     h2_buf_t discard = {0};
     const uint8_t *data_ptr = NULL;
@@ -729,6 +934,13 @@ static int h2_refuse_concurrent_request_stream(rt_http2_conn_t *conn, const h2_f
     return h2_send_rst_stream(conn, frame->stream_id, H2_ERROR_REFUSED_STREAM);
 }
 
+/// @brief Split an encoded HPACK block across HEADERS and CONTINUATION frames.
+/// @param conn Destination connection and source of the peer frame-size limit.
+/// @param stream_id Target stream identifier.
+/// @param block Encoded HPACK bytes.
+/// @param block_len Number of bytes in @p block.
+/// @param end_stream Whether a single-frame HEADERS block should also close the stream.
+/// @return 1 after the complete block is written; 0 on invalid state or I/O failure.
 static int h2_send_headers_block(rt_http2_conn_t *conn,
                                  uint32_t stream_id,
                                  const uint8_t *block,
@@ -767,6 +979,17 @@ static int h2_send_headers_block(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Process connection-control and asynchronous frames shared by client and server loops.
+/// @details Validates and acknowledges SETTINGS and PING, applies flow-control
+///          updates, handles GOAWAY and resets, ignores valid PRIORITY or
+///          unknown extension frames, and rejects unsupported push promises.
+/// @param conn Connection whose protocol state is updated.
+/// @param frame Parsed frame to consider.
+/// @param stream_id Currently active stream identifier.
+/// @param stream_window_io Optional active stream send window.
+/// @param handled_out Optional receiver set nonzero when no higher-level processing is needed.
+/// @return 1 when the frame is valid, whether handled or left for the caller; 0 on protocol or I/O
+///         failure.
 static int h2_handle_common_frame(rt_http2_conn_t *conn,
                                   const h2_frame_t *frame,
                                   uint32_t stream_id,
@@ -865,6 +1088,11 @@ static int h2_handle_common_frame(rt_http2_conn_t *conn,
     }
 }
 
+/// @brief Read and process control frames until connection and stream send credit are positive.
+/// @param conn Connection whose peer flow-control window is monitored.
+/// @param stream_id Active outbound stream.
+/// @param stream_window_io Optional active stream send window.
+/// @return 1 when data can be sent; 0 on I/O, protocol, or unexpected-frame failure.
 static int h2_wait_for_send_window(rt_http2_conn_t *conn,
                                    uint32_t stream_id,
                                    int64_t *stream_window_io) {
@@ -887,6 +1115,14 @@ static int h2_wait_for_send_window(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Send a complete body as flow-controlled DATA frames ending the stream.
+/// @details Honors both connection and initial per-stream peer windows, reading
+///          control frames when more credit is required.
+/// @param conn Destination connection.
+/// @param stream_id Target stream identifier.
+/// @param data Body bytes; must be readable when @p data_len is nonzero.
+/// @param data_len Number of body bytes.
+/// @return 1 after an END_STREAM DATA frame is sent; 0 on protocol or I/O failure.
 static int h2_send_data(rt_http2_conn_t *conn,
                         uint32_t stream_id,
                         const uint8_t *data,
@@ -922,6 +1158,20 @@ static int h2_send_data(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Build and validate the HPACK block for an outbound request.
+/// @details Emits required pseudo-headers first. Caller-supplied pseudo-fields,
+///          `host`, connection-specific fields, and null-valued nodes are
+///          skipped; remaining fields are subject to the peer's logical and
+///          encoded header-list limits.
+/// @param conn Connection providing encoder state and peer limits.
+/// @param method Request `:method`.
+/// @param scheme Request `:scheme`.
+/// @param authority Request `:authority`.
+/// @param path Request `:path`.
+/// @param headers Optional regular header list.
+/// @param out Receives an owned encoded block.
+/// @return 1 on success; 0 on invalid input, invalid field data, limit violation, or allocation
+///         failure.
 static int h2_build_request_block(rt_http2_conn_t *conn,
                                   const char *method,
                                   const char *scheme,
@@ -975,6 +1225,15 @@ static int h2_build_request_block(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Build and validate the HPACK block for an outbound response.
+/// @details Emits `:status` first and skips caller-supplied pseudo-fields,
+///          connection-specific fields, and null-valued nodes.
+/// @param conn Connection providing encoder state and peer limits.
+/// @param status HTTP status code in the range 100 through 599.
+/// @param headers Optional regular header list.
+/// @param out Receives an owned encoded block.
+/// @return 1 on success; 0 on invalid input, invalid field data, limit violation, or allocation
+///         failure.
 static int h2_build_response_block(rt_http2_conn_t *conn,
                                    int status,
                                    const rt_http2_header_t *headers,
@@ -1018,6 +1277,10 @@ static int h2_build_response_block(rt_http2_conn_t *conn,
     return 1;
 }
 
+/// @brief Allocate common client/server HTTP/2 state with RFC default limits.
+/// @param io Valid callback table to copy; its context remains borrowed.
+/// @param is_server Nonzero for server endpoint behavior, zero for client behavior.
+/// @return New connection on success, or null for invalid callbacks or allocation failure.
 static rt_http2_conn_t *h2_conn_new_common(const rt_http2_io_t *io, int is_server) {
     rt_http2_conn_t *conn = NULL;
     if (!io || !io->read || !io->write)
@@ -1039,14 +1302,22 @@ static rt_http2_conn_t *h2_conn_new_common(const rt_http2_io_t *io, int is_serve
     return conn;
 }
 
+/// @brief Allocate a client-side HTTP/2 connection.
+/// @param io Callback table to copy; its context remains caller-owned.
+/// @return New connection, or null for invalid callbacks or allocation failure.
 rt_http2_conn_t *rt_http2_client_new(const rt_http2_io_t *io) {
     return h2_conn_new_common(io, 0);
 }
 
+/// @brief Allocate a server-side HTTP/2 connection.
+/// @param io Callback table to copy; its context remains caller-owned.
+/// @return New connection, or null for invalid callbacks or allocation failure.
 rt_http2_conn_t *rt_http2_server_new(const rt_http2_io_t *io) {
     return h2_conn_new_common(io, 1);
 }
 
+/// @brief Release a connection and both of its HPACK dynamic tables.
+/// @param conn Connection to release; may be null.
 void rt_http2_conn_free(rt_http2_conn_t *conn) {
     if (!conn)
         return;
@@ -1055,16 +1326,25 @@ void rt_http2_conn_free(rt_http2_conn_t *conn) {
     free(conn);
 }
 
+/// @brief Read a connection's most recent diagnostic.
+/// @param conn Connection to inspect; may be null.
+/// @return Borrowed connection-owned message, `"no error"`, or a static null-connection message.
 const char *rt_http2_get_error(const rt_http2_conn_t *conn) {
     if (!conn)
         return "HTTP/2: null connection";
     return conn->error[0] ? conn->error : "no error";
 }
 
+/// @brief Determine whether a connection remains open and has complete I/O callbacks.
+/// @param conn Connection to inspect.
+/// @return Nonzero when further protocol I/O may be attempted; zero otherwise.
 int rt_http2_conn_is_usable(const rt_http2_conn_t *conn) {
     return conn && !conn->closed && conn->io.read && conn->io.write;
 }
 
+/// @brief Lazily send the client connection preface and initial SETTINGS.
+/// @param conn Client connection to start.
+/// @return 1 when already or newly started; 0 on invalid input or I/O failure.
 static int h2_client_start(rt_http2_conn_t *conn) {
     if (!conn)
         return 0;
@@ -1078,6 +1358,9 @@ static int h2_client_start(rt_http2_conn_t *conn) {
     return 1;
 }
 
+/// @brief Lazily validate the client preface and send the server's initial SETTINGS.
+/// @param conn Server connection to start.
+/// @return 1 when already or newly started; 0 on invalid preface, invalid input, or I/O failure.
 static int h2_server_start(rt_http2_conn_t *conn) {
     uint8_t preface[sizeof(kClientPreface) - 1];
     if (!conn)
@@ -1094,6 +1377,12 @@ static int h2_server_start(rt_http2_conn_t *conn) {
     return 1;
 }
 
+/// @brief Append received body bytes without exceeding a caller-defined limit.
+/// @param body Accumulation buffer.
+/// @param max_body_len Maximum permitted total bytes.
+/// @param src Incoming body bytes; may be null only when @p len is zero.
+/// @param len Number of incoming bytes.
+/// @return 1 on success; 0 on invalid input, limit violation, overflow, or allocation failure.
 static int h2_append_body(h2_buf_t *body, size_t max_body_len, const uint8_t *src, size_t len) {
     if (!body || (!src && len > 0))
         return 0;
@@ -1104,6 +1393,22 @@ static int h2_append_body(h2_buf_t *body, size_t max_body_len, const uint8_t *sr
     return h2_buf_append(body, src, len);
 }
 
+/// @brief Send one request and synchronously receive its complete final response.
+/// @details Allocates the next odd stream, processes connection-control frames
+///          and informational responses, validates response pseudo-headers,
+///          restores receive-window credit, and appends valid trailers.
+/// @param conn Client connection.
+/// @param method Request `:method`.
+/// @param scheme Request `:scheme`.
+/// @param authority Request `:authority`.
+/// @param path Request `:path`.
+/// @param headers Optional regular request headers.
+/// @param body Optional request body bytes.
+/// @param body_len Number of request body bytes.
+/// @param max_body_len Maximum response body bytes accepted.
+/// @param out_res Receives an owned complete response and is reset before processing.
+/// @return 1 on success; 0 on invalid input, protocol error, limit violation, I/O failure, or
+///         allocation failure.
 int rt_http2_client_roundtrip(rt_http2_conn_t *conn,
                               const char *method,
                               const char *scheme,
@@ -1292,6 +1597,15 @@ int rt_http2_client_roundtrip(rt_http2_conn_t *conn,
     }
 }
 
+/// @brief Receive and validate the next complete request on a synchronous server connection.
+/// @details Enforces odd client stream IDs, required pseudo-headers and their
+///          ordering, body limits, flow-control updates, and trailer rules.
+///          Additional concurrent request streams are refused.
+/// @param conn Server connection.
+/// @param max_body_len Maximum request body bytes accepted.
+/// @param out_req Receives an owned complete request and is reset before processing.
+/// @return 1 on success; 0 on invalid input, protocol error, limit violation, I/O failure, or
+///         allocation failure.
 int rt_http2_server_receive_request(rt_http2_conn_t *conn,
                                     size_t max_body_len,
                                     rt_http2_request_t *out_req) {
@@ -1487,6 +1801,14 @@ int rt_http2_server_receive_request(rt_http2_conn_t *conn,
     }
 }
 
+/// @brief Encode and send a complete response on a server-side stream.
+/// @param conn Server connection.
+/// @param stream_id Positive request stream identifier.
+/// @param status HTTP status code in the range 100 through 599.
+/// @param headers Optional regular response headers.
+/// @param body Optional response body bytes.
+/// @param body_len Number of response body bytes.
+/// @return 1 on success; 0 on invalid input, encoding failure, protocol error, or I/O failure.
 int rt_http2_server_send_response(rt_http2_conn_t *conn,
                                   int stream_id,
                                   int status,

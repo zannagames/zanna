@@ -16,14 +16,18 @@
 //   - Keys are unique; last-write wins.
 //   - Save writes atomically through an exclusive temp file and replace.
 //   - Load replaces all in-memory data with file contents; missing file is empty.
-//   - All internal strings are heap-allocated via strdup/malloc.
+//   - Keys and string values must be well-formed UTF-8; keys are nonempty and NUL-free.
+//   - JSON persistence accepts only signed 64-bit integer and string values.
 //
 // Ownership/Lifetime:
 //   - SaveData is GC-managed; finalizer frees all entries and path strings.
-//   - Keys and string values are strdup'd copies; freed in finalizer/remove.
+//   - Entries retain runtime-string references for keys and string values; removal/finalization
+//     releases them. Game-name and file-path C strings are separately malloc-owned.
 //
-// Links: rt_savedata.h (public API), rt_dir.h (directory creation),
-//        rt_string_builder.h (JSON output), rt_json_stream.h (JSON input)
+// Links: src/runtime/io/rt_savedata.h (public API),
+//        src/runtime/io/rt_dir.h (directory creation),
+//        src/runtime/core/rt_string_builder.h (JSON output),
+//        src/runtime/text/rt_json_stream.h (JSON token input)
 //
 //===----------------------------------------------------------------------===//
 
@@ -108,11 +112,22 @@ typedef struct {
     SaveEntry *entries; ///< Head of the singly-linked entry list.
 } rt_savedata_impl;
 
+/// @brief Preserve the active trap diagnostic for cleanup and rethrow.
+/// @param[out] buffer Destination for the copied message.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Message used when the trap subsystem has no nonempty text.
 static void savedata_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Transactionally retain a key/value string pair.
+/// @details A local recovery boundary releases the first reference if retaining the second traps,
+///          then rethrows the preserved diagnostic so callers never receive partial ownership.
+/// @param key Borrowed key string to retain.
+/// @param value Borrowed value string to retain.
+/// @param[out] out_key Receives the retained key reference.
+/// @param[out] out_value Receives the retained value reference.
 static void savedata_retain_pair_or_trap(rt_string key,
                                          rt_string value,
                                          rt_string *out_key,
@@ -142,12 +157,22 @@ static void savedata_retain_pair_or_trap(rt_string key,
     rt_trap_clear_recovery();
 }
 
+/// @brief Validate and unwrap an opaque SaveData receiver.
+/// @param obj Borrowed runtime receiver.
+/// @param context Trap diagnostic for an invalid class identifier; may be NULL.
+/// @return SaveData implementation payload; invalid receivers trap.
 static rt_savedata_impl *savedata_require(void *obj, const char *context) {
     if (!obj || rt_obj_class_id(obj) != RT_SAVEDATA_CLASS_ID)
         rt_trap(context ? context : "SaveData: invalid handle");
     return (rt_savedata_impl *)obj;
 }
 
+/// @brief Validate a byte span as shortest-form Unicode UTF-8.
+/// @details Rejects truncated sequences, invalid continuations, overlong encodings, UTF-16
+///          surrogate code points, and scalar values above U+10FFFF.
+/// @param data Byte span to validate.
+/// @param len Number of bytes in @p data.
+/// @return 1 when the complete span is well-formed UTF-8; otherwise 0.
 static int savedata_is_valid_utf8(const char *data, size_t len) {
     size_t i = 0;
     while (i < len) {
@@ -219,6 +244,11 @@ static int savedata_is_valid_utf8(const char *data, size_t len) {
     return 1;
 }
 
+/// @brief Require a nonempty UTF-8 key without embedded NUL bytes.
+/// @param key Borrowed runtime string candidate.
+/// @param[out] len_out Optional destination for the validated byte length.
+/// @param context Trap diagnostic for invalid input.
+/// @return Borrowed key byte pointer on success; invalid input traps.
 static const char *savedata_require_key(rt_string key, size_t *len_out, const char *context) {
     const char *kcstr = rt_string_cstr(key);
     int64_t klen_i64 = key ? rt_str_len(key) : -1;
@@ -240,6 +270,10 @@ static const char *savedata_require_key(rt_string key, size_t *len_out, const ch
     return kcstr;
 }
 
+/// @brief Non-trapping validation for a SaveData key.
+/// @param key Borrowed runtime string candidate.
+/// @param[out] len_out Optional destination for the validated byte length.
+/// @return 1 for a nonempty well-formed UTF-8 key without embedded NUL; otherwise 0.
 static int savedata_is_valid_key(rt_string key, size_t *len_out) {
     const char *kcstr = rt_string_cstr(key);
     int64_t klen_i64 = key ? rt_str_len(key) : -1;
@@ -253,6 +287,9 @@ static int savedata_is_valid_key(rt_string key, size_t *len_out) {
     return 1;
 }
 
+/// @brief Require a runtime string containing well-formed UTF-8.
+/// @param value Borrowed runtime string candidate; empty strings are valid.
+/// @param context Trap diagnostic for invalid input.
 static void savedata_require_string_value(rt_string value, const char *context) {
     const char *data = rt_string_cstr(value);
     int64_t len_i64 = value ? rt_str_len(value) : -1;
@@ -266,6 +303,9 @@ static void savedata_require_string_value(rt_string value, const char *context) 
     }
 }
 
+/// @brief Non-trapping validation for a string-valued save entry.
+/// @param value Borrowed runtime string candidate.
+/// @return 1 for a valid runtime string containing well-formed UTF-8; otherwise 0.
 static int savedata_is_valid_string_value(rt_string value) {
     const char *data = rt_string_cstr(value);
     int64_t len_i64 = value ? rt_str_len(value) : -1;
@@ -278,11 +318,15 @@ static int savedata_is_valid_string_value(rt_string value) {
 
 /// @brief Linear-search the entry list for a key by raw bytes + length.
 ///
-/// Uses `memcmp` on the stored key bytes rather than NUL-terminated
-/// compare so embedded NULs are handled correctly. The list is
+/// Uses `memcmp` on the stored key bytes and cached validated length rather than
+/// repeating NUL-terminated scans. The list is
 /// singly-linked in insertion order; lookups are O(n). Save files are
 /// typically small (a handful to low hundreds of keys), so a hash
 /// table isn't worth the complexity and memory overhead.
+/// @param sd SaveData store to search.
+/// @param key Validated key bytes.
+/// @param key_len Number of bytes in @p key.
+/// @return Matching entry node, or NULL when absent/invalid.
 static SaveEntry *find_entry(rt_savedata_impl *sd, const char *key, size_t key_len) {
     if (!sd || !key)
         return NULL;
@@ -298,6 +342,7 @@ static SaveEntry *find_entry(rt_savedata_impl *sd, const char *key, size_t key_l
 }
 
 /// @brief Release all resources owned by a single entry node and free it.
+/// @param e Owned entry node to destroy; NULL is ignored.
 static void free_entry(SaveEntry *e) {
     if (e) {
         if (e->key)
@@ -314,6 +359,9 @@ static void free_entry(SaveEntry *e) {
 /// double loses precision past 2^53, so load validates and converts directly
 /// from the original token text. Fractions, exponents, and out-of-range values
 /// are rejected rather than rounded.
+/// @param text Borrowed runtime string containing the raw JSON number token.
+/// @param[out] out Receives the exact signed value on success.
+/// @return 1 for a canonical in-range JSON integer; otherwise 0.
 static int savedata_number_text_to_i64(rt_string text, int64_t *out) {
     if (!text || !out)
         return 0;
@@ -366,6 +414,7 @@ static int savedata_number_text_to_i64(rt_string text, int64_t *out) {
 }
 
 /// @brief Walk the entry list, freeing every node and setting the head pointer to NULL.
+/// @param sd SaveData store whose owned entries should be cleared.
 static void free_all_entries(rt_savedata_impl *sd) {
     SaveEntry *e = sd->entries;
     while (e) {
@@ -376,6 +425,9 @@ static void free_all_entries(rt_savedata_impl *sd) {
     sd->entries = NULL;
 }
 
+/// @brief Test whether a native path spelling is absolute.
+/// @param path Null-terminated native path.
+/// @return 1 for POSIX-rooted, Windows drive-rooted, or Windows UNC paths; otherwise 0.
 static int savedata_path_is_abs(const char *path) {
     if (!path || path[0] == '\0')
         return 0;
@@ -389,6 +441,12 @@ static int savedata_path_is_abs(const char *path) {
 #endif
 }
 
+/// @brief Copy a path as an absolute native path string.
+/// @details Windows delegates normalization to `GetFullPathNameW`; POSIX preserves already
+///          absolute spellings or prefixes a dynamically sized current working directory.
+/// @param path Nonempty null-terminated path.
+/// @return Malloc-owned absolute path, or NULL on conversion, overflow, probe, or allocation
+///         failure.
 static char *savedata_absolute_dup(const char *path) {
     if (!path || path[0] == '\0')
         return NULL;
@@ -480,6 +538,9 @@ static char *savedata_absolute_dup(const char *path) {
 /// @details `getenv` exposes process-ACP bytes and a borrowed buffer that can be
 ///          invalidated by concurrent environment changes. This helper retries
 ///          the native UTF-16 sizing race and always returns owned storage.
+/// @param name Null-terminated wide environment-variable name.
+/// @return Malloc-owned strict UTF-8 value, or NULL when missing, empty, unstable, invalid, or
+///         allocation fails.
 static char *savedata_windows_env_utf8(const wchar_t *name) {
     if (!name)
         return NULL;
@@ -532,6 +593,11 @@ static char *savedata_windows_env_utf8(const wchar_t *name) {
 
 #if RT_PLATFORM_WINDOWS
 /// @brief Concatenate four optional path fragments with checked size arithmetic.
+/// @param a First fragment; NULL contributes an empty string.
+/// @param b Second fragment; NULL contributes an empty string.
+/// @param c Third fragment; NULL contributes an empty string.
+/// @param d Fourth fragment; NULL contributes an empty string.
+/// @return Malloc-owned concatenation, or NULL on size overflow/allocation failure.
 static char *savedata_concat4(const char *a, const char *b, const char *c, const char *d) {
     const char *parts[4] = {a ? a : "", b ? b : "", c ? c : "", d ? d : ""};
     size_t lengths[4] = {0};
@@ -561,6 +627,8 @@ static char *savedata_concat4(const char *a, const char *b, const char *c, const
 /// `HOMEDRIVE`+`HOMEPATH`, then to `"."`. POSIX tries `HOME`, then
 /// falls back to `getpwuid(getuid())`, then `"."`. Always returns
 /// an owned string so the caller can `free` unconditionally.
+/// @return Malloc-owned absolute home/fallback directory, or NULL when even fallback resolution
+///         fails.
 static char *get_home_dir(void) {
 #if RT_PLATFORM_WINDOWS
     char *home = savedata_windows_env_utf8(L"USERPROFILE");
@@ -600,6 +668,8 @@ static char *get_home_dir(void) {
 /// @details Scans backwards for the last path separator and returns a heap-allocated
 ///          copy of everything before it.  Returns NULL if the path has no separator
 ///          (i.e. a bare filename with no directory component).
+/// @param file_path Null-terminated file path to split.
+/// @return Malloc-owned parent path, or NULL for invalid/bare paths or allocation failure.
 static char *savedata_parent_dir_dup(const char *file_path) {
     if (!file_path)
         return NULL;
@@ -630,6 +700,11 @@ static char *savedata_parent_dir_dup(const char *file_path) {
 
 #if RT_PLATFORM_WINDOWS
 /// @brief Open a file at a UTF-8 path using a non-inheritable CRT fd.
+/// @details Only binary read mode is accepted.
+/// @param path Null-terminated UTF-8 file path.
+/// @param mode Required `"rb"` stdio mode.
+/// @return Caller-owned FILE stream, or NULL on invalid mode, conversion, open, or wrapping
+///         failure.
 static FILE *savedata_fopen_utf8(const char *path, const char *mode) {
     wchar_t *wide_path = rt_file_path_utf8_to_wide(path);
     if (!wide_path)
@@ -653,6 +728,8 @@ static FILE *savedata_fopen_utf8(const char *path, const char *mode) {
 }
 
 /// @brief Delete a file at a UTF-8 path via `_wremove` (Windows).
+/// @param path Null-terminated UTF-8 path to remove.
+/// @return Zero on success; otherwise nonzero.
 static int savedata_remove_utf8(const char *path) {
     wchar_t *wide_path = rt_file_path_utf8_to_wide(path);
     if (!wide_path)
@@ -663,6 +740,9 @@ static int savedata_remove_utf8(const char *path) {
 }
 
 /// @brief Atomically replace `dst` with `src` using `MoveFileExW` (Windows).
+/// @param src UTF-8 staged source path.
+/// @param dst UTF-8 destination path to replace.
+/// @return 1 on success; otherwise 0.
 static int savedata_replace_utf8(const char *src, const char *dst) {
     wchar_t *wsrc = rt_file_path_utf8_to_wide(src);
     wchar_t *wdst = rt_file_path_utf8_to_wide(dst);
@@ -678,6 +758,8 @@ static int savedata_replace_utf8(const char *src, const char *dst) {
 }
 
 /// @brief Flush and sync an open file to stable storage using `_commit` (Windows).
+/// @param fp Open stdio stream whose descriptor should be committed.
+/// @return 1 on success; otherwise 0.
 static int savedata_sync_file(FILE *fp) {
     return _commit(_fileno(fp)) == 0 ? 1 : 0;
 }
@@ -692,6 +774,8 @@ static int savedata_sync_file(FILE *fp) {
 /// `FILE_FLAG_BACKUP_SEMANTICS` just to call `FlushFileBuffers`; some
 /// filesystems (e.g. exFAT) return INVALID_HANDLE — treated as
 /// success to avoid failing on portable drives.
+/// @param path Committed file path whose parent directory should be flushed.
+/// @return 1 on success or an explicitly tolerated unsupported/access result; otherwise 0.
 static int savedata_sync_parent_dir(const char *path) {
     char *parent = savedata_parent_dir_dup(path);
     if (!parent)
@@ -724,6 +808,10 @@ static int savedata_sync_parent_dir(const char *path) {
 }
 
 /// @brief Get the size of an open file in bytes using 64-bit seek (Windows).
+/// @details Leaves the stream positioned at its start.
+/// @param fp Open readable stream.
+/// @param[out] out_size Receives the nonnegative byte size.
+/// @return 1 when size and rewind succeed; otherwise 0.
 static int savedata_file_size(FILE *fp, uint64_t *out_size) {
     if (_fseeki64(fp, 0, SEEK_END) != 0)
         return 0;
@@ -751,6 +839,10 @@ static int savedata_random_u64(uint64_t *out) {
 }
 #else
 /// @brief Open a file at a UTF-8 path using `fopen` (POSIX).
+/// @details Opens a close-on-exec read-only descriptor and wraps it in @p mode.
+/// @param path Null-terminated native path.
+/// @param mode Binary read stdio mode used by `fdopen`.
+/// @return Caller-owned FILE stream, or NULL on open/wrapping failure.
 static FILE *savedata_fopen_utf8(const char *path, const char *mode) {
     int flags = O_RDONLY;
 #ifdef O_CLOEXEC
@@ -771,21 +863,30 @@ static FILE *savedata_fopen_utf8(const char *path, const char *mode) {
 }
 
 /// @brief Delete a file at a UTF-8 path using `remove` (POSIX).
+/// @param path Null-terminated path to remove.
+/// @return Zero on success; otherwise nonzero with `errno` set.
 static int savedata_remove_utf8(const char *path) {
     return remove(path);
 }
 
 /// @brief Atomically replace `dst` with `src` using `rename(2)` (POSIX).
+/// @param src Staged source path.
+/// @param dst Destination path to replace.
+/// @return 1 on success; otherwise 0.
 static int savedata_replace_utf8(const char *src, const char *dst) {
     return rename(src, dst) == 0 ? 1 : 0;
 }
 
 /// @brief Flush and sync an open file to stable storage using `fsync` (POSIX).
+/// @param fp Open stdio stream whose descriptor should be synchronized.
+/// @return 1 on success; otherwise 0.
 static int savedata_sync_file(FILE *fp) {
     return fsync(fileno(fp)) == 0 ? 1 : 0;
 }
 
 /// @brief Fsync the parent directory of `path` so rename is crash-durable (POSIX).
+/// @param path Committed file path whose parent directory should be synchronized.
+/// @return 1 on success; otherwise 0.
 static int savedata_sync_parent_dir(const char *path) {
     char *parent = savedata_parent_dir_dup(path);
     if (!parent)
@@ -813,6 +914,10 @@ static int savedata_random_u64(uint64_t *out) {
 }
 
 /// @brief Get the size of an open file in bytes using `fseeko`/`ftello` (POSIX).
+/// @details Leaves the stream positioned at its start.
+/// @param fp Open readable stream.
+/// @param[out] out_size Receives the nonnegative byte size.
+/// @return 1 when size and rewind succeed; otherwise 0.
 static int savedata_file_size(FILE *fp, uint64_t *out_size) {
     if (fseeko(fp, 0, SEEK_END) != 0)
         return 0;
@@ -829,6 +934,9 @@ static int savedata_file_size(FILE *fp, uint64_t *out_size) {
 /// @brief Validate game_name bytes for use in file paths.
 /// Rejects embedded NULs, path traversal separators, and non-alphanumeric
 /// characters except - and _.
+/// @param name Candidate byte span.
+/// @param len Number of bytes in @p name.
+/// @return 1 for 1..64 ASCII letters/digits/dash/underscore bytes; otherwise 0.
 static int is_safe_game_name_bytes(const char *name, size_t len) {
     if (!name || len == 0 || len > 64)
         return 0;
@@ -842,6 +950,8 @@ static int is_safe_game_name_bytes(const char *name, size_t len) {
 }
 
 /// @brief Validate a NUL-terminated game name.
+/// @param name Candidate null-terminated name.
+/// @return 1 when the complete C string satisfies is_safe_game_name_bytes(); otherwise 0.
 static int is_safe_game_name(const char *name) {
     return name ? is_safe_game_name_bytes(name, strlen(name)) : 0;
 }
@@ -856,6 +966,8 @@ static int is_safe_game_name(const char *name) {
 /// Rejects unsafe game names up front — any path-traversal characters
 /// trap before we compose the path. Returns a heap-allocated string
 /// that the caller owns (via `free`).
+/// @param game_name Validated null-terminated game identifier.
+/// @return Malloc-owned absolute save-file path, or NULL after resolution/allocation failure.
 static char *compute_save_path(const char *game_name) {
     if (!is_safe_game_name(game_name)) {
         rt_trap("SaveData: invalid game name (must be alphanumeric, dash, or underscore, max 64 "
@@ -909,6 +1021,7 @@ static char *compute_save_path(const char *game_name) {
 ///          promises a Boolean failure result. Catch the trap via the recovery hook
 ///          and report it as failure so operational errors reach the advertised
 ///          Boolean boundary rather than terminating the program (VDOC-246).
+/// @param file_path Save-file path whose parent hierarchy is required.
 /// @return 1 when the parent directory exists (or was created), 0 on failure.
 static int ensure_parent_dir(const char *file_path) {
     char *dir = savedata_parent_dir_dup(file_path);
@@ -937,6 +1050,10 @@ static int ensure_parent_dir(const char *file_path) {
 /// callers can change the stored type). Otherwise allocates a new
 /// node and pushes it to the head so the most-recently-written key
 /// stays cheap to look up in LIFO workloads. Returns 0 only on OOM.
+/// @param[in,out] head Entry-list head pointer.
+/// @param key Borrowed validated key; retained when a node is created.
+/// @param value Signed value to store.
+/// @return 1 after insertion/update; 0 for invalid input or node-allocation failure.
 static int savedata_set_int_entry(SaveEntry **head, rt_string key, int64_t value) {
     if (!head || !key)
         return 0;
@@ -981,6 +1098,12 @@ static int savedata_set_int_entry(SaveEntry **head, rt_string key, int64_t value
 
 /// @brief Insert or update a string entry at the head of the list (same semantics as the int
 /// variant).
+/// @details Retains @p value (or the shared empty string for NULL) before releasing an existing
+///          value, so replacement is transactional across retain traps.
+/// @param[in,out] head Entry-list head pointer.
+/// @param key Borrowed validated key retained when a node is created.
+/// @param value Borrowed string value; NULL is stored as empty.
+/// @return 1 after insertion/update; 0 for invalid input or node-allocation failure.
 static int savedata_set_string_entry(SaveEntry **head, rt_string key, rt_string value) {
     if (!head || !key)
         return 0;
@@ -1029,6 +1152,7 @@ static int savedata_set_string_entry(SaveEntry **head, rt_string key, rt_string 
 }
 
 /// @brief Release a JSON stream parser object via the GC if its refcount drops to zero.
+/// @param parser Owned parser object reference; NULL is ignored.
 static void savedata_free_parser(void *parser) {
     if (parser && rt_obj_release_check0(parser))
         rt_obj_free(parser);
@@ -1061,6 +1185,9 @@ static int savedata_json_append_cstr(rt_string_builder *sb, const char *text) {
 /// Non-control bytes pass through unchanged, so valid UTF-8 is
 /// preserved without re-encoding to `\u` escapes — keeping save
 /// files compact and diff-friendly.
+/// @param sb Destination JSON string builder.
+/// @param str Valid UTF-8 bytes to escape.
+/// @param len Number of bytes in @p str.
 /// @return 1 on success, 0 when a builder append failed.
 static int json_escape_append(rt_string_builder *sb, const char *str, size_t len) {
     static const char hex[] = "0123456789abcdef";
@@ -1124,6 +1251,10 @@ static int json_escape_append(rt_string_builder *sb, const char *str, size_t len
 ///      durable.
 /// On any failure the temp file is removed so we don't leave garbage
 /// alongside real saves.
+/// @param path Final save-file path to create or replace.
+/// @param data Complete serialized JSON payload.
+/// @param len Number of bytes in @p data.
+/// @return 1 after durable replacement; otherwise 0 after removing the sidecar when possible.
 static int savedata_write_atomic(const char *path, const char *data, size_t len) {
     size_t path_len = strlen(path);
 #if RT_PLATFORM_WINDOWS
@@ -1226,6 +1357,7 @@ static int savedata_write_atomic(const char *path, const char *data, size_t len)
 //=========================================================================
 
 /// @brief GC finalizer: release all entries and C string allocations owned by the SaveData store.
+/// @param obj SaveData implementation payload being finalized.
 static void savedata_finalizer(void *obj) {
     rt_savedata_impl *sd = (rt_savedata_impl *)obj;
     free_all_entries(sd);
@@ -1240,9 +1372,12 @@ static void savedata_finalizer(void *obj) {
 //=========================================================================
 
 /// @brief Construct a SaveData store keyed by `game_name`. The save file path is computed from
-/// the platform's per-user data directory (`%APPDATA%/<game>` on Win32, `~/.local/share/<game>`
-/// on Linux, `~/Library/Application Support/<game>` on macOS). Empty game-name traps. Returns a
-/// GC-managed handle; load existing data via `_load`.
+/// the platform's per-user data directory (`%APPDATA%/Zanna/<game>` on Win32,
+/// `~/.local/share/zanna/<game>` on Linux, `~/Library/Application Support/Zanna/<game>` on
+/// macOS). The name must contain 1..64 ASCII letters, digits, dash, or underscore bytes.
+/// @param game_name Borrowed runtime game identifier used to derive the save path.
+/// @return Fresh runtime-managed empty SaveData handle; invalid names/allocation/path resolution
+///         trap or return NULL as trap-control fallback.
 void *rt_savedata_new(rt_string game_name) {
     int64_t raw_name_len = game_name ? rt_str_len(game_name) : 0;
     if (!game_name || raw_name_len == 0) {
@@ -1286,6 +1421,9 @@ void *rt_savedata_new(rt_string game_name) {
 
 /// @brief Store an int64 under `key`. In-memory only — call `_save` to flush to disk.
 /// Re-setting an existing key overwrites; type-changing (string→int) is allowed.
+/// @param obj Borrowed SaveData handle.
+/// @param key Borrowed nonempty, NUL-free, well-formed UTF-8 key.
+/// @param value Signed 64-bit value to store.
 void rt_savedata_set_int(void *obj, rt_string key, int64_t value) {
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.SetInt: invalid handle");
     size_t klen = 0;
@@ -1295,6 +1433,11 @@ void rt_savedata_set_int(void *obj, rt_string key, int64_t value) {
 }
 
 /// @brief Store a string under `key`. In-memory only — call `_save` to persist.
+/// @details Replacing an integer changes the entry type. Both key and value must be well-formed
+///          UTF-8; the store retains its own references.
+/// @param obj Borrowed SaveData handle.
+/// @param key Borrowed nonempty, NUL-free UTF-8 key.
+/// @param value Borrowed UTF-8 string value; empty is valid.
 void rt_savedata_set_string(void *obj, rt_string key, rt_string value) {
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.SetString: invalid handle");
     size_t klen = 0;
@@ -1305,6 +1448,10 @@ void rt_savedata_set_string(void *obj, rt_string key, rt_string value) {
 }
 
 /// @brief Read an int64 by `key`, returning `default_val` if missing or stored as a different type.
+/// @param obj Borrowed SaveData handle; NULL yields @p default_val.
+/// @param key Borrowed key to look up; NULL/invalid yields @p default_val.
+/// @param default_val Value returned for absence or a string-valued entry.
+/// @return Stored integer when present with integer type; otherwise @p default_val.
 int64_t rt_savedata_get_int(void *obj, rt_string key, int64_t default_val) {
     if (!obj || !key)
         return default_val;
@@ -1320,6 +1467,10 @@ int64_t rt_savedata_get_int(void *obj, rt_string key, int64_t default_val) {
 
 /// @brief Read a string by `key`, returning `default_val` (or empty) if missing/wrong type.
 /// The returned string is freshly retained.
+/// @param obj Borrowed SaveData handle; NULL selects the fallback.
+/// @param key Borrowed key to look up; NULL/invalid selects the fallback.
+/// @param default_val Borrowed fallback string; NULL selects the shared empty string.
+/// @return Caller-owned reference to the stored string, @p default_val, or shared empty string.
 rt_string rt_savedata_get_string(void *obj, rt_string key, rt_string default_val) {
     if (!obj || !key)
         return default_val ? rt_string_ref(default_val) : rt_str_empty();
@@ -1336,6 +1487,8 @@ rt_string rt_savedata_get_string(void *obj, rt_string key, rt_string default_val
 /// @brief Persist all in-memory entries to disk as JSON. Ensures the parent directory exists,
 /// builds the JSON object via string-builder, then atomically writes via the file-IO layer.
 /// Returns 1 on success, 0 on any failure.
+/// @param obj Borrowed SaveData handle.
+/// @return 1 after durable atomic persistence; 0 for null state or any operational/build failure.
 int8_t rt_savedata_save(void *obj) {
     if (!obj)
         return 0;
@@ -1399,9 +1552,13 @@ build_error:
     return 0;
 }
 
-/// @brief Load existing entries from disk into memory, replacing the current state. Uses the
-/// streaming JSON parser (`rt_json_stream_*`) so large save files don't allocate everything at
-/// once. Returns 1 on success or "no file yet" (treats missing file as empty); 0 on parse error.
+/// @brief Load a complete JSON save file and transactionally replace the in-memory entries.
+/// @details Reads the file into one byte buffer, tokenizes it with `rt_json_stream_*`, and builds
+///          a separate entry list. The current store is changed only after the entire top-level
+///          object validates. Only integer and string values are accepted. A missing file clears
+///          the store and succeeds; empty, oversized, malformed, or unreadable files fail.
+/// @param obj Borrowed SaveData handle.
+/// @return 1 on successful replacement or a missing-file empty state; otherwise 0.
 int8_t rt_savedata_load(void *obj) {
     if (!obj)
         return 0;
@@ -1533,6 +1690,9 @@ done:
 }
 
 /// @brief Returns 1 if `key` exists in the current entries, regardless of stored type.
+/// @param obj Borrowed SaveData handle.
+/// @param key Borrowed key to query.
+/// @return 1 when a byte-identical key exists; otherwise 0.
 int8_t rt_savedata_has_key(void *obj, rt_string key) {
     if (!obj || !key)
         return 0;
@@ -1544,6 +1704,9 @@ int8_t rt_savedata_has_key(void *obj, rt_string key) {
 }
 
 /// @brief Remove an entry by key. Returns 1 if removed, 0 if absent. In-memory only.
+/// @param obj Borrowed SaveData handle.
+/// @param key Borrowed key to remove.
+/// @return 1 when an entry was removed; otherwise 0.
 int8_t rt_savedata_remove(void *obj, rt_string key) {
     if (!obj || !key)
         return 0;
@@ -1568,6 +1731,7 @@ int8_t rt_savedata_remove(void *obj, rt_string key) {
 }
 
 /// @brief Drop every in-memory entry (call `_save` afterwards to clear the on-disk file too).
+/// @param obj Borrowed SaveData handle; NULL is ignored.
 void rt_savedata_clear(void *obj) {
     if (!obj)
         return;
@@ -1575,6 +1739,8 @@ void rt_savedata_clear(void *obj) {
 }
 
 /// @brief Number of entries currently in the store.
+/// @param obj Borrowed SaveData handle; NULL reports zero.
+/// @return Current number of unique in-memory keys.
 int64_t rt_savedata_count(void *obj) {
     if (!obj)
         return 0;
@@ -1590,6 +1756,9 @@ int64_t rt_savedata_count(void *obj) {
 
 /// @brief Read the absolute path where this SaveData persists. Useful for showing the user
 /// where their save lives or for backup/restore tooling.
+/// @param obj Borrowed SaveData handle.
+/// @return Caller-owned runtime string copy of the absolute save-file path, or the shared empty
+///         string for NULL/missing state.
 rt_string rt_savedata_get_path(void *obj) {
     if (!obj)
         return rt_str_empty();
@@ -1615,10 +1784,9 @@ rt_string rt_savedata_get_path(void *obj) {
 ///     `~/.local/share/<app>`.
 ///
 /// The directory (including parents) is created on demand so callers can
-/// write settings/saves immediately. The app name is checked with the same
-/// C-string traversal rules as SaveData game names; unlike SaveData.New, this
-/// entry point currently does not compare that prefix with the runtime String's
-/// full byte length, so an embedded NUL can hide an unchecked suffix (VDOC-199).
+/// write settings/saves immediately. Validation covers the runtime string's
+/// complete stored byte length, rejecting embedded NULs and every byte outside
+/// ASCII letters, digits, dash, and underscore (VDOC-199).
 ///
 /// @param app_name Application folder name (alphanumeric/dash/underscore).
 /// @return GC-managed absolute path string (no trailing separator).

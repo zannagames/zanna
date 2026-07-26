@@ -811,8 +811,8 @@ RT_FUNC(Segment3DClosestPoint, rt_segment3d_closest_point,   "Zanna.Graphics3D.S
 RT_FUNC(Capsule3DSphereOverlaps,rt_capsule3d_sphere_overlaps,"Zanna.Graphics3D.Capsule3D.SphereOverlaps", "i1(obj,obj,f64,obj,f64)")
 RT_FUNC(Capsule3DAABBOverlaps, rt_capsule3d_aabb_overlaps,   "Zanna.Graphics3D.Capsule3D.AABBOverlaps",   "i1(obj,obj,f64,obj,obj)")
 RT_FUNC(RayHit3DDistance,        rt_ray3d_hit_distance,        "Zanna.Graphics3D.RayHit3D.get_Distance",    "f64(obj)")
-RT_FUNC(RayHit3DPoint,           rt_ray3d_hit_point,           "Zanna.Graphics3D.RayHit3D.get_Point",       "obj(obj)")
-RT_FUNC(RayHit3DNormal,          rt_ray3d_hit_normal,          "Zanna.Graphics3D.RayHit3D.get_Normal",      "obj(obj)")
+RT_FUNC(RayHit3DPoint,           rt_ray3d_hit_point,           "Zanna.Graphics3D.RayHit3D.get_Point",       "obj<Zanna.Math.Vec3>(obj)")
+RT_FUNC(RayHit3DNormal,          rt_ray3d_hit_normal,          "Zanna.Graphics3D.RayHit3D.get_Normal",      "obj<Zanna.Math.Vec3>(obj)")
 RT_FUNC(RayHit3DTriangle,        rt_ray3d_hit_triangle,        "Zanna.Graphics3D.RayHit3D.get_TriangleIndex","i64(obj)")
 
 /// @summary Provides Ray Hit 3D constants and static operations for 3D rendering and scene applications.
@@ -821,8 +821,8 @@ RT_FUNC(RayHit3DTriangle,        rt_ray3d_hit_triangle,        "Zanna.Graphics3D
 /// Its public surface exposes properties such as `Distance`, `Point`, `Normal`.
 RT_CLASS_BEGIN("Zanna.Graphics3D.RayHit3D", RayHit3D, "none", none)
     RT_PROP("Distance", "f64", RayHit3DDistance, none)
-    RT_PROP("Point", "obj", RayHit3DPoint, none)
-    RT_PROP("Normal", "obj", RayHit3DNormal, none)
+    RT_PROP("Point", "obj<Zanna.Math.Vec3>", RayHit3DPoint, none)
+    RT_PROP("Normal", "obj<Zanna.Math.Vec3>", RayHit3DNormal, none)
     RT_PROP("TriangleIndex", "i64", RayHit3DTriangle, none)
 RT_CLASS_END()
 

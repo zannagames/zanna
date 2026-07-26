@@ -15,11 +15,14 @@
 //   - Open* streams own their wrapped object; From* streams retain a reference
 //     without assuming responsibility for explicitly closing an existing file.
 //   - Operations on null or closed streams trap, except Close(NULL) is a no-op.
-//   - All primitive read/write operations use little-endian byte order.
+//   - Positions and lengths are byte counts; byte payloads are forwarded
+//     exactly and do not impose an integer byte order.
 //
 // Ownership/Lifetime:
-//   - Stream objects are heap-allocated; caller is responsible for lifetime management.
-//   - Destroying or closing an owning stream releases the wrapped backing object.
+//   - Stream objects are runtime-managed and install a finalizer that releases
+//     any still-attached backing object.
+//   - Finalizing or closing an Open* stream releases its owned backing object;
+//     OpenFile additionally closes the BinFile's native handle.
 //   - Destroying or closing a From* wrapper releases its retained reference but
 //     does not explicitly close the original object.
 //
@@ -54,29 +57,38 @@ typedef enum {
 /// @brief Create an owning stream wrapping a newly opened file.
 /// @details Constructor allocation is transactional: if wrapper allocation
 ///          traps, the newly opened BinFile and native handle are released.
-/// @param path File path.
-/// @param mode Open mode ("r", "w", "rw", "a").
-/// @return Stream object or NULL on failure.
+///          Closing or finalizing the returned wrapper explicitly closes the
+///          created BinFile before releasing it.
+/// @param path Runtime string containing the file-system path.
+/// @param mode BinFile mode such as `"r"`, `"w"`, `"rb"`, `"wb"`, `"a"`,
+///             or `"r+"`.
+/// @return Fresh managed Stream, or NULL after open/allocation failure.
 void *rt_stream_open_file(rt_string path, rt_string mode);
 
 /// @brief Create an owning stream wrapping a new in-memory buffer.
 /// @details A wrapper-allocation trap releases the fresh MemStream before it
 ///          propagates, so no partially constructed backing object escapes.
-/// @return Stream object with empty buffer.
+/// @return Fresh managed Stream with an empty growable buffer at position zero.
 void *rt_stream_open_memory(void);
 
-/// @brief Create a stream wrapping an existing Bytes object.
-/// @param bytes Initial data for the buffer.
-/// @return Stream object initialized with bytes.
+/// @brief Create a memory-backed Stream containing a copy of existing bytes.
+/// @details The input is not retained; the returned Stream owns independent
+///          storage, is positioned at zero, and is unaffected by the input's lifetime.
+/// @param bytes Valid Bytes object providing the initial complete payload.
+/// @return Fresh managed Stream, or NULL after validation/allocation failure.
 void *rt_stream_open_bytes(void *bytes);
 
 /// @brief Wrap and retain an existing BinFile in a Stream.
-/// @param binfile Valid open or closed BinFile object to retain.
+/// @details The wrapper shares the BinFile's cursor and state with other
+///          references. Closing the wrapper does not explicitly close the file.
+/// @param binfile Valid BinFile object to retain.
 /// @return Owned Stream wrapper; Close releases its reference but does not
 ///         explicitly close the caller's existing BinFile.
 void *rt_stream_from_binfile(void *binfile);
 
 /// @brief Wrap and retain an existing MemStream in a Stream.
+/// @details The wrapper shares the MemStream's buffer and cursor with the
+///          caller's reference.
 /// @param memstream Valid MemStream object to retain.
 /// @return Owned Stream wrapper whose Close releases the retained reference.
 void *rt_stream_from_memstream(void *memstream);
@@ -85,70 +97,84 @@ void *rt_stream_from_memstream(void *memstream);
 // Stream Properties
 //=========================================================================
 
-/// @brief Get the type of stream (BINFILE or MEMSTREAM).
-/// @param stream Stream object.
-/// @return Stream type constant.
+/// @brief Get the discriminator for the Stream's backing object.
+/// @param stream Open Stream handle.
+/// @return @ref RT_STREAM_TYPE_BINFILE or @ref RT_STREAM_TYPE_MEMSTREAM;
+///         returns -1 after an invalid/closed-stream trap.
 int64_t rt_stream_get_type(void *stream);
 
-/// @brief Get current position in stream.
-/// @param stream Stream object.
-/// @return Current position.
+/// @brief Get the current shared read/write position.
+/// @param stream Open Stream handle.
+/// @return Current byte offset, or -1 after an invalid/closed-stream trap.
 int64_t rt_stream_get_pos(void *stream);
 
-/// @brief Set position in stream.
-/// @param stream Stream object.
-/// @param pos New position.
+/// @brief Set the absolute shared read/write position.
+/// @details Memory streams permit positioning beyond their logical end for a
+///          later sparse write; backing-specific validation failures trap.
+/// @param stream Open Stream handle.
+/// @param pos Non-negative absolute byte offset.
 void rt_stream_set_pos(void *stream, int64_t pos);
 
-/// @brief Get length/size of stream data.
-/// @param stream Stream object.
-/// @return Length in bytes.
+/// @brief Get the current logical length of the backing data.
+/// @param stream Open Stream handle.
+/// @return Length in bytes, or -1 after an invalid/closed-stream trap.
 int64_t rt_stream_get_len(void *stream);
 
-/// @brief Check if stream is at end.
-/// @param stream Stream object.
-/// @return 1 if at end, 0 otherwise.
+/// @brief Test whether the current byte position is at or beyond the length.
+/// @details This position-based contract is identical for both backing types
+///          and does not expose BinFile's sticky host EOF flag.
+/// @param stream Open Stream handle.
+/// @return 1 at or beyond EOF and 0 before EOF; returns 1 after an
+///         invalid/closed-stream trap.
 int8_t rt_stream_is_eof(void *stream);
 
 //=========================================================================
 // Stream Operations
 //=========================================================================
 
-/// @brief Read bytes from stream.
+/// @brief Read up to a requested number of bytes from the current position.
 /// @details Allocates no more than the bytes measured from the current position
 ///          to EOF, even when @p count is much larger. A concurrently changing
 ///          file may still produce a shorter result.
-/// @param stream Stream object.
-/// @param count Number of bytes to read.
-/// @return Bytes object with data read (may be shorter if EOF).
+/// @param stream Open Stream handle.
+/// @param count Maximum number of bytes to consume; negative values trap.
+/// @return Fresh owned Bytes containing the data read; zero count and EOF
+///         produce a fresh empty object.
 void *rt_stream_read(void *stream, int64_t count);
 
-/// @brief Read all remaining bytes from stream.
-/// @param stream Stream object.
-/// @return Bytes object with all remaining data.
+/// @brief Read all bytes from the current position through the measured end.
+/// @details A concurrently changing file may produce a shorter right-sized result.
+/// @param stream Open Stream handle.
+/// @return Fresh owned Bytes containing all remaining data, or a fresh empty
+///         object at EOF.
 void *rt_stream_read_all(void *stream);
 
-/// @brief Write bytes to stream.
-/// @param stream Stream object.
-/// @param bytes Bytes object to write.
+/// @brief Write an entire Bytes payload at the current position.
+/// @param stream Open Stream handle.
+/// @param bytes Valid Bytes object whose complete payload is written.
 void rt_stream_write(void *stream, void *bytes);
 
-/// @brief Read a single byte.
-/// @param stream Stream object.
-/// @return Byte value (0-255) or -1 on EOF.
+/// @brief Read one unsigned byte and advance the position.
+/// @param stream Open Stream handle.
+/// @return Value from 0 through 255, or -1 at EOF or after an
+///         invalid/closed-stream trap.
 int64_t rt_stream_read_byte(void *stream);
 
-/// @brief Write a single byte.
-/// @param stream Stream object.
-/// @param byte Byte value to write (0-255).
+/// @brief Write one unsigned byte and advance the position.
+/// @param stream Open Stream handle.
+/// @param byte Value in the inclusive range 0 through 255; other values trap.
 void rt_stream_write_byte(void *stream, int64_t byte);
 
-/// @brief Flush any buffered writes.
-/// @param stream Stream object.
+/// @brief Flush pending writes for a file-backed Stream.
+/// @details Memory-backed Streams require no flush and treat this as a no-op.
+/// @param stream Open Stream handle.
 void rt_stream_flush(void *stream);
 
-/// @brief Close the stream.
-/// @param stream Stream object.
+/// @brief Detach and release the Stream's backing object.
+/// @details NULL and repeated closes are no-ops. OpenFile wrappers explicitly
+///          close their BinFile and may propagate a close error; From*
+///          wrappers only release their retained reference.
+/// @param stream Stream handle to close; may be NULL.
 void rt_stream_close(void *stream);
 
 //=========================================================================
@@ -156,18 +182,23 @@ void rt_stream_close(void *stream);
 //=========================================================================
 
 /// @brief Get a retained reference to the underlying BinFile.
-/// @param stream Stream object.
-/// @return Owned BinFile reference; traps if this is not a file stream.
+/// @details The retained result remains valid after the Stream is closed or finalized.
+/// @param stream Open file-backed Stream handle.
+/// @return Owned BinFile reference that the caller must release; traps if this
+///         is not a file-backed Stream.
 void *rt_stream_as_binfile(void *stream);
 
 /// @brief Get a retained reference to the underlying MemStream.
-/// @param stream Stream object.
-/// @return Owned MemStream reference; traps if this is not a memory stream.
+/// @details The retained result remains valid after the Stream is closed or finalized.
+/// @param stream Open memory-backed Stream handle.
+/// @return Owned MemStream reference that the caller must release; traps if
+///         this is not a memory-backed Stream.
 void *rt_stream_as_memstream(void *stream);
 
-/// @brief Convert memory stream contents to Bytes.
-/// @param stream Stream object.
-/// @return Fresh Bytes copy; traps if this is not a memory stream.
+/// @brief Copy the complete contents of a memory-backed Stream into Bytes.
+/// @details Snapshotting does not change the Stream's current position.
+/// @param stream Open memory-backed Stream handle.
+/// @return Fresh owned Bytes copy; traps if this is not a memory-backed Stream.
 void *rt_stream_to_bytes(void *stream);
 
 #ifdef __cplusplus

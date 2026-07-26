@@ -6,20 +6,26 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/io/rt_glob.h
-// Purpose: File glob pattern matching supporting *, **, and ? wildcards, returning matching file
-// paths as a Seq.
+// Purpose: Byte-oriented glob matching with *, **, ?, and bracket classes, plus non-recursive and
+// recursive filesystem enumeration that returns joined matching paths as a Seq.
 //
 // Key invariants:
-//   - Supports *, **, and ? wildcards with standard glob semantics.
-//   - ** matches across directory separators (recursive).
-//   - Patterns are matched against absolute or relative paths consistently.
-//   - Returns an empty Seq (not NULL) when no files match.
+//   - Ordinary *, ?, and bracket classes do not cross separators; ** consumes across components.
+//   - Matching is byte-oriented and case-sensitive on POSIX. Windows folds bytes with `tolower`
+//     and treats '/' and '\' as equivalent separators.
+//   - Bracket classes support literals, escaped bytes, normalized ranges, and leading !/^
+//     negation; malformed opening brackets are treated literally.
+//   - Recursive traversal does not follow symbolic links or Windows reparse-point directories.
+//   - Enumeration returns an empty owning Seq, not NULL, for invalid operands or no matches.
 //
 // Ownership/Lifetime:
-//   - Returned Seq objects are newly allocated; caller is responsible for releasing.
-//   - String paths within the Seq are also newly allocated.
+//   - Returned Seq objects are fresh runtime-managed containers that own their path elements.
+//   - Input strings are borrowed and are not retained after the call.
 //
-// Links: src/runtime/io/rt_glob.c (implementation), src/runtime/core/rt_string.h
+// Links: src/runtime/io/rt_glob.c (implementation),
+//        src/runtime/io/rt_dir.h (directory enumeration),
+//        src/runtime/io/rt_path.h (path joining),
+//        src/runtime/core/rt_string.h (runtime strings)
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -33,37 +39,39 @@ extern "C" {
 #endif
 
 /// @brief Check if a path matches a glob pattern.
-/// @details Supports wildcards:
-///          - * matches any sequence of characters except /
-///          - ** matches any sequence including /
-///          - ? matches any single character except /
-/// @param path The path to test.
-/// @param pattern The glob pattern (e.g., "*.txt", "src/*.c").
-/// @return 1 if path matches pattern, 0 otherwise.
+/// @details `*` matches zero or more non-separator bytes, `**` may cross separators, `?` matches
+///          one non-separator byte, and bracket classes match one selected byte. This is a pure
+///          string operation and does not access the filesystem.
+/// @param path Borrowed runtime string containing the complete path text to test.
+/// @param pattern Borrowed runtime glob pattern such as `*.txt` or `src/**/[a-z]*.c`.
+/// @return 1 when the complete path matches; otherwise 0, including invalid or embedded-NUL
+///         operands.
 int8_t rt_glob_match(rt_string path, rt_string pattern);
 
 /// @brief Find all files matching a glob pattern in a directory.
-/// @details Searches in the specified directory (non-recursive).
-///          The pattern is matched against file names only.
-/// @param dir The directory to search in.
-/// @param pattern The glob pattern (e.g., "*.txt").
-/// @return Seq of matching file paths (full paths).
+/// @details Enumerates only direct regular-file children and matches @p pattern against each
+///          filename. Missing/invalid inputs produce an empty result; allocation and append
+///          failures trap after partial-result cleanup.
+/// @param dir Borrowed runtime path of the directory to search.
+/// @param pattern Borrowed pattern such as `*.txt`, matched against names only.
+/// @return Fresh owning Seq of matching paths joined to @p dir.
 void *rt_glob_files(rt_string dir, rt_string pattern);
 
 /// @brief Find all files matching a glob pattern recursively.
-/// @details Searches in the specified directory and all subdirectories.
-///          The pattern is matched against the relative path from base.
-///          Supports ** for recursive matching.
-/// @param base The base directory to start searching from.
-/// @param pattern The glob pattern (e.g., "**/*.txt", "src/**/*.c").
-/// @return Seq of matching file paths (full paths).
+/// @details Performs depth-first traversal without following symlink/reparse-point directories.
+///          The pattern is matched against slash-separated paths relative to @p base, and
+///          traversal depth is capped at 4096.
+/// @param base Borrowed runtime path of the traversal root.
+/// @param pattern Borrowed relative-path pattern such as `**/*.txt` or `src/**/*.c`.
+/// @return Fresh owning Seq of full matching file paths.
 void *rt_glob_files_recursive(rt_string base, rt_string pattern);
 
-/// @brief Find all entries (files and dirs) matching a glob pattern.
-/// @details Searches in the specified directory (non-recursive).
-/// @param dir The directory to search in.
-/// @param pattern The glob pattern (e.g., "*.txt").
-/// @return Seq of matching entry paths (full paths).
+/// @brief Find direct file and directory entries matching a glob pattern.
+/// @details Matches @p pattern against each direct entry name and includes both files and
+///          directories. Missing/invalid inputs produce an empty owning Seq.
+/// @param dir Borrowed runtime path of the directory to search.
+/// @param pattern Borrowed glob pattern matched against entry names.
+/// @return Fresh owning Seq of matching paths joined to @p dir.
 void *rt_glob_entries(rt_string dir, rt_string pattern);
 
 #ifdef __cplusplus

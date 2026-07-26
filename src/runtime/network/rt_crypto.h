@@ -4,8 +4,9 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/network/rt_crypto.h
-// Purpose: Cryptographic primitives for TLS support: SHA-256, HMAC-SHA256, HKDF, ChaCha20-Poly1305
-// AEAD, and X25519 key exchange, implemented in pure C with no external dependencies.
+// Purpose: Pure-C cryptographic primitives for TLS support: SHA-256/384/512,
+//          HMAC-SHA2, HKDF, ChaCha20-Poly1305 and AES-GCM AEAD, X25519 key
+//          exchange, and secure random-byte generation.
 //
 // Frontend exposure boundary:
 //   - This header is primarily internal runtime support for TLS and related
@@ -18,6 +19,8 @@
 //   - Functions do not allocate heap memory for outputs.
 //   - ChaCha20-Poly1305 provides authenticated encryption with 16-byte tags.
 //   - X25519 computes a 32-byte shared secret from a private key and public key.
+//   - AEAD decryptors authenticate before writing plaintext and compare tags
+//     without data-dependent early exit.
 //
 // Ownership/Lifetime:
 //   - Pure functions operating on caller-owned buffers; no ownership transfer.
@@ -44,8 +47,11 @@ extern "C" {
 ///          prior bytes. The layout is part of the runtime ABI for internal
 ///          consumers such as TLS transcript hashing.
 typedef struct rt_sha256_ctx {
+    /// Eight FIPS 180-4 chaining words.
     uint32_t state[8];
+    /// Number of message bits absorbed so far.
     uint64_t count;
+    /// Partial 64-byte message block.
     uint8_t buffer[64];
 } rt_sha256_ctx;
 
@@ -135,6 +141,7 @@ void rt_hkdf_extract(
 /// @param okm Output buffer for the derived keying material.
 /// @param okm_len Desired length of output keying material in bytes
 ///               (at most 255 * 32 = 8160 bytes per RFC 5869).
+/// @return 0 on success; -1 for invalid pointers or an excessive output length.
 int rt_hkdf_expand(
     const uint8_t prk[32], const uint8_t *info, size_t info_len, uint8_t *okm, size_t okm_len);
 
@@ -145,6 +152,8 @@ int rt_hkdf_expand(
 /// @param context_len Length of @p context in bytes.
 /// @param out Output buffer for the derived keying material.
 /// @param out_len Desired length of output in bytes.
+/// @return 0 on success; -1 for invalid input or a label/context/output length
+///         that cannot be encoded.
 int rt_hkdf_expand_label(const uint8_t secret[32],
                          const char *label,
                          const uint8_t *context,
@@ -218,7 +227,8 @@ size_t rt_chacha20_poly1305_encrypt(const uint8_t key[32],
 /// @param ciphertext_len Length of @p ciphertext in bytes (including tag).
 /// @param plaintext Output buffer for decrypted data (must hold
 ///                  ciphertext_len - 16 bytes).
-/// @return Plaintext length on success, -1 on authentication failure.
+/// @return Plaintext length on success; -1 on invalid input, excessive length,
+///         counter exhaustion, or authentication failure.
 long rt_chacha20_poly1305_decrypt(const uint8_t key[32],
                                   const uint8_t nonce[12],
                                   const void *aad,
@@ -258,7 +268,8 @@ size_t rt_aes128_gcm_encrypt(const uint8_t key[16],
 /// @param ciphertext_len Length of @p ciphertext in bytes (including tag).
 /// @param plaintext Output buffer for decrypted data (must hold
 ///                  ciphertext_len - 16 bytes).
-/// @return Plaintext length on success, -1 on authentication failure.
+/// @return Plaintext length on success; -1 on invalid input, excessive length,
+///         or authentication failure.
 long rt_aes128_gcm_decrypt(const uint8_t key[16],
                            const uint8_t nonce[12],
                            const void *aad,
@@ -294,7 +305,8 @@ size_t rt_aes256_gcm_encrypt(const uint8_t key[32],
 /// @param ciphertext_len Length of @p ciphertext in bytes (including tag).
 /// @param plaintext Output buffer for decrypted data (must hold
 ///        ciphertext_len - 16 bytes).
-/// @return Plaintext length on success, -1 on authentication failure.
+/// @return Plaintext length on success; -1 on invalid input, excessive length,
+///         or authentication failure.
 long rt_aes256_gcm_decrypt(const uint8_t key[32],
                            const uint8_t nonce[12],
                            const void *aad,
@@ -326,6 +338,9 @@ int rt_x25519(const uint8_t secret[32], const uint8_t peer_public[32], uint8_t s
 //=========================================================================
 
 /// @brief Generate cryptographically secure random bytes.
+/// @details Uses the approved crypto module when enabled, otherwise the
+///          platform entropy adapter. Entropy failure clears @p buf, traps,
+///          and terminates rather than returning predictable bytes.
 /// @param buf Output buffer to fill with random data.
 /// @param len Number of random bytes to generate.
 void rt_crypto_random_bytes(uint8_t *buf, size_t len);

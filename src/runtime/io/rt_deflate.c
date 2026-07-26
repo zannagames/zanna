@@ -10,7 +10,21 @@
 //   fixed/stored Huffman block emission, and the bit writer. Inflate lives in
 //   rt_compress.c.
 //
-// Links: rt_compress_internal.h (shared trees), rt_compress.c
+// Key invariants:
+//   - Level 1 and inputs of at most 64 bytes use stored blocks.
+//   - Levels 2-5 use fixed Huffman coding; levels 6-9 also try dynamic
+//     Huffman coding and keep it only when smaller.
+//   - Match distances never exceed the RFC 1951 32 KiB history window.
+//   - GZIP trailers contain CRC-32 and input length modulo 2^32.
+//
+// Ownership/Lifetime:
+//   - Input byte spans are borrowed for each call.
+//   - Native writer/hash buffers are temporary; successful public worker
+//     results are fresh GC-managed Bytes objects.
+//
+// Links: src/runtime/io/rt_compress_internal.h,
+//        src/runtime/io/rt_compress.c,
+//        src/runtime/io/rt_compress.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -45,6 +59,9 @@ typedef struct {
 ///
 /// Allocates `initial_cap` bytes (clamped to a 256-byte minimum) and
 /// zeros the bit accumulator. Traps on OOM.
+/// @param bw Writer state to initialize.
+/// @param initial_cap Initial encoded-byte capacity estimate.
+/// @return 1 on success, or 0 after raising an allocation trap.
 static int bw_init(bit_writer_t *bw, size_t initial_cap) {
     bw->capacity = initial_cap > 256 ? initial_cap : 256;
     bw->data = (uint8_t *)malloc(bw->capacity);
@@ -64,8 +81,11 @@ static int bw_init(bit_writer_t *bw, size_t initial_cap) {
 
 /// @brief Grow the bit writer's byte buffer so `need` more bytes will fit.
 ///
-/// Doubles the capacity (with overflow guard) or jumps to
-/// `len + need + 256`, whichever is larger. Traps on OOM.
+/// Doubles capacity geometrically with an overflow guard, falling back to the
+/// exact required length near `SIZE_MAX`. Traps on OOM.
+/// @param bw Writer whose byte buffer may be reallocated.
+/// @param need Additional complete bytes the caller will append.
+/// @return 1 when sufficient capacity exists; otherwise 0 after a trap.
 static int bw_ensure(bit_writer_t *bw, size_t need) {
     if (need > SIZE_MAX - bw->len) {
         rt_trap("Compress: output size overflow");
@@ -92,7 +112,11 @@ static int bw_ensure(bit_writer_t *bw, size_t need) {
     return 1;
 }
 
-/// @brief Write n bits (LSB first)
+/// @brief Append a low-order bit field in DEFLATE's LSB-first order.
+/// @param bw Initialized bit writer.
+/// @param val Value whose low @p n bits are emitted.
+/// @param n Number of bits to append.
+/// @return 1 on success, or 0 after output growth failure.
 static int bw_write(bit_writer_t *bw, uint32_t val, int n) {
     bw->buffer |= val << bw->bits_in_buf;
     bw->bits_in_buf += n;
@@ -106,7 +130,9 @@ static int bw_write(bit_writer_t *bw, uint32_t val, int n) {
     return 1;
 }
 
-/// @brief Flush remaining bits (pad with zeros)
+/// @brief Flush a partial output byte, padding its high bits with zero.
+/// @param bw Writer to byte-align.
+/// @return 1 on success, or 0 after output growth failure.
 static int bw_flush(bit_writer_t *bw) {
     if (bw->bits_in_buf > 0) {
         if (!bw_ensure(bw, 1))
@@ -118,7 +144,11 @@ static int bw_flush(bit_writer_t *bw) {
     return 1;
 }
 
-/// @brief Write raw bytes (must be byte-aligned)
+/// @brief Append raw bytes to an already byte-aligned writer.
+/// @param bw Writer whose accumulator has no pending bits.
+/// @param data Source bytes; may be `NULL` only when @p len is zero.
+/// @param len Number of bytes to append.
+/// @return 1 on success, or 0 after output growth failure.
 static int bw_write_bytes(bit_writer_t *bw, const uint8_t *data, size_t len) {
     if (!bw_ensure(bw, len))
         return 0;
@@ -131,6 +161,7 @@ static int bw_write_bytes(bit_writer_t *bw, const uint8_t *data, size_t len) {
 ///
 /// Should be called once the assembled bytes have been copied out
 /// (see `deflate_data`). The struct itself is caller-owned.
+/// @param bw Writer whose native output allocation is released and reset.
 static void bw_free(bit_writer_t *bw) {
     free(bw->data);
     bw->data = NULL;
@@ -154,7 +185,9 @@ typedef struct {
 #define HASH_MASK (HASH_SIZE - 1)
 #define NIL (-1)
 
-/// @brief Compute hash for 3 bytes
+/// @brief Compute the match-finder hash of a three-byte prefix.
+/// @param data Pointer to at least three accessible bytes.
+/// @return Hash-table index in `[0, HASH_SIZE)`.
 static inline int compute_hash(const uint8_t *data) {
     return ((data[0] << 10) ^ (data[1] << 5) ^ data[2]) & HASH_MASK;
 }
@@ -167,6 +200,8 @@ static inline int compute_hash(const uint8_t *data) {
 /// same hash. NIL (-1) marks unused slots. Together they form a
 /// hash-chained lookup that `find_match` walks to locate the longest
 /// back-reference. Traps on OOM.
+/// @param lz Match-finder state to initialize.
+/// @return `true` on success, or `false` after raising an allocation trap.
 static bool lz77_init(lz77_state_t *lz) {
     lz->head = (int *)malloc(HASH_SIZE * sizeof(int));
     lz->prev = (int *)malloc(WINDOW_SIZE * sizeof(int));
@@ -187,6 +222,7 @@ static bool lz77_init(lz77_state_t *lz) {
 }
 
 /// @brief Release LZ77 hash-chain memory (head + prev arrays).
+/// @param lz State whose two native arrays are released.
 static void lz77_free(lz77_state_t *lz) {
     free(lz->head);
     free(lz->prev);
@@ -201,6 +237,14 @@ static void lz77_free(lz77_state_t *lz) {
 /// matches at the cost of speed. Refuses matches with distance
 /// exceeding 32KB or below `MIN_MATCH_LEN = 3` (short matches cost
 /// more bits than the literals they replace).
+/// @param lz Initialized hash-chain state containing earlier positions.
+/// @param data Complete borrowed input buffer.
+/// @param pos Current input offset.
+/// @param len Total input byte count.
+/// @param max_chain Maximum candidate positions to inspect.
+/// @param match_dist Receives the backward distance of the selected match.
+/// @return Best match length from 3 through 258, or 0 when no encodable match
+/// exists.
 static int find_match(
     lz77_state_t *lz, const uint8_t *data, size_t pos, size_t len, int max_chain, int *match_dist) {
     if (pos + MIN_MATCH_LEN > len)
@@ -249,6 +293,9 @@ static int find_match(
 /// that lets `find_match` walk back through older occurrences. Called
 /// after emitting a literal or (per byte) inside a match so later
 /// positions can find it.
+/// @param lz Initialized hash-chain state.
+/// @param data Complete borrowed input buffer.
+/// @param pos Position with at least three accessible bytes.
 static void update_hash(lz77_state_t *lz, const uint8_t *data, size_t pos) {
     int hash = compute_hash(data + pos);
     lz->prev[pos & WINDOW_MASK] = lz->head[hash];
@@ -261,6 +308,8 @@ static void update_hash(lz77_state_t *lz, const uint8_t *data, size_t pos) {
 /// exceeds `length`, which identifies the code whose range covers it.
 /// Lengths of exactly 258 are encoded as code 285 (the sentinel final
 /// entry, which has zero extra bits).
+/// @param length Encodable match length from 3 through 258.
+/// @return Literal/length alphabet code from 257 through 285.
 static int get_length_code(int length) {
     for (int i = 0; i < 29; i++) {
         if (i == 28)
@@ -276,6 +325,8 @@ static int get_length_code(int length) {
 /// Linear scan of `dist_base`; the extra-bits table on the matching
 /// code handles the offset within each code's range. 30 distance
 /// codes cover the full 32KB window.
+/// @param dist Encodable backward distance from 1 through 32,768.
+/// @return Distance alphabet code from 0 through 29.
 static int get_dist_code(int dist) {
     for (int i = 0; i < 30; i++) {
         if (i == 29 || dist < dist_base[i + 1])
@@ -290,6 +341,10 @@ static int get_dist_code(int dist) {
 /// bit stream reads LSB-first — so the code must be bit-reversed
 /// before `bw_write` emits it LSB-first and the decoder's
 /// `decode_symbol` reassembles the original MSB-first prefix.
+/// @param bw Destination bit writer.
+/// @param code Canonical MSB-first code value.
+/// @param len Code length in bits.
+/// @return 1 on success, or 0 after writer growth failure.
 static int write_code(bit_writer_t *bw, uint16_t code, int len) {
     // Reverse the code bits
     uint16_t rev = 0;
@@ -308,6 +363,10 @@ static int write_code(bit_writer_t *bw, uint16_t code, int len) {
 /// stored blocks with BFINAL=0 until the last one. An empty input
 /// still needs one final block so the stream is well-formed — handled
 /// as a special case up front.
+/// @param bw Destination bit writer.
+/// @param data Borrowed input bytes; may be `NULL` when @p len is zero.
+/// @param len Input byte count.
+/// @return 1 after emitting all stored blocks; otherwise 0.
 static int deflate_stored(bit_writer_t *bw, const uint8_t *data, size_t len) {
     // Handle empty data - still need a final block
     if (len == 0) {
@@ -367,6 +426,11 @@ static int deflate_stored(bit_writer_t *bw, const uint8_t *data, size_t len) {
 /// is 7 bits, etc. Otherwise falls back to a literal. Hash chain is
 /// advanced one byte per input regardless so future positions can
 /// still find matches even inside earlier matches.
+/// @param bw Destination bit writer.
+/// @param data Borrowed input bytes.
+/// @param len Input byte count.
+/// @param level Compression level controlling hash-chain search depth.
+/// @return 1 after emitting the complete final block; otherwise 0.
 static int deflate_fixed(bit_writer_t *bw, const uint8_t *data, size_t len, int level) {
     init_fixed_trees();
 
@@ -512,6 +576,10 @@ typedef struct {
 ///        any over-long codes are redistributed the way zlib's gen_bitlen does
 ///        (least-frequent symbols absorb the longest codes). On allocation
 ///        failure it leaves all-zero lengths, which makes the caller fall back.
+/// @param freq Per-symbol occurrence counts.
+/// @param n Number of symbols in @p freq and @p lengths.
+/// @param max_bits Maximum permitted code length.
+/// @param lengths Output array receiving one code length per symbol.
 static void dh_build_lengths(const uint32_t *freq, int n, int max_bits, uint8_t *lengths) {
     for (int i = 0; i < n; i++)
         lengths[i] = 0;
@@ -693,6 +761,9 @@ static void dh_build_lengths(const uint32_t *freq, int n, int max_bits, uint8_t 
 
 /// @brief Assign canonical (MSB-first) Huffman codes from code lengths per
 ///        RFC 1951 §3.2.2. Zero-length symbols get code 0 (unused).
+/// @param lengths Per-symbol canonical code lengths.
+/// @param n Number of symbols.
+/// @param codes Output array receiving MSB-first code values.
 static void dh_assign_codes(const uint8_t *lengths, int n, uint16_t *codes) {
     int bl_count[DH_MAXBITS + 1];
     for (int i = 0; i <= DH_MAXBITS; i++)
@@ -719,6 +790,13 @@ static void dh_assign_codes(const uint8_t *lengths, int n, uint16_t *codes) {
 /// descriptions, and the tokens. Returns 0 (and emits nothing) on allocation
 /// failure or when the input is too large for the token buffer, so the caller
 /// can fall back to the fixed block.
+/// @param bw Destination writer; callers use a separate candidate writer so a
+/// failed attempt cannot contaminate fixed output.
+/// @param data Borrowed input bytes.
+/// @param len Input byte count.
+/// @param level Compression level controlling match search depth.
+/// @return 1 after a complete dynamic block is emitted; 0 when unavailable or
+/// unsuccessful so the caller can use fixed coding.
 static int deflate_dynamic(bit_writer_t *bw, const uint8_t *data, size_t len, int level) {
     if (len == 0 || len > DH_MAX_INPUT || len > DH_MAX_DYNAMIC_TOKEN_INPUT)
         return 0;
@@ -918,6 +996,11 @@ static int deflate_dynamic(bit_writer_t *bw, const uint8_t *data, size_t len, in
 /// Huffman block; levels ≥6 emit both a fixed and a dynamic-Huffman block and
 /// keep whichever is smaller, so dynamic coding never regresses output size.
 /// Level is clamped to [1..9].
+/// @param data Borrowed input bytes; may be `NULL` when @p len is zero.
+/// @param len Input byte count.
+/// @param level Requested compression level, clamped to 1 through 9.
+/// @return Fresh GC-managed Bytes containing a complete raw DEFLATE stream, or
+/// `NULL` after allocation/encoding failure.
 void *deflate_data(const uint8_t *data, size_t len, int level) {
     if (level < DEFLATE_MIN_LEVEL)
         level = DEFLATE_MIN_LEVEL;
@@ -993,6 +1076,11 @@ void *deflate_data(const uint8_t *data, size_t len, int level) {
 /// trailer (CRC32 of the original uncompressed data + ISIZE =
 /// uncompressed length mod 2^32, both little-endian). CRC32 is computed
 /// over the raw input, not the compressed bytes.
+/// @param data Borrowed uncompressed bytes; may be `NULL` when @p len is zero.
+/// @param len Uncompressed byte count.
+/// @param level Requested compression level passed to deflate_data().
+/// @return Fresh GC-managed Bytes containing one complete GZIP member, or
+/// `NULL` after compression, overflow, or allocation failure.
 void *gzip_data(const uint8_t *data, size_t len, int level) {
     // First compress with DEFLATE
     void *deflated = deflate_data(data, len, level);

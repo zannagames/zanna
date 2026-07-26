@@ -18,12 +18,13 @@
 //   - Join always produces a path using the native platform separator.
 //   - Ext returns the final '.' suffix including the dot, or "" if absent.
 //   - IsLink inspects the final component without following it and never traps.
-//   - All returned strings are newly allocated runtime strings; none borrow.
+//   - Returned strings are runtime-managed values and never borrow input storage; empty results
+//     may use the shared empty string.
 //   - All functions are thread-safe and reentrant (no global mutable state).
 //
 // Ownership/Lifetime:
-//   - Every returned rt_string is a fresh allocation owned by the caller.
-//   - Zanna's garbage collector manages returned string lifetimes.
+//   - Every returned rt_string transfers a runtime-managed reference to the caller; nonempty
+//     results are copied and empty results may share the canonical empty string.
 //
 // Links: src/runtime/io/rt_path.h (public API),
 //        src/runtime/io/rt_dir.c (directory create/list/remove operations),
@@ -52,6 +53,8 @@
 #define PATH_SEP_STR "\\"
 
 /// @brief Inspect one validated native path for a Windows reparse point.
+/// @param cpath Null-terminated validated UTF-8 path.
+/// @return 1 when the final entry has `FILE_ATTRIBUTE_REPARSE_POINT`; otherwise 0.
 static int rt_path_is_link_cstr(const char *cpath) {
     wchar_t *wide = rt_file_path_utf8_to_wide(cpath);
     if (!wide)
@@ -68,6 +71,8 @@ static int rt_path_is_link_cstr(const char *cpath) {
 #define PATH_SEP_STR "/"
 
 /// @brief Inspect one validated native path without following its final component.
+/// @param cpath Null-terminated validated native path.
+/// @return 1 when `lstat` identifies a symbolic link; otherwise 0.
 static int rt_path_is_link_cstr(const char *cpath) {
     struct stat st;
     return lstat(cpath, &st) == 0 && S_ISLNK(st.st_mode);
@@ -81,7 +86,7 @@ static int rt_path_is_link_cstr(const char *cpath) {
 ///
 /// @param c Character to check.
 ///
-/// @return Non-zero if c is '/' or '\', zero otherwise.
+/// @return Nonzero for `/` on POSIX or either slash spelling on Windows; otherwise zero.
 static inline int is_path_sep(char c) {
 #ifdef _WIN32
     return c == '/' || c == '\\';
@@ -94,6 +99,8 @@ static inline int is_path_sep(char c) {
 ///
 /// Kept separate for call-site clarity: POSIX treats `\` as a literal
 /// filename byte, while Windows accepts it as a separator.
+/// @param c Byte to classify.
+/// @return Nonzero when @p c is a separator for join behavior; otherwise zero.
 static inline int is_join_sep(char c) {
 #ifdef _WIN32
     return is_path_sep(c);
@@ -104,11 +111,17 @@ static inline int is_join_sep(char c) {
 
 #ifdef _WIN32
 /// @brief Return 1 if `data[0..len-1]` starts with a Windows drive letter prefix (e.g. `C:`).
+/// @param data Path byte span to inspect.
+/// @param len Number of bytes in @p data.
+/// @return 1 for an ASCII drive-letter/colon prefix; otherwise 0.
 static inline int is_drive_letter_path(const char *data, size_t len) {
     return len >= 2 && isalpha((unsigned char)data[0]) && data[1] == ':';
 }
 
 /// @brief Return 1 if the path has a rooted drive prefix (e.g. `C:\`).
+/// @param data Path byte span to inspect.
+/// @param len Number of bytes in @p data.
+/// @return 1 for a drive-letter prefix followed by a recognized separator; otherwise 0.
 static inline int is_drive_rooted_path(const char *data, size_t len) {
     return is_drive_letter_path(data, len) && len >= 3 && is_path_sep(data[2]);
 }
@@ -791,6 +804,8 @@ int64_t rt_path_is_abs(rt_string path) {
 ///          files/directories return false. POSIX uses lstat so the final link
 ///          is not followed; Windows treats every reparse point (including
 ///          directory junctions) as a link boundary for workspace safety.
+/// @param path Borrowed runtime path string to inspect.
+/// @return 1 for a symbolic link/reparse point; otherwise 0.
 int64_t rt_path_is_link(rt_string path) {
     const char *cpath = NULL;
     if (!rt_file_path_from_vstr(path, &cpath) || !cpath || cpath[0] == '\0')

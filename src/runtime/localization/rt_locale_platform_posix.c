@@ -69,9 +69,13 @@ int rt_locale_platform_detect_system(char *out, size_t cap) {
 
 #else
 
-// Placeholder symbol when this TU is accidentally compiled on non-POSIX
-// platforms (e.g., a build misconfiguration that pulls in more than one
-// adapter). Keeps the link graph sane while the real adapter owns the symbol.
+/// @brief Provide an inert symbol when the POSIX adapter is built for another platform.
+/// @details Avoids defining the public adapter symbol alongside the selected
+///          Windows or macOS implementation. This function is not part of the
+///          localization interface and always reports failure.
+/// @param out Unused prospective destination buffer.
+/// @param cap Unused prospective buffer capacity.
+/// @return Always -1.
 int rt_locale_platform_detect_system_posix_unused_(char *out, size_t cap) {
     (void)out;
     (void)cap;

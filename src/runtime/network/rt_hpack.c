@@ -9,6 +9,17 @@
 // Purpose: HPACK (RFC 7541) header compression for HTTP/2: dynamic table,
 //   integer/string coding, Huffman codec, and header-block encode/decode.
 //
+// Key invariants:
+//   - HPACK indices are one-based: 1..61 select the RFC static table and
+//     values from 62 onward select newest-first dynamic entries.
+//   - Decoded names and values are validated before exposure to HTTP/2.
+//   - Huffman tables are initialized exactly once per process.
+//
+// Ownership/Lifetime:
+//   - Dynamic tables own copies of indexed names and values.
+//   - Successful header-block decoding transfers a linked header list to the
+//     caller; all temporary strings are released within this module.
+//
 // Links: rt_http2.h, rt_http2_internal.h, rt_http2.c (frame layer)
 //
 //===----------------------------------------------------------------------===//
@@ -186,6 +197,10 @@ static INIT_ONCE g_huff_once = INIT_ONCE_STATIC_INIT;
 static pthread_once_t g_huff_once = PTHREAD_ONCE_INIT;
 #endif
 
+/// @brief Release every entry and allocation owned by an HPACK dynamic table.
+/// @details Accepts a null pointer as a no-op and resets a released table to
+///          its zero state so it can be initialized or freed again safely.
+/// @param table Dynamic table to release.
 void hpack_dyn_table_free(hpack_dyn_table_t *table) {
     if (!table)
         return;
@@ -197,6 +212,10 @@ void hpack_dyn_table_free(hpack_dyn_table_t *table) {
     memset(table, 0, sizeof(*table));
 }
 
+/// @brief Evict oldest dynamic-table entries until the configured byte limit is met.
+/// @details HPACK orders the newest entry at index zero, so eviction proceeds
+///          from the array's final occupied slot.
+/// @param table Mutable dynamic table with a valid entry array.
 static void hpack_dyn_table_evict_to_fit(hpack_dyn_table_t *table) {
     while (table->bytes > table->max_bytes && table->count > 0) {
         hpack_dyn_entry_t *entry = &table->entries[table->count - 1];
@@ -207,6 +226,11 @@ static void hpack_dyn_table_evict_to_fit(hpack_dyn_table_t *table) {
     }
 }
 
+/// @brief Apply a peer-advertised HPACK dynamic-table size and evict excess entries.
+/// @param table Dynamic table to update.
+/// @param max_bytes New capacity in HPACK bytes, including the 32-byte overhead per entry.
+/// @return 1 when the limit is accepted; 0 for a null table or a limit above the implementation
+///         maximum.
 int hpack_dyn_table_set_max_size(hpack_dyn_table_t *table, size_t max_bytes) {
     if (!table || max_bytes > H2_MAX_DYNAMIC_TABLE_SIZE)
         return 0;
@@ -215,6 +239,15 @@ int hpack_dyn_table_set_max_size(hpack_dyn_table_t *table, size_t max_bytes) {
     return 1;
 }
 
+/// @brief Add a copied header field to the front of the HPACK dynamic table.
+/// @details Evicts oldest entries as necessary. An entry larger than the
+///          current capacity clears the table and is treated as successfully
+///          processed without being inserted, as required by HPACK.
+/// @param table Dynamic table that will own the new copies.
+/// @param name Null-terminated header name.
+/// @param value Null-terminated header value.
+/// @return 1 when the HPACK insertion semantics are applied; 0 on invalid input,
+///         size overflow, or allocation failure.
 static int hpack_dyn_table_add(hpack_dyn_table_t *table, const char *name, const char *value) {
     char *name_copy = NULL;
     char *value_copy = NULL;
@@ -273,6 +306,10 @@ static int hpack_dyn_table_add(hpack_dyn_table_t *table, const char *name, const
     return 1;
 }
 
+/// @brief Find an exact name-and-value match in the RFC 7541 static table.
+/// @param name Null-terminated header name.
+/// @param value Null-terminated header value.
+/// @return One-based HPACK index for the match, or zero when none exists.
 static int hpack_lookup_exact_static(const char *name, const char *value) {
     for (int i = 0; i < 61; i++) {
         if (strcmp(kHpackStaticTable[i].name, name) == 0 &&
@@ -283,6 +320,9 @@ static int hpack_lookup_exact_static(const char *name, const char *value) {
     return 0;
 }
 
+/// @brief Find the first matching header name in the RFC 7541 static table.
+/// @param name Null-terminated header name.
+/// @return One-based HPACK index for the matching name, or zero when absent.
 static int hpack_lookup_name_static(const char *name) {
     for (int i = 0; i < 61; i++) {
         if (strcmp(kHpackStaticTable[i].name, name) == 0)
@@ -291,6 +331,11 @@ static int hpack_lookup_name_static(const char *name) {
     return 0;
 }
 
+/// @brief Find an exact name-and-value match in an HPACK dynamic table.
+/// @param table Dynamic table to search; may be null.
+/// @param name Null-terminated header name.
+/// @param value Null-terminated header value.
+/// @return Combined HPACK index beginning at 62 for a match, or zero when absent.
 static int hpack_lookup_exact_dynamic(const hpack_dyn_table_t *table,
                                       const char *name,
                                       const char *value) {
@@ -305,6 +350,10 @@ static int hpack_lookup_exact_dynamic(const hpack_dyn_table_t *table,
     return 0;
 }
 
+/// @brief Find the newest matching header name in an HPACK dynamic table.
+/// @param table Dynamic table to search; may be null.
+/// @param name Null-terminated header name.
+/// @return Combined HPACK index beginning at 62 for a match, or zero when absent.
 static int hpack_lookup_name_dynamic(const hpack_dyn_table_t *table, const char *name) {
     if (!table)
         return 0;
@@ -315,6 +364,12 @@ static int hpack_lookup_name_dynamic(const hpack_dyn_table_t *table, const char 
     return 0;
 }
 
+/// @brief Resolve a combined HPACK index against the static and dynamic tables.
+/// @param table Dynamic table used for indices 62 and above; may be null for static lookups.
+/// @param index One-based combined HPACK index.
+/// @param name_out Optional receiver for a borrowed header-name pointer.
+/// @param value_out Optional receiver for a borrowed header-value pointer.
+/// @return 1 when the index resolves; 0 for index zero or an unavailable dynamic entry.
 static int hpack_get_by_index(const hpack_dyn_table_t *table,
                               size_t index,
                               const char **name_out,
@@ -338,6 +393,15 @@ static int hpack_get_by_index(const hpack_dyn_table_t *table,
     return 1;
 }
 
+/// @brief Decode an HPACK variable-length integer from a prefixed byte sequence.
+/// @details Rejects invalid prefix widths, truncated continuation sequences,
+///          and any shift or addition that would overflow `size_t`.
+/// @param src Encoded bytes beginning with the prefix-bearing byte.
+/// @param src_len Number of readable bytes at @p src.
+/// @param prefix_bits Number of low bits in the first byte assigned to the integer.
+/// @param value_out Optional receiver for the decoded integer.
+/// @param consumed_out Optional receiver for the number of encoded bytes consumed.
+/// @return 1 on successful decoding; 0 on invalid input, truncation, or overflow.
 static int hpack_int_decode(const uint8_t *src,
                             size_t src_len,
                             uint8_t prefix_bits,
@@ -380,6 +444,12 @@ static int hpack_int_decode(const uint8_t *src,
     return 0;
 }
 
+/// @brief Append an HPACK variable-length integer with caller-supplied high prefix bits.
+/// @param dst Destination byte buffer.
+/// @param prefix_bits Number of low bits available in the first byte.
+/// @param prefix_high High-bit representation marker to combine with the integer prefix.
+/// @param value Unsigned integer to encode.
+/// @return 1 on success; 0 for invalid arguments or buffer growth failure.
 static int hpack_int_encode(h2_buf_t *dst, uint8_t prefix_bits, uint8_t prefix_high, size_t value) {
     uint8_t first = prefix_high;
     if (!dst || prefix_bits == 0 || prefix_bits > 8)
@@ -402,6 +472,8 @@ static int hpack_int_encode(h2_buf_t *dst, uint8_t prefix_bits, uint8_t prefix_h
     return h2_buf_append_byte(dst, (uint8_t)value);
 }
 
+/// @brief Allocate and initialize one node from the fixed Huffman decode-tree arena.
+/// @return The new node index, or -1 when the arena is full.
 static int huff_new_node(void) {
     int index = g_huff_node_count;
     if (index >= H2_MAX_HUFF_NODES)
@@ -414,6 +486,8 @@ static int huff_new_node(void) {
     return index;
 }
 
+/// @brief Build the RFC 7541 Huffman decode trie and mark legal EOS-prefix padding nodes.
+/// @return 1 when all symbols and padding paths fit in the fixed node arena; 0 otherwise.
 static int hpack_huffman_build(void) {
     g_huff_node_count = 0;
     if (huff_new_node() != 0)
@@ -448,6 +522,11 @@ static int hpack_huffman_build(void) {
 }
 
 #ifdef _WIN32
+/// @brief Initialize the global HPACK Huffman trie through the Windows one-time callback API.
+/// @param init_once Windows initialization token; unused by the callback.
+/// @param parameter Caller parameter; unused.
+/// @param context Optional context receiver; unused.
+/// @return `TRUE` after recording the trie-build result in the global initialization state.
 static BOOL CALLBACK hpack_huffman_once(PINIT_ONCE init_once, PVOID parameter, PVOID *context) {
     (void)init_once;
     (void)parameter;
@@ -456,11 +535,14 @@ static BOOL CALLBACK hpack_huffman_once(PINIT_ONCE init_once, PVOID parameter, P
     return TRUE;
 }
 #else
+/// @brief Initialize the global HPACK Huffman trie through `pthread_once`.
 static void hpack_huffman_once(void) {
     g_huff_init_ok = hpack_huffman_build();
 }
 #endif
 
+/// @brief Ensure the process-wide HPACK Huffman decode trie has been initialized.
+/// @return 1 when one-time initialization and trie construction succeeded; 0 otherwise.
 static int hpack_huffman_init(void) {
 #ifdef _WIN32
     if (!InitOnceExecuteOnce(&g_huff_once, hpack_huffman_once, NULL, NULL))
@@ -472,6 +554,14 @@ static int hpack_huffman_init(void) {
     return g_huff_init_ok;
 }
 
+/// @brief Decode an RFC 7541 Huffman string into a newly allocated C string.
+/// @details Rejects the reserved EOS symbol, invalid tree paths, and terminal
+///          padding that is not a permitted prefix of EOS.
+/// @param src Huffman-coded bytes.
+/// @param src_len Number of encoded bytes.
+/// @param decoded_len_out Optional receiver for the decoded byte count, excluding the terminator.
+/// @return Newly allocated null-terminated decoded bytes, or null on malformed input,
+///         initialization failure, or allocation failure.
 static char *hpack_decode_huffman(const uint8_t *src, size_t src_len, size_t *decoded_len_out) {
     h2_buf_t out = {0};
     int node = 0;
@@ -517,6 +607,13 @@ static char *hpack_decode_huffman(const uint8_t *src, size_t src_len, size_t *de
     return (char *)out.data;
 }
 
+/// @brief Decode an HPACK string literal in Huffman or raw form.
+/// @param src Encoded string beginning with its Huffman flag and length prefix.
+/// @param src_len Number of readable encoded bytes.
+/// @param out Receives a newly allocated null-terminated string on success.
+/// @param value_len_out Optional receiver for the decoded byte length.
+/// @param consumed_out Optional receiver for the total encoded byte count consumed.
+/// @return 1 on success; 0 on malformed, truncated, or unallocatable input.
 static int hpack_decode_string(
     const uint8_t *src, size_t src_len, char **out, size_t *value_len_out, size_t *consumed_out) {
     size_t str_len = 0;
@@ -547,6 +644,10 @@ static int hpack_decode_string(
     return 1;
 }
 
+/// @brief Append a null-terminated string as an uncompressed HPACK string literal.
+/// @param dst Destination header-block buffer.
+/// @param text Text to encode.
+/// @return 1 on success; 0 for a null string or buffer growth failure.
 static int hpack_encode_string(h2_buf_t *dst, const char *text) {
     size_t len = text ? strlen(text) : 0;
     if (!text)
@@ -556,6 +657,15 @@ static int hpack_encode_string(h2_buf_t *dst, const char *text) {
     return h2_buf_append(dst, text, len);
 }
 
+/// @brief Append one validated header field to an HPACK header block.
+/// @details Lowercases non-pseudo-header names, prefers an exact indexed
+///          representation, and otherwise emits a literal without incremental
+///          indexing using an indexed name when available.
+/// @param dst Destination HPACK block buffer.
+/// @param table Dynamic table consulted for exact and name-only matches; may be null.
+/// @param name Null-terminated header name.
+/// @param value Null-terminated header value.
+/// @return 1 on success; 0 for invalid input, allocation failure, or buffer growth failure.
 int hpack_encode_header_field(h2_buf_t *dst,
                                      const hpack_dyn_table_t *table,
                                      const char *name,
@@ -599,6 +709,17 @@ int hpack_encode_header_field(h2_buf_t *dst,
     return hpack_encode_string(dst, value);
 }
 
+/// @brief Decode a complete HPACK block into a newly allocated HTTP/2 header list.
+/// @details Supports indexed fields, dynamic-table size updates, and literal
+///          fields with or without incremental indexing. Size updates are
+///          accepted only before the first header field. All decoded names and
+///          values are validated before being appended.
+/// @param table Connection-scoped dynamic table to query and update.
+/// @param block Encoded header-block bytes.
+/// @param block_len Number of bytes in @p block.
+/// @param headers_out Receives the owned decoded header list, or null for an empty block.
+/// @return 1 when the entire block decodes successfully; 0 on malformed input,
+///         invalid headers, invalid table updates, or allocation failure.
 int hpack_decode_header_block(hpack_dyn_table_t *table,
                                      const uint8_t *block,
                                      size_t block_len,

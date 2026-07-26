@@ -16,13 +16,15 @@
 //     (they do not cross separators).
 //   - '**' matches any sequence of characters including directory separators.
 //   - '?' matches exactly one character but not '/'.
-//   - '[...]' character classes follow POSIX semantics including negation '[!'.
-//   - Pattern matching is case-sensitive on Unix and case-insensitive on Windows.
+//   - '[...]' classes support literals, escapes, ranges, and leading '!'/'^' negation.
+//   - Matching is byte-oriented: Unix compares bytes exactly; Windows applies `tolower` to
+//     non-separator bytes and treats both slash spellings as equivalent.
 //   - Directory traversal respects the current working directory of the process.
 //
 // Ownership/Lifetime:
-//   - Returned path strings are fresh rt_string allocations owned by the caller.
-//   - The returned sequence is a new rt_seq owned by the caller.
+//   - Returned sequences are fresh owning rt_seq objects whose path-string elements are retained
+//     by the sequence.
+//   - Pattern, path, and directory strings are borrowed for the duration of each call.
 //
 // Links: src/runtime/io/rt_glob.h (public API),
 //        src/runtime/io/rt_dir.h (directory enumeration used internally),
@@ -66,6 +68,9 @@ const char *rt_trap_get_error(void);
 ///
 /// On Windows paths are conventionally case-insensitive, so both sides
 /// are lowered before comparison. On POSIX the compare is exact.
+/// @param a First pattern/path byte to compare.
+/// @param b Second pattern/path byte to compare.
+/// @return Nonzero when the bytes compare equal under platform rules; otherwise zero.
 static int glob_char_eq(char a, char b) {
 #ifdef _WIN32
     if ((a == '/' || a == '\\') && (b == '/' || b == '\\'))
@@ -77,6 +82,8 @@ static int glob_char_eq(char a, char b) {
 }
 
 /// @brief Return non-zero if `ch` is a path separator ('/' on POSIX, '/' or '\\' on Windows).
+/// @param ch Byte to classify.
+/// @return Nonzero for a platform-recognized path separator; otherwise zero.
 static int glob_is_path_sep(char ch) {
 #ifdef _WIN32
     return ch == '/' || ch == '\\';
@@ -85,6 +92,11 @@ static int glob_is_path_sep(char ch) {
 #endif
 }
 
+/// @brief Validate a runtime string for use as a null-terminated glob/path operand.
+/// @details Rejects null or invalid strings, negative lengths, and embedded NUL bytes so the glob
+///          engine's C-string traversal cannot silently ignore a suffix.
+/// @param value Borrowed runtime string to validate.
+/// @return Borrowed null-terminated character pointer on success; otherwise NULL.
 static const char *glob_string_cstr_no_nul(rt_string value) {
     if (!value)
         return NULL;
@@ -102,6 +114,10 @@ static const char *glob_string_cstr_no_nul(rt_string value) {
 /// Normalizes the three chars with the same platform case rule as
 /// `glob_char_eq`, then normalizes the range so reversed specs
 /// (`[z-a]`) still work.
+/// @param ch Candidate byte to test.
+/// @param start First endpoint from the class expression.
+/// @param end Second endpoint from the class expression.
+/// @return Nonzero when @p ch lies in the inclusive normalized range; otherwise zero.
 static int glob_char_in_range(char ch, char start, char end) {
 #ifdef _WIN32
     unsigned char c = (unsigned char)tolower((unsigned char)ch);
@@ -130,6 +146,12 @@ static int glob_char_in_range(char ch, char start, char end) {
 /// treating the `[` as a literal. The `-` only starts a range when a
 /// previous character was seen and a non-`]` character follows, so
 /// leading/trailing dashes match literally.
+/// @param[in,out] pattern_ptr On input points at the opening `[`. On a well-formed class, updated
+///                            to the byte following its closing `]`.
+/// @param ch Candidate text byte to match.
+/// @param allow_slash Nonzero to permit a path separator to participate in the class.
+/// @return 1 for a match, 0 for a well-formed non-match or a disallowed separator, and -1 for an
+///         unterminated class.
 static int glob_match_class(const char **pattern_ptr, char ch, int allow_slash) {
     const char *p = *pattern_ptr + 1; // skip '['
     int negate = 0;
@@ -179,6 +201,17 @@ typedef struct {
     int allow_slash;
 } glob_state;
 
+/// @brief Add one unvisited matcher state to the explicit work stack.
+/// @details Uses separate visited-state planes for ordinary component matching and
+///          separator-permitted matching, preventing exponential revisits.
+/// @param stack Preallocated matcher-state stack.
+/// @param[in,out] sp Current stack length, incremented when a new state is pushed.
+/// @param visited Zero-initialized state bitmap updated for the pushed state.
+/// @param plane Number of cells in one `allow_slash` plane.
+/// @param stride Number of text positions per pattern row.
+/// @param pi Pattern-byte index for the candidate state.
+/// @param ti Text-byte index for the candidate state.
+/// @param allow_slash Nonzero to select the separator-permitted state plane.
 static void glob_push_state(glob_state *stack,
                             size_t *sp,
                             uint8_t *visited,
@@ -194,7 +227,14 @@ static void glob_push_state(glob_state *stack,
     stack[(*sp)++] = (glob_state){pi, ti, allow_slash ? 1 : 0};
 }
 
-/// @brief Iterative glob engine that matches `pattern` against `text`.
+/// @brief Match a null-terminated byte string with the iterative glob engine.
+/// @details Explores a bounded `(pattern position, text position, separator mode)` state space,
+///          using an explicit stack and bitmap instead of recursive backtracking. Oversized state
+///          spaces and allocation failures trap.
+/// @param pattern Valid null-terminated glob pattern.
+/// @param text Valid null-terminated byte string to test.
+/// @param allow_slash Initial separator policy for ordinary `*`, `?`, and class tokens.
+/// @return 1 when the entire text matches the entire pattern; otherwise 0.
 static int glob_match_impl(const char *pattern, const char *text, int allow_slash) {
     size_t pattern_len = strlen(pattern);
     size_t text_len = strlen(text);
@@ -322,6 +362,9 @@ static int glob_match_impl(const char *pattern, const char *text, int allow_slas
 /// with `**` performing the separator crossing itself — later tokens follow
 /// ordinary component rules and never cross separators (VDOC-186). See the file
 /// header for the supported subset.
+/// @param path Borrowed runtime string containing the path text to test.
+/// @param pattern Borrowed runtime string containing the glob pattern.
+/// @return 1 for a complete match; otherwise 0, including null, invalid, or embedded-NUL inputs.
 int8_t rt_glob_match(rt_string path, rt_string pattern) {
     if (!path || !pattern)
         return 0;
@@ -333,11 +376,16 @@ int8_t rt_glob_match(rt_string path, rt_string pattern) {
 }
 
 /// @brief Release a GC object returned by dir-listing helpers if its ref-count hits zero.
+/// @param obj Owned runtime object reference to release; NULL is ignored.
 static void glob_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Copy the active trap diagnostic for cleanup-and-rethrow recovery.
+/// @param[out] buffer Destination for the preserved message.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Message used when the runtime has no nonempty active diagnostic.
 static void glob_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
@@ -350,6 +398,9 @@ static void glob_save_trap_error(char *buffer, size_t buffer_size, const char *f
 /// through junction/symlink cycles; on POSIX uses `lstat` so a symlink
 /// to a directory isn't followed — the caller already enumerates
 /// real subdirs through `rt_dir_list_seq`.
+/// @param path Borrowed runtime path string to inspect.
+/// @return 1 when @p path names a physical directory that is not a symlink/reparse point;
+///         otherwise 0.
 static int glob_is_real_directory(rt_string path) {
     const char *cpath = NULL;
     if (!rt_file_path_from_vstr(path, &cpath) || !cpath)
@@ -386,6 +437,12 @@ static int glob_is_real_directory(rt_string path) {
 /// tests each filename against the pattern, and returns full joined paths
 /// for matches. Use `Glob.FilesRecursive` for subtree traversal. Returns
 /// an empty owning Seq if `dir` is missing or `pattern` is NULL.
+/// @details Allocation or sequence-append traps are caught long enough to release partial results,
+///          then rethrown with the original diagnostic.
+/// @param dir Borrowed runtime path of the directory to enumerate.
+/// @param pattern Borrowed glob pattern matched against each direct file name.
+/// @return Fresh owning Seq of joined matching file paths; empty for invalid inputs, missing
+///         directories, or no matches.
 void *rt_glob_files(rt_string dir, rt_string pattern) {
     void *volatile result = rt_seq_new();
     void *volatile files = NULL;
@@ -449,6 +506,11 @@ void *rt_glob_files(rt_string dir, rt_string pattern) {
 /// result Seq; if it's a real directory, recurses. Symlinked
 /// directories are skipped via `glob_is_real_directory` to prevent
 /// cycles.
+/// @param base_dir Borrowed root directory against which full paths are constructed.
+/// @param rel_path Borrowed relative directory path from @p base_dir; empty at the root.
+/// @param pattern Valid null-terminated glob pattern matched against relative entry paths.
+/// @param result Owning result Seq that receives retained matching file paths.
+/// @param depth Current traversal depth; values above 4096 trap.
 static void glob_recursive_helper(
     rt_string base_dir, rt_string rel_path, const char *pattern, void *result, size_t depth) {
     if (depth > 4096) {
@@ -546,6 +608,11 @@ static void glob_recursive_helper(
 /// *relative path from base* (with `/` separators), so patterns like
 /// `**/*.png` or `assets/**/*.wav` span multiple directories. Symlinks
 /// are not followed.
+/// @details Traversal is depth-first and capped at 4096 nested directories. Partial allocations
+///          are released before traversal traps are rethrown.
+/// @param base Borrowed runtime path of the traversal root.
+/// @param pattern Borrowed glob pattern matched against each relative entry path.
+/// @return Fresh owning Seq of full matching file paths; empty for invalid inputs or no matches.
 void *rt_glob_files_recursive(rt_string base, rt_string pattern) {
     void *volatile result = rt_seq_new();
     rt_string volatile empty = NULL;
@@ -595,6 +662,13 @@ void *rt_glob_files_recursive(rt_string base, rt_string pattern) {
 /// Sibling of `Glob.Files`, but includes directory entries in the
 /// results (via `rt_dir_list_seq` instead of `rt_dir_files_seq`).
 /// Useful when the caller wants to pattern-match directory names.
+/// @details Only direct children are considered, and @p pattern is matched against each entry
+///          name rather than its joined path. Cleanup recovery releases partial results before
+///          rethrowing allocation/append traps.
+/// @param dir Borrowed runtime path of the directory to enumerate.
+/// @param pattern Borrowed glob pattern matched against each direct entry name.
+/// @return Fresh owning Seq of joined matching file and directory paths; empty for invalid inputs,
+///         missing directories, or no matches.
 void *rt_glob_entries(rt_string dir, rt_string pattern) {
     void *volatile result = rt_seq_new();
     void *volatile entries = NULL;

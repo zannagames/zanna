@@ -1,3 +1,27 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/network/rt_http_server_shared.inc
+// Purpose: Shared bounded HTTP/1 request parsing, routing dispatch, and
+//          response serialization for plain HTTP and HTTPS servers.
+// Key invariants:
+//   - Socket input is parsed by explicit byte length, never by implicit
+//     termination.
+//   - Request lines, header counts, body sizes, and arithmetic growth are
+//     bounded before allocation or copying.
+//   - Server-owned framing headers are generated centrally and cannot be
+//     overridden by handlers.
+// Ownership/Lifetime:
+//   - Parsed request fields and decoded bodies become owned by server_req_t.
+//   - Serialized responses are malloc-owned by the including server.
+// Links: src/runtime/network/rt_http_server.c,
+//        src/runtime/network/rt_https_server.c
+//
+//===----------------------------------------------------------------------===//
 #pragma once
 
 // Shared request/response helpers used by both the plain HTTP and TLS-backed
@@ -587,6 +611,14 @@ static bool parse_size_decimal(const char *text, size_t len, size_t *out) {
 }
 
 /// @brief Return true if a comma-separated header value contains @p token.
+/// @details Comparison is case-insensitive, ignores surrounding optional
+///          whitespace, and stops each candidate at a comma or parameter
+///          semicolon.
+/// @param value Length-delimited header value.
+/// @param value_len Number of bytes in @p value.
+/// @param token Token bytes to find.
+/// @param token_len Number of bytes in @p token.
+/// @return True when a complete list member matches; false for no match or invalid input.
 static bool header_value_contains_token(const char *value,
                                         size_t value_len,
                                         const char *token,
@@ -617,6 +649,13 @@ static bool header_value_contains_token(const char *value,
 }
 
 /// @brief Parse an HTTP chunk-size line (hex digits with optional extensions).
+/// @details Leading whitespace is accepted. Optional whitespace may follow the
+///          hexadecimal digits only before an extension separator; extension
+///          contents are ignored. Values above the request-body limit fail.
+/// @param line Length-delimited chunk-size line excluding CRLF.
+/// @param len Number of bytes in @p line.
+/// @param chunk_size_out Receives the parsed byte count.
+/// @return True on a valid bounded hexadecimal size; false otherwise.
 static bool parse_chunk_size_line(const char *line, size_t len, size_t *chunk_size_out) {
     size_t value = 0;
     size_t i = 0;
@@ -658,6 +697,16 @@ static bool parse_chunk_size_line(const char *line, size_t len, size_t *chunk_si
 }
 
 /// @brief Decode a chunked request body.
+/// @details Validates every size line and data terminator, enforces the decoded
+///          body limit, consumes trailer lines through the final empty line,
+///          and optionally avoids allocation when only framing completeness is
+///          being probed.
+/// @param encoded Length-delimited bytes beginning at the first chunk-size line.
+/// @param encoded_len Number of available encoded bytes.
+/// @param decoded_out Optional receiver for a malloc-owned, null-terminated decoded body.
+/// @param decoded_len_out Optional receiver for the decoded byte count.
+/// @param consumed_len_out Optional receiver for total encoded bytes through the trailer terminator.
+/// @return `CHUNK_PARSE_OK`, `CHUNK_PARSE_INCOMPLETE`, or `CHUNK_PARSE_INVALID`.
 static chunk_parse_status_t decode_chunked_body(const char *encoded,
                                                 size_t encoded_len,
                                                 char **decoded_out,
@@ -755,11 +804,25 @@ static chunk_parse_status_t decode_chunked_body(const char *encoded,
     }
 }
 
-/// @brief Scan a raw HTTP header block to extract framing hints.
+/// @brief Validate a Transfer-Encoding field accepted by the server.
+/// @param value Length-delimited field value.
+/// @param value_len Number of bytes in @p value.
+/// @param chunked_out Optional receiver set true for the accepted `chunked` coding.
+/// @return True only for one well-formed `chunked` coding; false for unsupported,
+///         duplicate, empty, or malformed codings.
 static bool parse_transfer_encoding_value_strict(const char *value,
                                                  size_t value_len,
                                                  bool *chunked_out);
 
+/// @brief Scan a raw HTTP header block for Content-Length and Transfer-Encoding framing.
+/// @details Rejects duplicate Content-Length, duplicate chunked coding,
+///          malformed supported transfer encoding, and simultaneous
+///          Content-Length plus chunked framing.
+/// @param headers Length-delimited header lines including their CRLF separators.
+/// @param headers_len Number of bytes in @p headers.
+/// @param content_length_out Receives the parsed Content-Length, or zero when absent.
+/// @param chunked_out Optional receiver set when chunked framing is selected.
+/// @return True for an internally consistent framing block; false otherwise.
 static bool parse_content_length_header_block(const char *headers,
                                               size_t headers_len,
                                               size_t *content_length_out,
@@ -818,6 +881,11 @@ static bool parse_content_length_header_block(const char *headers,
     return true;
 }
 
+/// @brief Parse the server's deliberately strict Transfer-Encoding grammar.
+/// @param value Length-delimited field value.
+/// @param value_len Number of bytes in @p value.
+/// @param chunked_out Optional receiver set true for the accepted coding.
+/// @return True only when the value consists of one `chunked` token with optional whitespace.
 static bool parse_transfer_encoding_value_strict(const char *value,
                                                  size_t value_len,
                                                  bool *chunked_out) {
@@ -910,6 +978,15 @@ static bool http_request_lines_within_limit(const char *buf, size_t buf_len) {
     return buf_len - line_start <= HTTP_REQ_MAX_LINE;
 }
 
+/// @brief Determine whether a socket buffer contains one complete bounded HTTP request.
+/// @details Validates observed line lengths and framing headers, then accounts
+///          for either a fixed-length or complete chunked body. The reported
+///          request length permits a caller to retain pipelined trailing bytes.
+/// @param buf Accumulated socket bytes.
+/// @param buf_len Number of valid bytes in @p buf.
+/// @param request_len_out Optional receiver for the complete first-request length.
+/// @param desired_cap_out Optional receiver for a sufficient future buffer capacity when incomplete.
+/// @return Complete, incomplete, or invalid framing status.
 static http_request_frame_status_t find_complete_http_request_frame(const char *buf,
                                                                     size_t buf_len,
                                                                     size_t *request_len_out,
@@ -962,6 +1039,15 @@ static http_request_frame_status_t find_complete_http_request_frame(const char *
 }
 
 /// @brief Parse an HTTP request from raw bytes.
+/// @details Parses a bounded HTTP/1.0 or HTTP/1.1 request line, normalizes the
+///          request target, lowercases and stores validated headers, and copies
+///          or decodes the body according to previously validated framing.
+///          Failure releases every partial request field and resets @p req.
+/// @param raw Complete request bytes.
+/// @param raw_len Number of bytes in @p raw.
+/// @param req Output request payload initialized and populated by this function.
+/// @return True on complete successful parsing; false for malformed, oversized, or unallocatable
+///         input.
 static bool parse_http_request(const char *raw, size_t raw_len, server_req_t *req) {
     memset(req, 0, sizeof(*req));
 
@@ -1145,6 +1231,9 @@ static const char *map_get_lower_header_cstr(void *headers, const char *lower_na
     return val ? rt_string_cstr(val) : NULL;
 }
 
+/// @brief Apply HTTP-version and Connection-header rules for request persistence.
+/// @param req Parsed request to inspect.
+/// @return Nonzero when the client permits another request on the connection.
 static int request_allows_keep_alive(const server_req_t *req) {
     const char *connection = req ? map_get_lower_header_cstr(req->headers, "connection") : NULL;
     if (!req)
@@ -1159,6 +1248,9 @@ static int request_allows_keep_alive(const server_req_t *req) {
     return header_value_contains_token(connection, strlen(connection), "keep-alive", 10);
 }
 
+/// @brief Test whether a response explicitly requests connection closure.
+/// @param res Response whose `connection` header is inspected.
+/// @return Nonzero when the header contains a case-insensitive `close` token.
 static int response_forces_close(const server_res_t *res) {
     const char *connection = res ? map_get_lower_header_cstr(res->headers, "connection") : NULL;
     if (!connection)
@@ -1240,6 +1332,8 @@ static int response_header_string_bytes(rt_string text, const char **bytes_out, 
 }
 
 /// @brief Map an HTTP status code to its canonical reason-phrase.
+/// @param code Numeric HTTP status code.
+/// @return Static reason phrase for supported common codes, or `"Unknown"`.
 static const char *status_text_for_code(int code) {
     switch (code) {
         case 200:
@@ -1270,6 +1364,16 @@ static const char *status_text_for_code(int code) {
 }
 
 /// @brief Build an HTTP response string.
+/// @details Computes an overflow-checked exact allocation, emits canonical
+///          status, Content-Length, and Connection fields, filters invalid or
+///          server-managed handler headers, suppresses forbidden status bodies,
+///          and copies exact body bytes. Trap recovery releases partial
+///          snapshots and buffers before re-raising.
+/// @param res Response payload to serialize.
+/// @param keep_alive Nonzero to emit `Connection: keep-alive`; zero emits `close`.
+/// @param out_len Optional receiver for wire bytes excluding the convenience terminator.
+/// @return Malloc-owned null-terminated wire response, or null on invalid state,
+///         overflow, allocation failure, or a returning trap hook.
 static char *build_response(server_res_t *res, int keep_alive, size_t *out_len) {
     void *volatile keys = NULL;
     char *volatile buffer = NULL;

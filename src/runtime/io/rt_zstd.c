@@ -47,22 +47,38 @@
 #define XXH_PRIME64_4 0x85EBCA77C2B2AE63ULL
 #define XXH_PRIME64_5 0x27D4EB2F165667C5ULL
 
+/// @brief Rotate a 64-bit checksum lane left by a fixed distance.
+/// @param x Lane value to rotate.
+/// @param r Rotation count in the range 1 through 63.
+/// @return Rotated 64-bit value.
 static uint64_t xxh_rotl64(uint64_t x, int r) {
     return (x << r) | (x >> (64 - r));
 }
 
+/// @brief Load one unaligned little-endian 64-bit checksum lane.
+/// @details The supported runtime targets are little-endian, so memcpy avoids
+///          alignment and aliasing violations without a byte-swap.
+/// @param p Pointer to at least eight readable bytes.
+/// @return Loaded host-order 64-bit value.
 static uint64_t xxh_read64(const uint8_t *p) {
     uint64_t v;
     memcpy(&v, p, sizeof(v));
     return v; /* zstd frames are little-endian; Zanna targets are little-endian */
 }
 
+/// @brief Load one unaligned little-endian 32-bit checksum lane.
+/// @param p Pointer to at least four readable bytes on a supported little-endian target.
+/// @return Loaded host-order 32-bit value.
 static uint32_t xxh_read32(const uint8_t *p) {
     uint32_t v;
     memcpy(&v, p, sizeof(v));
     return v;
 }
 
+/// @brief Mix one 64-bit input lane into an xxHash64 accumulator.
+/// @param acc Current accumulator lane.
+/// @param input Next input word.
+/// @return Multiplied and rotated accumulator.
 static uint64_t xxh_round(uint64_t acc, uint64_t input) {
     acc += input * XXH_PRIME64_2;
     acc = xxh_rotl64(acc, 31);
@@ -70,6 +86,10 @@ static uint64_t xxh_round(uint64_t acc, uint64_t input) {
     return acc;
 }
 
+/// @brief Merge a completed xxHash64 stripe lane into the main accumulator.
+/// @param acc Main checksum accumulator.
+/// @param val Completed stripe lane to fold in.
+/// @return Updated main accumulator.
 static uint64_t xxh_merge_round(uint64_t acc, uint64_t val) {
     val = xxh_round(0, val);
     acc ^= val;
@@ -79,6 +99,9 @@ static uint64_t xxh_merge_round(uint64_t acc, uint64_t val) {
 
 /// @brief xxhash64 with seed 0 — the digest zstd stores (low 32 bits) as its
 ///   optional content checksum.
+/// @param input Complete byte span to hash.
+/// @param len Number of readable bytes at @p input.
+/// @return Full 64-bit xxHash64 digest; Zstandard compares its low 32 bits.
 static uint64_t xxhash64(const uint8_t *input, size_t len) {
     const uint8_t *p = input;
     const uint8_t *end = input + len;
@@ -153,6 +176,11 @@ typedef struct {
     size_t bits_consumed; /* bits handed out via zstd_rbits_read */
 } zstd_rbits;
 
+/// @brief Initialize a backward entropy bit reader and remove its end sentinel.
+/// @param b Reader state to zero and initialize.
+/// @param data Complete encoded backward-bitstream payload.
+/// @param len Payload size in bytes; must include a nonzero final byte.
+/// @return 1 when a sentinel was found and state initialized, otherwise 0.
 static int zstd_rbits_init(zstd_rbits *b, const uint8_t *data, size_t len) {
     uint8_t last;
     int sentinel;
@@ -176,6 +204,12 @@ static int zstd_rbits_init(zstd_rbits *b, const uint8_t *data, size_t len) {
     return 1;
 }
 
+/// @brief Ensure the backward reader's shift container exposes enough bits.
+/// @details Bytes are prepended while walking toward the payload front. Once
+///          exhausted, zero padding supports table peeks; consumption validity
+///          remains tracked separately by @ref zstd_rbits_ok.
+/// @param b Initialized backward-bitstream reader.
+/// @param need Minimum number of bits required in the container.
 static void zstd_rbits_refill(zstd_rbits *b, int need) {
     while (b->bits_in_container < need) {
         if (b->byte_pos == 0) {
@@ -192,6 +226,9 @@ static void zstd_rbits_refill(zstd_rbits *b, int need) {
 }
 
 /// @brief Read @p n bits (MSB-first from the backward container). n <= 32.
+/// @param b Initialized backward-bitstream reader.
+/// @param n Number of bits to consume, from zero through 32.
+/// @return Decoded unsigned value; zero when @p n is zero.
 static uint32_t zstd_rbits_read(zstd_rbits *b, int n) {
     uint32_t v;
     if (n == 0)
@@ -204,16 +241,22 @@ static uint32_t zstd_rbits_read(zstd_rbits *b, int n) {
 }
 
 /// @brief Bits still available to consume without touching padding.
+/// @param b Initialized backward-bitstream reader.
+/// @return Unconsumed real payload bits, saturated at zero.
 static size_t zstd_rbits_remaining(const zstd_rbits *b) {
     return b->bits_consumed >= b->total_bits ? 0 : b->total_bits - b->bits_consumed;
 }
 
 /// @brief True while no consumed bit has come from padding.
+/// @param b Initialized backward-bitstream reader.
+/// @return 1 when consumption has not exceeded the real payload, otherwise 0.
 static int zstd_rbits_ok(const zstd_rbits *b) {
     return b->bits_consumed <= b->total_bits;
 }
 
 /// @brief True when the stream was consumed exactly (all payload, no padding).
+/// @param b Initialized backward-bitstream reader.
+/// @return 1 when consumed bits equal the payload budget, otherwise 0.
 static int zstd_rbits_fully_consumed(const zstd_rbits *b) {
     return b->bits_consumed == b->total_bits;
 }
@@ -233,6 +276,9 @@ typedef struct {
     int table_log;
 } zstd_fse_table;
 
+/// @brief Find the index of the highest set bit in a 32-bit value.
+/// @param v Value to classify.
+/// @return Floor of log2(@p v) for positive input; zero for zero or one.
 static int zstd_highbit32(uint32_t v) {
     int r = 0;
     while (v > 1) {
@@ -247,6 +293,11 @@ static int zstd_highbit32(uint32_t v) {
 ///   remaining cells are spread with the standard (5/8·size + 3) step. Cell
 ///   states then get their bit counts and baselines from the per-symbol
 ///   occurrence counters.
+/// @param t Destination decode table.
+/// @param norm Normalized counts indexed from zero through @p max_symbol.
+/// @param max_symbol Highest populated symbol index, at most 255.
+/// @param table_log Base-two log of the requested table size.
+/// @return 1 for a complete valid table, otherwise 0.
 static int zstd_fse_build(zstd_fse_table *t, const int16_t *norm, int max_symbol, int table_log) {
     uint32_t table_size;
     uint32_t high_threshold;
@@ -302,6 +353,15 @@ static int zstd_fse_build(zstd_fse_table *t, const int16_t *norm, int max_symbol
 
 /// @brief Parse an FSE normalized-count header (RFC 8878 §4.1.1) from a
 ///   forward bitstream. Returns consumed byte count, or 0 on error.
+/// @param data Bounded header bytes.
+/// @param len Number of readable bytes at @p data.
+/// @param norm Destination array for decoded normalized counts.
+/// @param out_max_symbol Receives the last decoded symbol index on success.
+/// @param out_table_log Receives the decoded table log on success.
+/// @param max_allowed_symbol Largest symbol accepted for this alphabet.
+/// @param max_allowed_log Largest table log accepted by this caller.
+/// @return Number of whole encoded bytes consumed, or zero for malformed or
+///         truncated input.
 static size_t zstd_fse_read_ncount(const uint8_t *data,
                                    size_t len,
                                    int16_t *norm,
@@ -403,6 +463,11 @@ typedef struct {
 /// @brief Build the canonical Huffman lookup table from symbol weights
 ///   (RFC 8878 §4.2.1): codes are assigned by ascending weight, symbols in
 ///   natural order within a weight, each filling 2^(weight-1) table cells.
+/// @param t Destination lookup table.
+/// @param weights Decoded weight for every symbol in natural order.
+/// @param num_symbols Number of entries in @p weights.
+/// @return 1 when weights exactly populate a supported power-of-two table,
+///         otherwise 0.
 static int zstd_huf_build(zstd_huf_table *t, const uint8_t *weights, int num_symbols) {
     uint32_t total = 0;
     int max_bits;
@@ -447,6 +512,11 @@ static int zstd_huf_build(zstd_huf_table *t, const uint8_t *weights, int num_sym
 /// @brief Decode Huffman weights, either raw 4-bit pairs (header >= 128) or an
 ///   FSE-compressed weight stream. Fills @p weights (up to 255 symbols + the
 ///   implied final weight) and returns consumed bytes, or 0 on error.
+/// @param data Bounded Huffman tree description.
+/// @param len Number of readable bytes at @p data.
+/// @param weights Destination with capacity for 256 weights.
+/// @param out_num_symbols Receives the explicit symbols plus the implied final symbol.
+/// @return Encoded tree-description bytes consumed, or zero on error.
 static size_t zstd_huf_read_weights(const uint8_t *data,
                                     size_t len,
                                     uint8_t *weights,
@@ -558,6 +628,13 @@ static size_t zstd_huf_read_weights(const uint8_t *data,
 /// @details Each symbol peeks table_log bits (zero padding past the stream
 ///   start is fine for the peek) but consumes only its code length; the stream
 ///   is valid when consumption lands exactly on the payload size.
+/// @param t Previously validated Huffman lookup table.
+/// @param data Complete backward-bitstream payload.
+/// @param len Payload size in bytes.
+/// @param out Destination for exactly @p out_len decoded symbols.
+/// @param out_len Required number of output bytes.
+/// @return 1 when exactly the requested symbols and complete stream were
+///         consumed, otherwise 0.
 static int zstd_huf_decode_stream(
     const zstd_huf_table *t, const uint8_t *data, size_t len, uint8_t *out, size_t out_len) {
     zstd_rbits bits;
@@ -633,6 +710,12 @@ typedef struct {
     int of_valid;
 } zstd_ctx;
 
+/// @brief Grow the reusable current-block literal buffer when necessary.
+/// @details Capacity starts at 4096 bytes and doubles with overflow checks.
+///          Existing contents and capacity remain valid when realloc fails.
+/// @param ctx Frame context owning the literal buffer.
+/// @param need Minimum required literal capacity in bytes.
+/// @return 1 when capacity is sufficient, otherwise 0 on overflow/allocation failure.
 static int zstd_ensure_literals(zstd_ctx *ctx, size_t need) {
     if (need <= ctx->literals_cap)
         return 1;
@@ -654,7 +737,13 @@ static int zstd_ensure_literals(zstd_ctx *ctx, size_t need) {
 }
 
 /// @brief Decode a block's literals section into ctx->literals.
-/// @return Consumed byte count, or 0 on error.
+/// @details Supports raw, RLE, compressed, and treeless sections plus one- and
+///          four-stream Huffman payloads. Newly described Huffman tables
+///          persist in @p ctx for later treeless blocks.
+/// @param ctx Current frame context and reusable literals/Huffman state.
+/// @param data Complete remaining compressed-block bytes beginning at literals.
+/// @param len Number of readable bytes at @p data.
+/// @return Encoded literals-section bytes consumed, or zero on error.
 static size_t zstd_decode_literals(zstd_ctx *ctx, const uint8_t *data, size_t len) {
     uint8_t type;
     uint8_t size_format;
@@ -801,6 +890,21 @@ static size_t zstd_decode_literals(zstd_ctx *ctx, const uint8_t *data, size_t le
 }
 
 /// @brief Resolve a sequence-table compression mode into a usable FSE table.
+/// @details Handles predefined, single-symbol RLE, newly described FSE, and
+///          repeat-previous modes while updating the caller's persistence flag.
+/// @param ctx Current frame context; reserved for shared sequence state.
+/// @param data Encoded table bytes for modes that consume input.
+/// @param len Number of readable bytes at @p data.
+/// @param mode Two-bit sequence-table mode from the block header.
+/// @param table Destination or previously persisted FSE table.
+/// @param valid_flag Persistence flag updated for newly usable FSE tables.
+/// @param default_norm Predefined normalized distribution for mode zero.
+/// @param default_max_symbol Highest symbol in @p default_norm.
+/// @param default_log Table log for the predefined distribution.
+/// @param max_symbol_limit Largest symbol accepted for this sequence alphabet.
+/// @param max_log Largest table log accepted for this sequence alphabet.
+/// @param rle_symbol Receives the single symbol for RLE mode.
+/// @param is_rle Set to one for RLE mode and zero otherwise.
 /// @return Consumed bytes from @p data (0 is valid for non-FSE modes);
 ///         (size_t)-1 on error.
 static size_t zstd_setup_seq_table(zstd_ctx *ctx,
@@ -855,6 +959,14 @@ static size_t zstd_setup_seq_table(zstd_ctx *ctx,
 }
 
 /// @brief Execute one compressed block's sequences against the literals buffer.
+/// @details Decodes literal-length, offset, and match-length FSE states,
+///          resolves repeated offsets, copies literal runs and overlapping
+///          matches within the fixed output budget, and appends trailing
+///          literals. The backward sequence bitstream must be consumed exactly.
+/// @param ctx Current frame context containing literals, tables, repeats, and output.
+/// @param data Encoded sequence section following the literals section.
+/// @param len Number of readable sequence bytes.
+/// @return 1 when all sequences decode within bounds, otherwise 0.
 static int zstd_decode_sequences(zstd_ctx *ctx, const uint8_t *data, size_t len) {
     size_t pos = 0;
     uint32_t num_sequences;
@@ -1267,7 +1379,15 @@ done:
 }
 
 /// @brief Decompress one complete Zstandard frame into a malloc-owned buffer.
-/// @details Compatibility wrapper retaining the established bounded allocation API.
+/// @details Compatibility wrapper retaining the established bounded allocation
+///          API. Output pointers are reset before parsing. A successful empty
+///          frame still returns a freeable non-NULL allocation.
+/// @param data Complete standard Zstandard frame bytes.
+/// @param len Number of readable bytes at @p data.
+/// @param max_output Maximum permitted decompressed size and allocation bound.
+/// @param out_data Receives malloc-owned decoded bytes on success.
+/// @param out_len Receives the exact decoded byte count on success.
+/// @return 1 on complete success, otherwise 0 with no output allocation returned.
 int rt_zstd_decompress_raw(
     const uint8_t *data, size_t len, size_t max_output, uint8_t **out_data, size_t *out_len) {
     return zstd_decompress_impl(data, len, max_output, NULL, 0, out_data, out_len);
@@ -1276,7 +1396,13 @@ int rt_zstd_decompress_raw(
 /// @brief Decompress one complete Zstandard frame into exact caller-owned storage.
 /// @details The output buffer is borrowed and remains caller-owned on both success and failure;
 ///          only temporary entropy/literal state can allocate. The exact-size contract rejects
-///          both short and overproducing frames before publication.
+///          both short and overproducing frames. Contents may be partially
+///          modified when decoding ultimately fails.
+/// @param data Complete standard Zstandard frame bytes.
+/// @param len Number of readable bytes at @p data.
+/// @param output Caller-owned destination for exactly @p output_size bytes.
+/// @param output_size Required decompressed size and destination capacity.
+/// @return 1 only for exact complete-frame decoding, otherwise 0.
 int rt_zstd_decompress_into(const uint8_t *data, size_t len, uint8_t *output, size_t output_size) {
     if (!output)
         return 0;

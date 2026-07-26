@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_theora.c
+// File: src/runtime/graphics/media/rt_theora.c
 // Purpose: In-tree Theora video-codec decoder for OGG container playback.
 //   Parses Theora setup/info/comment headers, builds the Huffman tables,
 //   decodes intra and inter frames, and produces YCbCr pixel planes that
@@ -30,8 +30,9 @@
 //   - Input packets (`data`, `len`) are caller-owned and only borrowed
 //     during decode. No reference is held after the call returns.
 //
-// Links: rt_theora.h (public API), rt_videoplayer.c (consumer),
-//        rt_ycbcr.c (planar→RGB conversion)
+// Links: src/runtime/graphics/media/rt_theora.h (public API),
+//        src/runtime/graphics/media/rt_videoplayer.c (consumer),
+//        src/runtime/graphics/media/rt_ycbcr.c (planar-to-RGB conversion)
 //
 //===----------------------------------------------------------------------===//
 
@@ -90,6 +91,9 @@ static const theora_dc_weight_t dc_weights[16] = {{{0, 0, 0, 0}, 1},
 // packet.
 
 /// @brief Initialize a bitreader to consume `data` MSB-first.
+/// @param br Writable reader state.
+/// @param data Borrowed packet bytes.
+/// @param len Accessible length of @p data.
 void br_init(bitreader_t *br, const uint8_t *data, size_t len) {
     br->data = data;
     br->len = len;
@@ -103,6 +107,9 @@ void br_init(bitreader_t *br, const uint8_t *data, size_t len) {
 /// Capped at 25 bits per call — enough for any single Theora field;
 /// 32-bit reads would overflow the accumulator on the last bit.
 /// Returns 0 and latches `failed` on EOF or overlong request.
+/// @param br Mutable bit-reader state.
+/// @param nbits Number of bits to consume, in [0, 25].
+/// @return Decoded unsigned value, or 0 after latching failure.
 static uint32_t br_read(bitreader_t *br, int nbits) {
     uint32_t value = 0;
     if (!br || nbits < 0 || nbits > 25) {
@@ -127,6 +134,8 @@ static uint32_t br_read(bitreader_t *br, int nbits) {
 }
 
 /// @brief Read one bit from the stream (convenience wrapper).
+/// @param br Mutable bit-reader state.
+/// @return Next bit as 0 or 1; underflow returns 0 and latches failure.
 static int br_read1(bitreader_t *br) {
     return (int)br_read(br, 1);
 }
@@ -134,6 +143,10 @@ static int br_read1(bitreader_t *br) {
 // Tiny scalar helpers used throughout the decoder:
 
 /// @brief Clamp `v` to `[lo, hi]`.
+/// @param v Value to clamp.
+/// @param lo Inclusive lower bound.
+/// @param hi Inclusive upper bound.
+/// @return @p v constrained to the supplied bounds.
 int clampi(int v, int lo, int hi) {
     if (v < lo)
         return lo;
@@ -146,6 +159,8 @@ int clampi(int v, int lo, int hi) {
 ///
 /// Uses the unsigned-cast trick to avoid implementation-defined
 /// signed overflow when `v` is outside int16 range.
+/// @param v Signed value to wrap modulo 2^16.
+/// @return Low sixteen bits interpreted as an int16_t.
 int16_t trunc_i16(int32_t v) {
     return (int16_t)(uint16_t)v;
 }
@@ -153,6 +168,8 @@ int16_t trunc_i16(int32_t v) {
 /// @brief Bit-length of `v` (number of bits needed to encode it; 0 → 0).
 ///
 /// Per Theora spec: `ilog(0) = 0`, `ilog(1) = 1`, `ilog(n) = floor(log2(n)) + 1`.
+/// @param v Unsigned value to measure.
+/// @return Number of significant bits needed to encode @p v.
 static int ilog_u32(uint32_t v) {
     int ret = 0;
     while (v) {
@@ -166,6 +183,9 @@ static int ilog_u32(uint32_t v) {
 ///
 /// Matches the spec's "rounded division" — `(v + d/2) / d` for
 /// positive `v`, mirrored for negative. Returns 0 when `d <= 0`.
+/// @param v Signed numerator.
+/// @param d Positive divisor.
+/// @return Symmetrically rounded quotient, or 0 for a non-positive divisor.
 static int round_div_s32(int v, int d) {
     if (d <= 0)
         return 0;
@@ -179,6 +199,8 @@ static int round_div_s32(int v, int d) {
 /// Modes 1 (intra) → previous frame; 5/6 (golden + extra) → golden
 /// frame; everything else → last frame. Used during inter-frame
 /// motion compensation.
+/// @param mode Decoded macroblock mode.
+/// @return Reference slot index: 0 for previous, 1 for last, or 2 for golden.
 int theora_ref_index_for_mode(int mode) {
     switch (mode) {
         case 1:
@@ -195,6 +217,9 @@ int theora_ref_index_for_mode(int mode) {
 ///
 /// Luma always 2; chroma is 2 only for 4:4:4 (pixel_format 3),
 /// otherwise 1 (subsampled).
+/// @param dec Initialized decoder describing the chroma format.
+/// @param plane Plane index: 0 for luma, 1 or 2 for chroma.
+/// @return Number of horizontal 8x8 blocks per macroblock.
 static int plane_mb_block_w(const theora_decoder_t *dec, int plane) {
     if (plane == 0)
         return 2;
@@ -206,6 +231,9 @@ static int plane_mb_block_w(const theora_decoder_t *dec, int plane) {
 /// @brief Number of 8×8 blocks per macroblock height, per plane.
 ///
 /// Luma always 2; chroma is 1 only for 4:2:0 (pixel_format 0).
+/// @param dec Initialized decoder describing the chroma format.
+/// @param plane Plane index: 0 for luma, 1 or 2 for chroma.
+/// @return Number of vertical 8x8 blocks per macroblock.
 static int plane_mb_block_h(const theora_decoder_t *dec, int plane) {
     if (plane == 0)
         return 2;
@@ -310,6 +338,7 @@ static int theora_checked_frame_plane_sizes(int32_t y_stride,
 /// @brief Tear down all heap allocations owned by the decoder's `priv`.
 ///
 /// Called from the public destroy path. NULL-safe.
+/// @param dec Valid decoder whose private allocation graph is released.
 static void theora_priv_free(theora_decoder_t *dec) {
     theora_priv_t *priv = (theora_priv_t *)dec->priv;
     if (!priv)
@@ -337,6 +366,10 @@ static void theora_priv_free(theora_decoder_t *dec) {
 ///
 /// Theora's three header packet types (id=0x80, comment=0x81, setup=0x82)
 /// all begin with the type byte followed by the ASCII string "theora".
+/// @param data Borrowed packet bytes.
+/// @param len Accessible packet length.
+/// @param type Expected header type byte.
+/// @return 1 when the bounded packet has the requested signature, otherwise 0.
 static int check_header_sig(const uint8_t *data, size_t len, uint8_t type) {
     if (!data || len < 7 || data[0] != type)
         return 0;
@@ -355,6 +388,10 @@ static int check_header_sig(const uint8_t *data, size_t len, uint8_t type) {
 ///   - Color space + quality hint + keyframe granule shift
 ///   - Pixel format (4:2:0 / 4:2:2 / 4:4:4)
 /// Computes the derived block / superblock / macroblock counts.
+/// @param dec Decoder receiving validated identification metadata.
+/// @param data Borrowed identification packet.
+/// @param len Accessible packet length.
+/// @return 0 on success, or -1 for signature, bounds, version, geometry, rate, or format failure.
 static int parse_id_header(theora_decoder_t *dec, const uint8_t *data, size_t len) {
     bitreader_t br;
     if (!check_header_sig(data, len, 0x80) || len < 42)
@@ -420,6 +457,10 @@ static int parse_id_header(theora_decoder_t *dec, const uint8_t *data, size_t le
 /// The decoder only needs to know the comment header was present (it
 /// occupies a packet slot in the header sequence). Fields like vendor
 /// string and user comments are ignored.
+/// @param dec Decoder context; currently unused.
+/// @param data Borrowed comment packet.
+/// @param len Accessible packet length.
+/// @return 0 for a valid comment-header signature, otherwise -1.
 static int parse_comment_header(theora_decoder_t *dec, const uint8_t *data, size_t len) {
     (void)dec;
     return check_header_sig(data, len, 0x81) ? 0 : -1;
@@ -430,6 +471,10 @@ static int parse_comment_header(theora_decoder_t *dec, const uint8_t *data, size
 ///
 /// `depth` enforces a 64-level maximum to bound stack use. Returns the
 /// new node's index, or -1 on overflow / read failure.
+/// @param tab Huffman table receiving parsed nodes.
+/// @param br Bit reader positioned at the encoded node.
+/// @param depth Current recursive tree depth.
+/// @return New node index, or -1 for malformed, oversized, or truncated input.
 static int huff_parse_node(theora_huff_table_t *tab, bitreader_t *br, int depth) {
     int idx;
     if (!tab || !br || depth > 64 || tab->node_count >= 64)
@@ -457,6 +502,9 @@ static int huff_parse_node(theora_huff_table_t *tab, bitreader_t *br, int depth)
 ///
 /// One bit per tree edge until a leaf node is reached; returns the
 /// leaf's token. Returns -1 on bitreader failure or invalid index.
+/// @param tab Parsed Huffman table.
+/// @param br Bit reader positioned at the encoded symbol.
+/// @return Decoded token, or -1 for invalid state or truncated input.
 static int huff_decode_token(const theora_huff_table_t *tab, bitreader_t *br) {
     int idx = 0;
     if (!tab || !br || tab->node_count <= 0)
@@ -482,6 +530,9 @@ static int huff_decode_token(const theora_huff_table_t *tab, bitreader_t *br) {
 ///   - Per-block parallel arrays: bcoded, qiis, tis, ncoeffs, mvects, coeffs.
 ///   - Per-MB and per-SB state arrays.
 /// Returns -1 on any malloc failure (caller cleans up via `theora_priv_free`).
+/// @param dec Decoder supplying validated frame geometry and chroma format.
+/// @param priv Private decoder state receiving layout tables and working arrays.
+/// @return 0 on success, or -1 for invalid layout, overflow, or allocation failure.
 static int theora_alloc_layout(theora_decoder_t *dec, theora_priv_t *priv) {
     int plane;
     int32_t block_offset = 0;
@@ -671,6 +722,12 @@ static void theora_free_frame_planes(theora_decoder_t *dec) {
 /// Result is clamped to the spec-defined range [floor, 4096], then
 /// to a per-coeff minimum (8 for DC luma, 2 for chroma DC, etc.).
 /// Used to pre-bake the qmat tables consulted during inverse quant.
+/// @param priv Parsed quantization setup state.
+/// @param qti Quantization type: intra or inter.
+/// @param pli Plane index.
+/// @param qi Quantizer index in [0, 63].
+/// @param ci Coefficient index in [0, 63].
+/// @return Clamped quantization scale for the specified lookup cell.
 static uint16_t theora_compute_qscale(const theora_priv_t *priv, int qti, int pli, int qi, int ci) {
     uint16_t qscale;
     uint16_t bm = 0;
@@ -706,6 +763,9 @@ static uint16_t theora_compute_qscale(const theora_priv_t *priv, int qti, int pl
 /// 64 entries), allocates the layout buffers, computes plane strides,
 /// and allocates the YUV output planes. Called once, just before the
 /// first compressed packet is decoded.
+/// @param dec Decoder receiving matrices, strides, and frame buffers.
+/// @param priv Fully parsed private setup state.
+/// @return 0 on success, or -1 for invalid sizing or allocation failure.
 static int theora_finish_setup(theora_decoder_t *dec, theora_priv_t *priv) {
     int32_t fw, fh;
     size_t y_size, c_size;
@@ -763,6 +823,10 @@ static int theora_finish_setup(theora_decoder_t *dec, theora_priv_t *priv) {
 ///   bitstream is malformed, or if any allocation fails; in those cases `dec->priv` is
 ///   left as set (callers free it via the decoder finalizer). Sets `headers_complete = 1`
 ///   on success so subsequent calls know the decoder is ready for frame data.
+/// @param dec Decoder receiving setup state and allocated frame buffers.
+/// @param data Borrowed setup packet.
+/// @param len Accessible packet length.
+/// @return 0 on success, or -1 for malformed syntax, bounds, or allocation failure.
 static int parse_setup_header(theora_decoder_t *dec, const uint8_t *data, size_t len) {
     theora_priv_t *priv;
     bitreader_t br;
@@ -862,6 +926,7 @@ static int parse_setup_header(theora_decoder_t *dec, const uint8_t *data, size_t
 ///
 /// Caller-allocated struct; this just clears the slab. Allocations
 /// happen lazily as headers and frames are parsed.
+/// @param dec Caller-owned decoder storage to zero.
 void theora_decoder_init(theora_decoder_t *dec) {
     memset(dec, 0, sizeof(*dec));
 }
@@ -871,6 +936,7 @@ void theora_decoder_init(theora_decoder_t *dec) {
 /// Frees the YUV reference frames (current, previous, golden) plus
 /// the private state via `theora_priv_free`. Re-zeros the struct
 /// so it could be reused with another `_init` call.
+/// @param dec Decoder to release; NULL is accepted as a no-op.
 void theora_decoder_free(theora_decoder_t *dec) {
     if (!dec)
         return;
@@ -884,6 +950,9 @@ void theora_decoder_free(theora_decoder_t *dec) {
 /// Header packets begin with type byte 0x80/0x81/0x82 followed by the
 /// magic ASCII string "theora". Used by Ogg demuxers to route packets
 /// to `decode_header` vs. `decode_frame`.
+/// @param data Borrowed packet bytes.
+/// @param len Accessible packet length.
+/// @return 1 for a recognized bounded Theora header signature, otherwise 0.
 int theora_is_header_packet(const uint8_t *data, size_t len) {
     if (!data || len < 7)
         return 0;
@@ -902,6 +971,10 @@ int theora_is_header_packet(const uint8_t *data, size_t len) {
 ///   - -1 on any structural error in the header payload.
 /// Theora requires id (0x80), comment (0x81), setup (0x82) in that
 /// order before the first data packet.
+/// @param dec Decoder receiving parsed header state.
+/// @param data Borrowed packet bytes.
+/// @param len Accessible packet length.
+/// @return 0 for a parsed header, 1 for a non-header packet, or -1 on invalid input/header syntax.
 int theora_decode_header(theora_decoder_t *dec, const uint8_t *data, size_t len) {
     if (!dec || !data || len < 1)
         return -1;
@@ -925,6 +998,10 @@ int theora_decode_header(theora_decoder_t *dec, const uint8_t *data, size_t len)
 /// 0=intra (keyframe), 1=inter (predicted from previous). 1-3 QI
 /// values follow, each indexing the per-color-plane quantization
 /// table; the count is encoded as 0/1/2 trailing flag bits.
+/// @param dec Decoder whose private state records whether a reference frame exists.
+/// @param br Bit reader positioned at a video data packet.
+/// @param fh Output frame-header structure.
+/// @return 0 on success, or -1 for invalid packet bits or an inter frame before the first keyframe.
 int decode_frame_header(theora_decoder_t *dec, bitreader_t *br, theora_frame_header_t *fh) {
     int has_more;
     if (br_read1(br) != 0)
@@ -958,6 +1035,8 @@ int decode_frame_header(theora_decoder_t *dec, bitreader_t *br, theora_frame_hea
 /// Six-bucket prefix code: 0 → 1; 10x → 2-3; 110xx → 4-7; 1110xxx →
 /// 8-15; 11110xxxx → 16-31; 11111xxxxxxxxxxxx → 32-4127. Used to
 /// run-length-encode the bcoded bitmap and other per-block flags.
+/// @param br Bit reader positioned at a long run.
+/// @return Decoded run length in [1, 4127]; reader failure is latched separately.
 static int decode_long_run_length(bitreader_t *br) {
     int bit0 = br_read1(br);
     if (bit0 == 0)
@@ -978,6 +1057,7 @@ static int decode_long_run_length(bitreader_t *br) {
 ///   `0` → run = 1; `10` → reads 1 bit → run in [2,3]; `110` → reads 2 bits → [4,7];
 ///   `111` → reads 4 bits → [8,23]. Short runs are used in the final pass of
 ///   `decode_block_flags` for blocks within partially-coded superblocks.
+/// @param br Bit reader positioned at a short run.
 /// @return Run length in [1, 23].
 static int decode_short_run_length(bitreader_t *br) {
     int bit0 = br_read1(br);
@@ -996,7 +1076,11 @@ static int decode_short_run_length(bitreader_t *br) {
 ///   (for block-level flags within partial superblocks). The run value is written to
 ///   that many consecutive entries in @p out. Returns 0 if exactly @p count entries
 ///   were written, -1 on bitstream failure or if a run length is nonsensical.
-/// @param long_runs  1 for long-run decoding (used for SB-level arrays), 0 for short.
+/// @param br Bit reader positioned at the first encoded run.
+/// @param out Output bit array.
+/// @param count Number of entries to fill.
+/// @param long_runs 1 for superblock long runs, 0 for block short runs.
+/// @return 0 after filling exactly @p count entries, otherwise -1.
 static int decode_rle_bits(bitreader_t *br, uint8_t *out, int count, int long_runs) {
     int filled = 0;
     while (filled < count) {
@@ -1018,6 +1102,10 @@ static int decode_rle_bits(bitreader_t *br, uint8_t *out, int count, int long_ru
 ///   3. Per-block flags for blocks inside partially-coded SBs (short-run RLE).
 ///   Each pass requires a temporary heap buffer sized to the number of items decoded
 ///   in that pass; both buffers are freed before returning.
+/// @param dec Decoder geometry used to traverse coded block order.
+/// @param priv Private block and superblock state receiving flags.
+/// @param br Bit reader positioned at block flags.
+/// @param frame_type 0 for intra or 1 for inter.
 /// @return 0 on success, -1 on bitstream error or allocation failure.
 int decode_block_flags(theora_decoder_t *dec,
                        theora_priv_t *priv,
@@ -1106,6 +1194,8 @@ int decode_block_flags(theora_decoder_t *dec,
 /// @details The default mode alphabet is a simple unary code where mode N is
 ///   encoded as N '1' bits followed by a '0' (except mode 0 which is just '0').
 ///   Returns the decoded mode index in [0,7] or -1 on bitstream failure.
+/// @param br Bit reader positioned at a macroblock mode.
+/// @return Mode alphabet index in [0, 7], or -1 on malformed or truncated input.
 static int decode_mb_mode_huff(bitreader_t *br) {
     int code = 0;
     for (int len = 1; len <= 8; len++) {
@@ -1136,6 +1226,8 @@ static int decode_mb_mode_huff(bitreader_t *br) {
 /// @details Used to determine whether motion-vector modes need to be decoded for a
 ///   macroblock: if none of its four luma blocks (Y0..Y3) are coded, the macroblock
 ///   is effectively uncoded and its mode defaults to 0 (INTER_NOMV).
+/// @param priv Private decoder block and macroblock layout.
+/// @param mbi Coded-order macroblock index.
 /// @return 1 if any luma block index is valid and coded, 0 otherwise.
 static int mb_has_coded_luma(const theora_priv_t *priv, int mbi) {
     for (int i = 0; i < 4; i++) {
@@ -1153,6 +1245,10 @@ static int mb_has_coded_luma(const theora_priv_t *priv, int mbi) {
 ///   - Schemes 1–6: one of the six pre-defined mode alphabets.
 ///   - Scheme 7: raw 3-bit mode index per MB (no Huffman coding).
 ///   Macroblocks without coded luma blocks are always assigned mode 0 (INTER_NOMV).
+/// @param dec Decoder context; currently unused by mode parsing.
+/// @param priv Private macroblock state receiving decoded modes.
+/// @param br Bit reader positioned at the mode scheme.
+/// @param frame_type 0 for intra or 1 for inter.
 /// @return 0 on success, -1 on bitstream error.
 int decode_mb_modes(theora_decoder_t *dec, theora_priv_t *priv, bitreader_t *br, int frame_type) {
     (void)dec;
@@ -1206,6 +1302,7 @@ int decode_mb_modes(theora_decoder_t *dec, theora_priv_t *priv, bitreader_t *br,
 ///   short codewords; larger magnitudes (4..39) use progressively longer codes. The
 ///   sign of each non-zero displacement is encoded as an additional bit after the
 ///   magnitude codeword. Returns 0 on bitstream failure (sets br->failed = 1).
+/// @param br Bit reader positioned at one motion-vector component.
 /// @return Signed displacement in approximately [-31, +31], or 0 on error.
 static int decode_mv_component_huff(bitreader_t *br) {
     int code = 0;
@@ -1267,6 +1364,10 @@ static int decode_mv_component_huff(bitreader_t *br) {
 ///   their zero-initialized MV from the `memset` at the top of `decode_motion_vectors`.
 ///   This broadcast pattern is required because the residual reconstruction step
 ///   operates per-block and needs the MV stored alongside the block data.
+/// @param priv Private block/macroblock state receiving vectors.
+/// @param mbi Coded-order macroblock index.
+/// @param mvx Horizontal motion component.
+/// @param mvy Vertical motion component.
 static void assign_mv_to_coded_blocks(const theora_priv_t *priv, int mbi, int mvx, int mvy) {
     for (int i = 0; i < 4; i++) {
         int bi = priv->mbs[mbi].luma[i];
@@ -1288,14 +1389,18 @@ static void assign_mv_to_coded_blocks(const theora_priv_t *priv, int mbi, int mv
 
 /// @brief Decode all macroblock motion vectors for an inter frame.
 /// @details The MV encoding scheme is determined by a 1-bit selector:
-///   - Mode 0: each MV component is read from a 6-bit signed fixed value.
-///   - Mode 1: each MV component is decoded with `decode_mv_component_huff`.
+///   - Mode 0: each MV component is decoded with `decode_mv_component_huff`.
+///   - Mode 1: each magnitude is read from five bits followed by a sign bit.
 ///   The MV for each coded macroblock is decoded according to its prediction mode:
 ///   - INTER modes: one MV per MB, assigned to all coded blocks via
 ///     `assign_mv_to_coded_blocks`. Last-MV tracking (`last1x`/`last1y`,
 ///     `last2x`/`last2y`) enables the INTER_MV_LAST and INTER_MV_LAST2 modes.
 ///   - GOLDEN modes use the same MV decoding but reference the golden frame buffer.
 ///   - INTRA/INTER_NOMV: MV = (0, 0).
+/// @param dec Decoder supplying chroma subsampling geometry.
+/// @param priv Private block/macroblock state receiving motion vectors.
+/// @param br Bit reader positioned at the motion-vector coding selector.
+/// @param frame_type 0 for intra or 1 for inter.
 /// @return 0 on success, -1 on bitstream error.
 int decode_motion_vectors(theora_decoder_t *dec,
                           theora_priv_t *priv,
@@ -1454,6 +1559,9 @@ int decode_motion_vectors(theora_decoder_t *dec,
 ///   long-run RLE. The final QII for each block determines which qi[] entry selects
 ///   the AC scale factor. All qiis are zero-initialized before the pass loop so blocks
 ///   with fewer QII bits than available QP levels default to QII=0.
+/// @param priv Private coded-block state receiving QII selectors.
+/// @param br Bit reader positioned at QII runs.
+/// @param nqi Number of frame quantizer indices in [1, 3].
 /// @return 0 on success, -1 on bitstream error or allocation failure.
 int decode_qiis(theora_priv_t *priv, bitreader_t *br, int nqi) {
     memset(priv->qiis, 0, (size_t)priv->total_blocks);
@@ -1490,6 +1598,12 @@ int decode_qiis(theora_priv_t *priv, bitreader_t *br, int nqi) {
 ///   remaining uncompleted coded blocks as the run (a "clear to end of frame" token).
 ///   The @p *eobs counter is decremented for each subsequent coded block that falls
 ///   within the run, shortcutting the Huffman decode loop in `decode_coefficients`.
+/// @param priv Private coefficient state to update.
+/// @param br Bit reader positioned after the EOB token.
+/// @param token EOB token in [0, 6].
+/// @param bi Coded-order block index.
+/// @param ti Current transform coefficient index.
+/// @param eobs Output counter for subsequent blocks covered by the run.
 /// @return 0 on success, -1 on bitstream error or invalid run.
 static int decode_eob_token(
     theora_priv_t *priv, bitreader_t *br, int token, int bi, int ti, int *eobs) {
@@ -1551,6 +1665,11 @@ static int decode_eob_token(
 ///   bits. Tokens 23–31 combine zero runs with a trailing non-zero coefficient. All
 ///   token handlers advance `priv->tis[bi]` to track where the next coefficient lands;
 ///   `priv->ncoeffs[bi]` is also updated to reflect the new highest populated index.
+/// @param priv Private coefficient state to update.
+/// @param br Bit reader positioned after the coefficient token.
+/// @param token Coefficient token in [7, 31].
+/// @param bi Coded-order block index.
+/// @param ti Current transform coefficient index.
 /// @return 0 on success, -1 on bitstream error or out-of-range index.
 static int decode_coeff_token(theora_priv_t *priv, bitreader_t *br, int token, int bi, int ti) {
     int sign = 0;
@@ -1718,6 +1837,7 @@ static int decode_coeff_token(theora_priv_t *priv, bitreader_t *br, int token, i
 ///   (15–27), and high AC (28–63). Each band can use a different Huffman table
 ///   for luma and chroma blocks. The group index is combined with `hti_l`/`hti_c`
 ///   to select the specific Huffman table from `priv->huff`.
+/// @param ti Transform coefficient index in [0, 63].
 /// @return Huffman group index in [0, 4].
 static int huffman_group_for_ti(int ti) {
     if (ti == 0)
@@ -1741,6 +1861,8 @@ static int huffman_group_for_ti(int ti) {
 ///   - Otherwise, a token is decoded from the appropriate Huffman table, dispatched
 ///     to either `decode_eob_token` or `decode_coeff_token`.
 ///   Validation at the end confirms every coded block consumed all 64 positions.
+/// @param priv Private coded-block and Huffman state receiving coefficients.
+/// @param br Bit reader positioned at coefficient table selectors and tokens.
 /// @return 0 on success, -1 on bitstream error or validation failure.
 int decode_coefficients(theora_priv_t *priv, bitreader_t *br) {
     int hti_l = 0;
@@ -1801,6 +1923,9 @@ int decode_coefficients(theora_priv_t *priv, bitreader_t *br) {
 ///   qualifies, `lastdc[rfi]` is returned as a fall-back. The three-neighbor clamping
 ///   logic (lines ~1616–1623) guards against DC drift when the weighted average deviates
 ///   by more than 128 from any single neighbor.
+/// @param priv Private block layout, mode, coded-flag, and coefficient state.
+/// @param lastdc Last DC value for each of the three reference-frame slots.
+/// @param bi Coded-order block index to predict.
 /// @return DC prediction value in [-32767, 32767].
 int compute_dc_pred(const theora_priv_t *priv, const int16_t lastdc[3], int bi) {
     static const int dx[4] = {-1, -1, 0, 1};

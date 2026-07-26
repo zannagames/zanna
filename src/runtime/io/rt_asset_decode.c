@@ -7,22 +7,25 @@
 //
 // File: src/runtime/io/rt_asset_decode.c
 // Purpose: Extension-based type dispatch for the asset manager. Decodes raw
-//          bytes into typed runtime objects (Pixels, Sound, Mesh3D, etc.)
-//          using the appropriate format decoder.
+//          bytes into Pixels or Sound runtime objects using the appropriate
+//          in-memory or file-backed format decoder.
 //
 // Key invariants:
 //   - JPEG, PNG, GIF, and Sound decoding use in-memory entry points.
 //   - BMP currently spills to an exclusive temporary file for its path-based loader.
 //   - Extension matching is case-insensitive.
-//   - Returns NULL for unknown extensions and failed recognized decodes; the caller
-//     falls back to Bytes in either case.
+//   - Returns NULL for both unknown extensions and failed recognized decodes;
+//     rt_asset_extension_is_typed() lets the caller distinguish those cases so
+//     corrupt typed assets never silently become Bytes.
 //
 // Ownership/Lifetime:
 //   - Input data buffer is borrowed (not freed).
 //   - Returned objects are GC-managed.
 //   - Temp files are cleaned up after use.
 //
-// Links: rt_asset.c (consumer), rt_pixels_io.c, rt_audio.c
+// Links: src/runtime/io/rt_asset.c,
+//        src/runtime/graphics/2d/rt_pixels_io.c,
+//        src/runtime/audio/rt_audio.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -86,6 +89,10 @@ extern void rt_trap_set_recovery(jmp_buf *buf);
 extern void rt_trap_clear_recovery(void);
 extern const char *rt_trap_get_error(void);
 
+/// @brief Select a bounded, path-safe suffix for a temporary decode file.
+/// @param ext Candidate extension beginning with `.`.
+/// @return Borrowed @p ext when it is at most 32 bytes and contains no path
+/// separator or colon; otherwise the static suffix `.tmp`.
 static const char *asset_temp_suffix(const char *ext) {
     if (!ext || ext[0] != '.')
         return ".tmp";
@@ -100,6 +107,10 @@ static const char *asset_temp_suffix(const char *ext) {
 }
 
 #ifdef _WIN32
+/// @brief Convert a NUL-terminated UTF-16 path to strict UTF-8.
+/// @param wide UTF-16 input string.
+/// @return Heap-allocated UTF-8 string owned by the caller, or `NULL` for
+/// invalid input, conversion failure, or allocation failure.
 static char *asset_decode_wide_to_utf8_dup(const wchar_t *wide) {
     if (!wide)
         return NULL;
@@ -118,6 +129,8 @@ static char *asset_decode_wide_to_utf8_dup(const wchar_t *wide) {
 }
 #endif
 
+/// @brief Best-effort removal of a temporary file.
+/// @param path NUL-terminated UTF-8 path previously created by this unit.
 static void asset_remove_temp_path(const char *path) {
 #ifdef _WIN32
     wchar_t *wide = rt_file_path_utf8_to_wide(path);
@@ -130,6 +143,9 @@ static void asset_remove_temp_path(const char *path) {
 #endif
 }
 
+/// @brief Best-effort removal of an empty temporary directory.
+/// @param path NUL-terminated UTF-8 directory path previously created by this
+/// unit.
 static void asset_remove_temp_dir(const char *path) {
 #ifdef _WIN32
     wchar_t *wide = rt_file_path_utf8_to_wide(path);
@@ -161,6 +177,11 @@ static void asset_cleanup_tempfile(char **tmppath, char **tmpdir_path) {
     }
 }
 
+/// @brief Join a temporary directory and leaf with the native separator.
+/// @param dir NUL-terminated directory path.
+/// @param leaf NUL-terminated leaf name.
+/// @return Heap-allocated joined path owned by the caller, or `NULL` for
+/// invalid input, size overflow, or allocation failure.
 static char *asset_join_temp_path(const char *dir, const char *leaf) {
     if (!dir || !leaf)
         return NULL;
@@ -269,6 +290,9 @@ static void *asset_decode_gif_memory(const uint8_t *data, size_t size) {
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 /// @brief Return 1 if `name`'s extension matches `ext` (case-insensitive), 0 otherwise.
+/// @param name NUL-terminated asset name whose final suffix is inspected.
+/// @param ext NUL-terminated extension including its leading dot.
+/// @return 1 for a case-insensitive match; otherwise 0.
 static int iext(const char *name, const char *ext) {
     const char *dot = strrchr(name, '.');
     if (!dot)
@@ -286,6 +310,14 @@ static int iext(const char *name, const char *ext) {
 /// from embedded/mounted assets, this helper spills the bytes to an exclusively
 /// created temp file, calls the path-based loader, and unlinks it. The current
 /// caller uses this path for BMP; JPEG, PNG, GIF, and audio decode in memory.
+/// A loader trap is captured long enough to release the runtime path and remove
+/// the private file/directory, then propagated with its original diagnostic.
+/// @param data Borrowed encoded file bytes.
+/// @param size Number of accessible bytes in @p data.
+/// @param ext Extension used for the private temporary file.
+/// @param loader Path-based decoder invoked with a temporary runtime string.
+/// @return The loader's GC-managed result, or `NULL` when temporary-file setup,
+/// writing, runtime-string creation, or decoding fails.
 static void *load_via_tempfile(const uint8_t *data,
                                size_t size,
                                const char *ext,
@@ -493,14 +525,12 @@ static void *load_via_tempfile(const uint8_t *data,
 
 // ─── rt_asset_decode_typed ──────────────────────────────────────────────────
 
-/// @brief Decode raw bytes into a typed object based on file extension.
-/// @param name  Asset name (for extension detection).
-/// @param data  Raw asset bytes.
-/// @param size  Size of data.
-/// @return Typed GC object, or NULL if the extension is unknown or decoding fails.
 /// @brief Return 1 when `name`'s extension has a registered typed decoder
 ///        (image or audio), 0 otherwise. Lets `rt_asset_load` distinguish an
 ///        UNRECOGNIZED extension from a RECOGNIZED decoder failure (VDOC-181).
+/// @param name NUL-terminated asset name used for extension dispatch.
+/// @return 1 for JPEG, WAV, OGG, MP3, PNG, BMP, or GIF suffixes,
+/// case-insensitively; otherwise 0.
 int rt_asset_extension_is_typed(const char *name) {
     if (!name)
         return 0;
@@ -508,6 +538,15 @@ int rt_asset_extension_is_typed(const char *name) {
            iext(name, ".mp3") || iext(name, ".png") || iext(name, ".bmp") || iext(name, ".gif");
 }
 
+/// @brief Decode raw asset bytes according to a recognized filename extension.
+/// @details JPEG, PNG, first-frame GIF, and audio decoding operate directly on
+/// memory. BMP uses a private exclusive temporary file because its decoder is
+/// path-based.
+/// @param name NUL-terminated asset name used for extension dispatch.
+/// @param data Borrowed encoded asset bytes.
+/// @param size Number of accessible bytes in @p data.
+/// @return Fresh GC-managed Pixels or Sound object, or `NULL` for invalid
+/// input, unknown extension, or decode failure.
 void *rt_asset_decode_typed(const char *name, const uint8_t *data, size_t size) {
     if (!name || !data || size == 0)
         return NULL;

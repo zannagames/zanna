@@ -59,10 +59,17 @@ typedef struct rt_memstream_impl {
     int64_t pos;      ///< Current position.
 } rt_memstream_impl;
 
+/// @brief Test whether an opaque pointer is a complete MemStream object.
+/// @param obj Candidate runtime pointer.
+/// @return 1 for a managed object with the MemStream class and payload size; otherwise 0.
 int8_t rt_memstream_is_handle(void *obj) {
     return rt_obj_is_instance(obj, RT_MEMSTREAM_CLASS_ID, sizeof(rt_memstream_impl)) ? 1 : 0;
 }
 
+/// @brief Validate and unwrap an opaque MemStream receiver.
+/// @param obj Borrowed opaque runtime receiver.
+/// @param context Trap diagnostic for an invalid receiver; may be NULL.
+/// @return Validated implementation payload, or NULL as trap-control fallback.
 static rt_memstream_impl *memstream_require(void *obj, const char *context) {
     if (!rt_memstream_is_handle(obj)) {
         rt_trap(context ? context : "MemStream: invalid stream");
@@ -72,6 +79,7 @@ static rt_memstream_impl *memstream_require(void *obj, const char *context) {
 }
 
 /// @brief Finalizer callback to free the buffer when collected.
+/// @param obj MemStream payload being finalized; NULL is ignored.
 static void rt_memstream_finalize(void *obj) {
     if (!obj)
         return;
@@ -124,16 +132,29 @@ static int ensure_capacity(rt_memstream_impl *ms, int64_t required) {
     return 1;
 }
 
+/// @brief Preserve an active trap diagnostic across recovery cleanup.
+/// @param[out] buffer Destination for the copied message.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Message used when the trap subsystem has no current text.
 static void memstream_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Release an owned runtime object and finalize it at zero references.
+/// @param obj Owned object reference; NULL is ignored.
 static void memstream_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Reserve constructor capacity while cleanup owns the partial stream.
+/// @details Catches allocation traps, releases @p ms (thereby finalizing its buffer), and rethrows
+///          the preserved diagnostic.
+/// @param ms Owned partially constructed MemStream.
+/// @param required Minimum addressable byte count.
+/// @param fallback Diagnostic used when no more specific trap text is available.
+/// @return 1 on success; otherwise releases the stream, traps, and returns 0 as fallback.
 static int memstream_ensure_capacity_or_release(rt_memstream_impl *ms,
                                                 int64_t required,
                                                 const char *fallback) {
@@ -160,6 +181,9 @@ static int memstream_ensure_capacity_or_release(rt_memstream_impl *ms,
 
 /// @brief Ensure we can write 'count' bytes at current position.
 /// Expands buffer and fills gaps with zeros if needed.
+/// @param ms Valid MemStream implementation.
+/// @param count Nonnegative byte count that will become writable.
+/// @return 1 when capacity/length were prepared; otherwise traps and returns 0.
 static int prepare_write(rt_memstream_impl *ms, int64_t count) {
     if (count < 0 || ms->pos > INT64_MAX - count) {
         rt_trap("MemStream: write position overflow");
@@ -181,6 +205,10 @@ static int prepare_write(rt_memstream_impl *ms, int64_t count) {
 }
 
 /// @brief Check that we have enough bytes to read.
+/// @param ms Valid MemStream implementation.
+/// @param count Requested nonnegative byte count.
+/// @param op Trap diagnostic for an out-of-bounds read.
+/// @return 1 when `[pos,pos+count)` lies within logical length; otherwise traps and returns 0.
 static int check_read(rt_memstream_impl *ms, int64_t count, const char *op) {
     if (count < 0 || count > ms->len || ms->pos > ms->len - count) {
         rt_trap(op);
@@ -194,6 +222,7 @@ static int check_read(rt_memstream_impl *ms, int64_t count, const char *op) {
 //=============================================================================
 
 /// @brief Construct an empty in-memory stream. Buffer grows on demand. GC-managed.
+/// @return Fresh runtime-managed MemStream at position and length zero.
 void *rt_memstream_new(void) {
     rt_memstream_impl *ms = (rt_memstream_impl *)rt_obj_new_i64(RT_MEMSTREAM_CLASS_ID,
                                                                 (int64_t)sizeof(rt_memstream_impl));
@@ -213,6 +242,8 @@ void *rt_memstream_new(void) {
 
 /// @brief Construct a stream pre-allocated to `capacity` bytes — useful when the final size is
 /// known up front to avoid mid-write reallocations.
+/// @param capacity Nonnegative minimum capacity hint; zero keeps allocation lazy.
+/// @return Fresh empty MemStream, or NULL after trapping on invalid input/allocation failure.
 void *rt_memstream_new_capacity(int64_t capacity) {
     if (capacity < 0) {
         rt_trap("MemStream.NewCapacity: negative capacity");
@@ -241,6 +272,8 @@ void *rt_memstream_new_capacity(int64_t capacity) {
 
 /// @brief Construct a stream initialized with a copy of `bytes`. Position starts at 0; subsequent
 /// reads consume the data, writes append/overwrite. The original Bytes is NOT retained.
+/// @param bytes Borrowed valid Bytes object to copy.
+/// @return Fresh MemStream containing the copied bytes, or NULL after trapping on failure.
 void *rt_memstream_from_bytes(void *bytes) {
     if (!bytes || !rt_bytes_is_bytes(bytes)) {
         rt_trap("MemStream.FromBytes: invalid bytes");
@@ -287,6 +320,8 @@ void *rt_memstream_from_bytes(void *bytes) {
 //=============================================================================
 
 /// @brief Read the current cursor position (0 = start of buffer).
+/// @param obj Borrowed MemStream receiver.
+/// @return Current nonnegative cursor position.
 int64_t rt_memstream_get_pos(void *obj) {
     rt_memstream_impl *ms = memstream_require(obj, "MemStream.Pos: invalid stream");
     return ms ? ms->pos : 0;
@@ -294,6 +329,8 @@ int64_t rt_memstream_get_pos(void *obj) {
 
 /// @brief Move the cursor to `pos`. Negative input traps; positions past the buffer end are
 /// allowed (next write zero-fills the gap).
+/// @param obj Borrowed MemStream receiver.
+/// @param pos New nonnegative absolute byte position.
 void rt_memstream_set_pos(void *obj, int64_t pos) {
     if (!obj) {
         rt_trap("MemStream.set_Pos: null stream");
@@ -310,12 +347,16 @@ void rt_memstream_set_pos(void *obj, int64_t pos) {
 }
 
 /// @brief Read the logical length (high-water-mark of writes); distinct from capacity.
+/// @param obj Borrowed MemStream receiver.
+/// @return Logical byte length.
 int64_t rt_memstream_get_len(void *obj) {
     rt_memstream_impl *ms = memstream_require(obj, "MemStream.Len: invalid stream");
     return ms ? ms->len : 0;
 }
 
 /// @brief Read the underlying buffer's allocated size (>= length). Doubles on each grow.
+/// @param obj Borrowed MemStream receiver.
+/// @return Allocated capacity in bytes.
 int64_t rt_memstream_get_capacity(void *obj) {
     rt_memstream_impl *ms = memstream_require(obj, "MemStream.Capacity: invalid stream");
     return ms ? ms->capacity : 0;
@@ -335,6 +376,8 @@ int64_t rt_memstream_get_capacity(void *obj) {
 // =============================================================================
 
 /// @brief Read 1 byte as signed int8 (sign-extended to int64). Advances pos by 1.
+/// @param obj Borrowed MemStream receiver.
+/// @return Signed 8-bit value widened to int64; insufficient data traps.
 int64_t rt_memstream_read_i8(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadI8: null stream");
@@ -351,6 +394,8 @@ int64_t rt_memstream_read_i8(void *obj) {
 }
 
 /// @brief Write one signed byte. Advances pos by 1.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Value in the inclusive signed 8-bit range.
 void rt_memstream_write_i8(void *obj, int64_t value) {
     if (!obj) {
         rt_trap("MemStream.WriteI8: null stream");
@@ -370,6 +415,8 @@ void rt_memstream_write_i8(void *obj, int64_t value) {
 }
 
 /// @brief Read 1 byte as unsigned uint8 (zero-extended to int64). Advances pos by 1.
+/// @param obj Borrowed MemStream receiver.
+/// @return Unsigned 8-bit value widened to int64; insufficient data traps.
 int64_t rt_memstream_read_u8(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadU8: null stream");
@@ -386,6 +433,8 @@ int64_t rt_memstream_read_u8(void *obj) {
 }
 
 /// @brief Write 1 byte (low 8 bits of `value`). Advances pos by 1.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Value in the inclusive unsigned 8-bit range; other values trap.
 void rt_memstream_write_u8(void *obj, int64_t value) {
     if (!obj) {
         rt_trap("MemStream.WriteU8: null stream");
@@ -405,6 +454,8 @@ void rt_memstream_write_u8(void *obj, int64_t value) {
 }
 
 /// @brief Read 2 bytes as signed int16 (little-endian, sign-extended to int64). Advances pos by 2.
+/// @param obj Borrowed MemStream receiver.
+/// @return Signed 16-bit value widened to int64; insufficient data traps.
 int64_t rt_memstream_read_i16(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadI16: null stream");
@@ -422,6 +473,8 @@ int64_t rt_memstream_read_i16(void *obj) {
 }
 
 /// @brief Write a signed 16-bit value in little-endian order. Advances pos by 2.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Value in the inclusive signed 16-bit range.
 void rt_memstream_write_i16(void *obj, int64_t value) {
     if (!obj) {
         rt_trap("MemStream.WriteI16: null stream");
@@ -445,6 +498,8 @@ void rt_memstream_write_i16(void *obj, int64_t value) {
 
 /// @brief Read 2 bytes as unsigned uint16 (little-endian, zero-extended to int64). Advances pos
 /// by 2.
+/// @param obj Borrowed MemStream receiver.
+/// @return Unsigned 16-bit value widened to int64; insufficient data traps.
 int64_t rt_memstream_read_u16(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadU16: null stream");
@@ -462,6 +517,8 @@ int64_t rt_memstream_read_u16(void *obj) {
 }
 
 /// @brief Write an unsigned 16-bit value in little-endian order. Advances pos by 2.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Value in the inclusive unsigned 16-bit range.
 void rt_memstream_write_u16(void *obj, int64_t value) {
     if (!obj) {
         rt_trap("MemStream.WriteU16: null stream");
@@ -483,6 +540,8 @@ void rt_memstream_write_u16(void *obj, int64_t value) {
 }
 
 /// @brief Read 4 bytes as signed int32 (little-endian, sign-extended to int64). Advances pos by 4.
+/// @param obj Borrowed MemStream receiver.
+/// @return Signed 32-bit value widened to int64; insufficient data traps.
 int64_t rt_memstream_read_i32(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadI32: null stream");
@@ -501,6 +560,8 @@ int64_t rt_memstream_read_i32(void *obj) {
 }
 
 /// @brief Write a signed 32-bit value in little-endian order. Advances pos by 4.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Value in the inclusive signed 32-bit range.
 void rt_memstream_write_i32(void *obj, int64_t value) {
     if (!obj) {
         rt_trap("MemStream.WriteI32: null stream");
@@ -526,6 +587,8 @@ void rt_memstream_write_i32(void *obj, int64_t value) {
 
 /// @brief Read 4 bytes as unsigned uint32 (little-endian, zero-extended to int64). Advances pos
 /// by 4.
+/// @param obj Borrowed MemStream receiver.
+/// @return Unsigned 32-bit value widened to int64; insufficient data traps.
 int64_t rt_memstream_read_u32(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadU32: null stream");
@@ -544,6 +607,8 @@ int64_t rt_memstream_read_u32(void *obj) {
 }
 
 /// @brief Write an unsigned 32-bit value in little-endian order. Advances pos by 4.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Value in the inclusive unsigned 32-bit range.
 void rt_memstream_write_u32(void *obj, int64_t value) {
     if (!obj) {
         rt_trap("MemStream.WriteU32: null stream");
@@ -567,6 +632,8 @@ void rt_memstream_write_u32(void *obj, int64_t value) {
 }
 
 /// @brief Read 8 bytes as signed int64 (little-endian). Advances pos by 8.
+/// @param obj Borrowed MemStream receiver.
+/// @return Signed 64-bit value; insufficient data traps.
 int64_t rt_memstream_read_i64(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadI64: null stream");
@@ -591,6 +658,8 @@ int64_t rt_memstream_read_i64(void *obj) {
 }
 
 /// @brief Write 8 bytes (`value`, little-endian). Advances pos by 8.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Signed 64-bit value to encode.
 void rt_memstream_write_i64(void *obj, int64_t value) {
     if (!obj) {
         rt_trap("MemStream.WriteI64: null stream");
@@ -619,6 +688,8 @@ void rt_memstream_write_i64(void *obj, int64_t value) {
 //=============================================================================
 
 /// @brief Read 4 bytes as IEEE-754 float, returned as double. Little-endian.
+/// @param obj Borrowed MemStream receiver.
+/// @return Decoded binary32 value widened to double; insufficient data traps.
 double rt_memstream_read_f32(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadF32: null stream");
@@ -639,6 +710,8 @@ double rt_memstream_read_f32(void *obj) {
 }
 
 /// @brief Write 4 bytes as IEEE-754 float (double → float cast, little-endian). Advances pos by 4.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Value converted to binary32 before encoding.
 void rt_memstream_write_f32(void *obj, double value) {
     if (!obj) {
         rt_trap("MemStream.WriteF32: null stream");
@@ -661,6 +734,8 @@ void rt_memstream_write_f32(void *obj, double value) {
 }
 
 /// @brief Read 8 bytes as IEEE-754 double. Little-endian.
+/// @param obj Borrowed MemStream receiver.
+/// @return Decoded binary64 value; insufficient data traps.
 double rt_memstream_read_f64(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ReadF64: null stream");
@@ -682,6 +757,8 @@ double rt_memstream_read_f64(void *obj) {
 }
 
 /// @brief Write 8 bytes as IEEE-754 double (little-endian). Advances pos by 8.
+/// @param obj Borrowed MemStream receiver.
+/// @param value Binary64 value to encode.
 void rt_memstream_write_f64(void *obj, double value) {
     if (!obj) {
         rt_trap("MemStream.WriteF64: null stream");
@@ -711,6 +788,9 @@ void rt_memstream_write_f64(void *obj, double value) {
 //=============================================================================
 
 /// @brief Read `count` raw bytes into a fresh Bytes object. Advances pos by `count`.
+/// @param obj Borrowed MemStream receiver.
+/// @param count Nonnegative number of bytes to copy.
+/// @return Fresh Bytes snapshot of the requested span; invalid ranges/allocation failure trap.
 void *rt_memstream_read_bytes(void *obj, int64_t count) {
     if (!obj) {
         rt_trap("MemStream.ReadBytes: null stream");
@@ -739,6 +819,8 @@ void *rt_memstream_read_bytes(void *obj, int64_t count) {
 }
 
 /// @brief Write all bytes from a Bytes object at the current position. Grows buffer as needed.
+/// @param obj Borrowed MemStream receiver.
+/// @param bytes Borrowed valid Bytes object whose complete payload is copied.
 void rt_memstream_write_bytes(void *obj, void *bytes) {
     if (!obj) {
         rt_trap("MemStream.WriteBytes: null stream");
@@ -768,6 +850,10 @@ void rt_memstream_write_bytes(void *obj, void *bytes) {
 
 /// @brief Read `count` bytes as a UTF-8 rt_string. Caller must know the byte count up front
 /// (no length prefix; for self-describing strings, use a `write_i32(len)` + `write_str` pattern).
+/// @details Bytes are copied verbatim without UTF-8 validation and embedded NUL bytes are retained.
+/// @param obj Borrowed MemStream receiver.
+/// @param count Nonnegative byte count to consume.
+/// @return Fresh runtime string containing the selected bytes; invalid ranges/allocation trap.
 rt_string rt_memstream_read_str(void *obj, int64_t count) {
     if (!obj) {
         rt_trap("MemStream.ReadStr: null stream");
@@ -795,6 +881,9 @@ rt_string rt_memstream_read_str(void *obj, int64_t count) {
 
 /// @brief Write a UTF-8 string's raw bytes (no length prefix, no terminator). Pair with
 /// `read_str(byte_count)` — caller must track length out-of-band.
+/// @details Uses the runtime byte length rather than `strlen`, preserving embedded NUL bytes.
+/// @param obj Borrowed MemStream receiver.
+/// @param text Borrowed non-null runtime string to copy.
 void rt_memstream_write_str(void *obj, rt_string text) {
     if (!obj) {
         rt_trap("MemStream.WriteStr: null stream");
@@ -829,6 +918,8 @@ void rt_memstream_write_str(void *obj, rt_string text) {
 
 /// @brief Snapshot the stream's current contents (positions 0..len-1) as a fresh Bytes object.
 /// Doesn't affect cursor position. Use to extract the result of a build-up sequence of writes.
+/// @param obj Borrowed MemStream receiver.
+/// @return Fresh Bytes copy of the complete logical contents.
 void *rt_memstream_to_bytes(void *obj) {
     if (!obj) {
         rt_trap("MemStream.ToBytes: null stream");
@@ -851,6 +942,7 @@ void *rt_memstream_to_bytes(void *obj) {
 
 /// @brief Reset length and position to 0. Does NOT shrink the buffer (so reuse keeps the
 /// already-allocated capacity for the next batch of writes).
+/// @param obj Borrowed MemStream receiver.
 void rt_memstream_clear(void *obj) {
     if (!obj) {
         rt_trap("MemStream.Clear: null stream");
@@ -865,11 +957,15 @@ void rt_memstream_clear(void *obj) {
 }
 
 /// @brief Alias for `set_pos`. Familiar name for stdio-style users.
+/// @param obj Borrowed MemStream receiver.
+/// @param pos New nonnegative absolute byte position.
 void rt_memstream_seek(void *obj, int64_t pos) {
     rt_memstream_set_pos(obj, pos);
 }
 
 /// @brief Advance the cursor by `count` bytes (relative seek). Like `set_pos(pos + count)`.
+/// @param obj Borrowed MemStream receiver.
+/// @param count Signed relative byte displacement; overflow or a negative result traps.
 void rt_memstream_skip(void *obj, int64_t count) {
     if (!obj) {
         rt_trap("MemStream.Skip: null stream");

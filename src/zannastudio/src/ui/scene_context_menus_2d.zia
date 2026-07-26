@@ -21,6 +21,7 @@
 
 module scene_context_menus_2d;
 
+bind "scene_clipboard";
 bind "scene_editor_2d";
 
 bind GUI = Zanna.GUI;
@@ -43,6 +44,14 @@ bind Input = Zanna.Input;
 class SceneContextMenus2D {
     expose GUI.ContextMenu hierarchyMenu;
     expose GUI.ContextMenu canvasMenu;
+    expose GUI.MenuItem canvasAddObjectHere;
+    expose GUI.MenuItem canvasCopyTiles;
+    expose GUI.MenuItem canvasCutTiles;
+    expose GUI.MenuItem canvasDeleteTiles;
+    expose GUI.MenuItem canvasPasteTiles;
+    expose GUI.MenuItem canvasStampFromRegion;
+    hide Number canvasPointX;
+    hide Number canvasPointY;
     expose GUI.MenuItem hierarchyAddRoot;
     expose GUI.MenuItem hierarchyAddChild;
     expose GUI.MenuItem hierarchyRename;
@@ -60,6 +69,14 @@ class SceneContextMenus2D {
     expose func init() {
         hierarchyMenu = null;
         canvasMenu = null;
+        canvasAddObjectHere = null;
+        canvasCopyTiles = null;
+        canvasCutTiles = null;
+        canvasDeleteTiles = null;
+        canvasPasteTiles = null;
+        canvasStampFromRegion = null;
+        canvasPointX = 0.0;
+        canvasPointY = 0.0;
         hierarchyAddRoot = null;
         hierarchyAddChild = null;
         hierarchyRename = null;
@@ -89,6 +106,15 @@ class SceneContextMenus2D {
         hierarchyMoveLater = hierarchyMenu.AddItem("Move Later");
 
         canvasMenu = GUI.ContextMenu.New();
+        canvasAddObjectHere = canvasMenu.AddItem("Add Object Here");
+        canvasMenu.AddSeparator();
+        canvasCopyTiles = canvasMenu.AddItem("Copy Tiles");
+        canvasCutTiles = canvasMenu.AddItem("Cut Tiles");
+        canvasDeleteTiles = canvasMenu.AddItem("Delete Tiles");
+        canvasPasteTiles = canvasMenu.AddItem("Paste Tiles Here");
+        canvasStampFromRegion =
+            canvasMenu.AddItem("Paint with Region Stamp");
+        canvasMenu.AddSeparator();
         canvasToolSelect = canvasMenu.AddItem("Select Tool");
         canvasToolPaint = canvasMenu.AddItem("Paint Tool");
         canvasToolErase = canvasMenu.AddItem("Erase Tool");
@@ -124,6 +150,23 @@ class SceneContextMenus2D {
         if editor.canvasImage != null
            and editor.canvasImage.IsVisible()
            and editor.canvasImage.IsHovered() {
+            // The pointer moves before an item is clicked, so the placement
+            // point is the recorded right-click position, not the click.
+            canvasPointX = x;
+            canvasPointY = y;
+            canvasAddObjectHere.SetEnabled(
+                editor.CanvasCellAtPointX(x) >= 0
+                and editor.CanvasCellAtPointY(y) >= 0);
+            var hasRegion = editor.HasTileRegion();
+            canvasCopyTiles.SetEnabled(hasRegion);
+            canvasCutTiles.SetEnabled(hasRegion);
+            canvasDeleteTiles.SetEnabled(hasRegion);
+            canvasStampFromRegion.SetEnabled(hasRegion);
+            canvasPasteTiles.SetEnabled(
+                editor.CanvasCellAtPointX(x) >= 0
+                and editor.CanvasCellAtPointY(y) >= 0
+                and scene_clipboard.HasTileBlock(
+                    GUI.ClipboardText.GetText()));
             canvasMenu.Show(x, y);
         }
     }
@@ -164,6 +207,27 @@ class SceneContextMenus2D {
         }
         if hierarchyMoveLater.WasClicked() {
             changed = editor.MoveSelectedObjectLater() or changed;
+        }
+        if canvasAddObjectHere.WasClicked() {
+            changed = editor.CreateObjectAtCanvasPoint(
+                canvasPointX, canvasPointY) >= 0 or changed;
+        }
+        if canvasCopyTiles.WasClicked() {
+            editor.CopyTileRegion();
+        }
+        if canvasCutTiles.WasClicked() {
+            changed = editor.CutTileRegion() or changed;
+        }
+        if canvasDeleteTiles.WasClicked() {
+            changed = editor.DeleteTileRegion() or changed;
+        }
+        if canvasStampFromRegion.WasClicked() {
+            editor.UseTileRegionAsStamp();
+        }
+        if canvasPasteTiles.WasClicked() {
+            changed = editor.PasteTileBlockAt(
+                editor.CanvasCellAtPointX(canvasPointX),
+                editor.CanvasCellAtPointY(canvasPointY)) or changed;
         }
         if canvasToolSelect.WasClicked() {
             editor.SetToolMode(scene_editor_2d.MODE_SELECT);

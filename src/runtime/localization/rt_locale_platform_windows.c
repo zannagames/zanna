@@ -9,9 +9,9 @@
 // Purpose: Windows implementation of rt_locale_platform_detect_system. Uses
 //          GetUserDefaultLocaleName (Vista+) which already returns a BCP-47
 //          tag ("en-US", "zh-Hans-CN") as UTF-16; we just transcode to UTF-8
-//          and pass through. Falls back to the %LANG% env var (for MinGW/MSYS
-//          POSIX-flavored environments) when the Win32 call returns an empty
-//          result.
+//          and pass through. Falls back to the LC_ALL, LC_MESSAGES, and LANG
+//          environment variables (for MinGW/MSYS POSIX-flavored environments)
+//          when the Win32 call returns an empty result.
 //
 // Key invariants:
 //   - Only compiled when RT_PLATFORM_WINDOWS is set.
@@ -47,6 +47,11 @@
 /// @details `getenv()` exposes storage invalidated by concurrent environment
 ///          mutation. The Win32 copy API gives this adapter an owned snapshot
 ///          and retries bounded growth races.
+/// @param name NUL-terminated UTF-16 environment-variable name. NULL and empty
+///             names are rejected.
+/// @return Heap-allocated NUL-terminated UTF-8 value, or NULL if the variable
+///         is absent, empty, invalid, changes repeatedly, or cannot be copied.
+///         The caller owns the returned allocation and must free it.
 static char *rt_locale_environment_utf8(const wchar_t *name) {
     DWORD capacity;
 

@@ -8,11 +8,20 @@
 //          Zanna Studio and editor-style tooling.
 // Key invariants:
 //   - Workspace edit targets are validated before any disk mutation is attempted.
+//   - Rooted edits canonicalize every root and target and reject paths outside the declared
+//     workspace boundary.
+//   - Edit application stages complete same-directory replacements, rechecks live contents before
+//     commit, and retains backups for best-effort batch rollback.
+//   - File indexing applies built-in, caller, and nested .gitignore exclusions and caps complete
+//     traversal at 100,000 accepted entries.
 //   - Workspace/file-index helpers never depend on compiler-layer services.
 // Ownership/Lifetime:
-//   - Runtime strings passed to these functions are borrowed from the caller.
-//   - Map and sequence results are runtime-owned objects returned to callers.
-// Links: src/runtime/io/rt_ide_primitives.cpp, src/runtime/io/rt_watcher.h
+//   - Runtime strings and opaque collection/watcher arguments are borrowed for each call.
+//   - Every returned map or sequence is a fresh runtime-managed object whose reference transfers
+//     to the caller; returned owning sequences retain their element objects.
+// Links: src/runtime/io/rt_ide_primitives.cpp (implementation),
+//        src/runtime/io/rt_watcher.h (watcher events),
+//        src/runtime/io/rt_asset.h (mounted asset lookup)
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,6 +35,15 @@
 extern "C" {
 #endif
 
+/// @brief Enumerate a filtered workspace tree into entry maps.
+/// @details Recursively applies built-in exclusions, caller patterns, nested `.gitignore` files,
+///          and an optional case-normalized extension allow-list. Permission-denied entries are
+///          skipped, directory maps are optional, and output stops at 100,000 accepted entries.
+/// @param root Borrowed runtime path of the workspace root.
+/// @param extensions_csv Delimited extension allow-list; empty includes all file extensions.
+/// @param excludes_csv Delimited additional gitignore-style patterns.
+/// @param include_dirs Nonzero to include directory maps.
+/// @return Fresh owning Seq of entry maps; empty when the root is invalid or traversal fails.
 void *rt_workspace_file_index_enumerate(rt_string root,
                                         rt_string extensions_csv,
                                         rt_string excludes_csv,
@@ -35,15 +53,15 @@ void *rt_workspace_file_index_enumerate(rt_string root,
 /// @details Applies the same validation, extension filtering, ignore rules, and
 ///          entry cap as @ref rt_workspace_file_index_enumerate, but emits at
 ///          most @p limit entries starting at logical match offset @p offset.
-///          The result map contains `entries`, `offset`, `limit`, `emitted`,
-///          `nextOffset`, `done`, `truncated`, and `diagnostics`.
-/// @param root Directory to enumerate.
-/// @param extensions_csv Comma-separated extension filter, such as ".zia,.png".
-/// @param excludes_csv Comma-separated additional ignore patterns.
+///          The result map contains validity/root fields, `entries`, `offset`, `limit`, `emitted`,
+///          `nextOffset`, `scanned`, `maxEntries`, `done`, `truncated`, and `diagnostics`.
+/// @param root Borrowed runtime path of the directory to enumerate.
+/// @param extensions_csv Delimited extension filter, such as ".zia,.png".
+/// @param excludes_csv Delimited additional ignore patterns.
 /// @param include_dirs Non-zero to count matching directories as entries.
 /// @param offset Zero-based logical match offset to start returning.
 /// @param limit Maximum entries to emit; values outside 1..4096 are clamped.
-/// @return Page result map owned by the caller.
+/// @return Fresh page result map owned by the caller.
 void *rt_workspace_file_index_page(rt_string root,
                                    rt_string extensions_csv,
                                    rt_string excludes_csv,
@@ -55,31 +73,72 @@ void *rt_workspace_file_index_page(rt_string root,
 /// @details Applies the same root validation, extension filtering, ignore rules,
 ///          and entry cap as @ref rt_workspace_file_index_enumerate without
 ///          allocating one map per file. The result map contains `valid`, `root`,
-///          `entryCount`, `maxEntries`, `truncated`, and `diagnostics`.
-/// @param root Directory to enumerate.
-/// @param extensions_csv Comma-separated extension filter, such as ".zia,.png".
-/// @param excludes_csv Comma-separated additional ignore patterns.
+///          `entryCount`, `maxEntries`, `truncated`, `fingerprint`, and `diagnostics`.
+/// @param root Borrowed runtime path of the directory to enumerate.
+/// @param extensions_csv Delimited extension filter, such as ".zia,.png".
+/// @param excludes_csv Delimited additional ignore patterns.
 /// @param include_dirs Non-zero to count matching directories as entries.
-/// @return Status map owned by the caller.
+/// @return Fresh status map owned by the caller.
 void *rt_workspace_file_index_status(rt_string root,
                                      rt_string extensions_csv,
                                      rt_string excludes_csv,
                                      int8_t include_dirs);
 
+/// @brief Evaluate workspace ignore rules for one relative path.
+/// @details Applies hard exclusions, caller patterns, and nested `.gitignore` files. A trailing
+///          slash marks the candidate as a directory; an empty root uses the current directory.
+/// @param root Borrowed runtime path of the workspace root.
+/// @param relative_path Borrowed candidate path relative to @p root.
+/// @param patterns Delimited caller ignore/negation patterns.
+/// @return 1 when the path should be omitted; otherwise 0.
 int8_t rt_workspace_file_index_should_ignore(rt_string root,
                                              rt_string relative_path,
                                              rt_string patterns);
+/// @brief Poll a bounded batch of normalized workspace watcher events.
+/// @details Each result map contains path, numeric and textual type, overflow count, and a
+///          `requiresRescan` flag. Nonpositive limits default to 64.
+/// @param watcher Borrowed opaque watcher handle; may be NULL.
+/// @param max_events Maximum events to return, or a nonpositive value for the default.
+/// @return Fresh owning Seq of event maps.
 void *rt_workspace_watcher_poll_batch(void *watcher, int64_t max_events);
 
+/// @brief Resolve an asset reference through filesystem and mounted-asset locations.
+/// @details Searches absolute, scene-relative, project-relative, configured asset-root, and
+///          mounted registry candidates in order. Relative scene and asset-root paths are anchored
+///          to the project root.
+/// @param scene_path Borrowed path of the referencing scene; may be empty.
+/// @param project_root Borrowed project-root path; empty uses the current directory.
+/// @param asset_roots_csv Delimited configured asset-root paths.
+/// @param asset_path Borrowed asset reference to resolve.
+/// @return Fresh result map with path/display/source, exists/found flags, and diagnostic text.
 void *rt_asset_resolver_resolve(rt_string scene_path,
                                 rt_string project_root,
                                 rt_string asset_roots_csv,
                                 rt_string asset_path);
 
+/// @brief Parse project-manifest directive text.
+/// @details Applies defaults, top-level directives, and run/build sections while collecting
+///          unknown or malformed constructs into an owning diagnostics sequence.
+/// @param text Borrowed runtime string containing the complete manifest.
+/// @return Fresh manifest map with parsed fields and a `valid` flag.
 void *rt_project_manifest_parse_text(rt_string text);
+
+/// @brief Read and parse a project manifest file.
+/// @param path Borrowed runtime path of the manifest.
+/// @return Fresh parsed manifest map, or an invalid default manifest with diagnostics on failure.
 void *rt_project_manifest_parse_file(rt_string path);
 
+/// @brief Validate an unrooted workspace edit batch without changing files.
+/// @param edits Borrowed Seq of edit maps with file, range, replacement, and optional version
+///              fields.
+/// @return Fresh map containing `success`, accepted `editCount`, and `diagnostics`.
 void *rt_workspace_edit_validate(void *edits);
+
+/// @brief Transactionally apply an unrooted workspace edit batch.
+/// @details Stages replacements, rechecks validated content before commit, preserves permissions,
+///          and restores backups on a later batch failure when possible.
+/// @param edits Borrowed Seq of edit maps.
+/// @return Fresh result map containing validation fields and `appliedFiles`.
 void *rt_workspace_edit_apply(void *edits);
 
 /// @brief Validate a workspace edit batch against an explicit root directory.

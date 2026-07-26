@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_bitmapfont.c
+// File: src/runtime/graphics/text/rt_bitmapfont.c
 // Purpose: Custom bitmap font loading (BDF/PSF formats) and Canvas rendering.
 //   Parses BDF (text-based) and PSF v1/v2 (binary) font files into an internal
 //   glyph table, then draws text to a Canvas using the loaded glyphs.
@@ -20,8 +20,9 @@
 //   - BitmapFont objects allocated via rt_obj_new_i64 (GC-managed).
 //   - Per-glyph bitmap arrays are malloc'd; freed in rt_bitmapfont_destroy.
 //
-// Links: rt_bitmapfont.h (public API), rt_font.h (built-in font pattern),
-//        rt_drawing.c (existing Canvas.Text rendering)
+// Links: src/runtime/graphics/text/rt_bitmapfont.h,
+//        src/runtime/graphics/text/rt_font.h,
+//        src/runtime/graphics/2d/rt_drawing.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,6 +67,10 @@ typedef struct {
     int64_t glyph_count;            ///< Number of valid (non-NULL bitmap) glyphs.
 } rt_bitmapfont_impl;
 
+/// @brief Validate and unwrap a public BitmapFont or SpriteFont handle.
+/// @param font_ptr Candidate runtime object handle.
+/// @return The internal font payload when @p font_ptr has either supported
+/// class ID and the expected object size; otherwise `NULL`.
 static rt_bitmapfont_impl *bitmapfont_checked(void *font_ptr) {
     if (rt_obj_is_instance(font_ptr, RT_BITMAPFONT_CLASS_ID, sizeof(rt_bitmapfont_impl)) ||
         rt_obj_is_instance(font_ptr, RT_SPRITEFONT_CLASS_ID, sizeof(rt_bitmapfont_impl)))
@@ -77,7 +82,9 @@ static rt_bitmapfont_impl *bitmapfont_checked(void *font_ptr) {
 // Fallback Glyph
 //=============================================================================
 
-/// @brief Bytes per row for a given pixel width (ceil(width/8)).
+/// @brief Compute the number of packed bitmap bytes needed for one row.
+/// @param width Glyph width in pixels; callers supply a non-negative value.
+/// @return `ceil(width / 8)` bytes.
 static inline int bf_row_bytes(int width) {
     return (width + 7) / 8;
 }
@@ -130,6 +137,10 @@ static int bf_parse_int_fields(const char *text, int *values, int count) {
 
 static int bf_next_codepoint(const char *str, size_t byte_len, size_t *index, int *codepoint_out);
 
+/// @brief Add two signed coordinates without overflowing.
+/// @param a First addend.
+/// @param b Second addend.
+/// @return The mathematical sum clamped to the `int64_t` range.
 static int64_t bf_add_sat64(int64_t a, int64_t b) {
     if (b > 0 && a > INT64_MAX - b)
         return INT64_MAX;
@@ -138,7 +149,11 @@ static int64_t bf_add_sat64(int64_t a, int64_t b) {
     return a + b;
 }
 
-/// @brief Get a glyph for a codepoint, returning a fallback if not available.
+/// @brief Resolve a codepoint to a loaded glyph or the configured fallback.
+/// @param font Valid internal font payload.
+/// @param codepoint Unicode scalar value requested by the renderer.
+/// @return The matching glyph, then `'?'`, then space, or `NULL` if none of
+/// those slots contains bitmap data.
 static const rt_glyph *bf_get_glyph(const rt_bitmapfont_impl *font, int codepoint) {
     if (codepoint >= 0 && codepoint < BF_MAX_GLYPHS && font->glyphs[codepoint].bitmap)
         return &font->glyphs[codepoint];
@@ -158,6 +173,12 @@ static const rt_glyph *bf_get_glyph(const rt_bitmapfont_impl *font, int codepoin
 ///          pass. Empty spans (`right <= left`) are silently skipped so the
 ///          caller can pass through every glyph regardless of whether it
 ///          has visible pixels.
+/// @param left Inclusive left edge of the candidate interval.
+/// @param right Exclusive right edge of the candidate interval.
+/// @param min_x In/out minimum bound.
+/// @param max_x In/out maximum bound.
+/// @param has_bounds In/out flag indicating whether the bound pair has been
+/// initialized.
 static void bf_extend_bounds(
     int64_t left, int64_t right, int64_t *min_x, int64_t *max_x, int8_t *has_bounds) {
     if (!min_x || !max_x || !has_bounds || right <= left)
@@ -186,6 +207,14 @@ static void bf_extend_bounds(
 ///          centering / right-alignment / width-measurement APIs to size
 ///          text accurately even with overhanging glyphs (italics,
 ///          decorative scripts).
+/// @param font Font used to resolve glyph metrics and fallbacks.
+/// @param text Runtime UTF-8 string to measure.
+/// @param min_x Receives the inclusive left extent relative to pen position
+/// zero.
+/// @param max_x Receives the exclusive right extent relative to pen position
+/// zero.
+/// @param has_bounds Receives 1 when at least one codepoint contributed an
+/// interval, or 0 for invalid/empty input.
 static void bf_text_bounds(
     rt_bitmapfont_impl *font, rt_string text, int64_t *min_x, int64_t *max_x, int8_t *has_bounds) {
     if (min_x)
@@ -245,6 +274,11 @@ static void bf_text_bounds(
 ///          The "fall back to single byte" cases produce `'?'` and only
 ///          consume one byte, so the caller resyncs naturally to the next
 ///          codepoint boundary on the following call.
+/// @param str Byte buffer containing UTF-8 input.
+/// @param byte_len Number of accessible bytes in @p str.
+/// @param index In/out byte offset of the next sequence.
+/// @param codepoint_out Receives the decoded scalar value or `'?'` for an
+/// invalid sequence.
 /// @return 1 if a codepoint was decoded and `*index` advanced; 0 if
 ///         `*index` is already at or past `byte_len` (end of string).
 static int bf_next_codepoint(const char *str, size_t byte_len, size_t *index, int *codepoint_out) {
@@ -301,6 +335,9 @@ static int bf_next_codepoint(const char *str, size_t byte_len, size_t *index, in
 ///          Refuses to overwrite an already-populated destination, refuses
 ///          out-of-range source/dest indices, and caps per-glyph allocation
 ///          at 1 MiB to bound the memory cost of malformed PSF Unicode tables.
+/// @param font Font containing the source and destination glyph slots.
+/// @param source_index Existing physical-glyph slot to copy.
+/// @param codepoint BMP destination slot to populate.
 /// @return 1 if the copy succeeded, 0 if any precondition failed.
 static int bf_copy_glyph_to_codepoint(rt_bitmapfont_impl *font, int source_index, int codepoint) {
     if (!font || source_index < 0 || source_index >= BF_MAX_GLYPHS || codepoint < 0 ||
@@ -330,6 +367,11 @@ static int bf_copy_glyph_to_codepoint(rt_bitmapfont_impl *font, int source_index
 ///          combining-character sequence, which we skip — Zanna's bitmap font
 ///          renderer does not compose). Each codepoint between separators is
 ///          aliased to the current glyph index via bf_copy_glyph_to_codepoint.
+/// @param font Font whose glyph table receives copied Unicode aliases.
+/// @param glyph_count Number of sequential physical glyphs described by the
+/// table.
+/// @param table Raw PSF v2 Unicode-table bytes.
+/// @param table_len Number of accessible bytes in @p table.
 static void bf_apply_psf2_unicode_table(rt_bitmapfont_impl *font,
                                         int glyph_count,
                                         const uint8_t *table,
@@ -374,6 +416,11 @@ static void bf_apply_psf2_unicode_table(rt_bitmapfont_impl *font,
 ///          0xFFFF as the end-of-glyph separator and 0xFFFE marking the
 ///          start of a skipped combining sequence. Otherwise mirrors the
 ///          PSF v2 table semantics implemented by bf_apply_psf2_unicode_table.
+/// @param font Font whose glyph table receives copied Unicode aliases.
+/// @param glyph_count Number of sequential physical glyphs described by the
+/// table.
+/// @param table Raw little-endian PSF v1 Unicode-table bytes.
+/// @param table_len Number of accessible bytes in @p table.
 static void bf_apply_psf1_unicode_table(rt_bitmapfont_impl *font,
                                         int glyph_count,
                                         const uint8_t *table,
@@ -400,7 +447,10 @@ static void bf_apply_psf1_unicode_table(rt_bitmapfont_impl *font,
     }
 }
 
-/// @brief Decrement the refcount of a bitmap font and free it when it reaches zero.
+/// @brief Release a partially constructed or caller-owned bitmap-font object.
+/// @details The runtime finalizer frees each glyph bitmap before the object
+/// storage is reclaimed when its reference count reaches zero.
+/// @param font Font object to release; `NULL` is accepted.
 static void bf_release_font(rt_bitmapfont_impl *font) {
     if (!font)
         return;
@@ -412,7 +462,9 @@ static void bf_release_font(rt_bitmapfont_impl *font) {
 // BDF Parser
 //=============================================================================
 
-/// @brief Parse a single hex digit (0-9, a-f, A-F) to value 0-15. Returns -1 on error.
+/// @brief Convert one hexadecimal digit to its numeric value.
+/// @param c Candidate ASCII digit.
+/// @return A value from 0 through 15, or -1 when @p c is not hexadecimal.
 static int bf_hex_digit(char c) {
     if (c >= '0' && c <= '9')
         return c - '0';
@@ -423,7 +475,10 @@ static int bf_hex_digit(char c) {
     return -1;
 }
 
-/// @brief Parse a hex byte from two characters. Returns -1 on error.
+/// @brief Parse exactly two hexadecimal characters as one byte.
+/// @param s Pointer to at least two accessible characters; an early NUL makes
+/// the token invalid.
+/// @return A value from 0 through 255, or -1 for a short or non-hex token.
 static int bf_hex_byte(const char *s) {
     if (!s[0] || !s[1])
         return -1;
@@ -434,10 +489,15 @@ static int bf_hex_byte(const char *s) {
     return (hi << 4) | lo;
 }
 
-/// @brief Load a font from a BDF (Glyph Bitmap Distribution Format) file.
-/// Parses ENCODING, BBX, DWIDTH, BITMAP entries and reconstructs per-glyph 1-bit
-/// bitmaps. Supports up to 256 codepoints and fails closed on malformed or
-/// truncated files. Returns NULL on file/parse failure or empty font.
+/// @brief Load a BDF font and assign the requested runtime class identity.
+/// @details Parses `ENCODING`, `BBX`, `DWIDTH`, and `BITMAP` records into a
+/// 65,536-slot BMP glyph table. Parsing fails closed for incomplete glyph
+/// rows, invalid dimensions or metrics, missing `ENDFONT`, allocation
+/// failures, and files that produce no glyphs.
+/// @param path Runtime string containing the platform path to the BDF file.
+/// @param class_id Runtime class ID to assign to the allocated font object.
+/// @return A GC-managed font handle on success, or `NULL` on path, I/O,
+/// allocation, or parse failure.
 static void *bitmapfont_load_bdf_as(rt_string path, int64_t class_id) {
     if (!path)
         return NULL;
@@ -634,10 +694,16 @@ static void *bitmapfont_load_bdf_as(rt_string path, int64_t class_id) {
     return font;
 }
 
+/// @brief Load a BDF file as a BitmapFont runtime object.
+/// @param path Runtime string containing the BDF file path.
+/// @return A GC-managed BitmapFont handle, or `NULL` if loading fails.
 void *rt_bitmapfont_load_bdf(rt_string path) {
     return bitmapfont_load_bdf_as(path, RT_BITMAPFONT_CLASS_ID);
 }
 
+/// @brief Load a BDF file as a SpriteFont-compatible runtime object.
+/// @param path Runtime string containing the BDF file path.
+/// @return A GC-managed SpriteFont handle, or `NULL` if loading fails.
 void *rt_spritefont_load_bdf(rt_string path) {
     return bitmapfont_load_bdf_as(path, RT_SPRITEFONT_CLASS_ID);
 }
@@ -659,10 +725,14 @@ void *rt_spritefont_load_bdf(rt_string path) {
 #define PSF2_MAGIC2 0x4A
 #define PSF2_MAGIC3 0x86
 
-/// @brief Load a font from a PSF (PC Screen Font) v1 or v2 file.
-/// Auto-detects version via magic bytes. Glyphs are always monospace; v1 is
-/// fixed at 8 pixels wide, v2 reads width from the header. Returns NULL on
-/// magic mismatch or truncated/corrupt input.
+/// @brief Load a PSF v1 or v2 font with the requested runtime class identity.
+/// @details Auto-detects the version from its magic bytes, imports packed
+/// monospace glyphs, and applies an optional Unicode alias table. PSF v1
+/// glyphs are eight pixels wide; PSF v2 dimensions come from its header.
+/// @param path Runtime string containing the platform path to the PSF file.
+/// @param class_id Runtime class ID to assign to the allocated font object.
+/// @return A GC-managed font handle on success, or `NULL` for an unsupported,
+/// truncated, malformed, unreadable, or unallocatable input.
 static void *bitmapfont_load_psf_as(rt_string path, int64_t class_id) {
     if (!path)
         return NULL;
@@ -855,10 +925,16 @@ static void *bitmapfont_load_psf_as(rt_string path, int64_t class_id) {
     return font;
 }
 
+/// @brief Load a PSF v1 or v2 file as a BitmapFont runtime object.
+/// @param path Runtime string containing the PSF file path.
+/// @return A GC-managed BitmapFont handle, or `NULL` if loading fails.
 void *rt_bitmapfont_load_psf(rt_string path) {
     return bitmapfont_load_psf_as(path, RT_BITMAPFONT_CLASS_ID);
 }
 
+/// @brief Load a PSF v1 or v2 file as a SpriteFont-compatible runtime object.
+/// @param path Runtime string containing the PSF file path.
+/// @return A GC-managed SpriteFont handle, or `NULL` if loading fails.
 void *rt_spritefont_load_psf(rt_string path) {
     return bitmapfont_load_psf_as(path, RT_SPRITEFONT_CLASS_ID);
 }
@@ -868,7 +944,9 @@ void *rt_spritefont_load_psf(rt_string path) {
 //=============================================================================
 
 /// @brief GC finalizer that frees every per-glyph bitmap allocation.
-/// The font struct itself is GC-managed.
+/// @details The font object storage itself remains owned by the runtime object
+/// manager. Invalid handles are ignored.
+/// @param font_ptr BitmapFont or SpriteFont object being finalized.
 void rt_bitmapfont_destroy(void *font_ptr) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
     if (!font)
@@ -883,7 +961,10 @@ void rt_bitmapfont_destroy(void *font_ptr) {
 // Properties
 //=============================================================================
 
-/// @brief Glyph width for monospace fonts (returns 0 for proportional fonts).
+/// @brief Query the fixed advance width of a monospace bitmap font.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @return The maximum glyph advance when the font is monospace; otherwise 0,
+/// including for an invalid handle.
 int64_t rt_bitmapfont_char_width(void *font_ptr) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
     if (!font)
@@ -891,19 +972,27 @@ int64_t rt_bitmapfont_char_width(void *font_ptr) {
     return font->monospace ? font->max_width : 0;
 }
 
-/// @brief Line height in pixels (ascent + descent).
+/// @brief Query the font's single-line height.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @return The ascent-plus-descent height in pixels, or 0 for an invalid
+/// handle.
 int64_t rt_bitmapfont_char_height(void *font_ptr) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
     return font ? font->line_height : 0;
 }
 
-/// @brief Number of valid (non-empty) glyphs loaded.
+/// @brief Query the number of populated glyph-table slots.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @return The number of glyph slots containing bitmap data, including
+/// Unicode aliases copied from PSF tables, or 0 for an invalid handle.
 int64_t rt_bitmapfont_glyph_count(void *font_ptr) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
     return font ? font->glyph_count : 0;
 }
 
-/// @brief Returns 1 if every glyph has the same advance width, 0 otherwise.
+/// @brief Report whether every loaded glyph has the same advance width.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @return 1 for a valid monospace font; otherwise 0.
 int8_t rt_bitmapfont_is_monospace(void *font_ptr) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
     return font ? font->monospace : 0;
@@ -914,7 +1003,12 @@ int8_t rt_bitmapfont_is_monospace(void *font_ptr) {
 //=============================================================================
 
 /// @brief Compute the rendered width of @p text in pixels for this font.
-/// Accounts for per-glyph advance widths plus left/right overhangs.
+/// @details Accounts for per-glyph advances, bearings, fallback glyphs, and
+/// left or right ink overhangs while decoding the runtime string as UTF-8.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @param text Runtime UTF-8 string to measure.
+/// @return The saturated horizontal extent in pixels, or 0 for invalid,
+/// `NULL`, or empty input.
 int64_t rt_bitmapfont_text_width(void *font_ptr, rt_string text) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
     if (!font || !text)
@@ -929,7 +1023,11 @@ int64_t rt_bitmapfont_text_width(void *font_ptr, rt_string text) {
     return max_x - min_x;
 }
 
-/// @brief Single-line text height (same as line_height; multi-line callers must accumulate).
+/// @brief Query the height of one line of bitmap-font text.
+/// @details This routine does not inspect the string or account for multiple
+/// lines; callers performing multiline layout accumulate line heights.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @return The font line height in pixels, or 0 for an invalid handle.
 int64_t rt_bitmapfont_text_height(void *font_ptr) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
     return font ? font->line_height : 0;
@@ -943,6 +1041,9 @@ int64_t rt_bitmapfont_text_height(void *font_ptr) {
 
 #include "rt_graphics_internal.h"
 
+/// @brief Convert a runtime Canvas color to the backend's 24-bit RGB value.
+/// @param color Runtime packed color accepted by the Pixels/Canvas API.
+/// @return The converted backend RGB value with alpha discarded.
 static vgfx_color_t bitmapfont_color_to_vgfx_rgb(int64_t color) {
     return (vgfx_color_t)((rt_pixels_color_to_rgba(color) >> 8) & 0x00FFFFFFu);
 }
@@ -1029,6 +1130,12 @@ static void bf_draw_glyph_runs(vgfx_window_t win,
 ///          translate correctly to a top-of-line `(px, py)` reference. The
 ///          glyph bitmap is packed MSB-left, row-major; iterates row × col
 ///          and emits one fill rectangle per contiguous run of set bits.
+/// @param win Target graphics window.
+/// @param g Glyph to render; `NULL` or bitmap-less glyphs are ignored.
+/// @param px Unadjusted pen X coordinate.
+/// @param py Top-of-line Y coordinate.
+/// @param ascent Font ascent used to place the glyph relative to its baseline.
+/// @param color Backend RGB color.
 static void bf_draw_glyph(vgfx_window_t win,
                           const rt_glyph *g,
                           int64_t px,
@@ -1044,7 +1151,16 @@ static void bf_draw_glyph(vgfx_window_t win,
     bf_draw_glyph_runs(win, g, draw_x, draw_y, 1, color);
 }
 
-/// @brief Draw a single glyph with integer scaling.
+/// @brief Draw a single glyph with an integer pixel scale.
+/// @details Scales bearings, baseline placement, bitmap runs, and the caller's
+/// subsequent advance consistently. Values below one are ignored.
+/// @param win Target graphics window.
+/// @param g Glyph to render; `NULL` or bitmap-less glyphs are ignored.
+/// @param px Unadjusted scaled pen X coordinate.
+/// @param py Top-of-line scaled Y coordinate.
+/// @param ascent Unscaled font ascent.
+/// @param scale Positive integer enlargement factor.
+/// @param color Backend RGB color.
 static void bf_draw_glyph_scaled(vgfx_window_t win,
                                  const rt_glyph *g,
                                  int64_t px,
@@ -1061,7 +1177,18 @@ static void bf_draw_glyph_scaled(vgfx_window_t win,
     bf_draw_glyph_runs(win, g, draw_x, draw_y, scale, color);
 }
 
-/// @brief Draw a single glyph with foreground and background colors.
+/// @brief Draw a glyph and an opaque background covering its horizontal span.
+/// @details The background includes both the glyph advance and any ink
+/// overhang, then the packed glyph bitmap is rendered in the foreground
+/// color.
+/// @param win Target graphics window.
+/// @param g Glyph whose advance and bitmap are rendered.
+/// @param px Current pen X coordinate.
+/// @param py Top-of-line Y coordinate.
+/// @param ascent Font ascent used for baseline placement.
+/// @param line_h Background rectangle height.
+/// @param fg Backend foreground RGB color.
+/// @param bg Backend background RGB color.
 static void bf_draw_glyph_bg(vgfx_window_t win,
                              const rt_glyph *g,
                              int64_t px,
@@ -1110,8 +1237,14 @@ static void bf_draw_glyph_bg(vgfx_window_t win,
 //=============================================================================
 
 /// @brief Render a string at (x, y) on @p canvas using the bitmap font.
-/// @p y is the top of the line; per-glyph baseline offsets are applied internally.
-/// Color is the canvas color format (typically 0x00RRGGBB).
+/// @details @p y is the top of the line; per-glyph baseline offsets are
+/// applied internally. Invalid handles and `NULL` strings are no-ops.
+/// @param canvas_ptr Canvas object receiving the glyph pixels.
+/// @param x Initial pen X coordinate in canvas pixels.
+/// @param y Top-of-line Y coordinate in canvas pixels.
+/// @param text Runtime UTF-8 string to render.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @param color Runtime Canvas foreground color.
 void rt_canvas_text_font(
     void *canvas_ptr, int64_t x, int64_t y, rt_string text, void *font_ptr, int64_t color) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
@@ -1145,7 +1278,16 @@ void rt_canvas_text_font(
 }
 
 /// @brief Like `_text_font` but fills the glyph advance × line_height background first.
-/// Useful for opaque text overlays (status bars, code editors).
+/// @details Useful for opaque overlays such as status bars and editors. Each
+/// background cell also expands to cover a glyph's right or left ink
+/// overhang. Invalid handles and `NULL` strings are no-ops.
+/// @param canvas_ptr Canvas object receiving the glyph pixels.
+/// @param x Initial pen X coordinate in canvas pixels.
+/// @param y Top-of-line Y coordinate in canvas pixels.
+/// @param text Runtime UTF-8 string to render.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @param fg_color Runtime Canvas foreground color.
+/// @param bg_color Runtime Canvas background color.
 void rt_canvas_text_font_bg(void *canvas_ptr,
                             int64_t x,
                             int64_t y,
@@ -1191,7 +1333,15 @@ void rt_canvas_text_font_bg(void *canvas_ptr,
 }
 
 /// @brief Render text at integer scale (each glyph pixel becomes a `scale × scale` rect).
-/// @p scale must be >= 1; smaller values cause the call to be a silent no-op.
+/// @details @p scale must be at least one; smaller values and invalid handles
+/// cause a silent no-op.
+/// @param canvas_ptr Canvas object receiving the scaled glyph pixels.
+/// @param x Initial pen X coordinate in canvas pixels.
+/// @param y Top-of-line Y coordinate in canvas pixels.
+/// @param text Runtime UTF-8 string to render.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @param scale Positive integer enlargement factor.
+/// @param color Runtime Canvas foreground color.
 void rt_canvas_text_font_scaled(void *canvas_ptr,
                                 int64_t x,
                                 int64_t y,
@@ -1230,7 +1380,13 @@ void rt_canvas_text_font_scaled(void *canvas_ptr,
 }
 
 /// @brief Render text horizontally centered in the canvas at row @p y.
-/// Width is derived from the canvas size; uses `_text_font` underneath.
+/// @details Uses the measured ink-and-advance bounds so glyph overhangs are
+/// centered, then delegates rendering to rt_canvas_text_font().
+/// @param canvas_ptr Canvas whose current window width defines the center.
+/// @param y Top-of-line Y coordinate in canvas pixels.
+/// @param text Runtime UTF-8 string to render.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @param color Runtime Canvas foreground color.
 void rt_canvas_text_font_centered(
     void *canvas_ptr, int64_t y, rt_string text, void *font_ptr, int64_t color) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
@@ -1255,6 +1411,15 @@ void rt_canvas_text_font_centered(
 }
 
 /// @brief Render text right-aligned with @p margin pixels of padding from the canvas right edge.
+/// @details Alignment uses the text's rightmost ink-or-advance extent before
+/// delegating to rt_canvas_text_font().
+/// @param canvas_ptr Canvas whose current window width defines the right edge.
+/// @param margin Requested distance from the text's right extent to the canvas
+/// right edge.
+/// @param y Top-of-line Y coordinate in canvas pixels.
+/// @param text Runtime UTF-8 string to render.
+/// @param font_ptr BitmapFont or SpriteFont handle.
+/// @param color Runtime Canvas foreground color.
 void rt_canvas_text_font_right(
     void *canvas_ptr, int64_t margin, int64_t y, rt_string text, void *font_ptr, int64_t color) {
     rt_bitmapfont_impl *font = bitmapfont_checked(font_ptr);
@@ -1281,12 +1446,19 @@ void rt_canvas_text_font_right(
 
 /// @brief Stub used when graphics are not compiled in; raises an InvalidOperation trap with the
 /// given message.
+/// @param msg Static diagnostic text associated with the unavailable API.
 static void rt_bitmapfont_canvas_unavailable_(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_INVALID_OPERATION, Err_InvalidOperation, 0, msg);
 }
 
 /// @brief Stub for Canvas.TextFont when ZANNA_ENABLE_GRAPHICS is undefined; raises an
 /// InvalidOperation trap.
+/// @param canvas Unused Canvas handle.
+/// @param x Unused X coordinate.
+/// @param y Unused Y coordinate.
+/// @param text Unused runtime string.
+/// @param font Unused font handle.
+/// @param color Unused foreground color.
 void rt_canvas_text_font(
     void *canvas, int64_t x, int64_t y, rt_string text, void *font, int64_t color) {
     (void)canvas;
@@ -1300,6 +1472,13 @@ void rt_canvas_text_font(
 
 /// @brief Stub for Canvas.TextFontBg when ZANNA_ENABLE_GRAPHICS is undefined; raises an
 /// InvalidOperation trap.
+/// @param canvas Unused Canvas handle.
+/// @param x Unused X coordinate.
+/// @param y Unused Y coordinate.
+/// @param text Unused runtime string.
+/// @param font Unused font handle.
+/// @param fg Unused foreground color.
+/// @param bg Unused background color.
 void rt_canvas_text_font_bg(
     void *canvas, int64_t x, int64_t y, rt_string text, void *font, int64_t fg, int64_t bg) {
     (void)canvas;
@@ -1314,6 +1493,13 @@ void rt_canvas_text_font_bg(
 
 /// @brief Stub for Canvas.TextFontScaled when ZANNA_ENABLE_GRAPHICS is undefined; raises an
 /// InvalidOperation trap.
+/// @param canvas Unused Canvas handle.
+/// @param x Unused X coordinate.
+/// @param y Unused Y coordinate.
+/// @param text Unused runtime string.
+/// @param font Unused font handle.
+/// @param scale Unused scale factor.
+/// @param color Unused foreground color.
 void rt_canvas_text_font_scaled(
     void *canvas, int64_t x, int64_t y, rt_string text, void *font, int64_t scale, int64_t color) {
     (void)canvas;
@@ -1328,6 +1514,11 @@ void rt_canvas_text_font_scaled(
 
 /// @brief Stub for Canvas.TextFontCentered when ZANNA_ENABLE_GRAPHICS is undefined; raises an
 /// InvalidOperation trap.
+/// @param canvas Unused Canvas handle.
+/// @param y Unused Y coordinate.
+/// @param text Unused runtime string.
+/// @param font Unused font handle.
+/// @param color Unused foreground color.
 void rt_canvas_text_font_centered(
     void *canvas, int64_t y, rt_string text, void *font, int64_t color) {
     (void)canvas;
@@ -1340,6 +1531,12 @@ void rt_canvas_text_font_centered(
 
 /// @brief Stub for Canvas.TextFontRight when ZANNA_ENABLE_GRAPHICS is undefined; raises an
 /// InvalidOperation trap.
+/// @param canvas Unused Canvas handle.
+/// @param margin Unused right-edge margin.
+/// @param y Unused Y coordinate.
+/// @param text Unused runtime string.
+/// @param font Unused font handle.
+/// @param color Unused foreground color.
 void rt_canvas_text_font_right(
     void *canvas, int64_t margin, int64_t y, rt_string text, void *font, int64_t color) {
     (void)canvas;

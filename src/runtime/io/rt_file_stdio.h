@@ -7,7 +7,25 @@
 //
 // File: src/runtime/io/rt_file_stdio.h
 // Purpose: Small shared helper for opening UTF-8 file paths as non-inheritable
-//          stdio FILE* handles.
+//          stdio FILE* handles and committing adjacent temporary replacements.
+//
+// Key invariants:
+//   - Supported stdio modes are the exact binary spellings rb, wb, ab, r+b/rb+, w+b/wb+, and
+//     a+b/ab+.
+//   - Every opened descriptor is marked non-inheritable through the native creation flag or
+//     close-on-exec fallback.
+//   - Replacement sidecars use exclusive creation in the destination's directory, and commit
+//     uses the platform's atomic replace primitive.
+//   - All filesystem paths are UTF-8; Windows calls strict UTF-8/wide conversion helpers.
+//
+// Ownership/Lifetime:
+//   - Successful open helpers return FILE streams that callers must close.
+//   - Temporary-path construction returns malloc-owned storage that callers free after commit or
+//     cleanup.
+//   - Path and mode inputs are borrowed only for the duration of each call.
+//
+// Links: src/runtime/io/rt_file_path.h (Windows path conversion),
+//        src/runtime/io/rt_file_ext.c (higher-level atomic file operations)
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -246,6 +264,15 @@ static inline FILE *rt_file_stdio_open_temp_for_replace_utf8(const char *dst_pat
     return NULL;
 }
 
+/// @brief Translate a supported binary stdio mode into descriptor-open flags.
+/// @details Accepts read, write, append, and update variants in the exact spellings used by
+///          `fdopen`. Adds the platform binary and non-inheritance flags and selects creation
+///          permissions appropriate to POSIX or the Windows CRT. Output values are written only
+///          after the complete mode has been validated.
+/// @param mode Null-terminated binary stdio mode string.
+/// @param[out] out_flags Required destination for `open`/`_wopen` flags.
+/// @param[out] out_pmode Required destination for creation permissions.
+/// @return 1 when @p mode is supported and both outputs were populated; otherwise 0.
 static inline int rt_file_stdio_mode_flags(const char *mode, int *out_flags, int *out_pmode) {
     if (!mode || !out_flags || !out_pmode)
         return 0;
@@ -283,6 +310,15 @@ static inline int rt_file_stdio_mode_flags(const char *mode, int *out_flags, int
     return 1;
 }
 
+/// @brief Open a UTF-8 path as a non-inheritable binary stdio stream.
+/// @details Converts the path to UTF-16 on Windows, opens a descriptor with flags from
+///          rt_file_stdio_mode_flags(), and wraps it with `fdopen`. If stream construction fails,
+///          the descriptor is closed before returning. Invalid input sets `errno` to `EINVAL`;
+///          other failures preserve the native open/stdio error.
+/// @param path Null-terminated UTF-8 filesystem path.
+/// @param mode Supported binary stdio mode string.
+/// @return Caller-owned open FILE stream, or NULL on validation, conversion, open, or wrapping
+///         failure.
 static inline FILE *rt_file_stdio_open_utf8(const char *path, const char *mode) {
     if (!path || !mode) {
         errno = EINVAL;

@@ -3,21 +3,22 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
-// File: src/runtime/graphics/rt_vec2.h
+// File: src/runtime/graphics/math/rt_vec2.h
 // Purpose: 2D vector math utilities for Zanna.Vec2 with immutable value semantics, providing
 // arithmetic, dot product, magnitude, normalization, rotation, and lerp.
 //
 // Key invariants:
 //   - Vec2 objects are immutable; all operations return new Vec2 objects.
 //   - All operations are done in double-precision floating point.
-//   - Normalize traps on zero-length vectors.
+//   - Normalize returns a zero vector for zero or non-finite length.
 //   - Angle is measured in radians.
 //
 // Ownership/Lifetime:
 //   - Vec2 objects are runtime-managed (heap-allocated, GC'd via thread-local pool).
 //   - The thread-local pool (P2-3.6) resurrects Vec2 objects on finalization for reuse.
 //
-// Links: src/runtime/graphics/rt_vec2.c (implementation)
+// Links: src/runtime/graphics/math/rt_vec2.c (implementation),
+//        src/runtime/graphics/math/rt_mat3.h (2D matrix transforms)
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -33,25 +34,25 @@ extern "C" {
 /// @brief Create a new Vec2 with given x and y components.
 /// @param x The x (horizontal) component.
 /// @param y The y (vertical) component.
-/// @return A new Vec2 object with the specified components.
+/// @return New runtime-managed Vec2, or NULL after trapping if allocation fails.
 void *rt_vec2_new(double x, double y);
 
 /// @brief Create a new Vec2 at origin (0, 0).
-/// @return A new Vec2 object with both components set to zero.
+/// @return New zero Vec2, or NULL after trapping if allocation fails.
 void *rt_vec2_zero(void);
 
 /// @brief Create a new Vec2 (1, 1).
-/// @return A new Vec2 object with both components set to one.
+/// @return New `(1, 1)` Vec2, or NULL after trapping if allocation fails.
 void *rt_vec2_one(void);
 
 /// @brief Get the X component.
 /// @param v The Vec2 object.
-/// @return The x (horizontal) component of the vector.
+/// @return Stored x component, or 0.0 after trapping for an invalid handle.
 double rt_vec2_x(void *v);
 
 /// @brief Get the Y component.
 /// @param v The Vec2 object.
-/// @return The y (vertical) component of the vector.
+/// @return Stored y component, or 0.0 after trapping for an invalid handle.
 double rt_vec2_y(void *v);
 
 /// @brief Add two vectors: a + b.
@@ -75,8 +76,8 @@ void *rt_vec2_mul(void *v, double s);
 
 /// @brief Divide vector by scalar: v / s.
 /// @param v The Vec2 operand.
-/// @param s The scalar divisor (must not be zero).
-/// @return A new Vec2 with each component divided by @p s.
+/// @param s The scalar divisor; it must be finite and nonzero.
+/// @return New quotient Vec2, or NULL after trapping for invalid input or allocation failure.
 void *rt_vec2_div(void *v, double s);
 
 /// @brief Dot product of two vectors.
@@ -95,7 +96,8 @@ double rt_vec2_cross(void *a, void *b);
 
 /// @brief Length (magnitude) of vector.
 /// @param v The Vec2 object.
-/// @return The Euclidean length sqrt(x^2 + y^2).
+/// @return Overflow-resistant Euclidean length, positive infinity for non-finite components, or
+///         0.0 after an invalid-handle trap.
 double rt_vec2_len(void *v);
 
 /// @brief Squared length of vector (avoids sqrt).
@@ -104,10 +106,11 @@ double rt_vec2_len(void *v);
 ///         distance comparisons without the cost of a square root.
 double rt_vec2_len_sq(void *v);
 
-/// @brief Normalize vector to unit length (returns zero vector if length is zero).
+/// @brief Normalize a vector to unit length.
 /// @param v The Vec2 object.
 /// @return A new unit-length Vec2 pointing in the same direction as @p v,
-///         or the zero vector if the input length is zero.
+///         the zero vector if its length is zero or non-finite, or NULL after an invalid-handle
+///         or allocation trap.
 void *rt_vec2_norm(void *v);
 
 /// @brief Distance between two points (vectors).

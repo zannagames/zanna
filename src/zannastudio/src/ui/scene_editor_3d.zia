@@ -226,6 +226,7 @@ final PRIMITIVE_EMPTY: Integer = 0;
 final PRIMITIVE_BOX: Integer = 1;
 final PRIMITIVE_SPHERE: Integer = 2;
 final PRIMITIVE_PLANE: Integer = 3;
+final PRIMITIVE_CYLINDER: Integer = 4;
 
 final ADD_COMPONENT_LIGHT: Integer = 0;
 final ADD_COMPONENT_MATERIAL: Integer = 1;
@@ -590,6 +591,7 @@ class SceneEditor3D {
     expose GUI.Button addBoxButton;
     expose GUI.Button addSphereButton;
     expose GUI.Button addPlaneButton;
+    expose GUI.Button addCylinderButton;
     expose GUI.Button addLightButton;
     expose GUI.Button addCameraButton;
     expose GUI.Button importInstanceButton;
@@ -884,6 +886,7 @@ class SceneEditor3D {
         addBoxButton = null;
         addSphereButton = null;
         addPlaneButton = null;
+        addCylinderButton = null;
         addLightButton = null;
         addCameraButton = null;
         importInstanceButton = null;
@@ -1207,6 +1210,7 @@ class SceneEditor3D {
         addBoxButton = GUI.Button.New(toolbar, "+ Box");
         addSphereButton = GUI.Button.New(toolbar, "+ Sphere");
         addPlaneButton = GUI.Button.New(toolbar, "+ Plane");
+        addCylinderButton = GUI.Button.New(toolbar, "+ Cylinder");
         addLightButton = GUI.Button.New(toolbar, "+ Light");
         addLightButton.SetTooltip(
             "Create a top-level Point light node in one undoable edit");
@@ -1983,6 +1987,9 @@ class SceneEditor3D {
         }
         if addPlaneButton.WasClicked() {
             changed = AddPrimitive(PRIMITIVE_PLANE, false) or changed;
+        }
+        if addCylinderButton.WasClicked() {
+            changed = AddPrimitive(PRIMITIVE_CYLINDER, false) or changed;
         }
         if addLightButton.WasClicked() {
             changed = AddLightNode(
@@ -5993,6 +6000,86 @@ class SceneEditor3D {
     }
 
     expose func AddPrimitive(kind: Integer, asChild: Boolean) -> Boolean {
+        return AddPrimitiveAt(
+            kind, asChild,
+            viewTargetX, viewTargetY, viewTargetZ, false);
+    }
+
+    /// @brief Create one primitive from a context menu with rename armed.
+    /// @details Menu creates spawn at the camera's view target and open the
+    ///          inline hierarchy rename so the name is typed immediately;
+    ///          toolbar buttons keep plain creation.
+    expose func AddPrimitiveFromMenu(kind: Integer,
+                                     asChild: Boolean) -> Boolean {
+        return AddPrimitiveAt(
+            kind, asChild,
+            viewTargetX, viewTargetY, viewTargetZ, true);
+    }
+
+    /// @brief Create one primitive at the surface under a viewport pointer.
+    /// @details The spawn point is the precise triangle hit under the
+    ///          pointer, the ground-plane intersection when the ray misses
+    ///          geometry, or the view target when it misses both. Shared by
+    ///          the viewport context menu's create items.
+    /// @param physicalX Physical pointer x recorded when the menu opened.
+    /// @param physicalY Physical pointer y recorded when the menu opened.
+    expose func AddPrimitiveAtPointer(kind: Integer,
+                                      physicalX: Number,
+                                      physicalY: Number) -> Boolean {
+        if viewportImage == null {
+            return AddPrimitiveFromMenu(kind, false);
+        }
+        var viewportX = Convert.NumToInt(
+            PhysicalPointerToUi(physicalX)
+            - viewportImage.GetScreenX());
+        var viewportY = Convert.NumToInt(
+            PhysicalPointerToUi(physicalY)
+            - viewportImage.GetScreenY());
+        var spawn = ViewportSpawnPoint(viewportX, viewportY);
+        return AddPrimitiveAt(
+            kind, false, spawn.X, spawn.Y, spawn.Z, true);
+    }
+
+    /// @brief Resolve a viewport point to a world spawn position.
+    /// @details Precise surface hit first, ground plane (y = 0) second,
+    ///          view target last — creation always lands somewhere visible.
+    expose func ViewportSpawnPoint(viewportX: Integer,
+                                   viewportY: Integer) -> Vec3 {
+        if scene != null and ConfigureViewportCamera() {
+            var origin = viewportRenderCamera.ScreenToRayOrigin(
+                viewportX, viewportY,
+                renderedViewportWidth, renderedViewportHeight) as Vec3;
+            var direction = viewportRenderCamera.ScreenToRay(
+                viewportX, viewportY,
+                renderedViewportWidth, renderedViewportHeight) as Vec3;
+            var hit = scene.RaycastPreciseHit(
+                origin, direction, viewportRenderCamera.FarPlane)
+                as RayHit3D;
+            if hit != null { return hit.Point as Vec3; }
+            if direction.Y < -0.000001 or direction.Y > 0.000001 {
+                var t = (0.0 - origin.Y) / direction.Y;
+                if t > 0.0 and t < viewportRenderCamera.FarPlane {
+                    return Vec3.New(
+                        origin.X + direction.X * t,
+                        0.0,
+                        origin.Z + direction.Z * t);
+                }
+            }
+        }
+        return Vec3.New(viewTargetX, viewTargetY, viewTargetZ);
+    }
+
+    /// @brief Shared primitive creation at one world position.
+    /// @details Root creates spawn at the given world point; child creates
+    ///          keep the parent-local origin so they land on their parent.
+    ///          One undoable transaction; the new node becomes the
+    ///          selection, optionally with inline rename armed.
+    hide func AddPrimitiveAt(kind: Integer,
+                             asChild: Boolean,
+                             spawnX: Number,
+                             spawnY: Number,
+                             spawnZ: Number,
+                             armRename: Boolean) -> Boolean {
         if scene == null { return false; }
         if asChild
            and ParentAcceptsAuthoredChildren(SelectedNode()) == false {
@@ -6012,16 +6099,22 @@ class SceneEditor3D {
             name = "Plane " + scene.NodeCount;
             node.Mesh = Mesh3D.Plane(4.0, 4.0);
             node.Material = Material3D.FromColor(0.42, 0.70, 0.42);
+        } else if kind == PRIMITIVE_CYLINDER {
+            name = "Cylinder " + scene.NodeCount;
+            node.Mesh = Mesh3D.Cylinder(0.5, 1.0, 24);
+            node.Material = Material3D.FromColor(0.72, 0.46, 0.82);
         }
         node.Name = name;
         var parent = SelectedNode();
         if asChild and parent != null {
             parent.AddChild(node);
         } else {
+            node.SetPosition(spawnX, spawnY, spawnZ);
             scene.Add(node);
         }
         if CommitScene("Added " + name) == false { return false; }
         RefreshHierarchy(node);
+        if armRename { BeginRenameSelected(); }
         return true;
     }
 
@@ -7082,6 +7175,7 @@ class SceneEditor3D {
         addBoxButton.SetEnabled(enabled);
         addSphereButton.SetEnabled(enabled);
         addPlaneButton.SetEnabled(enabled);
+        addCylinderButton.SetEnabled(enabled);
         addLightButton.SetEnabled(enabled);
         duplicateNodeButton.SetEnabled(hasSelection);
         moveToolButton.SetEnabled(hasSelection);

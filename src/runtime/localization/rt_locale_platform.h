@@ -48,7 +48,8 @@ extern "C" {
 ///          `$LC_ALL` -> `$LC_MESSAGES` -> `$LANG`.
 /// @param out Destination buffer. NUL-terminated on success.
 /// @param cap Total capacity of @p out in bytes, including space for the
-///            terminator. Must be at least 16 for any useful result.
+///            terminator. Values below 2 are rejected; the complete detected
+///            tag and terminator must fit.
 /// @return 0 on success; -1 if no system locale could be determined or @p out
 ///         is NULL / @p cap is too small.
 int rt_locale_platform_detect_system(char *out, size_t cap);

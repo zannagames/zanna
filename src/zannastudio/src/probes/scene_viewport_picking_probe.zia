@@ -569,6 +569,51 @@ func main() {
         return;
     }
 
+    // Creation ergonomics (1.4): the viewport spawn point resolves the
+    // precise surface hit under the pointer, and falls back to the view
+    // target over empty space with a camera-parallel ground plane.
+    var spawn = editor.ViewportSpawnPoint(meshX, centerY);
+    if Near(spawn.Z, 4.0, 0.05) == false {
+        Fail(shell, harness,
+             "surface spawn point missed the front box face: z=" + spawn.Z);
+        return;
+    }
+    var emptySpawn = editor.ViewportSpawnPoint(rectLeft, rectTop);
+    if Near(emptySpawn.X, editor.viewTargetX, 0.000001) == false
+       or Near(emptySpawn.Y, editor.viewTargetY, 0.000001) == false
+       or Near(emptySpawn.Z, editor.viewTargetZ, 0.000001) == false {
+        Fail(shell, harness,
+             "empty-space spawn point was not the view target: "
+             + emptySpawn.X + "," + emptySpawn.Y + "," + emptySpawn.Z);
+        return;
+    }
+
+    // Toolbar primitives spawn at the view target; Cylinder is offered.
+    editor.viewTargetX = 2.5;
+    var beforeCount = editor.flatNodes.count();
+    ClickWidget(shell, harness, editor.addCylinderButton);
+    if editor.Pump(sceneDoc) == false
+       or editor.flatNodes.count() != beforeCount + 1 {
+        Fail(shell, harness,
+             "toolbar cylinder create did not add one node: count="
+             + editor.flatNodes.count());
+        return;
+    }
+    var cylinderNode = editor.flatNodes.get(beforeCount);
+    if cylinderNode.Mesh == null
+       or Near(cylinderNode.WorldPosition.X, 2.5, 0.000001) == false {
+        Fail(shell, harness,
+             "cylinder did not spawn at the view target: x="
+             + cylinderNode.WorldPosition.X);
+        return;
+    }
+    editor.viewTargetX = 0.0;
+    if editor.Undo() == false or sceneDoc.content != canonical {
+        Fail(shell, harness,
+             "undoing the cylinder did not restore canonical bytes");
+        return;
+    }
+
     harness.UnbindApp();
     shell.Destroy();
     Terminal.Say("RESULT: ok");

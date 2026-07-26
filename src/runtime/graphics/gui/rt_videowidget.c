@@ -125,6 +125,7 @@ static size_t s_videowidget_wrapper_cap = 0;
 /// @details The registry is the source of truth for handle validation: videowidget_checked
 ///          only trusts an opaque `void*` once it is found here (then verifies the magic
 ///          tag), guarding against forged/freed handles. Capacity doubles from 8.
+/// @param w Wrapper address to register; NULL is rejected.
 /// @return 1 on success or if already present; 0 on overflow or realloc failure.
 static int videowidget_register_wrapper(rt_videowidget *w) {
     if (!w)
@@ -153,6 +154,7 @@ static int videowidget_register_wrapper(rt_videowidget *w) {
 }
 
 /// @brief Remove a wrapper from the VideoWidget registry, compacting the array. No-op if absent.
+/// @param w Wrapper address to remove; NULL and unregistered addresses are ignored.
 static void videowidget_unregister_wrapper(rt_videowidget *w) {
     if (!w)
         return;
@@ -173,6 +175,8 @@ static void videowidget_unregister_wrapper(rt_videowidget *w) {
 }
 
 /// @brief True if @p w is a currently-registered wrapper; backs handle validation.
+/// @param w Candidate wrapper address.
+/// @return Non-zero only when the exact address occurs in the live registry.
 static int videowidget_wrapper_is_registered(const rt_videowidget *w) {
     if (!w)
         return 0;
@@ -185,6 +189,8 @@ static int videowidget_wrapper_is_registered(const rt_videowidget *w) {
 
 /// @brief Safe-cast an opaque handle to a VideoWidget: NULL unless it is a live
 ///        registered wrapper carrying the expected magic tag.
+/// @param obj Candidate opaque VideoWidget handle.
+/// @return Borrowed live registered wrapper, or NULL for invalid, forged, or disposed values.
 static rt_videowidget *videowidget_checked(void *obj) {
     rt_videowidget *w = (rt_videowidget *)obj;
     return videowidget_wrapper_is_registered(w) && w->magic == RT_VIDEOWIDGET_MAGIC ? w : NULL;
@@ -278,11 +284,13 @@ static void videowidget_wake_controls(rt_videowidget *w) {
 /// @details The wrapper owns the transport subtree it created. If user code
 ///          drops the wrapper while the GUI tree is still attached, destroy the
 ///          subtree so controls are not left orphaned with a released player.
+/// @param obj Runtime-managed VideoWidget wrapper supplied by the object finalizer.
 static void videowidget_finalizer(void *obj) {
     videowidget_dispose((rt_videowidget *)obj, 1);
 }
 
 /// @brief Release a GC-managed object if it exists, freeing it when the refcount drops to zero.
+/// @param obj Runtime-managed object to release; NULL is ignored.
 static void release_gc_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -293,6 +301,8 @@ static void release_gc_object(void *obj) {
 ///   dangling references after disposal. When @p destroy_widget_tree is non-zero it
 ///   also calls `rt_widget_destroy` on the root, which tears down the entire GUI
 ///   subtree — used during explicit `VideoWidget.Destroy` calls and GC finalization.
+/// @param w Candidate live wrapper; invalid and already-disposed wrappers are ignored.
+/// @param destroy_widget_tree Non-zero to destroy the retained root subtree before clearing it.
 static void videowidget_dispose(rt_videowidget *w, int destroy_widget_tree) {
     if (!w || w->magic != RT_VIDEOWIDGET_MAGIC)
         return;
@@ -326,6 +336,8 @@ static void videowidget_dispose(rt_videowidget *w, int destroy_widget_tree) {
 /// @brief Clamp a volume value to [0.0, 1.0] before passing it to the video player.
 /// @details Values outside [0, 1] are undefined behavior in most audio backends.
 ///   Clamping here shields the player from invalid values supplied by user code.
+/// @param vol Requested audio gain.
+/// @return Finite value clamped to [0,1], with non-finite input mapped to zero.
 static double clamp_volume(double vol) {
     if (!isfinite(vol))
         return 0.0;
@@ -545,6 +557,9 @@ static void videowidget_update_core(rt_videowidget *w, double dt) {
 /// builds a vbox containing an Image widget (for frames) plus an hbox of Play/Pause/Stop buttons
 /// and a position-slider. Returns NULL if the file can't be opened or the video has zero
 /// dimensions.
+/// @param parent Required live parent-container handle.
+/// @param path Runtime string naming the video source to open.
+/// @return New runtime-managed VideoWidget wrapper, or NULL for invalid input or setup failure.
 void *rt_videowidget_new(void *parent, rt_string path) {
     RT_ASSERT_MAIN_THREAD();
     if (!parent || !path)
@@ -643,6 +658,7 @@ void *rt_videowidget_new(void *parent, rt_string path) {
 }
 
 /// @brief Destroy the video widget subtree and release the owned VideoPlayer.
+/// @param obj VideoWidget handle; invalid and already-disposed values are ignored.
 void rt_videowidget_destroy(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -652,6 +668,7 @@ void rt_videowidget_destroy(void *obj) {
 }
 
 /// @brief Begin or resume video playback. Forwards to the underlying VideoPlayer.
+/// @param obj VideoWidget handle; invalid or playerless wrappers are ignored.
 void rt_videowidget_play(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -666,6 +683,7 @@ void rt_videowidget_play(void *obj) {
 }
 
 /// @brief Pause playback (preserves position). Resume with `_play`.
+/// @param obj VideoWidget handle; invalid or playerless wrappers are ignored.
 void rt_videowidget_pause(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -679,6 +697,7 @@ void rt_videowidget_pause(void *obj) {
 }
 
 /// @brief Stop playback and rewind to position 0.
+/// @param obj VideoWidget handle; invalid or playerless wrappers are ignored.
 void rt_videowidget_stop(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -695,6 +714,8 @@ void rt_videowidget_stop(void *obj) {
 /// @brief Manually request one transport/decode/upload update.
 /// @details With auto-update enabled, a completed scheduler update or earlier manual update in the
 ///          current app generation suppresses duplicate work. Manual-only mode always updates.
+/// @param obj VideoWidget handle.
+/// @param dt Elapsed seconds supplied to the underlying player update.
 void rt_videowidget_update(void *obj, double dt) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -719,6 +740,8 @@ void rt_videowidget_update(void *obj, double dt) {
 /// @brief Enable or disable app-owned automatic frame scheduling.
 /// @details Changing mode resets idempotence bookkeeping so the next selected update path performs
 ///          one complete step. Unattached widgets can retain the flag but have no app deadline.
+/// @param obj VideoWidget handle; invalid values are ignored.
+/// @param enabled Non-zero to participate in owning-app update scheduling.
 void rt_videowidget_set_auto_update(void *obj, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -734,6 +757,8 @@ void rt_videowidget_set_auto_update(void *obj, int64_t enabled) {
 }
 
 /// @brief Return whether this live widget participates in app scheduling.
+/// @param obj VideoWidget handle.
+/// @return One when automatic updates are enabled, otherwise zero.
 int64_t rt_videowidget_is_auto_update(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -741,6 +766,8 @@ int64_t rt_videowidget_is_auto_update(void *obj) {
 }
 
 /// @brief Consume one successful-load edge without changing other event counters.
+/// @param obj VideoWidget handle.
+/// @return One when an edge was consumed, otherwise zero.
 int64_t rt_videowidget_was_loaded(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -748,6 +775,8 @@ int64_t rt_videowidget_was_loaded(void *obj) {
 }
 
 /// @brief Consume one frame-processing failure edge.
+/// @param obj VideoWidget handle.
+/// @return One when an edge was consumed, otherwise zero.
 int64_t rt_videowidget_was_failed(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -755,6 +784,8 @@ int64_t rt_videowidget_was_failed(void *obj) {
 }
 
 /// @brief Consume one buffering-state transition edge.
+/// @param obj VideoWidget handle.
+/// @return One when an edge was consumed, otherwise zero.
 int64_t rt_videowidget_was_buffering_changed(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -762,6 +793,8 @@ int64_t rt_videowidget_was_buffering_changed(void *obj) {
 }
 
 /// @brief Consume one natural-end event edge.
+/// @param obj VideoWidget handle.
+/// @return One when an edge was consumed, otherwise zero.
 int64_t rt_videowidget_was_ended(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -769,6 +802,8 @@ int64_t rt_videowidget_was_ended(void *obj) {
 }
 
 /// @brief Consume one timeline-seek event edge.
+/// @param obj VideoWidget handle.
+/// @return One when an edge was consumed, otherwise zero.
 int64_t rt_videowidget_was_seeked(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -776,6 +811,8 @@ int64_t rt_videowidget_was_seeked(void *obj) {
 }
 
 /// @brief Return a caller-owned copy of the current frame diagnostic.
+/// @param obj VideoWidget handle.
+/// @return Owned diagnostic string, or an owned empty string when no error is latched.
 rt_string rt_videowidget_get_error(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -784,6 +821,8 @@ rt_string rt_videowidget_get_error(void *obj) {
 }
 
 /// @brief Return the saturating non-consuming widget revision in signed runtime range.
+/// @param obj VideoWidget handle.
+/// @return Current revision saturated at `INT64_MAX`, or zero for an invalid handle.
 int64_t rt_videowidget_get_revision(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -793,6 +832,8 @@ int64_t rt_videowidget_get_revision(void *obj) {
 }
 
 /// @brief Enable or disable the deterministic 2.5-second transport auto-hide policy.
+/// @param obj VideoWidget handle; invalid values are ignored.
+/// @param enabled Non-zero to hide idle controls during playback.
 void rt_videowidget_set_controls_auto_hide(void *obj, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -807,6 +848,8 @@ void rt_videowidget_set_controls_auto_hide(void *obj, int64_t enabled) {
 }
 
 /// @brief Forward fullscreen state to this widget's borrowed owning app.
+/// @param obj VideoWidget handle.
+/// @param fullscreen Non-zero to request fullscreen, zero to leave it.
 void rt_videowidget_set_fullscreen(void *obj, int64_t fullscreen) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -820,6 +863,8 @@ void rt_videowidget_set_fullscreen(void *obj, int64_t fullscreen) {
 }
 
 /// @brief Query fullscreen state from this widget's borrowed owning app.
+/// @param obj VideoWidget handle.
+/// @return One when the owning app is fullscreen, otherwise zero.
 int64_t rt_videowidget_is_fullscreen(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -827,6 +872,8 @@ int64_t rt_videowidget_is_fullscreen(void *obj) {
 }
 
 /// @brief Toggle visibility of the play/pause/stop/slider strip (image widget always visible).
+/// @param obj VideoWidget handle; invalid values are ignored.
+/// @param show Non-zero to show transport controls.
 void rt_videowidget_set_show_controls(void *obj, int8_t show) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -842,6 +889,10 @@ void rt_videowidget_set_show_controls(void *obj, int8_t show) {
     videowidget_note_revision(w);
 }
 
+/// @brief Return the configured transport-control visibility.
+/// @details Reports the requested state independently of temporary auto-hide suppression.
+/// @param obj VideoWidget handle.
+/// @return One when controls are configured to show, otherwise zero.
 int64_t rt_videowidget_get_show_controls(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -851,6 +902,8 @@ int64_t rt_videowidget_get_show_controls(void *obj) {
 }
 
 /// @brief Enable auto-loop. When enabled, the widget restarts playback on natural end-of-video.
+/// @param obj VideoWidget handle; invalid values are ignored.
+/// @param loop Non-zero to enable looping.
 void rt_videowidget_set_loop(void *obj, int8_t loop) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -863,6 +916,9 @@ void rt_videowidget_set_loop(void *obj, int8_t loop) {
     videowidget_note_revision(w);
 }
 
+/// @brief Return whether natural end-of-video restarts playback.
+/// @param obj VideoWidget handle.
+/// @return One when looping is enabled, otherwise zero.
 int64_t rt_videowidget_get_loop(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -872,6 +928,8 @@ int64_t rt_videowidget_get_loop(void *obj) {
 }
 
 /// @brief Set audio output level [0.0, 1.0]. Clamped via `clamp_volume`. Forwarded to player.
+/// @param obj VideoWidget handle; invalid values are ignored.
+/// @param vol Requested audio gain; non-finite values become zero.
 void rt_videowidget_set_volume(void *obj, double vol) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -887,6 +945,8 @@ void rt_videowidget_set_volume(void *obj, double vol) {
 }
 
 /// @brief Return 1 if the underlying VideoPlayer is currently playing, else 0.
+/// @param obj VideoWidget handle.
+/// @return Underlying player's playing flag, or zero for an invalid/playerless widget.
 int64_t rt_videowidget_get_is_playing(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -896,6 +956,8 @@ int64_t rt_videowidget_get_is_playing(void *obj) {
 }
 
 /// @brief Current playback position in seconds (forwarded from the underlying VideoPlayer).
+/// @param obj VideoWidget handle.
+/// @return Current position in seconds, or zero for an invalid/playerless widget.
 double rt_videowidget_get_position(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -905,6 +967,8 @@ double rt_videowidget_get_position(void *obj) {
 }
 
 /// @brief Total video duration in seconds (forwarded from the underlying VideoPlayer).
+/// @param obj VideoWidget handle.
+/// @return Duration in seconds, or zero for an invalid/playerless widget.
 double rt_videowidget_get_duration(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -917,6 +981,9 @@ double rt_videowidget_get_duration(void *obj) {
 /// @details Registry traversal allocates nothing. A pending manual update is acknowledged, and a
 ///          repeated call with the same generation is ignored, guaranteeing one decode/upload per
 ///          app generation without background threads.
+/// @param app Borrowed owning GUI application; NULL is ignored.
+/// @param dt Elapsed seconds supplied to each player update.
+/// @param frame_generation Non-zero owning-app frame generation used for idempotence.
 void rt_videowidget_update_app(void *app, double dt, uint64_t frame_generation) {
     RT_ASSERT_MAIN_THREAD();
     if (!app || frame_generation == 0u)
@@ -940,6 +1007,8 @@ void rt_videowidget_update_app(void *app, double dt, uint64_t frame_generation) 
 }
 
 /// @brief Return a 16ms scheduler deadline while an owned auto-updated video is playing.
+/// @param app Borrowed GUI application whose widgets are queried.
+/// @return 16 when an owned video requires animation updates, otherwise -1.
 int64_t rt_videowidget_next_deadline_ms(const void *app) {
     if (!app)
         return -1;
@@ -956,6 +1025,7 @@ int64_t rt_videowidget_next_deadline_ms(const void *app) {
 /// @brief Release controller resources for every VideoWidget belonging to a dying app.
 /// @details Subtrees are deliberately not destroyed here because app root teardown owns them. The
 ///          registry compacts during disposal, so the loop advances only past non-matching entries.
+/// @param app Borrowed GUI application being destroyed; NULL is ignored.
 void rt_videowidget_forget_app(void *app) {
     RT_ASSERT_MAIN_THREAD();
     if (!app)
@@ -971,12 +1041,18 @@ void rt_videowidget_forget_app(void *app) {
     }
 }
 
+/// @brief Return the VideoWidget's retained root container.
+/// @param obj VideoWidget handle.
+/// @return Borrowed root widget, or NULL for an invalid or disposed wrapper.
 void *rt_videowidget_get_root(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
     return w ? w->root_widget : NULL;
 }
 
+/// @brief Forward visibility to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param visible Non-zero to show the complete widget subtree.
 void rt_videowidget_set_visible(void *obj, int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -984,6 +1060,9 @@ void rt_videowidget_set_visible(void *obj, int64_t visible) {
         rt_widget_set_visible(w->root_widget, visible);
 }
 
+/// @brief Forward enabled state to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param enabled Non-zero to enable the complete widget subtree.
 void rt_videowidget_set_enabled(void *obj, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -991,6 +1070,10 @@ void rt_videowidget_set_enabled(void *obj, int64_t enabled) {
         rt_widget_set_enabled(w->root_widget, enabled);
 }
 
+/// @brief Forward fixed integer dimensions to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param width Requested width.
+/// @param height Requested height.
 void rt_videowidget_set_size(void *obj, int64_t width, int64_t height) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -998,6 +1081,10 @@ void rt_videowidget_set_size(void *obj, int64_t width, int64_t height) {
         rt_widget_set_size(w->root_widget, width, height);
 }
 
+/// @brief Forward preferred logical dimensions to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param width Preferred logical width.
+/// @param height Preferred logical height.
 void rt_videowidget_set_preferred_size(void *obj, double width, double height) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -1005,6 +1092,10 @@ void rt_videowidget_set_preferred_size(void *obj, double width, double height) {
         rt_widget_set_preferred_size(w->root_widget, width, height);
 }
 
+/// @brief Forward maximum logical dimensions to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param width Maximum logical width.
+/// @param height Maximum logical height.
 void rt_videowidget_set_max_size(void *obj, double width, double height) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -1012,6 +1103,9 @@ void rt_videowidget_set_max_size(void *obj, double width, double height) {
         rt_widget_set_max_size(w->root_widget, width, height);
 }
 
+/// @brief Forward a flex-grow factor to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param flex Requested flex-grow factor.
 void rt_videowidget_set_flex(void *obj, double flex) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -1019,6 +1113,9 @@ void rt_videowidget_set_flex(void *obj, double flex) {
         rt_widget_set_flex(w->root_widget, flex);
 }
 
+/// @brief Forward a uniform margin to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param margin Requested margin.
 void rt_videowidget_set_margin(void *obj, int64_t margin) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -1026,6 +1123,10 @@ void rt_videowidget_set_margin(void *obj, int64_t margin) {
         rt_widget_set_margin(w->root_widget, margin);
 }
 
+/// @brief Forward a manual position to the VideoWidget's retained root.
+/// @param obj VideoWidget handle.
+/// @param x Parent-relative X coordinate.
+/// @param y Parent-relative Y coordinate.
 void rt_videowidget_set_position(void *obj, int64_t x, int64_t y) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
@@ -1033,6 +1134,9 @@ void rt_videowidget_set_position(void *obj, int64_t x, int64_t y) {
         rt_widget_set_position(w->root_widget, x, y);
 }
 
+/// @brief Attach a child widget to the VideoWidget's retained root container.
+/// @param obj VideoWidget handle.
+/// @param child Child-widget handle forwarded to the generic GUI tree API.
 void rt_videowidget_add_child(void *obj, void *child) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);

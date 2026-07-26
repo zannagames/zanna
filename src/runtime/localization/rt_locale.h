@@ -8,16 +8,14 @@
 // File: src/runtime/localization/rt_locale.h
 // Purpose: Public C API for the Zanna.Localization.Locale class — an immutable
 //          reference-counted handle representing a BCP-47 language tag. Holds
-//          a non-owning pointer to the locale-data record registered with
-//          LocaleManager; the data pointer may be NULL when the locale has
-//          been parsed but not registered (info queries then fall through to
-//          the invariant defaults).
+//          a retained pointer to the locale-data record registered with
+//          LocaleManager; the pointer may be NULL when the locale has been
+//          parsed but not registered, in which case queries use invariant data.
 //
 // Key invariants:
 //   - Fields `language`, `script`, `region`, `tag` are small fixed-size char
-//     buffers so the entire struct is 80 bytes and value-equality is
-//     memcmp-friendly for the tag prefix. BCP-47 subtags fit within the
-//     allotted capacity per RFC 5646 §2.2.
+//     buffers. BCP-47 subtags fit within their RFC 5646 limits and the
+//     128-byte canonical tag buffer bounds extensions/private-use storage.
 //   - `language` is always lowercase; `script` is Title-case (Xxxx); `region`
 //     is UPPERCASE. Parse-time canonicalization guarantees these invariants.
 //   - `data` is either NULL (unregistered) or a pointer to a rt_locale_data_t
@@ -27,6 +25,8 @@
 //   - Handles are allocated via rt_obj_new_i64 and refcount-managed by the GC.
 //   - Ownership of interned subtag/tag strings is the handle itself; strings
 //     are embedded in the struct and freed with the handle.
+//   - A non-NULL data pointer is retained from LocaleManager and released by
+//     the Locale finalizer.
 //
 // Links: src/runtime/localization/rt_locale_data.h (data record),
 //        src/runtime/localization/rt_locale_manager.h (registry owner),
@@ -117,6 +117,7 @@ void *rt_locale_from_parts(rt_string language, rt_string script, rt_string regio
 ///          to the baked en-US record so user-facing queries still produce
 ///          sensible defaults. Always returns a fresh handle (not a shared
 ///          singleton) so caller lifetime management is uniform.
+/// @return Fresh GC-managed invariant Locale; allocation failure traps.
 void *rt_locale_invariant(void);
 
 //===----------------------------------------------------------------------===//
@@ -124,15 +125,23 @@ void *rt_locale_invariant(void);
 //===----------------------------------------------------------------------===//
 
 /// @brief Primary language subtag (lowercased). Empty for invariant locale.
+/// @param locale Locale handle; may be NULL.
+/// @return Fresh runtime string containing the language or empty.
 rt_string rt_locale_language(void *locale);
 
 /// @brief Script subtag (Title-case) or empty string when absent.
+/// @param locale Locale handle; may be NULL.
+/// @return Fresh runtime string containing the script or empty.
 rt_string rt_locale_script(void *locale);
 
 /// @brief Region subtag (uppercase) or empty string when absent.
+/// @param locale Locale handle; may be NULL.
+/// @return Fresh runtime string containing the region or empty.
 rt_string rt_locale_region(void *locale);
 
 /// @brief Canonical BCP-47 tag (e.g. "en-US" / "zh-Hans-CN" / "root").
+/// @param locale Locale handle; NULL is treated as invariant.
+/// @return Fresh runtime string containing the canonical tag.
 rt_string rt_locale_tag(void *locale);
 
 //===----------------------------------------------------------------------===//
@@ -142,6 +151,8 @@ rt_string rt_locale_tag(void *locale);
 /// @brief Compare two locales by canonical tag.
 /// @details NULL-tolerant on both sides; two NULLs compare equal. Script and
 ///          region emptiness affects the tag and therefore the comparison.
+/// @param a First Locale handle; NULL is invariant.
+/// @param b Second Locale handle; NULL is invariant.
 /// @return 1 if equal, 0 otherwise.
 int8_t rt_locale_equals(void *a, void *b);
 
@@ -151,11 +162,14 @@ int8_t rt_locale_equals(void *a, void *b);
 ///          locale returns `[root]`. The returned List owns strong
 ///          references to fresh Locale handles — caller is responsible
 ///          for the List (GC-managed) which in turn owns the handles.
+/// @param locale Locale whose fallback chain is requested; NULL yields only root.
 /// @return New rt_list containing obj Locale handles.
 void *rt_locale_fallbacks(void *locale);
 
 /// @brief Return the canonical tag as an rt_string. Alias for rt_locale_tag.
 /// @details Provided so callers don't need to special-case "ToString".
+/// @param locale Locale handle; NULL is treated as invariant.
+/// @return Fresh runtime string containing the canonical tag.
 rt_string rt_locale_to_string(void *locale);
 
 //===----------------------------------------------------------------------===//
@@ -165,19 +179,26 @@ rt_string rt_locale_to_string(void *locale);
 /// @brief Attach a locale-data record to a handle.
 /// @details Called by LocaleManager immediately after registering the data
 ///          so the Locale's queries short-circuit to the right record. Safe
-///          to call with NULL to detach; the record is non-owning.
+///          to call with NULL to detach. The new record is retained before
+///          the previous binding is released.
+/// @param locale Locale handle to update; NULL is a no-op.
+/// @param data Locale-data record to retain, or NULL to clear the binding.
 void rt_locale_bind_data(void *locale, const rt_locale_data_t *data);
 
 /// @brief Internal parse helper that emits structured error codes.
 /// @details Used by both rt_locale_parse and rt_locale_try_parse to avoid
 ///          duplicating the validator. The `strict` flag controls whether
 ///          the function returns NULL or traps on invalid input.
+/// @param tag Candidate runtime string.
+/// @param strict Nonzero to trap on invalid/empty input, zero to return NULL.
 /// @return New Locale handle on success, NULL on failure (when !strict).
 void *rt_locale_parse_internal(rt_string tag, int strict);
 
 /// @brief Find locale data for the given handle, falling back to invariant.
 /// @details NULL-safe: returns the invariant data when `locale` is NULL or
-///          its `data` pointer has not yet been bound.
+///          its `data` pointer has not yet been bound. The result is borrowed.
+/// @param locale Locale handle; may be NULL.
+/// @return Borrowed bound or invariant locale-data record; never NULL.
 const rt_locale_data_t *rt_locale_get_data(void *locale);
 
 #ifdef __cplusplus

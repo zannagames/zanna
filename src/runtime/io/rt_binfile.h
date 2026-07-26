@@ -12,12 +12,17 @@
 // Key invariants:
 //   - Open modes: 'r' (read-only), 'w' (write/truncate), 'rw' (read-write), 'a' (append).
 //   - Seek origins: 0=SEEK_SET, 1=SEEK_CUR, 2=SEEK_END.
-//   - rt_binfile_eof returns 1 only after a read that reached end-of-file.
+//   - For an open handle, rt_binfile_eof returns 1 only after stdio reports
+//     end-of-file; NULL and closed handles conservatively report EOF.
 //   - Reads past EOF return 0 bytes and set the EOF flag.
+//   - Update streams insert the stdio synchronization required when switching
+//     between reads and writes.
 //
 // Ownership/Lifetime:
-//   - BinFile objects are heap-allocated; caller is responsible for closing and freeing.
-//   - rt_binfile_close releases the OS file handle; the object must still be freed separately.
+//   - BinFile objects are GC-managed; callers should close promptly but never
+//     free the object manually.
+//   - rt_binfile_close releases the native stream. The finalizer closes any
+//     stream that was not explicitly closed.
 //
 // Links: src/runtime/io/rt_binfile.c (implementation), src/runtime/core/rt_string.h
 //
@@ -55,6 +60,8 @@ void *rt_binfile_open(void *path, void *mode);
 int8_t rt_binfile_is_handle(void *obj);
 
 /// @brief Close the binary file and release resources.
+/// @details `NULL` and already-closed handles are no-ops. Native close failure
+/// raises a trap after the handle is marked closed.
 /// @param obj BinFile object.
 void rt_binfile_close(void *obj);
 
@@ -63,7 +70,8 @@ void rt_binfile_close(void *obj);
 /// @param bytes Target Bytes object.
 /// @param offset Starting offset in the Bytes object.
 /// @param count Maximum number of bytes to read.
-/// @return Number of bytes actually read.
+/// @return Number of bytes actually read, 0 for an empty/clamped read, or -1
+/// after a native read error trap.
 int64_t rt_binfile_read(void *obj, void *bytes, int64_t offset, int64_t count);
 
 /// @brief Write bytes from a Bytes object to file.
@@ -71,6 +79,8 @@ int64_t rt_binfile_read(void *obj, void *bytes, int64_t offset, int64_t count);
 /// @param bytes Source Bytes object.
 /// @param offset Starting offset in the Bytes object.
 /// @param count Number of bytes to write.
+/// @note Negative offsets become zero and counts are clamped to the available
+/// source range. A partial native write raises a trap.
 void rt_binfile_write(void *obj, void *bytes, int64_t offset, int64_t count);
 
 /// @brief Read a single byte from the file.
@@ -81,9 +91,12 @@ int64_t rt_binfile_read_byte(void *obj);
 /// @brief Write a single byte to the file.
 /// @param obj BinFile object.
 /// @param byte Byte value to write (0-255).
+/// @note Out-of-range values and native write failures raise a trap.
 void rt_binfile_write_byte(void *obj, int64_t byte);
 
 /// @brief Seek to a position in the file.
+/// @details Successful seeks clear EOF. Invalid origins trap; unrepresentable
+/// or rejected native seeks return -1.
 /// @param obj BinFile object.
 /// @param offset Byte offset.
 /// @param origin 0=start, 1=current, 2=end.
@@ -96,17 +109,22 @@ int64_t rt_binfile_seek(void *obj, int64_t offset, int64_t origin);
 int64_t rt_binfile_pos(void *obj);
 
 /// @brief Get the file size.
+/// @details Temporarily seeks to the end and restores the original position.
+/// A failure to restore the position raises a trap.
 /// @param obj BinFile object.
 /// @return File size in bytes or -1 on error.
 int64_t rt_binfile_size(void *obj);
 
 /// @brief Flush any buffered writes to disk.
+/// @details `NULL` and closed valid handles are no-ops. Native flush failure
+/// raises a trap; this does not imply an OS-level `fsync`.
 /// @param obj BinFile object.
 void rt_binfile_flush(void *obj);
 
 /// @brief Check if at end of file.
 /// @param obj BinFile object.
-/// @return 1 if at EOF, 0 otherwise.
+/// @return 1 if a read reached EOF or the handle is `NULL`/closed; otherwise
+/// 0. An unrelated runtime handle raises a trap.
 int8_t rt_binfile_eof(void *obj);
 
 #ifdef __cplusplus

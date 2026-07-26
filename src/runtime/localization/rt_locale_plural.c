@@ -9,7 +9,24 @@
 // Purpose: Recursive-descent parser for CLDR plural-rule expressions (operand
 //   comparisons, ranges, and/or), producing an arena-allocated AST.
 //
-// Links: rt_locale_manager.h, rt_locale_manager_internal.h, rt_locale_manager.c
+// Key invariants:
+//   - Parsing is bounded to rule strings of at most 256 bytes and range lists
+//     of at most 64 entries.
+//   - `and` binds more tightly than `or`; both operators build left-associative
+//     binary trees.
+//   - A parse succeeds only when the complete input has been consumed.
+//   - Decimal accumulation detects signed-integer overflow before mutation.
+//
+// Ownership/Lifetime:
+//   - The parser borrows the input string for the duration of `parse_rule`.
+//   - Every AST node and range array is allocated from the caller's locale
+//     arena. Intermediate allocations made before a parse error remain owned
+//     by that arena and are reclaimed with the rest of the locale data.
+//
+// Links: src/runtime/localization/rt_locale_manager.h (loader API),
+//        src/runtime/localization/rt_locale_manager_internal.h (arena boundary),
+//        src/runtime/localization/rt_locale_manager.c (arena implementation),
+//        src/runtime/localization/rt_locale_data.h (AST node schema).
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,11 +55,17 @@
 #include <stdio.h>
 #include "rt_locale_manager_internal.h"
 
+/// @brief Mutable cursor and failure state for one plural-rule parse.
 typedef struct rule_parser {
+    /// Borrowed NUL-terminated rule text.
     const char *s;
+    /// Current byte offset into @ref s.
     size_t pos;
+    /// Valid byte length of @ref s, excluding its terminator.
     size_t len;
+    /// Borrowed arena that owns all nodes produced by this parse.
     loc_arena_t *arena;
+    /// Sticky flag set after the first syntax, bounds, or allocation failure.
     int failed;
 } rule_parser_t;
 

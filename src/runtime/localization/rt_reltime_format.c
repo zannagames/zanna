@@ -23,6 +23,8 @@
 //
 // Ownership/Lifetime:
 //   - Instances are rt_obj_new_i64-allocated; GC-managed.
+//   - Each instance retains its Locale handle and captured locale-data record.
+//   - Formatting methods return owned runtime strings.
 //
 // Links: src/runtime/localization/rt_reltime_format.h (interface),
 //        src/runtime/localization/rt_plural_rules.h (category evaluator),
@@ -52,11 +54,13 @@
 // Instance struct
 //===----------------------------------------------------------------------===//
 
+/// @brief Template and unit-width style selected by a formatter.
 typedef enum {
     RTF_STYLE_LONG = 0,
     RTF_STYLE_SHORT = 1,
 } rtf_style_t;
 
+/// @brief Retained locale state and mutable style for RelativeTimeFormat.
 typedef struct rt_reltimefmt_inst {
     void *locale;
     const rt_locale_data_t *data;
@@ -64,17 +68,21 @@ typedef struct rt_reltimefmt_inst {
 } rt_reltimefmt_inst_t;
 
 /// @brief Unchecked cast of an opaque handle to the RelativeTimeFormat inst.
+/// @param obj Opaque handle expected to reference an `rt_reltimefmt_inst_t`.
+/// @return @p obj reinterpreted as a formatter pointer, including NULL.
 static rt_reltimefmt_inst_t *as_fmt(void *obj) {
     return (rt_reltimefmt_inst_t *)obj;
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Runtime handle to release, or NULL for a no-op.
 static void rtf_release_handle(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief GC finalizer: release the format's locale data and locale handle.
+/// @param obj RelativeTimeFormat allocation being finalized. NULL is accepted.
 static void rtf_finalizer(void *obj) {
     rt_reltimefmt_inst_t *fmt = (rt_reltimefmt_inst_t *)obj;
     if (!fmt)
@@ -92,6 +100,9 @@ static void rtf_finalizer(void *obj) {
 /// @brief Allocate and initialize a GC-managed RelativeTimeFormat for @p locale.
 /// @details Retains the locale handle + its data, defaults to the long style.
 ///          Traps on allocation failure; installs @ref rtf_finalizer.
+/// @param locale Locale handle to retain, or NULL for invariant locale data.
+/// @return Newly allocated formatter, or NULL after allocation failure if the
+///         runtime trap hook returns.
 static void *rtf_alloc(void *locale) {
     rt_reltimefmt_inst_t *fmt =
         (rt_reltimefmt_inst_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_reltimefmt_inst_t));
@@ -109,6 +120,11 @@ static void *rtf_alloc(void *locale) {
     return fmt;
 }
 
+/// @brief Create a long-style formatter bound to the current locale.
+/// @details Balances the locale manager's temporary retained handle after the
+///          formatter has retained its own reference.
+/// @return Newly allocated formatter, or NULL after allocation failure if the
+///         runtime trap hook returns.
 void *rt_reltimefmt_new(void) {
     void *current = rt_locale_manager_current();
     void *fmt = rtf_alloc(current);
@@ -116,20 +132,35 @@ void *rt_reltimefmt_new(void) {
     return fmt;
 }
 
+/// @brief Create a long-style formatter bound to an explicit locale.
+/// @param locale Locale handle to retain, or NULL for invariant locale data.
+/// @return Newly allocated formatter, or NULL after allocation failure if the
+///         runtime trap hook returns.
 void *rt_reltimefmt_for_locale(void *locale) {
     return rtf_alloc(locale);
 }
 
+/// @brief Return the locale bound to a relative-time formatter.
+/// @param self RelativeTimeFormat handle, or NULL.
+/// @return Borrowed locale handle, or NULL when @p self is NULL.
 void *rt_reltimefmt_get_locale(void *self) {
     return self ? as_fmt(self)->locale : NULL;
 }
 
+/// @brief Return the formatter's canonical style name.
+/// @param self RelativeTimeFormat handle, or NULL for the long default.
+/// @return Newly allocated runtime string containing `"long"` or `"short"`.
 rt_string rt_reltimefmt_get_style(void *self) {
     rtf_style_t s = self ? as_fmt(self)->style : RTF_STYLE_LONG;
     const char *name = s == RTF_STYLE_SHORT ? "short" : "long";
     return rt_string_from_bytes(name, strlen(name));
 }
 
+/// @brief Set the formatter style by canonical name.
+/// @details Accepts `"long"` and `"short"`; other names trap and leave the
+///          existing style unchanged. NULL arguments are ignored.
+/// @param self RelativeTimeFormat handle to update, or NULL.
+/// @param style Runtime string naming the requested style, or NULL.
 void rt_reltimefmt_set_style(void *self, rt_string style) {
     if (!self || !style)
         return;
@@ -148,6 +179,7 @@ void rt_reltimefmt_set_style(void *self, rt_string style) {
 // Unit table
 //===----------------------------------------------------------------------===//
 
+/// @brief Units supported by explicit and automatically selected formatting.
 typedef enum {
     UNIT_SECOND = 0,
     UNIT_MINUTE = 1,
@@ -159,6 +191,8 @@ typedef enum {
 } rtf_unit_t;
 
 /// @brief CLDR keyword for a time unit ("second".."year"); defaults "second".
+/// @param u Internal unit value to name.
+/// @return Process-lifetime canonical unit keyword.
 static const char *unit_name(rtf_unit_t u) {
     switch (u) {
         case UNIT_SECOND:
@@ -180,6 +214,9 @@ static const char *unit_name(rtf_unit_t u) {
 }
 
 /// @brief Parse a unit keyword into @p out; returns 1 on match, 0 if unknown.
+/// @param name NUL-terminated canonical unit name, or NULL.
+/// @param out Receives the parsed unit on success.
+/// @return 1 for a recognized exact lowercase keyword; otherwise 0.
 static int unit_from_name(const char *name, rtf_unit_t *out) {
     if (!name)
         return 0;
@@ -218,6 +255,7 @@ static int unit_from_name(const char *name, rtf_unit_t *out) {
 // Unit selection from milliseconds
 //===----------------------------------------------------------------------===//
 
+/// @brief Automatically selected unit and truncated absolute count.
 typedef struct {
     rtf_unit_t unit;
     int64_t count; // absolute count in the selected unit
@@ -226,6 +264,8 @@ typedef struct {
 /// @brief Choose the largest unit whose threshold @p abs_ms reaches and the
 ///        integer count in that unit (CLDR-style coarsening; month≈30d,
 ///        year≈365d), e.g. 90 min → {hour, 1}.
+/// @param abs_ms Absolute duration magnitude in milliseconds.
+/// @return Selected unit and floor-divided count.
 static unit_pick_t pick_unit(uint64_t abs_ms) {
     unit_pick_t p;
     const uint64_t MS_SEC = 1000ULL;
@@ -278,6 +318,10 @@ static unit_pick_t pick_unit(uint64_t abs_ms) {
 /// @brief Select the unit phrase for plural category @p cat, falling back to
 ///        the "other" form (then the empty string) when the category form is
 ///        absent.
+/// @param u Borrowed locale unit-form record.
+/// @param cat Plural category whose form is preferred.
+/// @return Borrowed locale string, the borrowed `other` form, or a
+///         process-lifetime empty string.
 static const char *unit_plural_form(const rt_locdata_reltime_unit_t *u, rt_plural_category_t cat) {
     const char *result = NULL;
     switch (cat) {
@@ -312,6 +356,7 @@ static const char *unit_plural_form(const rt_locdata_reltime_unit_t *u, rt_plura
 // Template expansion: "{n} {unit} ago" etc.
 //===----------------------------------------------------------------------===//
 
+/// @brief Byte slices for the ten code points in a locale digit set.
 typedef struct digit_spans {
     const char *ptr[10];
     size_t len[10];
@@ -320,6 +365,8 @@ typedef struct digit_spans {
 
 /// @brief Byte length of the leading UTF-8 codepoint in @p s (0 if empty/NULL,
 ///        1 on a malformed lead byte so callers always make forward progress).
+/// @param s NUL-terminated byte sequence to inspect, or NULL.
+/// @return Apparent leading code-point width from zero through four bytes.
 static size_t utf8_cp_len(const char *s) {
     if (!s || !*s)
         return 0;
@@ -337,6 +384,8 @@ static size_t utf8_cp_len(const char *s) {
 
 /// @brief Slice the locale's 10 numbering-system digit glyphs into a span table
 ///        (falls back to ASCII; @c ds.valid only when exactly ten consumed).
+/// @param data Borrowed locale data, or NULL for ASCII digits.
+/// @return Digit span table whose `valid` member reports a complete ten-glyph set.
 static digit_spans_t digit_spans_from_locale(const rt_locale_data_t *data) {
     digit_spans_t ds;
     memset(&ds, 0, sizeof(ds));
@@ -388,6 +437,13 @@ static int append_localized_int(rt_string_builder *sb, const rt_locale_data_t *d
 
 /// @brief Expand a relative-time template into @p sb, substituting "{n}" with
 ///        the localized count and "{unit}" with the resolved unit phrase.
+/// @details Unknown placeholder syntax is copied literally. NULL or empty
+///          templates append nothing and succeed.
+/// @param sb Initialized destination builder.
+/// @param tmpl NUL-terminated relative-time template, or NULL.
+/// @param data Borrowed locale data supplying digit glyphs.
+/// @param n Unsigned magnitude substituted for `{n}`.
+/// @param unit_form NUL-terminated text substituted for `{unit}`.
 /// @return 1 on success, 0 if an append operation failed.
 static int expand_template(rt_string_builder *sb,
                            const char *tmpl,
@@ -427,6 +483,11 @@ static int expand_template(rt_string_builder *sb,
 ///          (duration < 0, "in") template at the requested @p style, and
 ///          expands it. Magnitudes are tracked unsigned so INT64_MIN keeps
 ///          its exact absolute value (VDOC-073).
+/// @param fmt Formatter supplying locale data.
+/// @param duration Signed duration in milliseconds; positive is past.
+/// @param style Style used to choose long or short units and templates.
+/// @return Newly allocated relative-time string, or an owned empty string on
+///         template-expansion failure.
 static rt_string format_core(rt_reltimefmt_inst_t *fmt, int64_t duration, rtf_style_t style) {
     int is_past = duration >= 0;
     uint64_t abs_ms = duration == INT64_MIN ? (uint64_t)INT64_MAX + 1
@@ -467,6 +528,11 @@ static rt_string format_core(rt_reltimefmt_inst_t *fmt, int64_t duration, rtf_st
 // Public format methods
 //===----------------------------------------------------------------------===//
 
+/// @brief Format a millisecond duration using the instance's current style.
+/// @param self RelativeTimeFormat handle, or NULL.
+/// @param duration Signed milliseconds; positive is past and negative is future.
+/// @return Newly allocated relative-time string, or an owned empty string for
+///         NULL @p self or a formatting failure.
 rt_string rt_reltimefmt_format(void *self, int64_t duration) {
     if (!self)
         return rt_string_from_bytes("", 0);
@@ -474,6 +540,14 @@ rt_string rt_reltimefmt_format(void *self, int64_t duration) {
     return format_core(fmt, duration, fmt->style);
 }
 
+/// @brief Format the elapsed interval from one Unix timestamp to another.
+/// @details Computes `now_ts - then_ts` in seconds, checks subtraction and
+///          millisecond-conversion overflow, then uses the current style.
+/// @param self RelativeTimeFormat handle, or NULL.
+/// @param then_ts Earlier or reference Unix timestamp in seconds.
+/// @param now_ts Current Unix timestamp in seconds.
+/// @return Newly allocated relative-time string, or an owned empty string for
+///         NULL @p self or after a trapped overflow.
 rt_string rt_reltimefmt_format_from(void *self, int64_t then_ts, int64_t now_ts) {
     if (!self)
         return rt_string_from_bytes("", 0);
@@ -496,18 +570,37 @@ rt_string rt_reltimefmt_format_from(void *self, int64_t then_ts, int64_t now_ts)
     return format_core(fmt, delta_ms, fmt->style);
 }
 
+/// @brief Format a millisecond duration with the short style for this call.
+/// @param self RelativeTimeFormat handle, or NULL.
+/// @param duration Signed milliseconds; positive is past and negative is future.
+/// @return Newly allocated relative-time string, or an owned empty string for
+///         NULL @p self or a formatting failure.
 rt_string rt_reltimefmt_short(void *self, int64_t duration) {
     if (!self)
         return rt_string_from_bytes("", 0);
     return format_core(as_fmt(self), duration, RTF_STYLE_SHORT);
 }
 
+/// @brief Format a millisecond duration with the long style for this call.
+/// @param self RelativeTimeFormat handle, or NULL.
+/// @param duration Signed milliseconds; positive is past and negative is future.
+/// @return Newly allocated relative-time string, or an owned empty string for
+///         NULL @p self or a formatting failure.
 rt_string rt_reltimefmt_long(void *self, int64_t duration) {
     if (!self)
         return rt_string_from_bytes("", 0);
     return format_core(as_fmt(self), duration, RTF_STYLE_LONG);
 }
 
+/// @brief Format an explicit signed count and time unit.
+/// @details Zero returns the locale's `now` token. Non-zero values use the
+///          current style, plural rules, locale digits, and past/future
+///          template without automatic unit coarsening.
+/// @param self RelativeTimeFormat handle.
+/// @param value Signed unit count; positive is past and negative is future.
+/// @param unit Exact lowercase unit name from `second` through `year`.
+/// @return Newly allocated relative-time string, or an owned empty string
+///         after invalid input, a trapped unknown unit, or expansion failure.
 rt_string rt_reltimefmt_numeric(void *self, int64_t value, rt_string unit) {
     if (!self || !unit) {
         rt_trap("Zanna.Localization.RelativeTimeFormat: Numeric requires a unit");

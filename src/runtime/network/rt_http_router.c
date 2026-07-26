@@ -88,6 +88,8 @@ typedef struct {
     void *params; // Map of param name -> value
 } rt_route_match_impl;
 
+/// @brief Finalize a managed RouteMatch payload.
+/// @param obj RouteMatch payload being finalized.
 static void rt_route_match_finalize(void *obj);
 
 void rt_trap_set_recovery(jmp_buf *buf);
@@ -247,6 +249,7 @@ static int router_lock_init(rt_http_router_impl *router) {
 }
 
 /// @brief Destroy and free the router's lock (no contention at finalize time).
+/// @param router Router whose initialized lock is released.
 static void router_lock_destroy(rt_http_router_impl *router) {
     if (!router->rw_lock)
         return;
@@ -258,6 +261,7 @@ static void router_lock_destroy(rt_http_router_impl *router) {
 }
 
 /// @brief Acquire the shared (read) lock on a successfully constructed router.
+/// @param router Router whose route table will be read.
 static void router_rdlock(rt_http_router_impl *router) {
 #if RT_PLATFORM_WINDOWS
     AcquireSRWLockShared((SRWLOCK *)router->rw_lock);
@@ -267,6 +271,7 @@ static void router_rdlock(rt_http_router_impl *router) {
 }
 
 /// @brief Release the shared (read) lock on a successfully constructed router.
+/// @param router Router whose shared lock is held by the caller.
 static void router_rdunlock(rt_http_router_impl *router) {
 #if RT_PLATFORM_WINDOWS
     ReleaseSRWLockShared((SRWLOCK *)router->rw_lock);
@@ -276,6 +281,7 @@ static void router_rdunlock(rt_http_router_impl *router) {
 }
 
 /// @brief Acquire the exclusive (write) lock on a successfully constructed router.
+/// @param router Router whose route table will be modified.
 static void router_wrlock(rt_http_router_impl *router) {
 #if RT_PLATFORM_WINDOWS
     AcquireSRWLockExclusive((SRWLOCK *)router->rw_lock);
@@ -285,6 +291,7 @@ static void router_wrlock(rt_http_router_impl *router) {
 }
 
 /// @brief Release the exclusive (write) lock on a successfully constructed router.
+/// @param router Router whose exclusive lock is held by the caller.
 static void router_wrunlock(rt_http_router_impl *router) {
 #if RT_PLATFORM_WINDOWS
     ReleaseSRWLockExclusive((SRWLOCK *)router->rw_lock);
@@ -690,6 +697,7 @@ static void destroy_route(route_t *route) {
 }
 
 /// @brief GC finalizer for the router: free every parsed route's heap allocations.
+/// @param obj Router payload being finalized; may be null.
 static void rt_http_router_finalize(void *obj) {
     if (!obj)
         return;
@@ -706,6 +714,7 @@ static void rt_http_router_finalize(void *obj) {
 }
 
 /// @brief GC finalizer for a route-match: free the pattern string and release the params Map.
+/// @param obj RouteMatch payload being finalized; may be null.
 static void rt_route_match_finalize(void *obj) {
     if (!obj)
         return;
@@ -726,6 +735,8 @@ static void rt_route_match_finalize(void *obj) {
 /// @details Routes are matched in registration order, so register more-specific
 ///          patterns first. The route and per-route segment arrays grow as
 ///          routes are added and are released by the GC finalizer.
+/// @return Owned managed router, or null after allocation or synchronization initialization
+///         failure.
 void *rt_http_router_new(void) {
     rt_http_router_impl *router = (rt_http_router_impl *)rt_obj_new_i64(
         RT_HTTP_ROUTER_CLASS_ID, (int64_t)sizeof(rt_http_router_impl));
@@ -836,7 +847,15 @@ static void *add_route(rt_http_router_impl *router,
 }
 
 /// @brief Register a route for an arbitrary HTTP method (e.g. PATCH, OPTIONS, custom verbs).
-/// Returns the router for fluent chaining: `router.add("GET", "/x").add("POST", "/y")`.
+/// @details Returns the router for fluent chaining:
+///          `router.add("GET", "/x").add("POST", "/y")`. Complete runtime
+///          strings and the method token are validated before detached parsing
+///          and atomic publication.
+/// @param router Managed router receiver.
+/// @param method Nonempty, case-sensitive HTTP method token.
+/// @param pattern Route pattern to parse.
+/// @return The original router on success or a returning registration trap; null for an invalid
+///         receiver.
 void *rt_http_router_add(void *router, rt_string method, rt_string pattern) {
     rt_http_router_impl *impl = router_require(router, "HttpRouter.Add: invalid router");
     if (!impl)
@@ -881,24 +900,36 @@ static void *add_convenience_route(
 }
 
 /// @brief Convenience: register a GET route. Equivalent to `_add(router, "GET", pattern)`.
+/// @param router Managed router receiver.
+/// @param pattern Route pattern to parse.
+/// @return The original router for fluent chaining, or null for an invalid receiver.
 void *rt_http_router_get(void *router, rt_string pattern) {
     return add_convenience_route(
         router, "GET", sizeof("GET") - 1, pattern, "HttpRouter.Get: invalid router");
 }
 
 /// @brief Convenience: register a POST route.
+/// @param router Managed router receiver.
+/// @param pattern Route pattern to parse.
+/// @return The original router for fluent chaining, or null for an invalid receiver.
 void *rt_http_router_post(void *router, rt_string pattern) {
     return add_convenience_route(
         router, "POST", sizeof("POST") - 1, pattern, "HttpRouter.Post: invalid router");
 }
 
 /// @brief Convenience: register a PUT route.
+/// @param router Managed router receiver.
+/// @param pattern Route pattern to parse.
+/// @return The original router for fluent chaining, or null for an invalid receiver.
 void *rt_http_router_put(void *router, rt_string pattern) {
     return add_convenience_route(
         router, "PUT", sizeof("PUT") - 1, pattern, "HttpRouter.Put: invalid router");
 }
 
 /// @brief Convenience: register a DELETE route.
+/// @param router Managed router receiver.
+/// @param pattern Route pattern to parse.
+/// @return The original router for fluent chaining, or null for an invalid receiver.
 void *rt_http_router_delete(void *router, rt_string pattern) {
     return add_convenience_route(
         router, "DELETE", sizeof("DELETE") - 1, pattern, "HttpRouter.Delete: invalid router");
@@ -910,6 +941,11 @@ void *rt_http_router_delete(void *router, rt_string pattern) {
 /// (the convenience helpers register the canonical uppercase forms).
 /// Walks routes in registration order — earlier wins on ties. Returns NULL if no route matches
 /// (the server can then return 404). The returned Match object is GC-managed; caller releases.
+/// @param obj Managed router receiver; null produces no match.
+/// @param method Nonempty HTTP method token.
+/// @param path Request path to match.
+/// @return Owned RouteMatch for the first matching route, or null for invalid input, no match, or
+///         construction failure.
 void *rt_http_router_match(void *obj, rt_string method, rt_string path) {
     if (!obj)
         return NULL;
@@ -952,6 +988,8 @@ void *rt_http_router_match(void *obj, rt_string method, rt_string path) {
 }
 
 /// @brief Number of routes currently registered (for diagnostics / capacity checks).
+/// @param obj Managed router receiver; null reports zero.
+/// @return Route count from a shared-lock snapshot.
 int64_t rt_http_router_count(void *obj) {
     if (!obj)
         return 0;
@@ -966,6 +1004,9 @@ int64_t rt_http_router_count(void *obj) {
 
 /// @brief Look up a captured parameter from a Match object (e.g. for `/users/:id` with input
 /// `/users/42`, `_param("id")` returns "42"). Returns empty string if the param wasn't captured.
+/// @param obj Managed RouteMatch receiver; null behaves as an empty match.
+/// @param name Case-sensitive capture name.
+/// @return Owned reference to the captured String, or a newly allocated empty String when absent.
 rt_string rt_route_match_param(void *obj, rt_string name) {
     if (!obj)
         return rt_string_from_bytes("", 0);
@@ -983,6 +1024,8 @@ rt_string rt_route_match_param(void *obj, rt_string name) {
 
 /// @brief Index of the route that matched (registration order). -1 for null Match. Useful for
 /// dispatching to a parallel handler array indexed by the same numbers.
+/// @param obj Managed RouteMatch receiver; null reports -1.
+/// @return Zero-based registration index, or -1 for null or invalid input.
 int64_t rt_route_match_index(void *obj) {
     if (!obj)
         return -1;
@@ -991,6 +1034,9 @@ int64_t rt_route_match_index(void *obj) {
 }
 
 /// @brief Read the original pattern string of the matched route (for logging / debug output).
+/// @param obj Managed RouteMatch receiver; null behaves as an empty match.
+/// @return Owned copy of the registered pattern, an empty String for no pattern, or null after an
+///         invalid-handle trap.
 rt_string rt_route_match_pattern(void *obj) {
     if (!obj)
         return rt_string_from_bytes("", 0);

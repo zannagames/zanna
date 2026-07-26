@@ -31,7 +31,7 @@
 //
 // Links: src/runtime/graphics/input/rt_keychord.h (public API),
 //        src/runtime/graphics/input/rt_input.h (keyboard state queries),
-//        src/runtime/graphics/rt_action.c (action mapping uses BIND_CHORD)
+//        src/runtime/graphics/2d/rt_action.c (action mapping uses BIND_CHORD)
 //
 //===----------------------------------------------------------------------===//
 
@@ -82,6 +82,9 @@ typedef struct {
 ///   Entry counts are typically small (single digits to low tens) so linear
 ///   search is appropriate; the keychord object is not designed for hundreds
 ///   of named bindings.  Returns NULL when no match is found.
+/// @param kc Live KeyChord instance to search.
+/// @param name NUL-terminated entry name.
+/// @return Borrowed matching entry, or NULL when absent.
 static kc_entry *find_entry(rt_keychord_impl *kc, const char *name) {
     int64_t i;
     for (i = 0; i < kc->count; i++) {
@@ -96,6 +99,7 @@ static kc_entry *find_entry(rt_keychord_impl *kc, const char *name) {
 ///   to zero.  Each entry owns a malloc'd name string, so those are freed first
 ///   in order before the entries array itself is freed.  Pointers and count are
 ///   cleared to prevent double-free if the finalizer is somehow called twice.
+/// @param obj Runtime-managed KeyChord object supplied by the object finalizer.
 static void kc_finalizer(void *obj) {
     rt_keychord_impl *kc = (rt_keychord_impl *)obj;
     if (kc) {
@@ -113,6 +117,7 @@ static void kc_finalizer(void *obj) {
 /// @details Called before every insertion so callers do not need to check.
 ///   Uses realloc for in-place growth where possible and guards both capacity
 ///   multiplication and byte-size conversion.
+/// @param kc KeyChord instance whose entry storage may grow.
 /// @return 1 when capacity is available, 0 on allocation overflow/failure.
 static int ensure_capacity(rt_keychord_impl *kc) {
     if (!kc)
@@ -162,6 +167,11 @@ static void keychord_advance_frame(rt_keychord_impl *kc) {
 ///   copied so the caller's string does not need to outlive the call. Invalid
 ///   key counts or allocation failures trap and leave the previous definition
 ///   unchanged unless replacement already succeeded.
+/// @param kc Live KeyChord instance to mutate.
+/// @param name NUL-terminated unique entry name.
+/// @param type Chord or sequential-combo discriminator.
+/// @param keys Runtime sequence of boxed public key codes.
+/// @param window_frames Maximum inter-key gap for combos; ignored for chords.
 static void add_entry(
     rt_keychord_impl *kc, const char *name, kc_type type, void *keys, int64_t window_frames) {
     int64_t key_count = rt_seq_len(keys);
@@ -228,6 +238,7 @@ static void add_entry(
 //=============================================================================
 
 /// @brief Create a new key chord manager for detecting multi-key combinations and combos.
+/// @return New GC-managed KeyChord handle, or NULL after a recoverable allocation trap.
 void *rt_keychord_new(void) {
     rt_keychord_impl *kc = (rt_keychord_impl *)rt_obj_new_i64(0, (int64_t)sizeof(rt_keychord_impl));
     if (!kc) {
@@ -250,6 +261,10 @@ void *rt_keychord_new(void) {
 }
 
 /// @brief Define a chord — all keys must be held simultaneously to activate.
+/// @details An existing entry with the same name is replaced atomically after fallible allocation.
+/// @param obj KeyChord handle.
+/// @param name Runtime entry name.
+/// @param keys Sequence of one to 16 boxed public key codes.
 void rt_keychord_define(void *obj, rt_string name, void *keys) {
     if (!obj || !keys)
         return;
@@ -261,6 +276,11 @@ void rt_keychord_define(void *obj, rt_string name, void *keys) {
 }
 
 /// @brief Define a combo — keys must be pressed in sequence within the time window.
+/// @details Non-positive windows normalize to 15 frames. Existing names are replaced.
+/// @param obj KeyChord handle.
+/// @param name Runtime entry name.
+/// @param keys Ordered sequence of one to 16 boxed public key codes.
+/// @param window_frames Maximum frames permitted between successive matches.
 void rt_keychord_define_combo(void *obj, rt_string name, void *keys, int64_t window_frames) {
     if (!obj || !keys)
         return;
@@ -274,6 +294,9 @@ void rt_keychord_define_combo(void *obj, rt_string name, void *keys, int64_t win
 }
 
 /// @brief Update the keychord state (called per frame/tick).
+/// @details Clears prior trigger edges, evaluates simultaneous chords, advances sequential combos,
+///          and resets combo progress on timeout or an out-of-order member-key press.
+/// @param obj KeyChord handle; NULL is ignored.
 void rt_keychord_update(void *obj) {
     if (!obj)
         return;
@@ -353,6 +376,9 @@ void rt_keychord_update(void *obj) {
 }
 
 /// @brief Check whether a named chord/combo is currently active (all keys held or combo complete).
+/// @param obj KeyChord handle.
+/// @param name Runtime entry name.
+/// @return One while a chord is held or during a combo's completion frame, otherwise zero.
 int8_t rt_keychord_active(void *obj, rt_string name) {
     if (!obj)
         return 0;
@@ -367,6 +393,9 @@ int8_t rt_keychord_active(void *obj, rt_string name) {
 }
 
 /// @brief Check whether a chord/combo was triggered this frame (edge-triggered).
+/// @param obj KeyChord handle.
+/// @param name Runtime entry name.
+/// @return One when the named entry triggered during the latest update, otherwise zero.
 int8_t rt_keychord_triggered(void *obj, rt_string name) {
     if (!obj)
         return 0;
@@ -381,6 +410,10 @@ int8_t rt_keychord_triggered(void *obj, rt_string name) {
 }
 
 /// @brief Get the combo progress (0 = not started, count = steps completed so far).
+/// @details Active chords report their complete key count; inactive chords report zero.
+/// @param obj KeyChord handle.
+/// @param name Runtime entry name.
+/// @return Matched step count, or zero for missing/invalid input.
 int64_t rt_keychord_progress(void *obj, rt_string name) {
     if (!obj)
         return 0;
@@ -397,6 +430,9 @@ int64_t rt_keychord_progress(void *obj, rt_string name) {
 }
 
 /// @brief Remove an entry from the keychord.
+/// @param obj KeyChord handle.
+/// @param name Runtime entry name.
+/// @return One when a matching entry was removed, otherwise zero.
 int8_t rt_keychord_remove(void *obj, rt_string name) {
     if (!obj)
         return 0;
@@ -419,6 +455,7 @@ int8_t rt_keychord_remove(void *obj, rt_string name) {
 }
 
 /// @brief Remove all entries from the keychord.
+/// @param obj KeyChord handle; NULL is ignored.
 void rt_keychord_clear(void *obj) {
     if (!obj)
         return;
@@ -431,6 +468,8 @@ void rt_keychord_clear(void *obj) {
 }
 
 /// @brief Return the count of elements in the keychord.
+/// @param obj KeyChord handle.
+/// @return Current named-entry count, or zero for NULL.
 int64_t rt_keychord_count(void *obj) {
     if (!obj)
         return 0;

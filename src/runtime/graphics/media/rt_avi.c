@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_avi.c
+// File: src/runtime/graphics/media/rt_avi.c
 // Purpose: AVI RIFF container parser. Walks the RIFF chunk tree to extract
 //   video stream info (codec, dimensions, frame rate), audio stream info
 //   (sample rate, channels, bit depth), and builds an index of interleaved
@@ -17,7 +17,8 @@
 //   - Parser validates all offsets to prevent out-of-bounds reads.
 //   - No memory allocated for the file data itself (caller owns it).
 //
-// Links: rt_avi.h, rt_videoplayer.c
+// Links: src/runtime/graphics/media/rt_avi.h (public parser API),
+//        src/runtime/graphics/media/rt_videoplayer.c (playback consumer)
 //
 //===----------------------------------------------------------------------===//
 
@@ -32,16 +33,25 @@
  *=========================================================================*/
 
 /// @brief Read a 32-bit little-endian unsigned integer from a byte pointer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Decoded host-order unsigned value.
 static uint32_t read_le32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /// @brief Read a 16-bit little-endian unsigned integer from a byte pointer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Decoded host-order unsigned value.
 static uint16_t read_le16(const uint8_t *p) {
     return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
 /// @brief Build a 32-bit FOURCC tag from four ASCII characters (packed little-endian).
+/// @param a Least-significant tag character.
+/// @param b Second tag character.
+/// @param c Third tag character.
+/// @param d Most-significant tag character.
+/// @return Packed little-endian FOURCC value.
 static uint32_t make_fourcc(char a, char b, char c, char d) {
     return (uint32_t)(uint8_t)a | ((uint32_t)(uint8_t)b << 8) | ((uint32_t)(uint8_t)c << 16) |
            ((uint32_t)(uint8_t)d << 24);
@@ -90,6 +100,9 @@ static int avi_stream_index_from_fourcc(uint32_t fourcc) {
 /// @details AVI media tags encode stream number in the first two bytes and payload kind in the
 ///          last two bytes: `dc`/`db` for video frames, `wb` for wave audio. Filtering here keeps
 ///          recursive `movi` walking and legacy `idx1` parsing on the same stream-selection rules.
+/// @param ctx Parsed stream-selection context.
+/// @param fourcc Packed media-chunk tag to classify.
+/// @param out_video Receives 1 for primary video or 0 for primary audio on success.
 /// @return 1 when the chunk belongs to the primary video/audio stream, 0 when it should be ignored.
 static int avi_classify_media_fourcc(const avi_context_t *ctx, uint32_t fourcc, int8_t *out_video) {
     uint8_t c2 = (uint8_t)((fourcc >> 16) & 0xFF);
@@ -139,6 +152,10 @@ static void avi_clear_audio(avi_context_t *ctx) {
 ///          Used to record the location of every video and audio chunk in
 ///          the movi list during parsing — the post-parse pass then walks
 ///          this array to build the video-frame index.
+/// @param ctx AVI context whose owned chunk array is extended.
+/// @param data Borrowed pointer to the chunk payload in the caller-owned file buffer.
+/// @param size Payload size in bytes.
+/// @param is_video 1 for video data or 0 for audio data.
 /// @return 0 on success; -1 on allocation failure (chunk is dropped).
 static int add_chunk(avi_context_t *ctx, const uint8_t *data, uint32_t size, int8_t is_video) {
     if (ctx->chunk_count >= ctx->chunk_capacity) {
@@ -165,7 +182,12 @@ static int add_chunk(avi_context_t *ctx, const uint8_t *data, uint32_t size, int
  * Header parsing
  *=========================================================================*/
 
-/// @brief Parse the main AVI header (avih chunk).
+/// @brief Parse supported fields from an AVI main-header chunk.
+/// @details Ignores payloads shorter than 40 bytes. Updates dimensions, declared frame count,
+///          frame rate, and duration only when the encoded values fit supported representations.
+/// @param ctx AVI context receiving main video metadata.
+/// @param data Bounded `avih` payload.
+/// @param size Payload size in bytes.
 static void parse_avih(avi_context_t *ctx, const uint8_t *data, uint32_t size) {
     if (size < 40)
         return;
@@ -194,7 +216,14 @@ static void parse_avih(avi_context_t *ctx, const uint8_t *data, uint32_t size) {
         ctx->video.duration = (double)ctx->video.frame_count / ctx->video.fps;
 }
 
-/// @brief Parse a stream header (strh chunk).
+/// @brief Parse one AVI stream-header chunk.
+/// @details Classifies the stream as video, audio, or unknown and selects only the first stream of
+///          each supported media type as primary. Video rate/scale and length may override main
+///          header metadata when valid.
+/// @param ctx AVI context receiving stream metadata.
+/// @param data Bounded `strh` payload.
+/// @param size Payload size in bytes.
+/// @param stream Mutable state for the enclosing `strl` list.
 static void parse_strh(avi_context_t *ctx,
                        const uint8_t *data,
                        uint32_t size,
@@ -233,7 +262,13 @@ static void parse_strh(avi_context_t *ctx,
     }
 }
 
-/// @brief Parse a stream format (strf chunk) for video.
+/// @brief Parse a video stream's BITMAPINFOHEADER format chunk.
+/// @details Requires at least 40 bytes, one plane, a supported bit depth, and positive dimensions
+///          no greater than @ref AVI_MAX_DIMENSION. Negative heights are accepted as top-down
+///          bitmaps and stored by absolute magnitude.
+/// @param ctx AVI context receiving video format metadata.
+/// @param data Bounded video `strf` payload.
+/// @param size Payload size in bytes.
 static void parse_strf_video(avi_context_t *ctx, const uint8_t *data, uint32_t size) {
     if (size < 40)
         return;
@@ -264,7 +299,13 @@ static void parse_strf_video(avi_context_t *ctx, const uint8_t *data, uint32_t s
         ctx->video.fourcc = bi_compression;
 }
 
-/// @brief Parse a stream format (strf chunk) for audio.
+/// @brief Parse and validate a PCM or IEEE-float WAVEFORMATEX chunk.
+/// @details Accepts PCM format 1 and float format 3 with bounded channels, sample rate, bit depth,
+///          block alignment, and average-byte-rate consistency. An internally inconsistent format
+///          clears the previously selected audio stream.
+/// @param ctx AVI context receiving audio format metadata.
+/// @param data Bounded audio `strf` payload.
+/// @param size Payload size in bytes.
 static void parse_strf_audio(avi_context_t *ctx, const uint8_t *data, uint32_t size) {
     if (size < 16)
         return;
@@ -319,7 +360,20 @@ static void parse_strf_audio(avi_context_t *ctx, const uint8_t *data, uint32_t s
  * RIFF chunk walking
  *=========================================================================*/
 
-/// @brief Walk chunks at a given level, calling handler for each.
+/// @brief Walk one bounded level of RIFF chunks and dispatch each payload.
+/// @details Validates every eight-byte chunk header, payload extent, and required odd-size pad
+///          byte before advancing. Nesting beyond @ref AVI_MAX_CHUNK_DEPTH and malformed bounds set
+///          `ctx->parse_error`. The handler may recursively walk LIST payloads.
+/// @param data Base address of the bounded RIFF or LIST buffer.
+/// @param len Accessible length of @p data in bytes.
+/// @param start Offset of the first chunk header within @p data.
+/// @param depth Current zero-based recursion depth.
+/// @param handler Callback receiving the context, FOURCC, bounded payload, payload size, and
+///                caller-supplied extra state.
+/// @param ctx AVI parse context updated by handlers; may be NULL for a context-free walk.
+/// @param extra Opaque state forwarded unchanged to @p handler.
+/// @return 0 after a complete or handler-aborted walk, or -1 for malformed bounds or excessive
+///         nesting.
 static int walk_chunks(const uint8_t *data,
                        size_t len,
                        size_t start,
@@ -373,7 +427,12 @@ static int walk_chunks(const uint8_t *data,
  * Parse handlers
  *=========================================================================*/
 
-/// @brief Handle chunks inside a strl LIST.
+/// @brief Dispatch stream header and format chunks inside one `strl` LIST.
+/// @param ctx AVI context receiving stream metadata.
+/// @param fourcc Child chunk tag.
+/// @param payload Bounded child payload.
+/// @param size Child payload size in bytes.
+/// @param extra Pointer to the enclosing stream's parse state.
 static void handle_strl(
     avi_context_t *ctx, uint32_t fourcc, const uint8_t *payload, uint32_t size, void *extra) {
     avi_stream_parse_state_t *stream = (avi_stream_parse_state_t *)extra;
@@ -387,7 +446,14 @@ static void handle_strl(
     }
 }
 
-/// @brief Handle chunks inside the hdrl LIST.
+/// @brief Dispatch main-header and nested stream-list chunks inside `hdrl`.
+/// @details Assigns monotonically increasing stream-list indices and recursively walks each
+///          supported `strl` list.
+/// @param ctx AVI context receiving header metadata.
+/// @param fourcc Child chunk tag.
+/// @param payload Bounded child payload.
+/// @param size Child payload size in bytes.
+/// @param extra Unused callback state.
 static void handle_hdrl(
     avi_context_t *ctx, uint32_t fourcc, const uint8_t *payload, uint32_t size, void *extra) {
     (void)extra;
@@ -405,7 +471,14 @@ static void handle_hdrl(
     }
 }
 
-/// @brief Handle chunks inside the movi LIST.
+/// @brief Collect primary media chunks from a `movi` or nested `rec ` LIST.
+/// @details Recurses into record lists, filters media tags by selected stream index, and sets
+///          `parse_error` if the owned chunk-index array cannot grow.
+/// @param ctx AVI context receiving borrowed media-chunk descriptors.
+/// @param fourcc Child chunk tag.
+/// @param payload Bounded child payload.
+/// @param size Child payload size in bytes.
+/// @param extra Unused callback state.
 static void handle_movi(
     avi_context_t *ctx, uint32_t fourcc, const uint8_t *payload, uint32_t size, void *extra) {
     (void)extra;
@@ -423,7 +496,14 @@ static void handle_movi(
     /* Skip 'ix##', 'JUNK' and other chunks */
 }
 
-/// @brief Handle top-level RIFF chunks.
+/// @brief Dispatch supported top-level AVI RIFF chunks.
+/// @details Recursively parses `hdrl` and `movi` LISTs, records the bounded movi extent for legacy
+///          index resolution, and borrows the payload of a top-level `idx1` chunk.
+/// @param ctx AVI parse context.
+/// @param fourcc Top-level chunk tag.
+/// @param payload Bounded top-level payload.
+/// @param size Top-level payload size in bytes.
+/// @param extra Unused callback state.
 static void handle_top(
     avi_context_t *ctx, uint32_t fourcc, const uint8_t *payload, uint32_t size, void *extra) {
     (void)extra;
@@ -453,6 +533,12 @@ static void handle_top(
 ///          `movi` list type tag, relative to the first chunk after that tag, and whether it points
 ///          at the chunk header or payload. This helper tries those common interpretations and
 ///          accepts only candidates whose chunk FOURCC and bounded length match the idx1 entry.
+/// @param ctx AVI context retaining the borrowed source-file extent and movi offsets.
+/// @param ckid Expected media chunk FOURCC.
+/// @param offset Legacy index offset under one of the supported base conventions.
+/// @param length Indexed payload length in bytes.
+/// @return Borrowed payload pointer within `ctx->file_data`, or NULL when no interpretation
+///         validates.
 static const uint8_t *avi_resolve_idx1_payload(const avi_context_t *ctx,
                                                uint32_t ckid,
                                                uint32_t offset,
@@ -489,6 +575,8 @@ static const uint8_t *avi_resolve_idx1_payload(const avi_context_t *ctx,
 ///          order from files whose `movi` data is nested or padded unusually. The replacement is
 ///          accepted only when it yields at least one primary video frame. Oversized indexes are
 ///          ignored so hostile files cannot force an unbounded chunk-index allocation.
+/// @param ctx AVI context containing a borrowed `idx1` payload and sequential chunk fallback.
+/// @return 1 when the owned chunk array was replaced by a valid index-derived array, otherwise 0.
 static int avi_try_build_chunks_from_idx1(avi_context_t *ctx) {
     int32_t entry_count;
     uint32_t raw_entry_count;
@@ -551,8 +639,11 @@ static int avi_try_build_chunks_from_idx1(avi_context_t *ctx) {
 ///          Note: `data` is not copied — the caller owns it and must keep
 ///          the buffer alive for the lifetime of `ctx`. Only the chunks
 ///          and indices arrays are heap-allocated; freed by `avi_free`.
+/// @param ctx Caller-provided context overwritten with initialized parse state.
+/// @param data Read-only AVI file buffer retained by pointer on success.
+/// @param len Accessible size of @p data in bytes.
 /// @return 0 on success (at least one video frame found); -1 on header
-///         validation failure or zero video frames.
+///         validation, bounds, allocation, or zero-video-frame failure.
 int avi_parse(avi_context_t *ctx, const uint8_t *data, size_t len) {
     if (!ctx || !data || len < 12)
         return -1;
@@ -619,6 +710,7 @@ int avi_parse(avi_context_t *ctx, const uint8_t *data, size_t len) {
 /// @details Does not free the file-data buffer — that's owned by the caller.
 ///          Safe to call multiple times; the second call sees the already-
 ///          NULL pointers and is a no-op.
+/// @param ctx AVI context to release; NULL is accepted as a no-op.
 void avi_free(avi_context_t *ctx) {
     if (!ctx)
         return;
@@ -635,7 +727,10 @@ void avi_free(avi_context_t *ctx) {
 ///          The returned pointer points into the original file-data buffer
 ///          (no copy); caller must not free or modify it. `out_size` may
 ///          be NULL if the caller doesn't need the chunk size.
-/// @return Frame data pointer + size, or NULL on out-of-range index.
+/// @param ctx Successfully parsed AVI context.
+/// @param frame_index Zero-based index in `[0, ctx->video_frame_count)`.
+/// @param out_size Optional destination for the compressed payload size.
+/// @return Borrowed compressed-frame pointer, or NULL for an invalid context or out-of-range index.
 const uint8_t *avi_get_video_frame(const avi_context_t *ctx,
                                    int32_t frame_index,
                                    uint32_t *out_size) {

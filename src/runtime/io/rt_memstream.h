@@ -18,8 +18,11 @@
 //     independent of implementation-defined signed shifts or casts.
 //
 // Ownership/Lifetime:
-//   - MemStream objects are heap-allocated; caller is responsible for lifetime management.
-//   - rt_memstream_to_bytes returns a newly allocated Bytes object; caller must release.
+//   - MemStream objects are runtime-managed opaque handles; their finalizer releases the backing
+//     allocation when the last reference is reclaimed.
+//   - Bytes inputs and string inputs are borrowed and copied rather than retained.
+//   - rt_memstream_to_bytes and read_bytes return fresh Bytes snapshots; read_str returns a fresh
+//     runtime string. Their references transfer to the caller.
 //
 // Links: src/runtime/io/rt_memstream.c (implementation), src/runtime/core/rt_string.h
 //
@@ -39,7 +42,9 @@ extern "C" {
 //=========================================================================
 
 /// @brief Create a new empty expandable memory stream.
-/// @return MemStream object.
+/// @details Starts with no backing allocation; the first nonempty write reserves at least 64
+///          bytes.
+/// @return Fresh runtime-managed MemStream object.
 void *rt_memstream_new(void);
 
 /// @brief Determine whether an opaque pointer is a complete MemStream handle.
@@ -59,8 +64,10 @@ int8_t rt_memstream_is_handle(void *obj);
 void *rt_memstream_new_capacity(int64_t capacity);
 
 /// @brief Create a memory stream from an existing Bytes object.
-/// @param bytes Bytes object to copy data from.
-/// @return MemStream object containing a copy of the bytes.
+/// @details Copies the complete payload, sets logical length to that size, and leaves position at
+///          zero. The input is not retained.
+/// @param bytes Borrowed valid Bytes object to copy.
+/// @return Fresh MemStream containing an independent copy.
 void *rt_memstream_from_bytes(void *bytes);
 
 //=========================================================================
@@ -196,19 +203,22 @@ void rt_memstream_write_f64(void *obj, double value);
 void *rt_memstream_read_bytes(void *obj, int64_t count);
 
 /// @brief Write a Bytes object to the stream.
-/// @param obj MemStream object.
-/// @param bytes Bytes object to write.
+/// @details Copies the complete payload at the cursor and grows/zero-fills sparse gaps as needed.
+/// @param obj Borrowed MemStream object.
+/// @param bytes Borrowed valid Bytes object to write.
 void rt_memstream_write_bytes(void *obj, void *bytes);
 
 /// @brief Read count bytes as a string.
-/// @param obj MemStream object.
+/// @details Copies raw bytes without encoding validation or a terminator and advances the cursor.
+/// @param obj Borrowed MemStream object.
 /// @param count Number of bytes to read. Traps if negative or insufficient.
 /// @return New string.
 rt_string rt_memstream_read_str(void *obj, int64_t count);
 
 /// @brief Write a string to the stream (no length prefix).
-/// @param obj MemStream object.
-/// @param text String to write.
+/// @details Copies the runtime byte span verbatim, including embedded NUL bytes.
+/// @param obj Borrowed MemStream object.
+/// @param text Borrowed non-null runtime string to write.
 void rt_memstream_write_str(void *obj, rt_string text);
 
 //=========================================================================
@@ -216,8 +226,9 @@ void rt_memstream_write_str(void *obj, rt_string text);
 //=========================================================================
 
 /// @brief Get entire stream contents as a Bytes object.
-/// @param obj MemStream object.
-/// @return New Bytes object (copy of internal buffer).
+/// @details Copies `[0, Length)` without changing the cursor.
+/// @param obj Borrowed MemStream object.
+/// @return Fresh Bytes snapshot of the logical buffer.
 void *rt_memstream_to_bytes(void *obj);
 
 /// @brief Reset the stream to empty state.

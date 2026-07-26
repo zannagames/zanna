@@ -234,12 +234,28 @@ static void tcp_server_stop(rt_tcp_server_t *server) {
         CLOSE_SOCKET(sock);
 }
 
-/// @brief Validate a managed TCP handle without raising a trap.
+/// @brief Determine whether an object is a fully initialized TCP handle.
+/// @details Performs the same class, payload-size, and magic validation as the
+///          internal non-trapping probe. The object is neither retained nor
+///          modified, so the caller must already guarantee its lifetime.
+/// @param obj Candidate managed object; NULL and unrelated objects are valid
+///        inputs.
+/// @return 1 when @p obj is a valid TCP handle, otherwise 0.
 int rt_tcp_is_handle(void *obj) {
     return tcp_try(obj) ? 1 : 0;
 }
 
 /// @brief Borrow the immutable remote endpoint stored in a TCP object.
+/// @details Clears every non-NULL output before validation. On success the host
+///          pointer aliases storage owned by @p obj and remains valid only
+///          while that TCP object is alive; callers must not free or modify it.
+///          This probe never traps or retains the object.
+/// @param obj Candidate TCP handle.
+/// @param host_out Receives the borrowed NUL-terminated host string.
+/// @param host_len_out Receives the host length in bytes, excluding the
+///        terminator.
+/// @param port_out Receives the numeric remote port.
+/// @return 1 when all outputs are present and @p obj is valid, otherwise 0.
 int rt_tcp_endpoint_view(void *obj, const char **host_out, size_t *host_len_out, int *port_out) {
     if (host_out)
         *host_out = NULL;
@@ -260,6 +276,14 @@ int rt_tcp_endpoint_view(void *obj, const char **host_out, size_t *host_len_out,
 }
 
 /// @brief Atomically claim a TCP for one nonzero connection-pool identity.
+/// @details Claims an unowned connection with acquire-release ordering. A
+///          repeated claim by the current owner is idempotently successful;
+///          a different live owner is never displaced. The operation neither
+///          traps nor retains the TCP object.
+/// @param obj Candidate TCP handle whose lifetime is externally protected.
+/// @param owner_token Nonzero stable identity of the claiming pool.
+/// @return 1 when the connection is newly or already owned by @p owner_token,
+///         otherwise 0.
 int rt_tcp_pool_try_claim(void *obj, uint64_t owner_token) {
     rt_tcp_t *tcp = tcp_try(obj);
     if (!tcp || owner_token == 0)
@@ -273,6 +297,12 @@ int rt_tcp_pool_try_claim(void *obj, uint64_t owner_token) {
 }
 
 /// @brief Atomically clear a TCP pool lease owned by the expected pool.
+/// @details Uses compare-and-swap so a stale pool cannot release a connection
+///          owned by another pool. The operation is non-trapping and leaves
+///          the lease unchanged when validation or ownership comparison fails.
+/// @param obj Candidate TCP handle whose lifetime is externally protected.
+/// @param owner_token Nonzero token expected to own the connection.
+/// @return 1 when the matching lease was cleared, otherwise 0.
 int rt_tcp_pool_release_claim(void *obj, uint64_t owner_token) {
     rt_tcp_t *tcp = tcp_try(obj);
     if (!tcp || owner_token == 0)
@@ -283,6 +313,10 @@ int rt_tcp_pool_release_claim(void *obj, uint64_t owner_token) {
 }
 
 /// @brief Snapshot a TCP connection's current pool lease token.
+/// @details Reads the token with acquire ordering without trapping, retaining,
+///          or changing the connection.
+/// @param obj Candidate TCP handle whose lifetime is externally protected.
+/// @return Current nonzero owner token, or 0 when unowned or invalid.
 uint64_t rt_tcp_pool_owner(void *obj) {
     rt_tcp_t *tcp = tcp_try(obj);
     return tcp ? rt_atomic_load_u64(&tcp->pool_owner_token, __ATOMIC_ACQUIRE) : 0;
@@ -310,6 +344,17 @@ static int parse_numeric_service_port(const char *service) {
     return (int)port;
 }
 
+/// @brief Expose a runtime string only when it is safe for native C APIs.
+/// @details Validates the managed string handle and host-sized length, then
+///          rejects any NUL byte inside the logical payload. Both outputs are
+///          cleared before string validation. The returned pointer is borrowed
+///          from @p value; an empty string may use a static empty literal.
+/// @param value Candidate managed runtime string.
+/// @param out Receives a borrowed NUL-terminated byte pointer on success.
+/// @param len_out Receives the exact logical byte length, excluding the
+///        terminator.
+/// @return 1 when both outputs are non-NULL and @p value is a valid
+///         NUL-free string, otherwise 0.
 int rt_net_cstr_no_embedded_nul(rt_string value, const char **out, size_t *len_out) {
     if (!out || !len_out)
         return 0;
@@ -333,7 +378,12 @@ int rt_net_cstr_no_embedded_nul(rt_string value, const char **out, size_t *len_o
     return 1;
 }
 
-/// @brief GC finalizer for TCP client — close the socket and free the host string.
+/// @brief Finalize a managed TCP client and release its native resources.
+/// @details Clears any connection-pool lease, closes an open socket, frees the
+///          owned host copy, and invalidates the implementation magic. The
+///          cleanup is safe to invoke with NULL or after the socket was
+///          explicitly detached or closed.
+/// @param obj TCP payload being finalized, or NULL for a no-op.
 static void rt_tcp_finalize(void *obj) {
     if (!obj)
         return;
@@ -350,8 +400,11 @@ static void rt_tcp_finalize(void *obj) {
     tcp->magic = 0;
 }
 
-/// @brief GC finalizer for TCP server — close the listening socket and free the bound-address
-/// string.
+/// @brief Finalize a managed TCP server and release its native resources.
+/// @details Stops the listener only after registered accept operations have
+///          drained, then frees the owned bound-address copy and invalidates
+///          the implementation magic. NULL is accepted as a no-op.
+/// @param obj TcpServer payload being finalized, or NULL.
 static void rt_tcp_server_finalize(void *obj) {
     if (!obj)
         return;
@@ -368,13 +421,23 @@ static void rt_tcp_server_finalize(void *obj) {
 // Socket Helpers
 //=============================================================================
 
-/// @brief Enable TCP_NODELAY on socket.
+/// @brief Best-effort enablement of TCP_NODELAY on a native socket.
+/// @details Requests immediate transmission of small writes. Failure is
+///          intentionally ignored because disabling Nagle's algorithm is an
+///          optimization and must not invalidate an established connection.
+/// @param sock Connected native TCP socket.
 static void set_nodelay(socket_t sock) {
     int flag = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&flag, sizeof(flag));
 }
 
-/// @brief Convert an int64 timeout argument to the range supported by socket helpers.
+/// @brief Narrow a millisecond timeout to the range supported by socket APIs.
+/// @details Accepts zero as the conventional infinite or disabled timeout and
+///          rejects negative values and values greater than @c INT_MAX.
+/// @param timeout_ms Candidate timeout in milliseconds.
+/// @param out_timeout_ms Receives the narrowed timeout on success; unchanged on
+///        failure.
+/// @return 1 when the value and output pointer are valid, otherwise 0.
 int rt_net_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms) {
     if (!out_timeout_ms || timeout_ms < 0 || timeout_ms > INT_MAX)
         return 0;
@@ -382,7 +445,11 @@ int rt_net_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms) {
     return 1;
 }
 
-/// @brief Convert an int64 byte count to an int-sized recv/send length.
+/// @brief Narrow a byte count to the range supported by native socket calls.
+/// @param byte_count Candidate nonnegative byte count.
+/// @param out_len Receives the narrowed count on success; unchanged on failure.
+/// @return 1 when @p byte_count is in [0, @c INT_MAX] and @p out_len is
+///         non-NULL, otherwise 0.
 int rt_net_i64_len_to_int(int64_t byte_count, int *out_len) {
     if (!out_len || byte_count < 0 || byte_count > INT_MAX)
         return 0;
@@ -390,7 +457,12 @@ int rt_net_i64_len_to_int(int64_t byte_count, int *out_len) {
     return 1;
 }
 
-/// @brief Get local port from socket.
+/// @brief Query the local port assigned to a native socket.
+/// @details Supports IPv4 and IPv6 socket addresses and converts the network
+///          byte-order port to host order.
+/// @param sock Bound or connected native socket.
+/// @return Local port in [1, 65535], or 0 when the query or address-family
+///         interpretation fails.
 static int get_local_port(socket_t sock) {
     struct sockaddr_storage addr;
     socklen_t len = sizeof(addr);
@@ -501,14 +573,21 @@ static void *tcp_server_adopt_listener(socket_t sock, char *address_cstr, int bo
     return server;
 }
 
-/// @brief Connect to `addr`, optionally with a timeout in `timeout_ms` (0 = blocking).
-///
-/// Implementation: when timed, switches the socket to non-blocking,
-/// calls `connect`, then `select`s for write-readiness. If the
-/// `select` returns ready, peeks `SO_ERROR` to confirm success.
-/// Restores blocking mode at end. Returns false + writes the OS
-/// errno into `*err_out` on any failure (including ETIMEDOUT for the
-/// select-timeout path).
+/// @brief Connect a native socket with optional bounded waiting.
+/// @details A zero timeout performs a normal blocking @c connect. For a
+///          positive timeout the socket is switched to non-blocking mode,
+///          connection progress is awaited for write readiness, @c SO_ERROR is
+///          checked, and blocking mode is restored after success. The caller
+///          owns and must close the socket after every failure; a timed failure
+///          may leave it non-blocking because it is not reused.
+/// @param sock Unconnected native socket.
+/// @param addr Destination socket address.
+/// @param addrlen Size of @p addr in bytes.
+/// @param timeout_ms Nonnegative timeout in milliseconds; zero selects
+///        blocking behavior.
+/// @param err_out Optional output for the native error code; initialized to
+///        zero and set to @c ETIMEDOUT when readiness expires.
+/// @return true when the socket is connected and blocking, otherwise false.
 static bool connect_socket_with_timeout(
     socket_t sock, const struct sockaddr *addr, socklen_t addrlen, int timeout_ms, int *err_out) {
     if (err_out)
@@ -577,22 +656,36 @@ static bool connect_socket_with_timeout(
 // expose state for diagnostics.
 // ===========================================================================
 
-/// @brief Connect to `host:port` with the default 30-second timeout.
+/// @brief Connect to a remote TCP endpoint with the default timeout.
+/// @details Delegates to @ref rt_tcp_connect_for with a 30-second deadline so
+///          unreachable endpoints cannot block indefinitely.
+/// @param host Managed hostname or numeric-address string.
+/// @param port Remote port in the inclusive range [1, 65535].
+/// @return Newly allocated connected TCP object, or NULL after reporting an
+///         invalid argument, resolution failure, timeout, or socket error.
 /// @see rt_tcp_connect_for
 void *rt_tcp_connect(rt_string host, int64_t port) {
     // Default 30-second timeout prevents indefinite blocking on unreachable hosts.
     return rt_tcp_connect_for(host, port, 30000);
 }
 
-/// @brief Connect to `host:port` with explicit `timeout_ms`.
-///
-/// Resolves `host` via `getaddrinfo` (AF_UNSPEC — IPv4 and IPv6
-/// candidates), tries each address in turn, and uses
-/// `connect_socket_with_timeout` so a slow / unreachable host fails
-/// in bounded time. Enables `TCP_NODELAY` on success.
-/// @throws Err_HostNotFound on resolution failure,
-///         Err_ConnectionRefused on connect failure,
-///         Err_Timeout on `timeout_ms` expiry.
+/// @brief Connect to a remote TCP endpoint with an explicit timeout.
+/// @details Validates a nonempty host with no embedded NUL, resolves both IPv4
+///          and IPv6 candidates, and attempts each address in resolver order.
+///          Successful sockets suppress SIGPIPE, best-effort enable
+///          TCP_NODELAY, and transfer ownership with an allocated host copy to
+///          the returned managed object. The timeout applies independently to
+///          each candidate address; zero requests blocking connects.
+/// @param host Managed hostname or numeric-address string.
+/// @param port Remote port in the inclusive range [1, 65535].
+/// @param timeout_ms Per-address connection timeout in milliseconds, in
+///        [0, @c INT_MAX].
+/// @return Newly allocated connected TCP object, or NULL after a returning
+///         trap hook.
+/// @throws Err_HostNotFound when name resolution fails.
+/// @throws Err_ConnectionRefused when every candidate refuses the connection.
+/// @throws Err_Timeout when the last connection attempt expires.
+/// @throws Err_NetworkError for other connection failures.
 void *rt_tcp_connect_for(rt_string host, int64_t port, int64_t timeout_ms) {
     rt_net_init_wsa();
 
@@ -686,7 +779,13 @@ void *rt_tcp_connect_for(rt_string host, int64_t port, int64_t timeout_ms) {
 // open/available state. Each is a trivial reach into `rt_tcp_t`.
 // ---------------------------------------------------------------------------
 
-/// @brief Return the host string the connection was opened with (empty for NULL/closed).
+/// @brief Return the host string used to open a TCP connection.
+/// @details Validates the receiver and creates a managed string from the
+///          immutable native host copy. Closing the socket does not erase this
+///          endpoint metadata.
+/// @param obj Required TCP receiver.
+/// @return Managed host string, or the runtime empty-string sentinel after a
+///         returning invalid-handle trap.
 rt_string rt_tcp_host(void *obj) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -694,7 +793,9 @@ rt_string rt_tcp_host(void *obj) {
     return rt_const_cstr(tcp->host);
 }
 
-/// @brief Return the remote port of the connection (the one passed to `connect`).
+/// @brief Return the remote port recorded for a TCP connection.
+/// @param obj Required TCP receiver.
+/// @return Remote port, or 0 after a returning invalid-handle trap.
 int64_t rt_tcp_port(void *obj) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -702,7 +803,12 @@ int64_t rt_tcp_port(void *obj) {
     return tcp->port;
 }
 
-/// @brief Return the local (ephemeral) port the OS assigned to this socket.
+/// @brief Return the local port assigned to a TCP connection.
+/// @details The value is captured when the socket is adopted and remains
+///          available after the connection is closed.
+/// @param obj Required TCP receiver.
+/// @return Local port, or 0 after a returning invalid-handle trap or an
+///         unavailable native port query during connection creation.
 int64_t rt_tcp_local_port(void *obj) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -710,7 +816,10 @@ int64_t rt_tcp_local_port(void *obj) {
     return tcp->local_port;
 }
 
-/// @brief 1 if the underlying socket is still open; 0 if closed (or `obj` is NULL).
+/// @brief Test whether a TCP object's native socket is still open.
+/// @param obj Required TCP receiver.
+/// @return 1 while the socket is open, otherwise 0; invalid receivers trap and
+///         return 0 only when the trap hook resumes execution.
 int8_t rt_tcp_is_open(void *obj) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -718,8 +827,13 @@ int8_t rt_tcp_is_open(void *obj) {
     return tcp->is_open ? 1 : 0;
 }
 
-/// @brief Number of bytes available for non-blocking read (best-effort `FIONREAD`).
-/// 0 means "unknown" or "nothing pending"; the actual recv may still block briefly.
+/// @brief Query the bytes currently available for a non-blocking TCP read.
+/// @details Uses the platform @c FIONREAD equivalent. This is a best-effort
+///          snapshot: zero can mean no queued bytes, a closed connection, or a
+///          failed native query, and later receives may still block.
+/// @param obj Required TCP receiver.
+/// @return Nonnegative queued-byte count, or 0 when closed, unavailable, or
+///         invalid after a returning trap.
 int64_t rt_tcp_available(void *obj) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -737,8 +851,15 @@ int64_t rt_tcp_available(void *obj) {
 // Tcp Client - Send Methods
 //=============================================================================
 
-/// @brief Send a Bytes payload — may write fewer bytes than requested if the kernel buffer is full.
-/// @return Bytes actually sent, or -1 on error.
+/// @brief Perform one native send from a managed Bytes payload.
+/// @details Validates the receiver and Bytes handle, sends at most @c INT_MAX
+///          bytes, and permits a normal short write. A socket error marks the
+///          connection closed before reporting its classified network trap.
+/// @param obj Required open TCP receiver.
+/// @param data Required managed Bytes object; its storage is borrowed for the
+///        duration of the call.
+/// @return Number of bytes written, including 0 for an empty payload, or -1
+///         after a returning validation or socket-error trap.
 int64_t rt_tcp_send(void *obj, void *data) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -775,7 +896,15 @@ int64_t rt_tcp_send(void *obj, void *data) {
     return sent;
 }
 
-/// @brief Send a string payload as UTF-8 bytes. May short-write — see `rt_tcp_send`.
+/// @brief Perform one native send from a managed string payload.
+/// @details Sends the string's exact stored bytes without relying on
+///          NUL-termination, but limits one native call to @c INT_MAX bytes.
+///          A normal short write is returned to the caller. Socket errors mark
+///          the connection closed and raise a classified network trap.
+/// @param obj Required open TCP receiver.
+/// @param text Required managed string whose storage is borrowed during send.
+/// @return Number of bytes written, including 0 for an empty string, or -1
+///         after a returning validation or socket-error trap.
 int64_t rt_tcp_send_str(void *obj, rt_string text) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -811,8 +940,13 @@ int64_t rt_tcp_send_str(void *obj, rt_string text) {
     return sent;
 }
 
-/// @brief Send a Bytes payload, looping on partial writes until every byte is delivered.
-/// Traps on send failure (closed peer, broken pipe, etc.).
+/// @brief Send an entire managed Bytes payload.
+/// @details Loops over partial writes and chunks larger than @c INT_MAX until
+///          every byte is delivered. A zero write or socket error marks the
+///          connection closed and reports a classified trap.
+/// @param obj Required open TCP receiver.
+/// @param data Required managed Bytes object; its storage remains borrowed for
+///        the duration of the operation.
 void rt_tcp_send_all(void *obj, void *data) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -853,8 +987,15 @@ void rt_tcp_send_all(void *obj, void *data) {
     }
 }
 
-/// @brief Internal: send `len` bytes from a raw buffer without looking up Bytes metadata.
-/// Used by HTTP / WebSocket layers that already have raw pointers.
+/// @brief Send an entire raw byte range through a managed TCP connection.
+/// @details Provides HTTP and WebSocket layers with the same chunked,
+///          partial-write loop as @ref rt_tcp_send_all without requiring a
+///          managed Bytes wrapper. A zero length accepts a NULL data pointer.
+///          Any failed or zero write marks the connection closed and traps.
+/// @param obj Required open TCP receiver.
+/// @param data Borrowed buffer containing at least @p len readable bytes, or
+///        NULL only when @p len is zero.
+/// @param len Nonnegative number of bytes to send.
 void rt_tcp_send_all_raw(void *obj, const void *data, int64_t len) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -900,11 +1041,19 @@ void rt_tcp_send_all_raw(void *obj, const void *data, int64_t len) {
 // Tcp Client - Receive Methods
 //=============================================================================
 
-/// @brief Read up to `max_bytes` from the socket; returns a Bytes object (possibly empty).
-///
-/// Single-call recv — may return fewer bytes than requested. Empty Bytes means
-/// either orderly peer close or expiry of a persistent receive timeout; peer
-/// close also clears `is_open`. Other socket errors trap.
+/// @brief Receive up to a requested number of bytes in one socket read.
+/// @details Allocates a managed buffer, performs a single @c recv, and returns
+///          an exactly sized Bytes object when the read is short. An orderly
+///          peer close marks the connection closed and returns empty Bytes.
+///          Expiry of the persistent receive timeout also returns empty Bytes
+///          but leaves the connection open, so these cases are distinguished
+///          through @ref rt_tcp_is_open. Other errors close the logical
+///          connection and trap. Temporary allocations are released across
+///          both returning and nonlocal trap paths.
+/// @param obj Required open TCP receiver.
+/// @param max_bytes Maximum bytes to read, in [0, @c INT_MAX].
+/// @return Newly owned managed Bytes object, which may be empty, or NULL after
+///         a returning validation, allocation, or socket-error trap.
 void *rt_tcp_recv(void *obj, int64_t max_bytes) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -982,7 +1131,16 @@ void *rt_tcp_recv(void *obj, int64_t max_bytes) {
     return result;
 }
 
-/// @brief Read up to `max_bytes` and decode as a UTF-8 string. Convenience over `rt_tcp_recv`.
+/// @brief Receive bytes once and convert them to a managed string.
+/// @details Delegates socket semantics to @ref rt_tcp_recv, converts the
+///          returned Bytes payload with the runtime byte-to-string operation,
+///          and releases the temporary Bytes reference even if conversion
+///          allocation traps.
+/// @param obj Required open TCP receiver.
+/// @param max_bytes Maximum bytes to read, in [0, @c INT_MAX].
+/// @return Newly owned managed string, including an empty string for timeout
+///         or orderly close, or the empty-string sentinel after a returning
+///         trap.
 rt_string rt_tcp_recv_str(void *obj, int64_t max_bytes) {
     void *bytes = rt_tcp_recv(obj, max_bytes);
     if (!bytes)
@@ -1006,8 +1164,17 @@ rt_string rt_tcp_recv_str(void *obj, int64_t max_bytes) {
     return str;
 }
 
-/// @brief Receive *exactly* `count` bytes, looping until the buffer fills or the connection drops.
-/// Traps on short read (premature EOF) — use `rt_tcp_recv` if partial reads are acceptable.
+/// @brief Receive exactly a requested number of bytes.
+/// @details Loops until the allocated Bytes buffer is full. Unlike
+///          @ref rt_tcp_recv, a configured timeout and premature orderly close
+///          are errors rather than empty successful results. Timeout leaves
+///          the connection state unchanged; EOF and other socket errors mark
+///          it closed. The partial result is released on every failure path.
+/// @param obj Required open TCP receiver.
+/// @param count Exact byte count in [0, @c INT_MAX].
+/// @return Newly owned managed Bytes object of exactly @p count bytes, or NULL
+///         after a returning validation, allocation, timeout, EOF, or socket
+///         trap.
 void *rt_tcp_recv_exact(void *obj, int64_t count) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -1067,11 +1234,16 @@ void *rt_tcp_recv_exact(void *obj, int64_t count) {
     return result;
 }
 
-/// @brief Read until `\n` is seen (CR is also stripped) and return the line as a string.
-///
-/// Caps at 64 KB to prevent unbounded growth from a malicious peer.
-/// Traps if the connection closes or a configured receive timeout expires
-/// before a newline is received.
+/// @brief Receive one newline-terminated line as a managed string.
+/// @details Reads one byte at a time until LF, removes an immediately preceding
+///          CR, and excludes both terminators from the result. Content before
+///          the newline is limited to 64 KiB. Timeout, EOF before LF, socket
+///          failure, and overlong lines trap; EOF and non-timeout socket
+///          failures also mark the connection closed. The native line buffer
+///          is freed even when managed string allocation traps nonlocally.
+/// @param obj Required open TCP receiver.
+/// @return Newly owned managed line string, or the runtime empty-string
+///         sentinel after a returning trap.
 rt_string rt_tcp_recv_line(void *obj) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -1167,7 +1339,12 @@ rt_string rt_tcp_recv_line(void *obj) {
 // Tcp Client - Timeout and Close
 //=============================================================================
 
-/// @brief Apply `SO_RCVTIMEO` to the socket — recv operations fail with timeout after `timeout_ms`.
+/// @brief Configure the persistent native receive timeout.
+/// @details Applies @c SO_RCVTIMEO to an open connection and records the
+///          narrowed value after the platform call succeeds. Zero disables the
+///          timeout according to the socket abstraction.
+/// @param obj Required open TCP receiver.
+/// @param timeout_ms Timeout in milliseconds, in [0, @c INT_MAX].
 void rt_tcp_set_recv_timeout(void *obj, int64_t timeout_ms) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -1188,7 +1365,12 @@ void rt_tcp_set_recv_timeout(void *obj, int64_t timeout_ms) {
     tcp->recv_timeout_ms = timeout_int;
 }
 
-/// @brief Apply `SO_SNDTIMEO` to the socket — send operations fail with timeout after `timeout_ms`.
+/// @brief Configure the persistent native send timeout.
+/// @details Applies @c SO_SNDTIMEO to an open connection and records the
+///          narrowed value after the platform call succeeds. Zero disables the
+///          timeout according to the socket abstraction.
+/// @param obj Required open TCP receiver.
+/// @param timeout_ms Timeout in milliseconds, in [0, @c INT_MAX].
 void rt_tcp_set_send_timeout(void *obj, int64_t timeout_ms) {
     rt_tcp_t *tcp = tcp_require(obj);
     if (!tcp)
@@ -1209,7 +1391,11 @@ void rt_tcp_set_send_timeout(void *obj, int64_t timeout_ms) {
     tcp->send_timeout_ms = timeout_int;
 }
 
-/// @brief Close the socket immediately. Subsequent send/recv calls return error.
+/// @brief Close a TCP connection immediately.
+/// @details Closing is idempotent for a valid TCP object and NULL is accepted
+///          as a no-op. The endpoint metadata remains available, while later
+///          send and receive operations report @c Err_ConnectionClosed.
+/// @param obj TCP receiver, or NULL for a no-op.
 void rt_tcp_close(void *obj) {
     if (!obj)
         return;
@@ -1223,16 +1409,25 @@ void rt_tcp_close(void *obj) {
     }
 }
 
-/// @brief Expose the underlying socket FD — used by `select`/`poll` integration and by TLS bind.
+/// @brief Borrow the native socket descriptor from a TCP object.
+/// @details This non-trapping internal accessor supports readiness integration
+///          and ownership transfer to TLS. It neither retains the object nor
+///          transfers the descriptor; callers must externally protect both
+///          lifetimes.
+/// @param obj Candidate TCP handle.
+/// @return Native socket descriptor, or @c INVALID_SOCK for an invalid handle.
 socket_t rt_tcp_socket_fd(void *obj) {
     rt_tcp_t *tcp = tcp_try(obj);
     return tcp ? tcp->sock : INVALID_SOCK;
 }
 
-/// @brief Forget the socket without closing it — caller takes ownership of the FD.
-///
-/// Used when TLS or a higher-level protocol needs to assume
-/// ownership of the connection (and therefore of socket lifetime).
+/// @brief Detach a native socket from its managed TCP object.
+/// @details Marks a valid connection closed and replaces its descriptor with
+///          @c INVALID_SOCK without invoking the native close operation. The
+///          caller must obtain the descriptor first and thereafter owns its
+///          lifetime, typically when TLS or another protocol wrapper takes
+///          control. Invalid handles are silently ignored.
+/// @param obj TCP handle whose descriptor ownership has already been captured.
 void rt_tcp_detach_socket(void *obj) {
     rt_tcp_t *tcp = tcp_try(obj);
     if (!tcp)
@@ -1245,12 +1440,19 @@ void rt_tcp_detach_socket(void *obj) {
 // TcpServer - Creation
 //=============================================================================
 
-/// @brief Internal listener factory — bind to `address:port`, listen with `SOMAXCONN` backlog.
-///
-/// Used by both `rt_tcp_server_listen` (binds to all interfaces)
-/// and `rt_tcp_server_listen_at` (binds to a specific interface).
-/// Sets `SO_REUSEADDR` so a hot-restart doesn't fail with
-/// "Address already in use" while the prior socket lingers in TIME_WAIT.
+/// @brief Create a non-blocking TCP listener for a local endpoint.
+/// @details Resolves IPv4 and IPv6 bind candidates and selects the first socket
+///          that can bind, listen with @c SOMAXCONN, and enter non-blocking
+///          mode. @c SO_REUSEADDR supports hot restart; wildcard IPv6
+///          candidates request dual-stack operation when the platform exposes
+///          @c IPV6_V6ONLY. A port of zero requests an OS-assigned ephemeral
+///          port, which is queried before the listener enters managed
+///          ownership.
+/// @param address Optional NUL-terminated local address. NULL uses
+///        @c AI_PASSIVE and all interfaces.
+/// @param port Local port in [0, 65535].
+/// @return Newly allocated managed TcpServer, or NULL after a returning
+///         address, bind, permission, allocation, or configuration trap.
 static void *rt_tcp_server_listen_impl(const char *address, int64_t port) {
     rt_net_init_wsa();
 
@@ -1333,12 +1535,23 @@ static void *rt_tcp_server_listen_impl(const char *address, int64_t port) {
     return tcp_server_adopt_listener(sock, addr_cstr, port == 0 ? get_local_port(sock) : (int)port);
 }
 
-/// @brief Listen on `port` on all local interfaces (`0.0.0.0`).
+/// @brief Listen for TCP connections on all local interfaces.
+/// @details Delegates wildcard address-family selection to the internal
+///          listener factory. The stored address reflects the selected family
+///          as either `0.0.0.0` or `::`.
+/// @param port Local port in [0, 65535]; zero requests an ephemeral port.
+/// @return Newly allocated managed TcpServer, or NULL after a returning trap.
 void *rt_tcp_server_listen(int64_t port) {
     return rt_tcp_server_listen_impl(NULL, port);
 }
 
-/// @brief Listen on `port` bound to a specific local address (e.g. `"127.0.0.1"` or `"::1"`).
+/// @brief Listen for TCP connections on a specific local address.
+/// @details Requires a nonempty managed address string with no embedded NUL,
+///          then resolves and binds it through the shared listener factory.
+/// @param address Managed local hostname or numeric IPv4/IPv6 address.
+/// @param port Local port in [0, 65535]; zero requests an ephemeral port.
+/// @return Newly allocated managed TcpServer, or NULL after a returning
+///         validation, resolution, bind, or allocation trap.
 void *rt_tcp_server_listen_at(rt_string address, int64_t port) {
     const char *addr_ptr = NULL;
     size_t addr_len = 0;
@@ -1353,7 +1566,11 @@ void *rt_tcp_server_listen_at(rt_string address, int64_t port) {
 // TcpServer - Properties
 //=============================================================================
 
-/// @brief Listening port (useful when the caller passed 0 to ask the OS to pick).
+/// @brief Return the local port recorded for a TCP server.
+/// @details Safely retains the server while reading the value. For an
+///          ephemeral bind this is the actual port selected by the OS.
+/// @param obj Required TcpServer receiver.
+/// @return Bound port, or 0 after a returning invalid-handle trap.
 int64_t rt_tcp_server_port(void *obj) {
     rt_tcp_server_t *server = tcp_server_require_retained(obj);
     if (!server)
@@ -1363,7 +1580,13 @@ int64_t rt_tcp_server_port(void *obj) {
     return port;
 }
 
-/// @brief Bound listen address (e.g. "0.0.0.0", "::1"), or empty string if not listening.
+/// @brief Return the address recorded for a TCP server.
+/// @details Retains the server across managed string creation and releases it
+///          on ordinary and recovered allocation-trap paths. The address
+///          metadata remains available after the listener is closed.
+/// @param obj Required TcpServer receiver.
+/// @return Newly owned managed address string, or the runtime empty-string
+///         sentinel after a returning trap.
 rt_string rt_tcp_server_address(void *obj) {
     rt_tcp_server_t *server = tcp_server_require_retained(obj);
     if (!server)
@@ -1387,7 +1610,12 @@ rt_string rt_tcp_server_address(void *obj) {
     return address;
 }
 
-/// @brief 1 if the server socket is still in the `listen()` state.
+/// @brief Test whether a TCP server is accepting connections.
+/// @details Retains the managed receiver and takes an acquire-ordered snapshot
+///          of its atomic listening flag.
+/// @param obj Required TcpServer receiver.
+/// @return 1 while listening, otherwise 0; invalid receivers trap and return 0
+///         only when the trap hook resumes execution.
 int8_t rt_tcp_server_is_listening(void *obj) {
     rt_tcp_server_t *server = tcp_server_require_retained(obj);
     if (!server)
@@ -1401,14 +1629,33 @@ int8_t rt_tcp_server_is_listening(void *obj) {
 // TcpServer - Accept and Close
 //=============================================================================
 
-/// @brief Accept the next pending connection — blocks indefinitely. Returns a connected
-/// `rt_tcp_t*`.
+/// @brief Accept the next TCP client without an application timeout.
+/// @details Delegates to @ref rt_tcp_server_accept_for with a zero timeout.
+///          Internally the non-blocking listener is polled in bounded slices so
+///          a concurrent close can still terminate the operation.
+/// @param obj Required listening TcpServer receiver.
+/// @return Newly allocated connected TCP object, or NULL when the server closes
+///         or after a returning accept/configuration/allocation trap.
 void *rt_tcp_server_accept(void *obj) {
     return rt_tcp_server_accept_for(obj, 0);
 }
 
-/// @brief Accept with a timeout — uses `select` first to wait for readability.
-/// @return A connected client `rt_tcp_t*` on accept, NULL on timeout.
+/// @brief Accept a TCP client with an optional timeout.
+/// @details Retains and registers against the server before reading its
+///          descriptor, preventing concurrent close-and-reuse races. The
+///          non-blocking listener is polled in at most 100-millisecond slices;
+///          a monotonic deadline is used when available, with a decrementing
+///          fallback otherwise. Zero waits indefinitely, while a positive
+///          timeout returns NULL without trapping when no client arrives.
+///          Accepted sockets are restored to blocking mode, configured for
+///          SIGPIPE suppression and TCP_NODELAY, and adopted with numeric peer
+///          and local endpoint metadata.
+/// @param obj Required listening TcpServer receiver.
+/// @param timeout_ms Timeout in milliseconds, in [0, @c INT_MAX]; zero waits
+///        until a connection arrives or the server closes.
+/// @return Newly allocated connected TCP object, or NULL on timeout, concurrent
+///         server close, or after a returning validation, accept,
+///         configuration, or allocation trap.
 void *rt_tcp_server_accept_for(void *obj, int64_t timeout_ms) {
     rt_tcp_server_t *server = tcp_server_require_retained(obj);
     if (!server)
@@ -1567,7 +1814,12 @@ void *rt_tcp_server_accept_for(void *obj, int64_t timeout_ms) {
                                       get_local_port(client_sock));
 }
 
-/// @brief Close the listening socket — pending `accept` calls return error.
+/// @brief Stop a TCP server and close its listener.
+/// @details NULL and repeated closes are no-ops. A valid close first prevents
+///          new accepts, waits for registered accept operations to release
+///          their descriptor snapshots, and then closes the listener. The
+///          managed server object and its bound endpoint metadata remain alive.
+/// @param obj TcpServer receiver, or NULL for a no-op.
 void rt_tcp_server_close(void *obj) {
     if (!obj)
         return;

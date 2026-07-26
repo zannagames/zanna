@@ -27,7 +27,7 @@
 //     is their sole owner.
 //
 // Links: src/runtime/io/rt_file.h (public API and RtFile type),
-//        src/runtime/io/rt_file_io.h (low-level read/write primitives),
+//        src/runtime/io/rt_file_io.c (low-level read/write primitives),
 //        src/runtime/io/rt_file_path.h (mode string helpers)
 //
 //===----------------------------------------------------------------------===//
@@ -51,6 +51,8 @@ typedef struct RtFileChannelEntry {
 } RtFileChannelEntry;
 
 /// @brief Release all open channel entries and free the file table in `ctx`.
+/// @param ctx Runtime context whose exclusively owned file state is being torn
+/// down; `NULL` is accepted.
 void rt_file_state_cleanup(RtContext *ctx) {
     if (!ctx)
         return;
@@ -78,18 +80,21 @@ void rt_file_state_cleanup(RtContext *ctx) {
 
 /// @brief Return a typed pointer to one locked context's channel entry array.
 /// @param ctx Context whose `RT_CONTEXT_STATE_FILE` mutex is held.
+/// @return Borrowed entry-array pointer, or `NULL` before allocation.
 static inline RtFileChannelEntry *rtf_entries(RtContext *ctx) {
     return (RtFileChannelEntry *)ctx->file_state.entries;
 }
 
 /// @brief Return a pointer to one locked context's channel count field.
 /// @param ctx Context whose file-state mutex is held.
+/// @return Borrowed mutable count-field pointer.
 static inline size_t *rtf_count(RtContext *ctx) {
     return &ctx->file_state.count;
 }
 
 /// @brief Return a pointer to one locked context's channel-table capacity.
 /// @param ctx Context whose file-state mutex is held.
+/// @return Borrowed mutable capacity-field pointer.
 static inline size_t *rtf_capacity(RtContext *ctx) {
     return &ctx->file_state.capacity;
 }
@@ -103,10 +108,13 @@ static inline void rtf_set_entries(RtContext *ctx, RtFileChannelEntry *ptr) {
 
 /// @brief Locate an existing channel entry without modifying the table.
 /// @details Performs a linear scan over the populated prefix of the table so
-///          channel handles remain stable even after reallocations.  Negative
-///          identifiers are rejected immediately.  Callers can reuse the result
-///          to inspect channel state or decide whether a new slot must be
-///          materialised.
+///          channel identity remains stable across table reallocations.
+///          Non-positive identifiers are rejected immediately. The returned
+///          pointer remains valid only while the file-state lock is held and
+///          no table-growing helper is invoked.
+/// @param ctx Locked runtime context containing the channel table.
+/// @param channel Positive BASIC channel identifier.
+/// @return Borrowed matching entry, or `NULL` when absent/invalid.
 static RtFileChannelEntry *rt_file_find_channel(RtContext *ctx, int32_t channel) {
     if (channel <= 0)
         return NULL;
@@ -129,6 +137,10 @@ static const size_t kMaxOpenChannels = 1024;
 ///          via @ref rt_file_init, and the freshly provisioned entry is returned
 ///          to the caller.  Allocation failures bubble up as @c NULL so callers
 ///          can surface @ref Err_RuntimeError.
+/// @param ctx Locked runtime context whose table may be reallocated.
+/// @param channel Positive BASIC channel identifier.
+/// @return Borrowed existing/new entry, or `NULL` for invalid input,
+/// capacity exhaustion, or allocation failure.
 static RtFileChannelEntry *rt_file_prepare_channel(RtContext *ctx, int32_t channel) {
     if (channel <= 0)
         return NULL;
@@ -173,6 +185,12 @@ static RtFileChannelEntry *rt_file_prepare_channel(RtContext *ctx, int32_t chann
 ///          descriptor.  When successful the resolved entry is stored in
 ///          @p out_entry so callers can perform further operations without a
 ///          second lookup.
+/// @param ctx Locked runtime context containing the channel table.
+/// @param channel Positive channel identifier to resolve.
+/// @param out_entry Receives a borrowed open entry on success and `NULL` on
+/// failure; may itself be `NULL`.
+/// @return 0 on success, `Err_InvalidOperation` for an invalid/closed channel,
+/// or `Err_IOError` for inconsistent descriptor state.
 static int32_t rt_file_resolve_channel(RtContext *ctx,
                                        int32_t channel,
                                        RtFileChannelEntry **out_entry) {
@@ -194,6 +212,11 @@ static int32_t rt_file_resolve_channel(RtContext *ctx,
 /// @details Validates pointers, forwards the call to @ref rt_file_write, clears
 ///          the cached EOF state when the write succeeds, and translates any
 ///          failure into the corresponding Err_* value.
+/// @param entry Open channel entry.
+/// @param data Source bytes; may be `NULL` only when @p len is zero.
+/// @param len Number of bytes to write.
+/// @return 0 on success/no-op, or an `Err` code on invalid input or I/O
+/// failure.
 static int32_t rt_file_write_entry(RtFileChannelEntry *entry, const uint8_t *data, size_t len) {
     if (!entry || len == 0)
         return 0;
@@ -212,6 +235,11 @@ static int32_t rt_file_write_entry(RtFileChannelEntry *entry, const uint8_t *dat
 ///          channel entry, and invokes @ref rt_file_open.  When the open
 ///          succeeds the entry is flagged in-use and its EOF indicator cleared;
 ///          failures propagate the error kind from the lower layer.
+/// @param path Runtime filesystem path.
+/// @param mode @ref RtFileMode value.
+/// @param channel Positive BASIC channel identifier.
+/// @return 0 on success, or an `Err` code for invalid input, duplicate/open
+/// channel, context/allocation failure, or filesystem failure.
 int32_t rt_open_err_vstr(ZannaString *path, int32_t mode, int32_t channel) {
     const char *mode_str = rt_file_mode_string(mode);
     const char *path_str = NULL;
@@ -249,6 +277,9 @@ int32_t rt_open_err_vstr(ZannaString *path, int32_t mode, int32_t channel) {
 /// @details Validates that the channel exists and is open, closes the underlying
 ///          descriptor, and resets bookkeeping state.  Returns zero on success or
 ///          propagates the runtime error code raised by @ref rt_file_close.
+/// @param channel Positive BASIC channel identifier.
+/// @return 0 on success, or an `Err` code for invalid/closed channel, missing
+/// context, or host close failure.
 int32_t rt_close_err(int32_t channel) {
     if (channel <= 0)
         return (int32_t)Err_InvalidOperation;
@@ -282,6 +313,10 @@ int32_t rt_close_err(int32_t channel) {
 ///          @ref rt_file_string_view, and then calls
 ///          @ref rt_file_write_entry so EOF caching and error translation remain
 ///          centralised in one helper.
+/// @param channel Positive open channel identifier.
+/// @param s Runtime string whose exact bytes are written.
+/// @return 0 on success, or an `Err` code for invalid state/input or I/O
+/// failure.
 int32_t rt_write_ch_err(int32_t channel, ZannaString *s) {
     RtContext *ctx = rt_context_acquire_state(RT_CONTEXT_STATE_FILE, NULL);
     if (!ctx)
@@ -308,6 +343,10 @@ int32_t rt_write_ch_err(int32_t channel, ZannaString *s) {
 /// @details Resolves the channel, writes the provided bytes, and finally emits a
 ///          single newline so the behaviour matches PRINT without a trailing
 ///          semicolon in traditional BASIC.
+/// @param channel Positive open channel identifier.
+/// @param s Runtime string written before the newline.
+/// @return 0 on success, or an `Err` code for invalid state/input or either
+/// write failure.
 int32_t rt_println_ch_err(int32_t channel, ZannaString *s) {
     RtContext *ctx = rt_context_acquire_state(RT_CONTEXT_STATE_FILE, NULL);
     if (!ctx)
@@ -342,6 +381,11 @@ int32_t rt_println_ch_err(int32_t channel, ZannaString *s) {
 ///          the blocking read, marks the cached EOF flag when the helper reports
 ///          end-of-file, and on success transfers ownership of the allocated
 ///          runtime string to @p out.
+/// @param channel Positive channel opened for input.
+/// @param out Receives a newly allocated runtime string on success and `NULL`
+/// on failure.
+/// @return 0 on success, `Err_EOF` at end-of-file, or another `Err` code for
+/// invalid state/input or I/O failure.
 int32_t rt_line_input_ch_err(int32_t channel, ZannaString **out) {
     if (!out)
         return (int32_t)Err_InvalidOperation;
@@ -377,6 +421,9 @@ int32_t rt_line_input_ch_err(int32_t channel, ZannaString **out) {
 /// @details Resolves the channel and copies the descriptor into @p out_fd, if
 ///          provided, so embedders can integrate with poll/select loops using the
 ///          underlying OS handle.
+/// @param channel Positive open channel identifier.
+/// @param out_fd Receives the borrowed native descriptor when non-`NULL`.
+/// @return 0 on success, or an `Err` code when the context/channel is invalid.
 int32_t rt_file_channel_fd(int32_t channel, int *out_fd) {
     RtContext *ctx = rt_context_acquire_state(RT_CONTEXT_STATE_FILE, NULL);
     if (!ctx)
@@ -396,6 +443,9 @@ int32_t rt_file_channel_fd(int32_t channel, int *out_fd) {
 /// @brief Query whether @p channel is currently positioned at EOF.
 /// @details Resolves the channel and exposes the cached EOF flag maintained by
 ///          read helpers, mirroring the VM's "sticky" EOF semantics.
+/// @param channel Positive open channel identifier.
+/// @param out_at_eof Receives 0 or 1 when non-`NULL`.
+/// @return 0 on success, or an `Err` code when the context/channel is invalid.
 int32_t rt_file_channel_get_eof(int32_t channel, int8_t *out_at_eof) {
     RtContext *ctx = rt_context_acquire_state(RT_CONTEXT_STATE_FILE, NULL);
     if (!ctx)
@@ -415,6 +465,9 @@ int32_t rt_file_channel_get_eof(int32_t channel, int8_t *out_at_eof) {
 /// @brief Mutate the cached EOF state for @p channel.
 /// @details Resolves the channel and updates the cached flag, enabling seek
 ///          helpers to force EOF on or off without performing another read.
+/// @param channel Positive open channel identifier.
+/// @param at_eof New cached value; stored as supplied.
+/// @return 0 on success, or an `Err` code when the context/channel is invalid.
 int32_t rt_file_channel_set_eof(int32_t channel, int8_t at_eof) {
     RtContext *ctx = rt_context_acquire_state(RT_CONTEXT_STATE_FILE, NULL);
     if (!ctx)

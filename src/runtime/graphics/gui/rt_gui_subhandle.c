@@ -544,6 +544,7 @@ static void rt_gui_subhandle_invalidate(rt_gui_subhandle_t *handle) {
 ///          owner is still live and the lower target has become a retained tombstone, collecting
 ///          that owner after unlinking can reclaim the exact retirement group now that the last
 ///          stable wrapper has disappeared.
+/// @param obj GC-managed @ref rt_gui_subhandle_t being finalized; NULL is a no-op.
 static void rt_gui_subhandle_finalize(void *obj) {
     rt_gui_subhandle_t *handle = (rt_gui_subhandle_t *)obj;
     if (!handle)
@@ -566,7 +567,10 @@ static void rt_gui_subhandle_finalize(void *obj) {
 }
 
 /// @brief Safe-cast an opaque handle to a subhandle of the expected @p kind.
-/// @return The subhandle if it has the right object size, magic tag and kind; NULL otherwise.
+/// @details Runtime heap metadata is validated before any private wrapper fields are read.
+/// @param handle Candidate opaque runtime object.
+/// @param kind Exact subhandle discriminator required by the caller.
+/// @return Borrowed matching subhandle, or NULL for a foreign, finalized, or wrong-kind object.
 static rt_gui_subhandle_t *rt_gui_subhandle_checked(void *handle, rt_gui_subhandle_kind_t kind) {
     if (!rt_obj_is_instance(handle, 0, sizeof(rt_gui_subhandle_t)))
         return NULL;
@@ -579,6 +583,8 @@ static rt_gui_subhandle_t *rt_gui_subhandle_checked(void *handle, rt_gui_subhand
 /// @brief True if the subhandle's owner widget is still alive (or it has no owner).
 /// @details A dead owner triggers hard invalidation and a false return, so callers never
 ///          dereference a sub-object whose widget storage has already been destroyed.
+/// @param handle Candidate authenticated subhandle.
+/// @return True for an ownerless handle or matching live owner generation, otherwise false.
 static bool rt_gui_subhandle_owner_is_live(rt_gui_subhandle_t *handle) {
     if (!handle)
         return false;
@@ -593,6 +599,8 @@ static bool rt_gui_subhandle_owner_is_live(rt_gui_subhandle_t *handle) {
 
 /// @brief Find the top-level widget that owns a menu item — its context menu, or
 ///        the menubar reached through its parent menu. NULL if free-floating.
+/// @param item Borrowed live menu item.
+/// @return Borrowed owner widget, preferring ContextMenu, or NULL when detached.
 static vg_widget_t *rt_gui_owner_widget_for_menu_item(vg_menu_item_t *item) {
     if (!item)
         return NULL;
@@ -604,6 +612,8 @@ static vg_widget_t *rt_gui_owner_widget_for_menu_item(vg_menu_item_t *item) {
 }
 
 /// @brief The menubar widget that owns a menu, or NULL if the menu isn't in a menubar.
+/// @param menu Borrowed live or detached menu.
+/// @return Borrowed owning MenuBar widget, or NULL.
 static vg_widget_t *rt_gui_owner_widget_for_menu(vg_menu_t *menu) {
     return menu && menu->owner_menubar ? &menu->owner_menubar->base : NULL;
 }
@@ -613,6 +623,11 @@ static vg_widget_t *rt_gui_owner_widget_for_menu(vg_menu_t *menu) {
 ///          (@p kind, @p ptr) — refreshing its owner — or allocates a new one and links
 ///          it into the global list. Reuse guarantees a stable identity per sub-object
 ///          across calls. Returns NULL on NULL ptr or allocation failure.
+/// @param kind Lower payload kind recorded in the wrapper and target index.
+/// @param ptr Borrowed live lower-toolkit payload address.
+/// @param owner_widget Borrowed owner widget used for generation validation; may be NULL.
+/// @return Existing or newly allocated GC-managed stable wrapper, or NULL on invalid input or
+///         allocation failure.
 static void *rt_gui_wrap_subhandle(rt_gui_subhandle_kind_t kind,
                                    void *ptr,
                                    vg_widget_t *owner_widget) {
@@ -661,44 +676,73 @@ static void *rt_gui_wrap_subhandle(rt_gui_subhandle_kind_t kind,
     return handle;
 }
 
+/// @brief Return the stable managed wrapper for a TreeView node.
+/// @param node Borrowed live node whose TreeView becomes the owner generation.
+/// @return Stable GC-managed TreeNode handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_tree_node(vg_tree_node_t *node) {
     return rt_gui_wrap_subhandle(
         RT_GUI_HANDLE_TREE_NODE, node, node && node->owner ? &node->owner->base : NULL);
 }
 
+/// @brief Return the stable managed wrapper for a TabBar tab.
+/// @param tab Borrowed live tab whose TabBar becomes the owner generation.
+/// @return Stable GC-managed Tab handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_tab(vg_tab_t *tab) {
     return rt_gui_wrap_subhandle(
         RT_GUI_HANDLE_TAB, tab, tab && tab->owner ? &tab->owner->base : NULL);
 }
 
+/// @brief Return the stable managed wrapper for a ListBox item.
+/// @param item Borrowed live item whose ListBox becomes the owner generation.
+/// @return Stable GC-managed ListBoxItem handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_listbox_item(vg_listbox_item_t *item) {
     return rt_gui_wrap_subhandle(
         RT_GUI_HANDLE_LISTBOX_ITEM, item, item && item->owner ? &item->owner->base : NULL);
 }
 
+/// @brief Return the stable managed wrapper for a regular Menu record.
+/// @param menu Borrowed live menu associated with its owning MenuBar when present.
+/// @return Stable GC-managed Menu handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_menu(vg_menu_t *menu) {
     return rt_gui_wrap_subhandle(RT_GUI_HANDLE_MENU, menu, rt_gui_owner_widget_for_menu(menu));
 }
 
+/// @brief Return the stable managed wrapper for a regular or context-menu item.
+/// @param item Borrowed live item associated with its ContextMenu/MenuBar owner.
+/// @return Stable GC-managed MenuItem handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_menu_item(vg_menu_item_t *item) {
     return rt_gui_wrap_subhandle(
         RT_GUI_HANDLE_MENU_ITEM, item, rt_gui_owner_widget_for_menu_item(item));
 }
 
+/// @brief Return the stable managed wrapper for a ContextMenu root.
+/// @param menu Borrowed live ContextMenu, which also serves as the owner widget.
+/// @return Stable GC-managed ContextMenu handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_contextmenu(vg_contextmenu_t *menu) {
     return rt_gui_wrap_subhandle(RT_GUI_HANDLE_CONTEXTMENU, menu, menu ? &menu->base : NULL);
 }
 
+/// @brief Return the stable managed wrapper for a StatusBar item.
+/// @param item Borrowed live item whose StatusBar becomes the owner generation.
+/// @return Stable GC-managed StatusBarItem handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_statusbar_item(vg_statusbar_item_t *item) {
     return rt_gui_wrap_subhandle(
         RT_GUI_HANDLE_STATUSBAR_ITEM, item, item && item->owner ? &item->owner->base : NULL);
 }
 
+/// @brief Return the stable managed wrapper for a Toolbar item.
+/// @param item Borrowed live item whose Toolbar becomes the owner generation.
+/// @return Stable GC-managed ToolbarItem handle, or NULL for invalid input/allocation failure.
 void *rt_gui_wrap_toolbar_item(vg_toolbar_item_t *item) {
     return rt_gui_wrap_subhandle(
         RT_GUI_HANDLE_TOOLBAR_ITEM, item, item && item->owner ? &item->owner->base : NULL);
 }
 
+/// @brief Resolve a managed TreeNode handle to its live lower node.
+/// @details Rejects retired/wrong-kind wrappers, validates the owner generation, and lazily marks
+///          the wrapper retired when the lower liveness registry no longer recognizes its target.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live node, or NULL when validation fails.
 vg_tree_node_t *rt_gui_tree_node_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_TREE_NODE);
     if (!sub || !sub->ptr || sub->retired)
@@ -713,6 +757,9 @@ vg_tree_node_t *rt_gui_tree_node_from_handle(void *handle) {
     return node;
 }
 
+/// @brief Resolve a managed Tab handle to its live lower tab.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live tab, or NULL for wrong-kind, retired, stale-owner, or dead payload state.
 vg_tab_t *rt_gui_tab_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_TAB);
     if (!sub || !sub->ptr || sub->retired)
@@ -727,6 +774,9 @@ vg_tab_t *rt_gui_tab_from_handle(void *handle) {
     return tab;
 }
 
+/// @brief Resolve a managed ListBoxItem handle to its live lower item.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live item, or NULL for wrong-kind, retired, stale-owner, or dead payload state.
 vg_listbox_item_t *rt_gui_listbox_item_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_LISTBOX_ITEM);
     if (!sub || !sub->ptr || sub->retired)
@@ -741,6 +791,9 @@ vg_listbox_item_t *rt_gui_listbox_item_from_handle(void *handle) {
     return item;
 }
 
+/// @brief Resolve a managed Menu handle to its live lower menu record.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live menu, or NULL for wrong-kind, retired, stale-owner, or dead payload state.
 vg_menu_t *rt_gui_menu_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_MENU);
     if (!sub || !sub->ptr || sub->retired)
@@ -755,6 +808,9 @@ vg_menu_t *rt_gui_menu_from_handle(void *handle) {
     return menu;
 }
 
+/// @brief Resolve a managed MenuItem handle to its live lower item record.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live item, or NULL for wrong-kind, retired, stale-owner, or dead payload state.
 vg_menu_item_t *rt_gui_menu_item_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_MENU_ITEM);
     if (!sub || !sub->ptr || sub->retired)
@@ -769,6 +825,11 @@ vg_menu_item_t *rt_gui_menu_item_from_handle(void *handle) {
     return item;
 }
 
+/// @brief Resolve a managed ContextMenu handle to its live lower menu widget.
+/// @details In addition to owner/payload liveness, requires the lower base type to remain
+///          @c VG_WIDGET_MENU before returning it.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live ContextMenu, or NULL when validation fails.
 vg_contextmenu_t *rt_gui_contextmenu_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_CONTEXTMENU);
     if (!sub || !sub->ptr || sub->retired)
@@ -783,6 +844,9 @@ vg_contextmenu_t *rt_gui_contextmenu_from_handle(void *handle) {
     return menu;
 }
 
+/// @brief Resolve a managed StatusBarItem handle to its live lower item.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live item, or NULL for wrong-kind, retired, stale-owner, or dead payload state.
 vg_statusbar_item_t *rt_gui_statusbar_item_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_STATUSBAR_ITEM);
     if (!sub || !sub->ptr || sub->retired)
@@ -797,6 +861,9 @@ vg_statusbar_item_t *rt_gui_statusbar_item_from_handle(void *handle) {
     return item;
 }
 
+/// @brief Resolve a managed ToolbarItem handle to its live lower item.
+/// @param handle Candidate opaque runtime handle.
+/// @return Borrowed live item, or NULL for wrong-kind, retired, stale-owner, or dead payload state.
 vg_toolbar_item_t *rt_gui_toolbar_item_from_handle(void *handle) {
     rt_gui_subhandle_t *sub = rt_gui_subhandle_checked(handle, RT_GUI_HANDLE_TOOLBAR_ITEM);
     if (!sub || !sub->ptr || sub->retired)
@@ -1040,6 +1107,8 @@ static void rt_gui_subhandle_invalidate_owner_matches(vg_widget_t *owner,
 /// @brief Hard-invalidate wrappers owned by every widget in a subtree using owner indexes.
 /// @details The traversal runs before widget destruction and never inspects child payloads. Each
 ///          exact owner lookup is expected O(1), replacing the former global handle-list scan.
+/// @param subtree Live root whose owner generations and descendants are being retired; NULL is a
+///                no-op.
 void rt_gui_invalidate_widget_subhandles(vg_widget_t *subtree) {
     if (!subtree)
         return;
@@ -1082,6 +1151,10 @@ void rt_gui_invalidate_retired_tab_subhandles(vg_tabbar_t *tabbar) {
     rt_gui_subhandle_invalidate_owner_matches(&tabbar->base, RT_GUI_HANDLE_TAB, true);
 }
 
+/// @brief Invalidate item and nested-submenu wrappers owned by a ContextMenu.
+/// @details Retires direct item wrappers through the owner index, then recursively invalidates each
+///          submenu tree while deliberately preserving the root wrapper for @p menu.
+/// @param menu Live ContextMenu whose contents are about to be cleared; NULL is a no-op.
 void rt_gui_invalidate_contextmenu_contents(vg_contextmenu_t *menu) {
     if (!menu)
         return;
@@ -1095,6 +1168,10 @@ void rt_gui_invalidate_contextmenu_contents(vg_contextmenu_t *menu) {
     }
 }
 
+/// @brief Invalidate a complete ContextMenu wrapper tree including its root.
+/// @details Invalidates all item/submenu descendants first, then hard-invalidates the stable
+///          ContextMenu wrapper owned by the root widget.
+/// @param menu Live ContextMenu being destroyed; NULL is a no-op.
 void rt_gui_invalidate_contextmenu_tree(vg_contextmenu_t *menu) {
     if (!menu)
         return;

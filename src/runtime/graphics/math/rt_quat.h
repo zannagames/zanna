@@ -3,23 +3,24 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
-// File: src/runtime/graphics/rt_quat.h
+// File: src/runtime/graphics/math/rt_quat.h
 // Purpose: Quaternion math for 3D rotation (Zanna.Quat), providing construction from
 // axis/angle/Euler, conjugate, product, SLERP, and conversion to/from rotation matrices.
 //
 // Key invariants:
 //   - Quaternions are stored as (x, y, z, w) where w is the scalar part.
-//   - Unit quaternions represent 3D rotations; non-unit quaternions produce undefined rotation
-//   results.
+//   - Unit quaternions represent pure 3D rotations; conversion and vector-rotation routines do not
+//     normalize their inputs.
 //   - All operations return new Quat objects; inputs are not modified.
 //   - SLERP correctly handles antipodal quaternions by negating one operand.
 //
 // Ownership/Lifetime:
-//   - Quat objects are runtime-managed (heap-allocated).
-//   - Caller is responsible for lifetime management.
+//   - Quat objects are managed by the runtime garbage collector.
+//   - Returned quaternions, matrices, and vectors require no explicit caller cleanup.
 //
-// Links: src/runtime/graphics/rt_quat.c (implementation), src/runtime/graphics/rt_mat4.h,
-// src/runtime/graphics/rt_vec3.h
+// Links: src/runtime/graphics/math/rt_quat.c (implementation),
+//        src/runtime/graphics/math/rt_mat4.h (matrix conversion),
+//        src/runtime/graphics/math/rt_vec3.h (axis and vector operations)
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -32,133 +33,150 @@
 extern "C" {
 #endif
 
-/// @brief Create a quaternion from components (x, y, z, w) where w is scalar.
+/// @brief Create a quaternion from raw vector and scalar components.
+/// @details Stores the values without normalizing them.
 /// @param x The first imaginary component (i).
 /// @param y The second imaginary component (j).
 /// @param z The third imaginary component (k).
 /// @param w The scalar (real) component.
-/// @return A new quaternion object with the specified components.
+/// @return New GC-managed Quat, or NULL after trapping if allocation fails.
 void *rt_quat_new(double x, double y, double z, double w);
 
 /// @brief Create the identity quaternion (0, 0, 0, 1).
-/// @return A new quaternion representing no rotation.
+/// @return New identity Quat, or NULL after trapping if allocation fails.
 void *rt_quat_identity(void);
 
 /// @brief Create a quaternion from axis-angle representation.
+/// @details Normalizes @p axis internally. A zero or non-finite axis or a non-finite angle produces
+///          identity; a NULL axis raises a runtime trap.
 /// @param axis A Vec3 representing the rotation axis (will be normalized).
 /// @param angle Rotation angle in radians.
-/// @return A new unit quaternion encoding a rotation of @p angle radians
-///         about @p axis.
+/// @return New unit Quat, identity for a degenerate value, or NULL after trapping for a NULL axis
+///         or allocation failure.
 void *rt_quat_from_axis_angle(void *axis, double angle);
 
 /// @brief Create a quaternion from Euler angles (pitch, yaw, roll) in radians.
+/// @details Forms `qz(roll) * qy(yaw) * qx(pitch)`, applying fixed-axis pitch, then yaw, then roll
+///          to column vectors. Non-finite input produces identity.
 /// @param pitch Rotation about the X axis in radians.
 /// @param yaw Rotation about the Y axis in radians.
 /// @param roll Rotation about the Z axis in radians.
-/// @return A new unit quaternion representing the combined rotation,
-///         applied in yaw-pitch-roll (YXZ) intrinsic order.
+/// @return New unit Quat, identity for non-finite input, or NULL after an allocation trap.
 void *rt_quat_from_euler(double pitch, double yaw, double roll);
 
-/// @brief Get the X component (first imaginary).
-/// @param q The quaternion object.
-/// @return The x (i) component of the quaternion.
+/// @brief Read the x component of a quaternion's imaginary part.
+/// @param q Quat handle to inspect.
+/// @return Stored x component, or 0.0 after trapping for an invalid handle.
 double rt_quat_x(void *q);
 
-/// @brief Get the Y component (second imaginary).
-/// @param q The quaternion object.
-/// @return The y (j) component of the quaternion.
+/// @brief Read the y component of a quaternion's imaginary part.
+/// @param q Quat handle to inspect.
+/// @return Stored y component, or 0.0 after trapping for an invalid handle.
 double rt_quat_y(void *q);
 
-/// @brief Get the Z component (third imaginary).
-/// @param q The quaternion object.
-/// @return The z (k) component of the quaternion.
+/// @brief Read the z component of a quaternion's imaginary part.
+/// @param q Quat handle to inspect.
+/// @return Stored z component, or 0.0 after trapping for an invalid handle.
 double rt_quat_z(void *q);
 
-/// @brief Get the W component (scalar/real part).
-/// @param q The quaternion object.
-/// @return The w (scalar) component of the quaternion.
+/// @brief Read a quaternion's scalar w component.
+/// @param q Quat handle to inspect.
+/// @return Stored w component, or 0.0 after trapping for an invalid handle.
 double rt_quat_w(void *q);
 
-/// @brief Multiply two quaternions (composition of rotations): a * b.
-/// @param a The left-hand quaternion (applied second in rotation order).
-/// @param b The right-hand quaternion (applied first in rotation order).
-/// @return A new quaternion representing the Hamilton product a*b,
-///         equivalent to applying rotation @p b then rotation @p a.
+/// @brief Compute the Hamilton product of two quaternions.
+/// @details For unit rotations, the right-hand rotation is applied first. Invalid handles raise a
+///          runtime trap.
+/// @param a Left-hand Quat operand.
+/// @param b Right-hand Quat operand.
+/// @return New product Quat, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_mul(void *a, void *b);
 
-/// @brief Conjugate of the quaternion: (-x, -y, -z, w).
-/// @param q The quaternion object.
-/// @return A new quaternion with the imaginary components negated.
-///         For unit quaternions, the conjugate equals the inverse.
+/// @brief Create a quaternion's conjugate `(-x, -y, -z, w)`.
+/// @details For a unit quaternion, the conjugate is also its inverse.
+/// @param q Quat operand.
+/// @return New conjugate Quat, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_conjugate(void *q);
 
-/// @brief Inverse of the quaternion (conjugate / |q|^2).
-/// @param q The quaternion object.
-/// @return A new quaternion that is the multiplicative inverse of @p q.
-///         For unit quaternions this is equivalent to the conjugate.
+/// @brief Compute a quaternion inverse as `conjugate(q) / |q|^2`.
+/// @details Uses an overflow-resistant norm and successive division. Invalid, zero-length, and
+///          non-finite quaternions raise a runtime trap.
+/// @param q Quat operand.
+/// @return New inverse Quat, or NULL after trapping when inversion or allocation fails.
 void *rt_quat_inverse(void *q);
 
-/// @brief Normalize quaternion to unit length.
-/// @param q The quaternion object.
-/// @return A new unit quaternion in the same direction as @p q
-///         (|result| = 1).
+/// @brief Normalize a quaternion to unit length.
+/// @details A zero or non-finite norm produces the zero quaternion; an invalid handle traps.
+/// @param q Quat operand.
+/// @return New unit Quat, zero Quat for a degenerate norm, or NULL after trapping for invalid input
+///         or allocation failure.
 void *rt_quat_norm(void *q);
 
-/// @brief Length (magnitude) of quaternion.
-/// @param q The quaternion object.
-/// @return The Euclidean norm sqrt(x^2 + y^2 + z^2 + w^2).
+/// @brief Compute a quaternion's Euclidean norm.
+/// @details Uses an overflow-resistant chained-hypot calculation.
+/// @param q Quat operand.
+/// @return Euclidean norm, positive infinity for non-finite components, or 0.0 after an
+///         invalid-handle trap.
 double rt_quat_len(void *q);
 
-/// @brief Squared length of quaternion.
-/// @param q The quaternion object.
-/// @return The squared norm (x^2 + y^2 + z^2 + w^2). Useful for
-///         checking unit-length without the cost of a square root.
+/// @brief Compute a quaternion's squared Euclidean norm.
+/// @details Direct squaring can overflow for extreme finite components.
+/// @param q Quat operand.
+/// @return Sum `x*x + y*y + z*z + w*w`, or 0.0 after an invalid-handle trap.
 double rt_quat_len_sq(void *q);
 
 /// @brief Dot product of two quaternions.
-/// @param a The first quaternion operand.
-/// @param b The second quaternion operand.
-/// @return The four-dimensional dot product
-///         (a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w).
+/// @param a Left-hand Quat operand.
+/// @param b Right-hand Quat operand.
+/// @return Four-component dot product, or 0.0 after trapping for invalid input.
 double rt_quat_dot(void *a, void *b);
 
 /// @brief Spherical linear interpolation between two quaternions.
-/// @param a The start quaternion (returned when t = 0).
-/// @param b The end quaternion (returned when t = 1).
-/// @param t Interpolation parameter (0.0 = a, 1.0 = b).
-/// @return A new quaternion representing the shortest-arc spherical
-///         interpolation between @p a and @p b at parameter @p t.
+/// @details Clamps @p t to [0, 1], takes the shortest arc, and uses a non-normalized linear blend
+///          for nearly aligned unit inputs. Non-finite @p t traps and returns NULL; a non-finite
+///          quaternion dot product traps and returns identity.
+/// @param a Unit Quat at interpolation parameter zero.
+/// @param b Unit Quat at interpolation parameter one.
+/// @param t Interpolation parameter, clamped to [0, 1].
+/// @return New interpolated Quat, identity for a non-finite dot product, or NULL after other input
+///         or allocation failures.
 void *rt_quat_slerp(void *a, void *b, double t);
 
-/// @brief Linear interpolation between two quaternions (faster, less accurate).
-/// @param a The start quaternion (returned when t = 0).
-/// @param b The end quaternion (returned when t = 1).
-/// @param t Interpolation parameter (0.0 = a, 1.0 = b).
-/// @return A new normalized quaternion computed by component-wise
-///         linear interpolation. Faster than slerp but less uniform.
+/// @brief Linearly blend two quaternions and normalize the result.
+/// @details Does not clamp @p t, allowing extrapolation. A zero or non-finite blend norm produces
+///          identity; invalid quaternion handles raise a runtime trap.
+/// @param a Quat at interpolation parameter zero.
+/// @param b Quat at interpolation parameter one.
+/// @param t Interpolation or extrapolation parameter.
+/// @return New normalized blend, identity for a degenerate blend, or NULL after trapping for
+///         invalid input or allocation failure.
 void *rt_quat_lerp(void *a, void *b, double t);
 
-/// @brief Rotate a Vec3 by this quaternion: q * v * q^-1.
-/// @param q The unit quaternion representing the rotation.
-/// @param v The Vec3 to rotate.
-/// @return A new Vec3 obtained by rotating @p v by the rotation
-///         encoded in @p q.
+/// @brief Rotate a Vec3 with a unit quaternion.
+/// @details Uses an optimized unit-quaternion formula and does not normalize @p q.
+/// @param q Unit Quat rotation.
+/// @param v Vec3 to rotate.
+/// @return New rotated Vec3, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_rotate_vec3(void *q, void *v);
 
-/// @brief Convert quaternion to a 4x4 rotation matrix.
-/// @param q The unit quaternion to convert.
-/// @return A new Mat4 representing the same rotation as @p q.
+/// @brief Convert a unit quaternion to a homogeneous 4x4 rotation matrix.
+/// @details Expands the components directly without normalizing @p q.
+/// @param q Unit Quat to convert.
+/// @return New Mat4 representation, or NULL after trapping for invalid input or allocation failure.
 void *rt_quat_to_mat4(void *q);
 
-/// @brief Extract the rotation axis as a Vec3 (undefined for identity).
-/// @param q The quaternion object.
-/// @return A new unit-length Vec3 representing the rotation axis.
-///         Undefined (degenerate) when @p q is the identity quaternion.
+/// @brief Extract the normalized imaginary part as a rotation axis.
+/// @details A non-finite or near-zero imaginary part produces the conventional z-axis fallback.
+/// @param q Quat to inspect.
+/// @return New unit axis Vec3, `(0, 0, 1)` for a degenerate quaternion, or NULL after trapping for
+///         invalid input or allocation failure.
 void *rt_quat_axis(void *q);
 
 /// @brief Extract the rotation angle in radians.
-/// @param q The quaternion object.
-/// @return The rotation angle in radians, in the range [0, 2*pi).
+/// @details Normalizes and clamps the scalar component before applying `2 * acos(w)`. A non-finite
+///          or near-zero norm produces zero.
+/// @param q Quat to inspect.
+/// @return Rotation angle in [0, 2*pi], or 0.0 for a degenerate or invalid quaternion.
 double rt_quat_angle(void *q);
 
 #ifdef __cplusplus

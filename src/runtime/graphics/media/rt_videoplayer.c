@@ -759,6 +759,14 @@ static int mjpeg_prepare_decode_source(const uint8_t *data,
 /// @details This compatibility path preserves the historical malloc-returning decode behavior for
 ///          callers that need an owned raw frame. Playback uses @c decode_mjpeg_frame_into_rgba32
 ///          to avoid the extra allocation.
+/// @param data Borrowed compressed JPEG payload.
+/// @param size Payload byte count.
+/// @param scratch In/out reusable buffer for DHT injection.
+/// @param scratch_capacity In/out allocated byte capacity of @p scratch.
+/// @param out_pixels Required destination for a malloc-owned RGBA32 buffer.
+/// @param out_width Required destination for decoded width.
+/// @param out_height Required destination for decoded height.
+/// @return 1 on successful decode, otherwise 0 with outputs initialized.
 static int VIDEOPLAYER_UNUSED_PRIVATE decode_mjpeg_frame_rgba32(const uint8_t *data,
                                                                 uint32_t size,
                                                                 uint8_t **scratch,
@@ -849,12 +857,17 @@ typedef struct {
     size_t mjpeg_scratch_capacity;
 } rt_videoplayer;
 
+/// @brief Validate and cast an opaque handle to a VideoPlayer payload.
+/// @param obj Candidate runtime object.
+/// @return Typed player pointer, or NULL for an invalid handle.
 static rt_videoplayer *videoplayer_checked(void *obj) {
     if (!obj || !rt_obj_is_instance(obj, RT_VIDEOPLAYER_CLASS_ID, sizeof(rt_videoplayer)))
         return NULL;
     return (rt_videoplayer *)obj;
 }
 
+/// @brief Release one owned runtime-object reference and clear its storage slot.
+/// @param slot Address of an owned object handle; NULL and empty slots are no-ops.
 static void release_owned_ref(void **slot) {
     if (!slot || !*slot)
         return;
@@ -975,6 +988,12 @@ static int videoplayer_decode_avi_frame(rt_videoplayer *vp, int32_t frame_index)
     return 1;
 }
 
+/// @brief Clamp a playback timestamp to the player's finite duration.
+/// @details Negative and NaN values map to zero, positive infinity maps to duration when known, and
+///          finite values beyond a valid duration map to that duration.
+/// @param vp Player supplying the optional duration bound.
+/// @param seconds Raw timestamp.
+/// @return Sanitized non-negative timestamp.
 static double videoplayer_clamp_seconds(const rt_videoplayer *vp, double seconds) {
     if (!isfinite(seconds)) {
         if (seconds > 0.0 && vp && isfinite(vp->duration) && vp->duration >= 0.0)
@@ -988,6 +1007,11 @@ static double videoplayer_clamp_seconds(const rt_videoplayer *vp, double seconds
     return seconds;
 }
 
+/// @brief Map a playback timestamp to a bounded zero-based frame index.
+/// @details Uses a small relative epsilon so a duration endpoint reliably selects the final frame.
+/// @param vp Player supplying frame rate and count.
+/// @param seconds Finite non-negative timestamp.
+/// @return Frame index, or -1 for invalid player/timing state.
 static int32_t videoplayer_frame_index_at(const rt_videoplayer *vp, double seconds) {
     long double frame;
     long double epsilon;
@@ -1010,6 +1034,9 @@ static int32_t videoplayer_frame_index_at(const rt_videoplayer *vp, double secon
 /// granule using `keyframe_granule_shift` bits. The total frame
 /// number is the sum: keyframe count plus inter-frame distance.
 /// Returns -1 on overflow / invalid shift.
+/// @param dec Decoder supplying the granule shift.
+/// @param granule_pos Non-negative Theora granule position.
+/// @return Sequential frame index, or -1 for invalid input or overflow.
 static int32_t theora_granule_to_frame_index(const theora_decoder_t *dec, int64_t granule_pos) {
     if (!dec || granule_pos < 0)
         return -1;
@@ -1030,6 +1057,10 @@ static int32_t theora_granule_to_frame_index(const theora_decoder_t *dec, int64_
 /// (Theora encodes a slightly larger frame and stores a crop rect),
 /// then runs the appropriate YCbCr-to-RGBA color conversion for the stream's
 /// 4:2:0, 4:2:2, or 4:4:4 pixel format into `frame_display`.
+/// @param vp Player owning decoder metadata and destination Pixels.
+/// @param y Decoder-owned luma plane.
+/// @param cb Decoder-owned Cb plane.
+/// @param cr Decoder-owned Cr plane.
 /// @return 1 on success, 0 if the destination buffer is missing or sizes mismatch.
 static int copy_theora_frame_to_display(rt_videoplayer *vp,
                                         const uint8_t *y,
@@ -1085,6 +1116,7 @@ static int copy_theora_frame_to_display(rt_videoplayer *vp,
 // ---------------------------------------------------------------------------
 
 /// @brief Push the player's volume (0.0-1.0) into the underlying audio track (0-100 scale).
+/// @param vp Player owning the optional audio track and normalized volume.
 static void videoplayer_set_audio_volume(rt_videoplayer *vp) {
     if (!vp || !vp->audio_track)
         return;
@@ -1093,6 +1125,7 @@ static void videoplayer_set_audio_volume(rt_videoplayer *vp) {
 }
 
 /// @brief Begin or resume audio playback in sync with the current video position.
+/// @param vp Player whose optional audio track is started or resumed.
 static void videoplayer_start_audio(rt_videoplayer *vp) {
     if (!vp || !vp->audio_track)
         return;
@@ -1108,6 +1141,7 @@ static void videoplayer_start_audio(rt_videoplayer *vp) {
 }
 
 /// @brief Pause the audio track if it's currently playing.
+/// @param vp Player whose optional active audio track is paused.
 static void videoplayer_pause_audio(rt_videoplayer *vp) {
     if (!vp || !vp->audio_track || !vp->audio_started || vp->audio_paused)
         return;
@@ -1116,6 +1150,7 @@ static void videoplayer_pause_audio(rt_videoplayer *vp) {
 }
 
 /// @brief Stop the audio track and reset the started/paused flags.
+/// @param vp Player whose optional audio track is stopped.
 static void videoplayer_stop_audio(rt_videoplayer *vp) {
     if (!vp || !vp->audio_track)
         return;
@@ -1125,6 +1160,7 @@ static void videoplayer_stop_audio(rt_videoplayer *vp) {
 }
 
 /// @brief Seek the audio track to match the player's current video position.
+/// @param vp Player whose started audio track is synchronized.
 static void videoplayer_seek_audio(rt_videoplayer *vp) {
     if (!vp || !vp->audio_track || !vp->audio_started)
         return;
@@ -1138,6 +1174,7 @@ static void videoplayer_seek_audio(rt_videoplayer *vp) {
 /// the Theora stream's serial number, decodes its three header
 /// packets, and records the granule of the last data packet
 /// (which gives us the total frame count + duration).
+/// @param vp Player containing borrowed Ogg bytes and receiving stream metadata.
 /// @return 1 on success, 0 if no Theora stream is found.
 static int ogv_scan_stream(rt_videoplayer *vp) {
     ogg_reader_t *reader = ogg_reader_open_mem(vp->file_data, vp->file_len);
@@ -1200,6 +1237,8 @@ static int ogv_scan_stream(rt_videoplayer *vp) {
 /// Run after `ogv_scan_stream` so the reader is ready to deliver
 /// data packets in order. Required because we don't keep the
 /// scan-pass reader alive (it would just be a wasteful memory hold).
+/// @param vp Player whose Ogg reader and decoder are reset.
+/// @return 1 after all Theora headers are replayed, otherwise 0.
 static int ogv_prepare_playback(rt_videoplayer *vp) {
     if (!vp)
         return 0;
@@ -1233,6 +1272,7 @@ static int ogv_prepare_playback(rt_videoplayer *vp) {
 }
 
 /// @brief Pull the next Theora data packet, decode it, and copy the result to `frame_display`.
+/// @param vp Player with a prepared Ogg reader and decoder.
 /// @return 1 on a fresh frame, 0 at EOF or decode failure.
 static int ogv_decode_next_frame(rt_videoplayer *vp) {
     if (!vp || !vp->ogg_reader)
@@ -1274,6 +1314,9 @@ static int ogv_decode_next_frame(rt_videoplayer *vp) {
 /// Theora is forward-only — to seek to frame N you must decode
 /// every frame from the previous keyframe. This loop drives that
 /// catch-up decode without rendering intermediate frames.
+/// @param vp Player with a prepared decoder.
+/// @param target_frame Zero-based frame to reach; negative targets are already satisfied.
+/// @return 1 after reaching the target, otherwise 0.
 static int ogv_decode_until_frame(rt_videoplayer *vp, int32_t target_frame) {
     if (!vp)
         return 0;
@@ -1318,6 +1361,7 @@ static int ogv_decode_until_frame_budget(rt_videoplayer *vp,
 
 /// @brief GC finalizer for the videoplayer — releases the ogg reader, decoder, frame buffers, audio
 /// track.
+/// @param obj VideoPlayer payload being finalized.
 static void videoplayer_finalizer(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp)
@@ -1363,6 +1407,8 @@ static void videoplayer_finalizer(void *obj) {
 /// `ogv_scan_stream` to find the Theora track + duration, then
 /// initialises the decoder. Returns NULL on any failure (file
 /// not found, not an Ogg/Theora file, OOM).
+/// @param path Runtime UTF-8 path to an AVI/MJPEG or Ogg/Theora file.
+/// @return New runtime-managed VideoPlayer with its first frame decoded, or NULL on failure.
 void *rt_videoplayer_open(rt_string path) {
     if (!path)
         return NULL;
@@ -1474,6 +1520,7 @@ void *rt_videoplayer_open(rt_string path) {
 }
 
 /// @brief Begin (or resume) playback. Subsequent `update` calls advance time.
+/// @param obj VideoPlayer handle; invalid handles are ignored.
 void rt_videoplayer_play(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp)
@@ -1486,6 +1533,7 @@ void rt_videoplayer_play(void *obj) {
 }
 
 /// @brief Pause playback at the current frame. `update` becomes a no-op until `play`.
+/// @param obj VideoPlayer handle; invalid handles are ignored.
 void rt_videoplayer_pause(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp)
@@ -1498,6 +1546,7 @@ void rt_videoplayer_pause(void *obj) {
 }
 
 /// @brief Stop playback and rewind to frame 0, restoring the first frame when possible.
+/// @param obj VideoPlayer handle; invalid handles are ignored.
 void rt_videoplayer_stop(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp)
@@ -1548,6 +1597,8 @@ static void videoplayer_restore_ogv_decoder_after_failed_seek(rt_videoplayer *vp
 /// keyframe also decodes from that keyframe forward. The audio
 /// track is reseeked to match. If the target frame cannot be decoded,
 /// the previously displayed frame and playback position are preserved.
+/// @param obj VideoPlayer handle; invalid handles are ignored.
+/// @param seconds Target timestamp, sanitized to the available duration.
 void rt_videoplayer_seek(void *obj, double seconds) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp)
@@ -1597,6 +1648,8 @@ void rt_videoplayer_seek(void *obj, double seconds) {
 /// Called once per game / UI frame. Skips frames if the host is
 /// running below the video's framerate (drops decode time but
 /// keeps audio in sync). At end-of-stream, sets `playing = 0`.
+/// @param obj VideoPlayer handle; invalid handles are ignored.
+/// @param dt Positive finite elapsed time in seconds.
 void rt_videoplayer_update(void *obj, double dt) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp || !isfinite(dt) || dt <= 0.0)
@@ -1669,6 +1722,8 @@ void rt_videoplayer_update(void *obj, double dt) {
 }
 
 /// @brief Set the audio mix volume in [0.0, 1.0]. Clamped at the bounds.
+/// @param obj VideoPlayer handle; invalid handles are ignored.
+/// @param vol Requested normalized volume. Finite values are clamped; NaN is stored unchanged.
 void rt_videoplayer_set_volume(void *obj, double vol) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp)
@@ -1687,24 +1742,32 @@ void rt_videoplayer_set_volume(void *obj, double vol) {
 }
 
 /// @brief Pixel width of the video frame (post-crop).
+/// @param obj VideoPlayer handle.
+/// @return Positive decoded width, or 0 for an invalid handle.
 int64_t rt_videoplayer_get_width(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     return vp ? vp->width : 0;
 }
 
 /// @brief Pixel height of the video frame (post-crop).
+/// @param obj VideoPlayer handle.
+/// @return Positive decoded height, or 0 for an invalid handle.
 int64_t rt_videoplayer_get_height(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     return vp ? vp->height : 0;
 }
 
 /// @brief Total duration of the video in seconds (computed at open time from `last_granule`).
+/// @param obj VideoPlayer handle.
+/// @return Non-negative duration, or 0.0 for an invalid handle.
 double rt_videoplayer_get_duration(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     return vp ? vp->duration : 0.0;
 }
 
 /// @brief Current playback position in seconds.
+/// @param obj VideoPlayer handle.
+/// @return Audio-clock position when active, otherwise the video clock; 0.0 for an invalid handle.
 double rt_videoplayer_get_position(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     if (!vp)
@@ -1719,6 +1782,8 @@ double rt_videoplayer_get_position(void *obj) {
 }
 
 /// @brief 1 if currently playing, 0 if paused / stopped / at EOF.
+/// @param obj VideoPlayer handle.
+/// @return 1 while playing, otherwise 0.
 int64_t rt_videoplayer_get_is_playing(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     return vp ? vp->playing : 0;
@@ -1726,6 +1791,8 @@ int64_t rt_videoplayer_get_is_playing(void *obj) {
 
 /// @brief Return the currently-displayed Pixels frame (NULL until first frame decodes).
 /// The returned pointer is owned by the player — borrow only, don't free.
+/// @param obj VideoPlayer handle.
+/// @return Borrowed stable display Pixels handle, or NULL for an invalid player.
 void *rt_videoplayer_get_frame(void *obj) {
     rt_videoplayer *vp = videoplayer_checked(obj);
     return vp ? vp->frame_display : NULL;

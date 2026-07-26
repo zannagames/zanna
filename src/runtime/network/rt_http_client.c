@@ -121,6 +121,10 @@ static rt_http_client_impl *http_client_require(void *obj, const char *context) 
     return (rt_http_client_impl *)obj;
 }
 
+/// @brief Validate a public millisecond timeout and narrow it for socket APIs.
+/// @param timeout_ms Candidate timeout in milliseconds.
+/// @param out_timeout_ms Optional receiver for the validated `int` value.
+/// @return 1 for values in the inclusive range 0 through `INT_MAX`; 0 otherwise.
 static int http_client_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms) {
     if (timeout_ms < 0 || timeout_ms > INT_MAX)
         return 0;
@@ -129,6 +133,11 @@ static int http_client_timeout_ms_to_int(int64_t timeout_ms, int *out_timeout_ms
     return 1;
 }
 
+/// @brief Detect embedded null bytes across a runtime String's exact logical length.
+/// @details Null Strings are considered free of embedded nulls, while malformed
+///          or non-String handles are conservatively rejected as containing one.
+/// @param value Runtime String to inspect.
+/// @return Nonzero when an embedded null is present or the handle cannot be inspected safely.
 static int http_client_string_has_embedded_nul(rt_string value) {
     if (!value)
         return 0;
@@ -210,6 +219,8 @@ static void http_client_save_trap_error(char *buffer, size_t buffer_size, const 
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Release a linked list of native cookie records and all owned strings.
+/// @param cookie First cookie to release; may be null.
 static void free_cookie_list(rt_http_cookie *cookie) {
     while (cookie) {
         rt_http_cookie *next = cookie->next;
@@ -222,6 +233,10 @@ static void free_cookie_list(rt_http_cookie *cookie) {
     }
 }
 
+/// @brief Finalize a managed HttpClient payload.
+/// @details Releases the managed default-header Map and connection pool, frees
+///          the native cookie jar, and destroys an initialized mutex.
+/// @param obj HttpClient payload being finalized; may be null.
 static void rt_http_client_finalize(void *obj) {
     if (!obj)
         return;
@@ -237,6 +252,15 @@ static void rt_http_client_finalize(void *obj) {
 // Helpers
 //=============================================================================
 
+/// @brief Apply a synchronized snapshot of session defaults to one request object.
+/// @details Copies and retains header entries under the client mutex, then
+///          configures headers, timeout, redirect behavior, keep-alive, and the
+///          retained pool after unlocking. Trap recovery releases every partial
+///          snapshot and re-raises the original diagnostic.
+/// @param c Initialized HttpClient payload.
+/// @param req Managed HTTP request receiving the snapshot.
+/// @param allow_sensitive_headers Nonzero to include credentials and other
+///        sensitive defaults; zero filters them after a cross-origin redirect.
 static void apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitive_headers) {
     typedef struct {
         rt_string key;
@@ -329,10 +353,16 @@ static void apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitiv
     rt_trap_clear_recovery();
 }
 
+/// @brief Read the current wall-clock time for cookie expiration comparisons.
+/// @return Seconds since the Unix epoch as reported by the C runtime.
 static int64_t cookie_now_seconds(void) {
     return (int64_t)time(NULL);
 }
 
+/// @brief Copy a byte range after trimming surrounding spaces and horizontal tabs.
+/// @param start First byte of the source range.
+/// @param len Number of source bytes.
+/// @return Newly allocated null-terminated trimmed copy, or null on allocation failure.
 static char *cookie_strdup_range_trim(const char *start, size_t len) {
     while (len > 0 && (*start == ' ' || *start == '\t')) {
         start++;
@@ -349,6 +379,9 @@ static char *cookie_strdup_range_trim(const char *start, size_t len) {
     return out;
 }
 
+/// @brief Allocate an ASCII-lowercase copy of cookie-related text.
+/// @param text Null-terminated source; null is treated as an empty string.
+/// @return Newly allocated lowercase copy, or null on allocation failure.
 static char *cookie_strdup_lower(const char *text) {
     size_t len = text ? strlen(text) : 0;
     char *out = (char *)malloc(len + 1);
@@ -362,6 +395,11 @@ static char *cookie_strdup_lower(const char *text) {
     return out;
 }
 
+/// @brief Normalize a manually supplied cookie domain into lowercase host form.
+/// @details Removes leading dots and horizontal whitespace, trailing whitespace,
+///          dots and slashes, and brackets around an IP literal.
+/// @param text Domain text to normalize.
+/// @return Newly allocated normalized domain, possibly empty, or null on allocation failure.
 static char *cookie_strdup_manual_domain(const char *text) {
     char *out = cookie_strdup_lower(text);
     size_t len;
@@ -557,6 +595,9 @@ static int cookie_parse_same_site(const char *value) {
     return HTTP_COOKIE_SAMESITE_UNSPECIFIED;
 }
 
+/// @brief Derive RFC-style default cookie scope from a request path.
+/// @param request_path Request path, or null.
+/// @return Newly allocated directory prefix, falling back to `/`, or null on allocation failure.
 static char *cookie_default_path(const char *request_path) {
     if (!request_path || request_path[0] != '/')
         return strdup("/");
@@ -572,6 +613,9 @@ static char *cookie_default_path(const char *request_path) {
     return out;
 }
 
+/// @brief Map a three-letter English month abbreviation to a zero-based index.
+/// @param month Text whose first three bytes contain the month abbreviation.
+/// @return Month index from 0 through 11, or -1 when no abbreviation matches.
 static int cookie_month_index(const char *month) {
     static const char *const kMonths[] = {
         "Jan",
@@ -594,6 +638,12 @@ static int cookie_month_index(const char *month) {
     return -1;
 }
 
+/// @brief Parse the supported IMF-fixdate-style cookie Expires value.
+/// @details Validates civil date and time ranges, permits leap-second value 60,
+///          and converts the result without depending on local timezone state.
+/// @param text Null-terminated expiry text ending in `GMT`.
+/// @param out_epoch Receives seconds since the Unix epoch.
+/// @return 0 on success; -1 when the text or civil fields are invalid.
 static int parse_cookie_expires(const char *text, int64_t *out_epoch) {
     char weekday[4] = {0};
     char month[4] = {0};
@@ -625,6 +675,10 @@ static int parse_cookie_expires(const char *text, int64_t *out_epoch) {
     return 0;
 }
 
+/// @brief Parse a decimal cookie Max-Age value with saturating overflow behavior.
+/// @param text Signed decimal text; a leading minus is accepted but a leading plus is not.
+/// @param out_delta Receives the signed lifetime in seconds, saturated to the `int64_t` limits.
+/// @return 0 on success; -1 for null, empty, or syntactically invalid input.
 static int parse_cookie_max_age(const char *text, int64_t *out_delta) {
     const char *p = text;
     int negative = 0;
@@ -666,6 +720,10 @@ static int parse_cookie_max_age(const char *text, int64_t *out_delta) {
     return 0;
 }
 
+/// @brief Test a cookie's host-only or domain scope against a request host.
+/// @param cookie Cookie containing normalized domain and host-only state.
+/// @param host Request host to compare case-insensitively.
+/// @return Nonzero for an exact host-only match or a label-boundary domain suffix match.
 static int cookie_domain_matches(const rt_http_cookie *cookie, const char *host) {
     size_t host_len, domain_len;
     if (!cookie || !cookie->domain || !host)
@@ -685,6 +743,10 @@ static int cookie_domain_matches(const rt_http_cookie *cookie, const char *host)
            strcasecmp(host + host_len - domain_len, cookie->domain) == 0;
 }
 
+/// @brief Apply cookie path-prefix and segment-boundary matching to a request path.
+/// @param cookie Cookie whose empty path defaults to `/`.
+/// @param request_path Request path whose empty value defaults to `/`.
+/// @return Nonzero when the request path is within the cookie's path scope.
 static int cookie_path_matches(const rt_http_cookie *cookie, const char *request_path) {
     const char *cookie_path = (cookie && cookie->path && *cookie->path) ? cookie->path : "/";
     const char *path = (request_path && *request_path) ? request_path : "/";
@@ -698,10 +760,16 @@ static int cookie_path_matches(const rt_http_cookie *cookie, const char *request
            cookie_path[cookie_len - 1] == '/';
 }
 
+/// @brief Determine whether a persistent cookie has reached its expiry instant.
+/// @param cookie Cookie to inspect.
+/// @param now Current Unix time in seconds.
+/// @return Nonzero only for a persistent cookie whose expiry is not later than @p now.
 static int cookie_is_expired(const rt_http_cookie *cookie, int64_t now) {
     return cookie && cookie->persistent && cookie->expires_at <= now;
 }
 
+/// @brief Remove all expired cookies while the caller holds the client mutex.
+/// @param c Client whose native cookie list is exclusively locked.
 static void purge_expired_cookies_locked(rt_http_client_impl *c) {
     rt_http_cookie **link = &c->cookies;
     const int64_t now = cookie_now_seconds();
@@ -717,6 +785,12 @@ static void purge_expired_cookies_locked(rt_http_client_impl *c) {
     }
 }
 
+/// @brief Replace one cookie identity while the caller holds the client mutex.
+/// @details Cookie identity combines case-sensitive name and path with a
+///          case-insensitive domain. An already expired persistent cookie
+///          performs deletion without inserting a replacement.
+/// @param c Client whose native cookie list is exclusively locked.
+/// @param incoming Owned cookie record consumed by this function.
 static void replace_cookie_locked(rt_http_client_impl *c, rt_http_cookie *incoming) {
     rt_http_cookie **link = &c->cookies;
     while (*link) {
@@ -1409,6 +1483,8 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
 /// following enabled, empty cookie jar, empty default-headers map. Built on top of `rt_http_req`
 /// from `rt_network_http.c` — adds session state (cookies + defaults) and **per-request redirect
 /// chasing** (rather than the underlying req's all-or-nothing redirect handling).
+/// @return Caller-owned managed HttpClient, or null after construction failure and a returning
+///         trap hook.
 void *rt_http_client_new(void) {
     rt_http_client_impl *volatile c = NULL;
     jmp_buf recovery;
@@ -1452,6 +1528,9 @@ void *rt_http_client_new(void) {
 
 /// @brief Send a `GET` to `url`. Applies default headers + cookies; auto-follows redirects up to
 /// `max_redirects`. Returns an HttpRes for the FINAL response after any redirects.
+/// @param obj HttpClient receiver.
+/// @param url Absolute HTTP or HTTPS URL.
+/// @return Caller-owned final HttpRes, or null after validation or request failure.
 void *rt_http_client_get(void *obj, rt_string url) {
     rt_http_client_impl *c = http_client_require(obj, "HttpClient: invalid client");
     return c ? do_request(c, "GET", url, NULL) : NULL;
@@ -1459,26 +1538,41 @@ void *rt_http_client_get(void *obj, rt_string url) {
 
 /// @brief Send a `POST` with a string body. **Redirect semantics:** 301/302 with POST switch to
 /// GET (per common browser behavior); 303 always switches to GET; 307/308 preserve method+body.
+/// @param obj HttpClient receiver.
+/// @param url Absolute HTTP or HTTPS URL.
+/// @param body Request body String; embedded null bytes are preserved by exact length.
+/// @return Caller-owned final HttpRes, or null after validation or request failure.
 void *rt_http_client_post(void *obj, rt_string url, rt_string body) {
     rt_http_client_impl *c = http_client_require(obj, "HttpClient: invalid client");
     return c ? do_request(c, "POST", url, body) : NULL;
 }
 
 /// @brief Send a `PUT` with a string body. Redirects preserve method+body for 307/308.
+/// @param obj HttpClient receiver.
+/// @param url Absolute HTTP or HTTPS URL.
+/// @param body Request body String; embedded null bytes are preserved by exact length.
+/// @return Caller-owned final HttpRes, or null after validation or request failure.
 void *rt_http_client_put(void *obj, rt_string url, rt_string body) {
     rt_http_client_impl *c = http_client_require(obj, "HttpClient: invalid client");
     return c ? do_request(c, "PUT", url, body) : NULL;
 }
 
 /// @brief Send a `DELETE` (no body). Same redirect handling as `_get`.
+/// @param obj HttpClient receiver.
+/// @param url Absolute HTTP or HTTPS URL.
+/// @return Caller-owned final HttpRes, or null after validation or request failure.
 void *rt_http_client_delete(void *obj, rt_string url) {
     rt_http_client_impl *c = http_client_require(obj, "HttpClient: invalid client");
     return c ? do_request(c, "DELETE", url, NULL) : NULL;
 }
 
 /// @brief Add or replace a default header that is sent with every request.
-/// Replacement is case-insensitive: setting `authorization` supersedes a stored
-/// `Authorization` (HTTP field names are case-insensitive).
+/// @details Replacement is case-insensitive: setting `authorization` supersedes
+///          a stored `Authorization`. Invalid names, embedded nulls, and CR/LF
+///          values trap without publishing a partial replacement.
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param name Header field name.
+/// @param value Header field value.
 void rt_http_client_set_header(void *obj, rt_string name, rt_string value) {
     if (!obj)
         return;
@@ -1504,6 +1598,8 @@ void rt_http_client_set_header(void *obj, rt_string name, rt_string value) {
 }
 
 /// @brief Set the request timeout in milliseconds for all subsequent requests.
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param timeout_ms Value in the inclusive range 0 through `INT_MAX`; zero disables deadlines.
 void rt_http_client_set_timeout(void *obj, int64_t timeout_ms) {
     if (!obj)
         return;
@@ -1521,6 +1617,8 @@ void rt_http_client_set_timeout(void *obj, int64_t timeout_ms) {
 }
 
 /// @brief Check whether this client keeps HTTP connections open for reuse.
+/// @param obj HttpClient receiver; null returns zero.
+/// @return One when pooled reuse is enabled; zero otherwise.
 int8_t rt_http_client_get_keep_alive(void *obj) {
     if (!obj)
         return 0;
@@ -1535,6 +1633,11 @@ int8_t rt_http_client_get_keep_alive(void *obj) {
 }
 
 /// @brief Enable or disable pooled keep-alive transport for this client.
+/// @details Enabling allocates a pool outside the mutex and rechecks the
+///          configured capacity before publication. Disabling detaches the
+///          current pool under lock and clears it afterward.
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param keep_alive Nonzero to enable pooled reuse.
 void rt_http_client_set_keep_alive(void *obj, int8_t keep_alive) {
     if (!obj)
         return;
@@ -1588,6 +1691,11 @@ void rt_http_client_set_keep_alive(void *obj, int8_t keep_alive) {
 }
 
 /// @brief Resize the keep-alive pool. Existing idle connections are dropped.
+/// @details Allocates the replacement before taking the client mutex. If
+///          keep-alive is disabled, only the future capacity is retained and
+///          no inactive pool remains attached.
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param max_size Requested capacity; non-positive values clamp to one.
 void rt_http_client_set_pool_size(void *obj, int64_t max_size) {
     if (!obj)
         return;
@@ -1614,6 +1722,8 @@ void rt_http_client_set_pool_size(void *obj, int64_t max_size) {
 }
 
 /// @brief Set the maximum number of HTTP redirects to follow (0 = no redirects).
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param max Maximum redirect hops; negative values clamp to zero.
 void rt_http_client_set_max_redirects(void *obj, int64_t max) {
     if (!obj)
         return;
@@ -1626,6 +1736,8 @@ void rt_http_client_set_max_redirects(void *obj, int64_t max) {
 }
 
 /// @brief Check whether the client automatically follows HTTP redirects.
+/// @param obj HttpClient receiver; null returns zero.
+/// @return One when automatic redirects are enabled; zero otherwise.
 int8_t rt_http_client_get_follow_redirects(void *obj) {
     if (!obj)
         return 0;
@@ -1640,6 +1752,8 @@ int8_t rt_http_client_get_follow_redirects(void *obj) {
 }
 
 /// @brief Enable or disable automatic following of HTTP redirects.
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param follow Nonzero to enable redirect following up to the configured limit.
 void rt_http_client_set_follow_redirects(void *obj, int8_t follow) {
     if (!obj)
         return;
@@ -1652,11 +1766,16 @@ void rt_http_client_set_follow_redirects(void *obj, int8_t follow) {
 }
 
 /// @brief Store a cookie for exactly the given host; sent automatically on matching requests.
-/// @details Manual cookies pass the SAME validation as response cookies: token-valid names,
-///          cookie-octet values, syntactically valid non-public-suffix domains. They are stored
-///          HOST-ONLY, so a cookie set for `example.com` is not sent to `sub.example.com`.
+/// @details Manual cookies require token-valid names, cookie-octet values, and
+///          syntactically valid domains. They are stored HOST-ONLY, so a cookie
+///          set for `example.com` is not sent to `sub.example.com`; this exact
+///          matching also makes public-suffix rejection unnecessary here.
 ///          Empty values are stored (they are valid cookies); use `DeleteCookie` to remove one.
 ///          Invalid inputs trap instead of being silently dropped or stored unsafely.
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param domain Exact host or address scope.
+/// @param name Case-sensitive cookie name.
+/// @param value Cookie value; an empty String is valid.
 void rt_http_client_set_cookie(void *obj, rt_string domain, rt_string name, rt_string value) {
     const char *domain_cstr;
     const char *name_cstr;
@@ -1717,6 +1836,9 @@ void rt_http_client_set_cookie(void *obj, rt_string domain, rt_string name, rt_s
 
 /// @brief Remove a manually or automatically stored cookie by exact domain and
 ///        case-sensitive name. No-op when nothing matches.
+/// @param obj HttpClient receiver; null is a no-op.
+/// @param domain Exact cookie domain.
+/// @param name Case-sensitive cookie name.
 void rt_http_client_delete_cookie(void *obj, rt_string domain, rt_string name) {
     const char *domain_cstr;
     const char *name_cstr;

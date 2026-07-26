@@ -675,6 +675,14 @@ static inline void rt_atomic_store_i32(volatile int *ptr, int value, int order) 
     __atomic_store_n(ptr, value, order);
 }
 
+/// @brief Emit a thread fence on GCC/Clang platforms.
+/// @details Mirrors the MSVC shim so shared code can call the helper by
+///          one name on every platform.
+/// @param order GCC-style memory-order constant.
+static inline void rt_atomic_thread_fence(int order) {
+    __atomic_thread_fence(order);
+}
+
 /// @brief Atomically exchange a 32-bit signed integer on GCC/Clang platforms.
 /// @param ptr Storage to update.
 /// @param value Replacement value.

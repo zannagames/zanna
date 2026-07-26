@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_gui_widgets.c
+// File: src/runtime/graphics/gui/rt_gui_widgets.c
 // Purpose: Runtime bindings for the ZannaGUI base widget API and fundamental
 //   widgets: font loading/destroy, widget visibility/enabled/size/flex/margin,
 //   Container, Label, Button (with icon support), TextInput (with undo/redo),
@@ -31,9 +31,9 @@
 //   - Public Font values are managed wrappers over vg_font_t. Legacy raw handles remain accepted;
 //     backing fonts referenced by retained surfaces are retired through a safe frame generation.
 //
-// Links: src/runtime/graphics/rt_gui_internal.h (internal types/globals),
+// Links: src/runtime/graphics/gui/rt_gui_internal.h (internal types/globals),
 //        src/lib/gui/include/vg.h (ZannaGUI C API),
-//        src/runtime/graphics/rt_gui_app.c (default font, s_current_app),
+//        src/runtime/graphics/gui/rt_gui_app.c (default font, s_current_app),
 //        docs/adr/0163-stable-multiselect-and-row-aware-treeview-editing.md,
 //        docs/adr/0165-scrollview-descendant-reveal.md
 //
@@ -53,6 +53,10 @@
 
 #include "vg_icon_vector.h"
 
+/// @brief Notify the platform accessibility adapter that a widget tree changed.
+/// @details Resolves the widget's owning application and publishes the application's complete
+///          root tree. Detached, stale, and otherwise ownerless widgets produce no notification.
+/// @param widget Borrowed widget whose application tree changed; may be NULL.
 static void rt_widget_notify_accessibility_tree(vg_widget_t *widget) {
     rt_gui_app_t *app = rt_gui_app_from_widget(widget);
     if (app)
@@ -64,6 +68,8 @@ static void rt_widget_notify_accessibility_tree(vg_widget_t *widget) {
 ///          placement); a valid handle returns its container widget; a non-NULL
 ///          handle that fails to resolve also returns NULL — an error the caller
 ///          must treat as "invalid parent", not "no parent".
+/// @param parent Candidate opaque parent-container handle; NULL requests no parent.
+/// @return Borrowed live parent widget, or NULL when absent or invalid.
 static vg_widget_t *rt_widget_parent_or_null_if_invalid(void *parent) {
     vg_widget_t *parent_widget = rt_gui_widget_parent_container_from_handle(parent);
     if (parent && !parent_widget)
@@ -83,6 +89,8 @@ static void *rt_widget_borrowed_option(vg_widget_t *widget) {
 
 /// @brief External shim for modules that need parent-container validation
 ///        without including rt_gui_internal.h inline helpers.
+/// @param handle Candidate opaque parent-container handle.
+/// @return Borrowed live container widget, or NULL for null, stale, or incompatible handles.
 void *rt_gui_widget_parent_container_checked(void *handle) {
     return rt_gui_widget_parent_container_from_handle(handle);
 }
@@ -90,12 +98,17 @@ void *rt_gui_widget_parent_container_checked(void *handle) {
 /// @brief Resolve a live widget handle to its borrowed owning GUI application.
 /// @details This exported shim keeps media modules independent of private widget/app layouts while
 ///          retaining the same liveness/type validation as the rest of the runtime boundary.
+/// @param handle Candidate opaque widget handle.
+/// @return Borrowed owning application, or NULL when the widget is invalid or detached.
 void *rt_gui_widget_owner_app(void *handle) {
     vg_widget_t *widget = rt_gui_widget_handle_checked(handle);
     return widget ? rt_gui_app_from_widget(widget) : NULL;
 }
 
 /// @brief Validate a borrowed widget handle for the C++ virtual-model binding bridge.
+/// @param handle Candidate opaque widget handle.
+/// @param widget_type Expected `vg_widget_type_t` value.
+/// @return Borrowed live widget of the requested type, or NULL for invalid input or a mismatch.
 void *rt_gui_widget_checked_for_binding(void *handle, int64_t widget_type) {
     if (widget_type < 0 || widget_type > (int64_t)VG_WIDGET_CUSTOM)
         return NULL;
@@ -129,10 +142,18 @@ static rt_gui_font_handle_t *rt_gui_managed_font_checked(void *handle) {
     return managed->magic == RT_GUI_FONT_HANDLE_MAGIC ? managed : NULL;
 }
 
+/// @brief Test whether a public font handle is a live runtime-managed wrapper.
+/// @param handle Candidate public Font value.
+/// @return Non-zero only when @p handle is a valid managed Font wrapper.
 int rt_gui_font_handle_is_managed(void *handle) {
     return rt_gui_managed_font_checked(handle) != NULL;
 }
 
+/// @brief Resolve either a managed Font wrapper or a legacy raw font handle.
+/// @details Managed handles must retain a live backing font. Legacy handles are accepted only when
+///          the lower toolkit still recognizes them as live.
+/// @param handle Candidate managed or legacy Font value.
+/// @return Borrowed live lower-toolkit font, or NULL for null, stale, or unrelated values.
 vg_font_t *rt_gui_font_handle_checked(void *handle) {
     if (!handle)
         return NULL;
@@ -188,15 +209,10 @@ static void *rt_gui_font_wrap(vg_font_t *font) {
     return managed;
 }
 
-/// @brief Load a font from a file path and return an opaque handle.
-/// @details Converts the runtime string path to a C string, loads the font via
-///          vg_font_load_file, and wraps it in a reference-counted runtime object. The loaded font
-///          is not automatically applied to any widget; use a SetFont operation to apply it.
-/// @param path File path to a .ttf or .ttc font file (runtime string).
-/// @return Opaque font handle, or NULL if the file could not be loaded.
 /// @brief Return the process-shared embedded fallback face (lazy, never freed).
 /// @details Guarantees per-glyph coverage for codepoints a user or system face
 ///          cannot map (plan 06). Lives for the process lifetime by design.
+/// @return Borrowed process-lifetime fallback font, or NULL if embedded loading fails.
 static vg_font_t *rt_gui_font_embedded_fallback(void) {
     static vg_font_t *s_fallback;
     if (!s_fallback)
@@ -204,6 +220,12 @@ static vg_font_t *rt_gui_font_embedded_fallback(void) {
     return s_fallback;
 }
 
+/// @brief Load a font file into a runtime-managed public Font value.
+/// @details Rejects paths containing embedded NUL bytes, loads the lower-toolkit font, attaches
+///          the process-wide embedded fallback face when available, and transfers ownership to a
+///          managed wrapper. The font is not applied to any widget automatically.
+/// @param path Runtime string containing a `.ttf`, `.ttc`, or other supported font-file path.
+/// @return Managed Font wrapper, or NULL when path conversion, loading, or wrapping fails.
 void *rt_font_load(rt_string path) {
     RT_ASSERT_MAIN_THREAD();
     char *cpath = rt_string_to_cstr_no_nul(path);
@@ -316,6 +338,9 @@ void rt_font_destroy(void *font) {
 /// @details Used by rt_widget_forget_runtime_refs to check whether a cached app-level
 ///          pointer (last_clicked, drag_source, etc.) falls inside the subtree that is
 ///          about to be destroyed, so it can be nulled out before the widget is freed.
+/// @param root Borrowed root of the subtree to search.
+/// @param candidate Borrowed widget whose membership is queried.
+/// @return Non-zero when both pointers are valid and @p candidate belongs to @p root's subtree.
 int rt_gui_widget_tree_contains(vg_widget_t *root, const vg_widget_t *candidate) {
     if (!root || !candidate)
         return 0;
@@ -336,6 +361,9 @@ int rt_gui_widget_tree_contains(vg_widget_t *root, const vg_widget_t *candidate)
 }
 
 /// @brief Return non-zero if @p root contains the owner statusbar for @p item.
+/// @param root Borrowed root of the widget subtree to search.
+/// @param item Borrowed status-bar item whose owning bar is queried.
+/// @return Non-zero when @p item occurs in a status bar within @p root's subtree.
 static int rt_widget_tree_contains_statusbar_item(vg_widget_t *root, vg_statusbar_item_t *item) {
     if (!root || !item)
         return 0;
@@ -362,6 +390,9 @@ static int rt_widget_tree_contains_statusbar_item(vg_widget_t *root, vg_statusba
 }
 
 /// @brief Return non-zero if @p root contains the owner toolbar for @p item.
+/// @param root Borrowed root of the widget subtree to search.
+/// @param item Borrowed toolbar item whose owning bar is queried.
+/// @return Non-zero when @p item occurs in a toolbar within @p root's subtree.
 static int rt_widget_tree_contains_toolbar_item(vg_widget_t *root, vg_toolbar_item_t *item) {
     if (!root || !item)
         return 0;
@@ -384,6 +415,8 @@ static int rt_widget_tree_contains_toolbar_item(vg_widget_t *root, vg_toolbar_it
 ///          raw pointers (last_clicked, drag_source, drag_over_widget,
 ///          last_statusbar_clicked, last_toolbar_clicked) from becoming dangling after
 ///          the widget tree is freed.
+/// @param app Borrowed owning application; may be NULL for a detached subtree.
+/// @param widget Borrowed root of the subtree about to be destroyed; NULL is ignored.
 void rt_widget_forget_runtime_refs(rt_gui_app_t *app, vg_widget_t *widget) {
     if (!widget)
         return;
@@ -1092,6 +1125,8 @@ void rt_label_set_font(void *label, void *font, double size) {
 }
 
 /// @brief Set the text color of a label as a packed ARGB integer.
+/// @param label Label widget handle; invalid handles are ignored.
+/// @param color Packed 32-bit ARGB color value.
 void rt_label_set_color(void *label, int64_t color) {
     RT_ASSERT_MAIN_THREAD();
     vg_label_t *lbl = (vg_label_t *)rt_gui_widget_handle_checked_type(label, VG_WIDGET_LABEL);
@@ -1100,6 +1135,8 @@ void rt_label_set_color(void *label, int64_t color) {
 }
 
 /// @brief Enable or disable word wrapping on a label.
+/// @param label Label widget handle; invalid handles are ignored.
+/// @param enabled Non-zero to wrap text within the arranged label width.
 void rt_label_set_word_wrap(void *label, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     vg_label_t *lbl = (vg_label_t *)rt_gui_widget_handle_checked_type(label, VG_WIDGET_LABEL);
@@ -1110,6 +1147,8 @@ void rt_label_set_word_wrap(void *label, int64_t enabled) {
 /// @brief Set (or clear) a named scalable vector icon before a label's text (ADR 0137).
 /// @details Unknown names are ignored; an empty name clears the icon. Rendered
 ///          on non-wrapped labels only.
+/// @param label Label widget handle; invalid handles are ignored.
+/// @param name Registered vector-icon name, or an empty runtime string to clear the icon.
 void rt_label_set_icon_name(void *label, rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     vg_label_t *lbl = (vg_label_t *)rt_gui_widget_handle_checked_type(label, VG_WIDGET_LABEL);
@@ -1224,6 +1263,9 @@ void *rt_button_new(void *parent, rt_string text) {
 }
 
 /// @brief Update the label text displayed on a button.
+/// @details The lower toolkit copies the converted text before the temporary buffer is released.
+/// @param button Button widget handle; invalid handles are ignored.
+/// @param text New button-label text.
 void rt_button_set_text(void *button, rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     vg_button_t *btn = (vg_button_t *)rt_gui_widget_handle_checked_type(button, VG_WIDGET_BUTTON);
@@ -1285,6 +1327,8 @@ void rt_button_set_icon(void *button, rt_string icon) {
 /// @brief Set (or clear) a named scalable vector icon on a button (ADR 0137).
 /// @details Unknown names are ignored so callers can probe icon availability;
 ///          an empty name clears the current vector icon.
+/// @param button Button widget handle; invalid handles are ignored.
+/// @param name Registered vector-icon name, or an empty runtime string to clear the icon.
 void rt_button_set_icon_name(void *button, rt_string name) {
     RT_ASSERT_MAIN_THREAD();
     vg_button_t *btn = (vg_button_t *)rt_gui_widget_handle_checked_type(button, VG_WIDGET_BUTTON);
@@ -1305,6 +1349,8 @@ void rt_button_set_icon_name(void *button, rt_string name) {
 /// @brief Set the icon position relative to the button label.
 /// @details 0 = icon on the left (default), 1 = icon on the right. The icon
 ///          is drawn with a 4 px gap from the label text.
+/// @param button Button widget handle; invalid handles are ignored.
+/// @param pos One for a right-side icon; every other value selects the left side.
 void rt_button_set_icon_pos(void *button, int64_t pos) {
     RT_ASSERT_MAIN_THREAD();
     vg_button_t *btn = (vg_button_t *)rt_gui_widget_handle_checked_type(button, VG_WIDGET_BUTTON);
@@ -1370,6 +1416,8 @@ rt_string rt_textinput_get_text(void *input) {
 /// @brief Set the placeholder text shown when the input is empty.
 /// @details The placeholder appears in a dimmed style and disappears when the
 ///          user starts typing. Useful for hinting at expected input format.
+/// @param input Text-input widget handle; invalid handles are ignored.
+/// @param placeholder New placeholder text; embedded NUL bytes are converted for GUI display.
 void rt_textinput_set_placeholder(void *input, rt_string placeholder) {
     RT_ASSERT_MAIN_THREAD();
     vg_textinput_t *ti =
@@ -1381,7 +1429,12 @@ void rt_textinput_set_placeholder(void *input, rt_string placeholder) {
     free(ctext);
 }
 
-/// @brief Set the font of the textinput.
+/// @brief Override the font and logical size used by a text-input widget.
+/// @details The validated lower font remains borrowed by the widget and is recorded as its runtime
+///          font reference. Invalid handles and invalid fonts leave the widget unchanged.
+/// @param input Text-input widget handle.
+/// @param font Managed or legacy live Font handle.
+/// @param size Requested logical size, sanitized with a 14-point fallback.
 void rt_textinput_set_font(void *input, void *font, double size) {
     RT_ASSERT_MAIN_THREAD();
     vg_textinput_t *ti =
@@ -1919,6 +1972,8 @@ void rt_scrollview_scroll_to(void *scroll, void *widget) {
 }
 
 /// @brief Get the current horizontal scroll offset.
+/// @param scroll Scroll-view widget handle.
+/// @return Current horizontal offset in logical pixels, or zero for an invalid handle.
 double rt_scrollview_get_scroll_x(void *scroll) {
     RT_ASSERT_MAIN_THREAD();
     vg_scrollview_t *sv =
@@ -1931,6 +1986,8 @@ double rt_scrollview_get_scroll_x(void *scroll) {
 }
 
 /// @brief Get the current vertical scroll offset.
+/// @param scroll Scroll-view widget handle.
+/// @return Current vertical offset in logical pixels, or zero for an invalid handle.
 double rt_scrollview_get_scroll_y(void *scroll) {
     RT_ASSERT_MAIN_THREAD();
     vg_scrollview_t *sv =
@@ -1988,6 +2045,10 @@ void *rt_treeview_add_node(void *tree, void *parent_node, rt_string text) {
 }
 
 /// @brief Remove a node and its subtree from the tree view.
+/// @details The lower toolkit retires removed nodes; managed node wrappers are collected so stale
+///          handles remain safely rejectable until tombstones are pruned.
+/// @param tree Owning TreeView widget handle.
+/// @param node Live node handle owned by @p tree.
 void rt_treeview_remove_node(void *tree, void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2000,6 +2061,8 @@ void rt_treeview_remove_node(void *tree, void *node) {
 }
 
 /// @brief Remove all nodes from the tree view, leaving it empty.
+/// @details Retired node wrappers are collected after the lower tree is cleared.
+/// @param tree TreeView widget handle; invalid handles are ignored.
 void rt_treeview_clear(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2015,6 +2078,7 @@ void rt_treeview_clear(void *tree) {
 ///          targets are cleared before the lower toolkit frees tombstone storage. Subsequent calls
 ///          through a pruned node therefore return the established empty result without reading
 ///          reclaimed memory. Wrappers for nodes still present in the tree are preserved.
+/// @param tree TreeView widget handle; invalid handles are ignored.
 void rt_treeview_prune_retired_nodes(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2026,6 +2090,8 @@ void rt_treeview_prune_retired_nodes(void *tree) {
 }
 
 /// @brief Expand a tree node to show its children.
+/// @param tree Owning TreeView widget handle.
+/// @param node Live node handle owned by @p tree.
 void rt_treeview_expand(void *tree, void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2036,6 +2102,8 @@ void rt_treeview_expand(void *tree, void *node) {
 }
 
 /// @brief Collapse a tree node to hide its children.
+/// @param tree Owning TreeView widget handle.
+/// @param node Live node handle owned by @p tree.
 void rt_treeview_collapse(void *tree, void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2060,6 +2128,10 @@ void rt_treeview_toggle(void *tree, void *node) {
 }
 
 /// @brief Programmatically select a tree node (NULL to clear selection).
+/// @details Foreign or stale node handles are rejected. Passing NULL as @p node clears the
+///          selection through the lower toolkit.
+/// @param tree TreeView widget handle.
+/// @param node Node owned by @p tree, or NULL to clear the selection.
 void rt_treeview_select(void *tree, void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2073,6 +2145,8 @@ void rt_treeview_select(void *tree, void *node) {
 }
 
 /// @brief Enable or disable retained-node Ctrl/Command and Shift multi-selection.
+/// @param tree TreeView widget handle; invalid handles are ignored.
+/// @param enabled Non-zero to permit multiple retained nodes to be selected.
 void rt_treeview_set_multi_select(void *tree, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2093,7 +2167,12 @@ void rt_treeview_scroll_to(void *tree, void *node) {
         vg_treeview_scroll_to(tv, n);
 }
 
-/// @brief Set the font of the treeview.
+/// @brief Override the font and logical size used by a TreeView.
+/// @details The validated lower font is borrowed by the widget and recorded as its runtime font
+///          reference. Invalid handles and fonts leave the tree unchanged.
+/// @param tree TreeView widget handle.
+/// @param font Managed or legacy live Font handle.
+/// @param size Requested logical size, sanitized with a 14-point fallback.
 void rt_treeview_set_font(void *tree, void *font, double size) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2107,7 +2186,9 @@ void rt_treeview_set_font(void *tree, void *font, double size) {
     tv->base.runtime_font_reference = checked_font;
 }
 
-/// @brief Currently-selected tree node handle (NULL if none / null tree).
+/// @brief Return the TreeView's primary selected-node handle.
+/// @param tree TreeView widget handle.
+/// @return Managed node subhandle, or NULL when the handle is invalid or nothing is selected.
 void *rt_treeview_get_selected(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2117,7 +2198,11 @@ void *rt_treeview_get_selected(void *tree) {
     return rt_gui_wrap_tree_node(tv->selected);
 }
 
-/// @brief Tree node under a window-space point (NULL if outside rows).
+/// @brief Return the TreeView node under a window-space point.
+/// @param tree TreeView widget handle.
+/// @param x Window-space horizontal coordinate.
+/// @param y Window-space vertical coordinate.
+/// @return Managed node subhandle, or NULL when the point misses a row or the tree is invalid.
 void *rt_treeview_get_node_at(void *tree, int64_t x, int64_t y) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2128,6 +2213,8 @@ void *rt_treeview_get_node_at(void *tree, int64_t x, int64_t y) {
 }
 
 /// @brief Extract a tree node's runtime string data, or empty string.
+/// @param n Borrowed live lower-toolkit node; may be NULL.
+/// @return Copy of owned length-tagged node data, or an owned empty string when absent.
 static rt_string rt_treeview_node_data_string(vg_tree_node_t *n) {
     if (!n || !n->user_data || !n->owns_user_data)
         return rt_str_empty();
@@ -2135,6 +2222,10 @@ static rt_string rt_treeview_node_data_string(vg_tree_node_t *n) {
 }
 
 /// @brief Return byte-exact data for every selected retained node in complete preorder.
+/// @details The returned sequence includes one owned runtime string for each selected retained node.
+///          Invalid, empty, and virtual trees produce an empty sequence.
+/// @param tree TreeView widget handle.
+/// @return Fresh owned sequence of selected-node data strings, or NULL if sequence allocation fails.
 void *rt_treeview_get_selected_data(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     void *result = rt_seq_new_owned();
@@ -2167,6 +2258,8 @@ void *rt_treeview_get_selected_data(void *tree) {
 }
 
 /// @brief `TreeView.SetDragDropEnabled` — enable poll-model drag-and-drop.
+/// @param tree TreeView widget handle; invalid handles are ignored.
+/// @param enabled Non-zero to enable application-directed drag-and-drop.
 void rt_treeview_set_drag_drop_enabled(void *tree, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2177,6 +2270,8 @@ void rt_treeview_set_drag_drop_enabled(void *tree, int64_t enabled) {
 }
 
 /// @brief Select disabled, legacy container-only, or row-aware poll-model drag-and-drop.
+/// @param tree TreeView widget handle.
+/// @param mode `VG_TREEVIEW_APP_DND_*` mode value; out-of-range values are ignored.
 void rt_treeview_set_drag_drop_mode(void *tree, int64_t mode) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2188,6 +2283,8 @@ void rt_treeview_set_drag_drop_mode(void *tree, int64_t mode) {
 }
 
 /// @brief `TreeView.WasDropReceived` — true while a completed drop is pending.
+/// @param tree TreeView widget handle.
+/// @return One while a drop remains latched, otherwise zero.
 int64_t rt_treeview_was_drop_received(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2196,6 +2293,8 @@ int64_t rt_treeview_was_drop_received(void *tree) {
 }
 
 /// @brief `TreeView.GetDropSourceData` — data string of the dragged node.
+/// @param tree TreeView widget handle.
+/// @return Copy of the source node's data, or an owned empty string when unavailable.
 rt_string rt_treeview_get_drop_source_data(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2206,6 +2305,8 @@ rt_string rt_treeview_get_drop_source_data(void *tree) {
 }
 
 /// @brief `TreeView.GetDropTargetData` — data string of the target node.
+/// @param tree TreeView widget handle.
+/// @return Copy of the target node's data, or an owned empty string when unavailable.
 rt_string rt_treeview_get_drop_target_data(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2216,6 +2317,8 @@ rt_string rt_treeview_get_drop_target_data(void *tree) {
 }
 
 /// @brief `TreeView.GetDropPosition` — 0=before, 1=into, 2=after.
+/// @param tree TreeView widget handle.
+/// @return Latched `vg_treeview_drop_position_t` value, defaulting to one (into) when invalid.
 int64_t rt_treeview_get_drop_position(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2226,6 +2329,7 @@ int64_t rt_treeview_get_drop_position(void *tree) {
 }
 
 /// @brief `TreeView.ClearDrop` — consume the latched drop.
+/// @param tree TreeView widget handle; invalid handles are ignored.
 void rt_treeview_clear_drop(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2236,6 +2340,10 @@ void rt_treeview_clear_drop(void *tree) {
 }
 
 /// @brief Check if the tree view selection changed since the last call (edge-triggered).
+/// @details Consumes only the legacy selection-revision edge and updates the previous-selection
+///          cache. The common widget change edge remains independent.
+/// @param tree TreeView widget handle.
+/// @return One once after one or more unreported selection changes, otherwise zero.
 int64_t rt_treeview_was_selection_changed(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     vg_treeview_t *tv =
@@ -2402,6 +2510,8 @@ int64_t rt_treeview_get_revision(void *tree) {
 }
 
 /// @brief Get the display text of a tree node.
+/// @param node Managed tree-node subhandle.
+/// @return Copy of the node's UTF-8 label, or an owned empty string for an invalid or unlabeled node.
 rt_string rt_treeview_node_get_text(void *node) {
     RT_ASSERT_MAIN_THREAD();
     if (!node)
@@ -2445,6 +2555,8 @@ void rt_treeview_node_set_icon(void *node, rt_string icon) {
 }
 
 /// @brief Return a tree node's copied UTF-8 icon text, or empty when absent.
+/// @param node Managed tree-node subhandle.
+/// @return Copy of the icon text, or an owned empty string when absent or invalid.
 rt_string rt_treeview_node_get_icon(void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
@@ -2453,6 +2565,8 @@ rt_string rt_treeview_node_get_icon(void *node) {
 }
 
 /// @brief Set the node's materialized/lazy-child affordance.
+/// @param node Managed tree-node subhandle; invalid handles are ignored.
+/// @param has_children Non-zero to advertise children even when none are currently materialized.
 void rt_treeview_node_set_has_children(void *node, int64_t has_children) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
@@ -2461,6 +2575,8 @@ void rt_treeview_node_set_has_children(void *node, int64_t has_children) {
 }
 
 /// @brief Return whether the node has real or advertised children.
+/// @param node Managed tree-node subhandle.
+/// @return One when the node has materialized or advertised children, otherwise zero.
 int64_t rt_treeview_node_has_children(void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
@@ -2468,6 +2584,8 @@ int64_t rt_treeview_node_has_children(void *node) {
 }
 
 /// @brief Set or clear a node's asynchronous loading indicator.
+/// @param node Managed tree-node subhandle; invalid handles are ignored.
+/// @param loading Non-zero to show the node's loading state.
 void rt_treeview_node_set_loading(void *node, int64_t loading) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
@@ -2476,6 +2594,8 @@ void rt_treeview_node_set_loading(void *node, int64_t loading) {
 }
 
 /// @brief Return whether a node's loading indicator is active.
+/// @param node Managed tree-node subhandle.
+/// @return One while loading is active, otherwise zero.
 int64_t rt_treeview_node_is_loading(void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
@@ -2483,6 +2603,10 @@ int64_t rt_treeview_node_is_loading(void *node) {
 }
 
 /// @brief Replace a node's stable identifier after rejecting embedded NUL bytes.
+/// @details A NULL runtime string clears the identifier. Conversion failure and invalid node
+///          handles leave the current identifier unchanged.
+/// @param node Managed tree-node subhandle.
+/// @param stable_id New stable identifier, or NULL to clear it.
 void rt_treeview_node_set_stable_id(void *node, rt_string stable_id) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
@@ -2500,6 +2624,8 @@ void rt_treeview_node_set_stable_id(void *node, rt_string stable_id) {
 }
 
 /// @brief Return a node's copied stable identifier, or empty when absent.
+/// @param node Managed tree-node subhandle.
+/// @return Copy of the stable identifier, or an owned empty string when absent or invalid.
 rt_string rt_treeview_node_get_stable_id(void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
@@ -2508,6 +2634,10 @@ rt_string rt_treeview_node_get_stable_id(void *node) {
 }
 
 /// @brief Attach arbitrary string data to a tree node (replaces any previous data).
+/// @details Data is copied into an owned length-tagged wrapper so embedded NUL bytes round-trip.
+///          A NULL runtime string clears previously owned data.
+/// @param node Managed tree-node subhandle; invalid handles are ignored.
+/// @param data New byte-exact runtime string, or NULL to clear the data.
 void rt_treeview_node_set_data(void *node, rt_string data) {
     RT_ASSERT_MAIN_THREAD();
     if (!node)
@@ -2527,6 +2657,8 @@ void rt_treeview_node_set_data(void *node, rt_string data) {
 }
 
 /// @brief Retrieve the string data previously attached to a tree node.
+/// @param node Managed tree-node subhandle.
+/// @return Copy of owned node data, or an owned empty string when absent or invalid.
 rt_string rt_treeview_node_get_data(void *node) {
     RT_ASSERT_MAIN_THREAD();
     if (!node)
@@ -2540,6 +2672,8 @@ rt_string rt_treeview_node_get_data(void *node) {
 }
 
 /// @brief Check whether a tree node is currently in the expanded state.
+/// @param node Managed tree-node subhandle.
+/// @return One when the node is expanded, otherwise zero.
 int64_t rt_treeview_node_is_expanded(void *node) {
     RT_ASSERT_MAIN_THREAD();
     if (!node)
@@ -2553,6 +2687,8 @@ int64_t rt_treeview_node_is_expanded(void *node) {
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
 /// @brief Stub: graphics disabled — widgets cannot have an owning GUI app.
+/// @param handle Ignored opaque widget handle.
+/// @return Always NULL because a headless build has no GUI application ownership.
 void *rt_gui_widget_owner_app(void *handle) {
     (void)handle;
     return NULL;
@@ -2560,12 +2696,15 @@ void *rt_gui_widget_owner_app(void *handle) {
 
 // ===========================================================================
 // Headless stubs — same prototypes as the real implementations above so
-// non-graphical builds (server / CLI) link without pulling in
-// the GUI subsystem. Each stub no-ops or returns a sentinel; doc comments
-// inherit from the real impls above by virtue of identical names.
+// non-graphical builds (server / CLI) link without pulling in the GUI
+// subsystem. Each adjacent contract names ignored inputs and the deterministic
+// no-op, empty-object, or scalar sentinel returned by that stub.
 // ===========================================================================
 
 /// @brief Stub: graphics-disabled builds cannot validate or bind lower GUI widgets.
+/// @param handle Ignored opaque widget handle.
+/// @param widget_type Ignored expected widget-type value.
+/// @return Always NULL because no lower-toolkit widget exists.
 void *rt_gui_widget_checked_for_binding(void *handle, int64_t widget_type) {
     (void)handle;
     (void)widget_type;
@@ -2573,6 +2712,8 @@ void *rt_gui_widget_checked_for_binding(void *handle, int64_t widget_type) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no font data is loaded.
+/// @param path Ignored runtime font-file path.
+/// @return Always NULL.
 void *rt_font_load(rt_string path) {
     (void)path;
     return NULL;
@@ -2602,29 +2743,38 @@ double rt_font_get_logical_size(void *font) {
     return 0.0;
 }
 
-/// @brief Release resources and destroy the font.
+/// @brief Stub: ignore font destruction when graphics support is disabled.
+/// @param font Ignored opaque font handle.
 void rt_font_destroy(void *font) {
     (void)font;
 }
 
-/// @brief Release resources and destroy the widget.
+/// @brief Stub: ignore widget destruction when graphics support is disabled.
+/// @param widget Ignored opaque widget handle.
 void rt_widget_destroy(void *widget) {
     (void)widget;
 }
 
-/// @brief Show or hide a widget.
+/// @brief Stub: ignore widget visibility changes when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @param visible Ignored visibility state.
 void rt_widget_set_visible(void *widget, int64_t visible) {
     (void)widget;
     (void)visible;
 }
 
-/// @brief Enable or disable user interaction with a widget.
+/// @brief Stub: ignore widget enabled-state changes when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @param enabled Ignored enabled state.
 void rt_widget_set_enabled(void *widget, int64_t enabled) {
     (void)widget;
     (void)enabled;
 }
 
-/// @brief Set a fixed width and height on the widget.
+/// @brief Stub: ignore fixed widget dimensions when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @param width Ignored width.
+/// @param height Ignored height.
 void rt_widget_set_size(void *widget, int64_t width, int64_t height) {
     (void)widget;
     (void)width;
@@ -2680,13 +2830,17 @@ double rt_widget_get_min_height(void *widget) {
     return 0.0;
 }
 
-/// @brief Set the flex-grow factor for a widget.
+/// @brief Stub: ignore widget flex-grow changes when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @param flex Ignored flex-grow factor.
 void rt_widget_set_flex(void *widget, double flex) {
     (void)widget;
     (void)flex;
 }
 
-/// @brief Add a child widget to a parent container.
+/// @brief Stub: ignore child attachment when graphics support is disabled.
+/// @param parent Ignored parent-container handle.
+/// @param child Ignored child-widget handle.
 void rt_widget_add_child(void *parent, void *child) {
     (void)parent;
     (void)child;
@@ -2783,7 +2937,9 @@ void *rt_widget_find_by_name_option(void *root, rt_string name) {
     return rt_option_none();
 }
 
-/// @brief Set the margin of the widget.
+/// @brief Stub: ignore uniform widget margins when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @param margin Ignored logical margin.
 void rt_widget_set_margin(void *widget, int64_t margin) {
     (void)widget;
     (void)margin;
@@ -2829,49 +2985,65 @@ void rt_widget_set_margin_edges(
     (void)bottom;
 }
 
-/// @brief Set the tab index of the widget.
+/// @brief Stub: ignore tab-order assignment when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @param idx Ignored tab index.
 void rt_widget_set_tab_index(void *widget, int64_t idx) {
     (void)widget;
     (void)idx;
 }
 
-/// @brief Check whether the widget is currently visible.
+/// @brief Stub: report no visible widget when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @return Always zero.
 int64_t rt_widget_is_visible(void *widget) {
     (void)widget;
     return 0;
 }
 
-/// @brief Check whether the widget is currently enabled.
+/// @brief Stub: report no enabled widget when graphics support is disabled.
+/// @param widget Ignored widget handle.
+/// @return Always zero.
 int64_t rt_widget_is_enabled(void *widget) {
     (void)widget;
     return 0;
 }
 
-/// @brief Get the width of the widget.
+/// @brief Stub: return absent integer widget width in a graphics-disabled runtime.
+/// @param widget Ignored widget handle.
+/// @return Always zero.
 int64_t rt_widget_get_width(void *widget) {
     (void)widget;
     return 0;
 }
 
-/// @brief Get the height of the widget.
+/// @brief Stub: return absent integer widget height in a graphics-disabled runtime.
+/// @param widget Ignored widget handle.
+/// @return Always zero.
 int64_t rt_widget_get_height(void *widget) {
     (void)widget;
     return 0;
 }
 
-/// @brief Get the x of the widget.
+/// @brief Stub: return absent integer widget X coordinate in a graphics-disabled runtime.
+/// @param widget Ignored widget handle.
+/// @return Always zero.
 int64_t rt_widget_get_x(void *widget) {
     (void)widget;
     return 0;
 }
 
-/// @brief Get the y of the widget.
+/// @brief Stub: return absent integer widget Y coordinate in a graphics-disabled runtime.
+/// @param widget Ignored widget handle.
+/// @return Always zero.
 int64_t rt_widget_get_y(void *widget) {
     (void)widget;
     return 0;
 }
 
-/// @brief Get the flex of the widget.
+/// @brief Stub: return the neutral flex value in a graphics-disabled runtime.
+/// @param widget Ignored widget handle.
+/// @return Always zero.
 double rt_widget_get_flex(void *widget) {
     (void)widget;
     return 0.0;
@@ -2968,44 +3140,60 @@ void rt_widget_invalidate_layout(void *widget) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no label widget is created.
+/// @param parent Ignored parent-container handle.
+/// @param text Ignored initial label text.
+/// @return Always NULL.
 void *rt_label_new(void *parent, rt_string text) {
     (void)parent;
     (void)text;
     return NULL;
 }
 
-/// @brief Set the text of the label.
+/// @brief Stub: ignore label-text changes when graphics support is disabled.
+/// @param label Ignored label handle.
+/// @param text Ignored runtime string.
 void rt_label_set_text(void *label, rt_string text) {
     (void)label;
     (void)text;
 }
 
-/// @brief Set the font of the label.
+/// @brief Stub: ignore label-font changes when graphics support is disabled.
+/// @param label Ignored label handle.
+/// @param font Ignored font handle.
+/// @param size Ignored logical font size.
 void rt_label_set_font(void *label, void *font, double size) {
     (void)label;
     (void)font;
     (void)size;
 }
 
-/// @brief Set the color of the label.
+/// @brief Stub: ignore label-color changes when graphics support is disabled.
+/// @param label Ignored label handle.
+/// @param color Ignored packed ARGB color.
 void rt_label_set_color(void *label, int64_t color) {
     (void)label;
     (void)color;
 }
 
 /// @brief Set word wrap stub (graphics disabled).
+/// @param label Ignored label handle.
+/// @param enabled Ignored wrapping state.
 void rt_label_set_word_wrap(void *label, int64_t enabled) {
     (void)label;
     (void)enabled;
 }
 
 /// @brief Graphics-disabled label vector-icon setter stub.
+/// @param label Ignored label handle.
+/// @param name Ignored vector-icon name.
 void rt_label_set_icon_name(void *label, rt_string name) {
     (void)label;
     (void)name;
 }
 
 /// @brief Graphics-disabled button vector-icon setter stub.
+/// @param button Ignored button handle.
+/// @param name Ignored vector-icon name.
 void rt_button_set_icon_name(void *button, rt_string name) {
     (void)button;
     (void)name;
@@ -3060,68 +3248,93 @@ rt_string rt_label_get_selected_text(void *label) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no button widget is created.
+/// @param parent Ignored parent-container handle.
+/// @param text Ignored initial button text.
+/// @return Always NULL.
 void *rt_button_new(void *parent, rt_string text) {
     (void)parent;
     (void)text;
     return NULL;
 }
 
-/// @brief Set the text of the button.
+/// @brief Stub: ignore button-text changes when graphics support is disabled.
+/// @param button Ignored button handle.
+/// @param text Ignored runtime string.
 void rt_button_set_text(void *button, rt_string text) {
     (void)button;
     (void)text;
 }
 
-/// @brief Set the font of the button.
+/// @brief Stub: ignore button-font changes when graphics support is disabled.
+/// @param button Ignored button handle.
+/// @param font Ignored font handle.
+/// @param size Ignored logical font size.
 void rt_button_set_font(void *button, void *font, double size) {
     (void)button;
     (void)font;
     (void)size;
 }
 
-/// @brief Set the style of the button.
+/// @brief Stub: ignore button-style changes when graphics support is disabled.
+/// @param button Ignored button handle.
+/// @param style Ignored style enumeration value.
 void rt_button_set_style(void *button, int64_t style) {
     (void)button;
     (void)style;
 }
 
-/// @brief Set the icon of the button.
+/// @brief Stub: ignore button icon-text changes when graphics support is disabled.
+/// @param button Ignored button handle.
+/// @param icon Ignored icon text.
 void rt_button_set_icon(void *button, rt_string icon) {
     (void)button;
     (void)icon;
 }
 
-/// @brief Set the icon pos of the button.
+/// @brief Stub: ignore button icon-position changes when graphics support is disabled.
+/// @param button Ignored button handle.
+/// @param pos Ignored icon-position value.
 void rt_button_set_icon_pos(void *button, int64_t pos) {
     (void)button;
     (void)pos;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no text input widget is created.
+/// @param parent Ignored parent-container handle.
+/// @return Always NULL.
 void *rt_textinput_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
-/// @brief Set the text of the textinput.
+/// @brief Stub: ignore text-input content changes when graphics support is disabled.
+/// @param input Ignored TextInput handle.
+/// @param text Ignored runtime string.
 void rt_textinput_set_text(void *input, rt_string text) {
     (void)input;
     (void)text;
 }
 
-/// @brief Get the text of the textinput.
+/// @brief Stub: return empty text-input content when graphics support is disabled.
+/// @param input Ignored TextInput handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_textinput_get_text(void *input) {
     (void)input;
     return rt_str_empty();
 }
 
-/// @brief Set the placeholder of the textinput.
+/// @brief Stub: ignore text-input placeholder changes when graphics support is disabled.
+/// @param input Ignored TextInput handle.
+/// @param placeholder Ignored placeholder string.
 void rt_textinput_set_placeholder(void *input, rt_string placeholder) {
     (void)input;
     (void)placeholder;
 }
 
-/// @brief Set the font of the textinput.
+/// @brief Stub: ignore text-input font changes when graphics support is disabled.
+/// @param input Ignored TextInput handle.
+/// @param font Ignored font handle.
+/// @param size Ignored logical font size.
 void rt_textinput_set_font(void *input, void *font, double size) {
     (void)input;
     (void)font;
@@ -3356,6 +3569,9 @@ int64_t rt_textinput_get_composition_length(void *input) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no checkbox widget is created.
+/// @param parent Ignored parent-container handle.
+/// @param text Ignored initial checkbox text.
+/// @return Always NULL.
 void *rt_checkbox_new(void *parent, rt_string text) {
     (void)parent;
     (void)text;
@@ -3419,19 +3635,27 @@ int64_t rt_checkbox_get_revision(void *checkbox) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no scroll view widget is created.
+/// @param parent Ignored parent-container handle.
+/// @return Always NULL.
 void *rt_scrollview_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
-/// @brief Set the scroll of the scrollview.
+/// @brief Stub: ignore scroll-position changes when graphics support is disabled.
+/// @param scroll Ignored ScrollView handle.
+/// @param x Ignored horizontal offset.
+/// @param y Ignored vertical offset.
 void rt_scrollview_set_scroll(void *scroll, double x, double y) {
     (void)scroll;
     (void)x;
     (void)y;
 }
 
-/// @brief Set the content size of a scroll view.
+/// @brief Stub: ignore scroll-content dimensions when graphics support is disabled.
+/// @param scroll Ignored ScrollView handle.
+/// @param width Ignored content width.
+/// @param height Ignored content height.
 void rt_scrollview_set_content_size(void *scroll, double width, double height) {
     (void)scroll;
     (void)width;
@@ -3439,30 +3663,42 @@ void rt_scrollview_set_content_size(void *scroll, double width, double height) {
 }
 
 /// @brief Stub: no descendant can be revealed when graphics is disabled.
+/// @param scroll Ignored ScrollView handle.
+/// @param widget Ignored descendant widget handle.
 void rt_scrollview_scroll_to(void *scroll, void *widget) {
     (void)scroll;
     (void)widget;
 }
 
-/// @brief Get the scroll x of the scrollview.
+/// @brief Stub: return no horizontal scroll offset when graphics support is disabled.
+/// @param scroll Ignored ScrollView handle.
+/// @return Always zero.
 double rt_scrollview_get_scroll_x(void *scroll) {
     (void)scroll;
     return 0.0;
 }
 
-/// @brief Get the current vertical scroll offset.
+/// @brief Stub: return no vertical scroll offset when graphics support is disabled.
+/// @param scroll Ignored ScrollView handle.
+/// @return Always zero.
 double rt_scrollview_get_scroll_y(void *scroll) {
     (void)scroll;
     return 0.0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no tree view widget is created.
+/// @param parent Ignored parent-container handle.
+/// @return Always NULL.
 void *rt_treeview_new(void *parent) {
     (void)parent;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no tree node is created or added.
+/// @param tree Ignored TreeView handle.
+/// @param parent_node Ignored parent-node handle.
+/// @param text Ignored node-label text.
+/// @return Always NULL.
 void *rt_treeview_add_node(void *tree, void *parent_node, rt_string text) {
     (void)tree;
     (void)parent_node;
@@ -3470,59 +3706,78 @@ void *rt_treeview_add_node(void *tree, void *parent_node, rt_string text) {
     return NULL;
 }
 
-/// @brief Remove a node and its subtree from the tree view.
+/// @brief Stub: ignore TreeView node removal when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
+/// @param node Ignored tree-node handle.
 void rt_treeview_remove_node(void *tree, void *node) {
     (void)tree;
     (void)node;
 }
 
-/// @brief Remove all nodes from the tree view, leaving it empty.
+/// @brief Stub: ignore TreeView clearing when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
 void rt_treeview_clear(void *tree) {
     (void)tree;
 }
 
 /// @brief Stub: retired node pruning is a no-op without graphics.
+/// @param tree Ignored TreeView handle.
 void rt_treeview_prune_retired_nodes(void *tree) {
     (void)tree;
 }
 
-/// @brief Expand a tree node to show its children.
+/// @brief Stub: ignore TreeView expansion when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
+/// @param node Ignored tree-node handle.
 void rt_treeview_expand(void *tree, void *node) {
     (void)tree;
     (void)node;
 }
 
-/// @brief Collapse a tree node to hide its children.
+/// @brief Stub: ignore TreeView collapse when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
+/// @param node Ignored tree-node handle.
 void rt_treeview_collapse(void *tree, void *node) {
     (void)tree;
     (void)node;
 }
 
 /// @brief Stub: ignore tree-node expansion toggles without graphics.
+/// @param tree Ignored TreeView handle.
+/// @param node Ignored tree-node handle.
 void rt_treeview_toggle(void *tree, void *node) {
     (void)tree;
     (void)node;
 }
 
-/// @brief Programmatically select a tree node (NULL to clear selection).
+/// @brief Stub: ignore TreeView selection changes when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
+/// @param node Ignored node handle, including NULL.
 void rt_treeview_select(void *tree, void *node) {
     (void)tree;
     (void)node;
 }
 
 /// @brief Stub: retained TreeView multi-selection is unavailable without graphics.
+/// @param tree Ignored TreeView handle.
+/// @param enabled Ignored multi-selection state.
 void rt_treeview_set_multi_select(void *tree, int64_t enabled) {
     (void)tree;
     (void)enabled;
 }
 
 /// @brief Stub: ignore TreeView scrolling without graphics.
+/// @param tree Ignored TreeView handle.
+/// @param node Ignored target-node handle.
 void rt_treeview_scroll_to(void *tree, void *node) {
     (void)tree;
     (void)node;
 }
 
-/// @brief Set the font of the treeview.
+/// @brief Stub: ignore TreeView font changes when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
+/// @param font Ignored font handle.
+/// @param size Ignored logical font size.
 void rt_treeview_set_font(void *tree, void *font, double size) {
     (void)tree;
     (void)font;
@@ -3530,12 +3785,18 @@ void rt_treeview_set_font(void *tree, void *font, double size) {
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no selection exists without a tree view.
+/// @param tree Ignored TreeView handle.
+/// @return Always NULL.
 void *rt_treeview_get_selected(void *tree) {
     (void)tree;
     return NULL;
 }
 
 /// @brief Stub: graphics disabled — no hit-tested nodes exist.
+/// @param tree Ignored TreeView handle.
+/// @param x Ignored window-space X coordinate.
+/// @param y Ignored window-space Y coordinate.
+/// @return Always NULL.
 void *rt_treeview_get_node_at(void *tree, int64_t x, int64_t y) {
     (void)tree;
     (void)x;
@@ -3544,48 +3805,70 @@ void *rt_treeview_get_node_at(void *tree, int64_t x, int64_t y) {
 }
 
 /// @brief Stub: no retained TreeView selection data exists without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Fresh owned empty runtime sequence, or NULL if sequence allocation fails.
 void *rt_treeview_get_selected_data(void *tree) {
     (void)tree;
     return rt_seq_new_owned();
 }
 
 /// @brief Stub: poll-model drag-and-drop is a no-op without graphics.
+/// @param tree Ignored TreeView handle.
+/// @param enabled Ignored drag-and-drop state.
 void rt_treeview_set_drag_drop_enabled(void *tree, int64_t enabled) {
     (void)tree;
     (void)enabled;
 }
 
 /// @brief Stub: poll-model TreeView drag-and-drop is unavailable without graphics.
+/// @param tree Ignored TreeView handle.
+/// @param mode Ignored drag-and-drop mode.
 void rt_treeview_set_drag_drop_mode(void *tree, int64_t mode) {
     (void)tree;
     (void)mode;
 }
 
+/// @brief Stub: report no pending TreeView drop when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
+/// @return Always zero.
 int64_t rt_treeview_was_drop_received(void *tree) {
     (void)tree;
     return 0;
 }
 
+/// @brief Stub: return empty TreeView drop-source data without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_treeview_get_drop_source_data(void *tree) {
     (void)tree;
     return rt_str_empty();
 }
 
+/// @brief Stub: return empty TreeView drop-target data without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_treeview_get_drop_target_data(void *tree) {
     (void)tree;
     return rt_str_empty();
 }
 
+/// @brief Stub: return the neutral TreeView drop position without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Always one, the public “into” sentinel.
 int64_t rt_treeview_get_drop_position(void *tree) {
     (void)tree;
     return 1;
 }
 
+/// @brief Stub: ignore drop-latch clearing when graphics support is disabled.
+/// @param tree Ignored TreeView handle.
 void rt_treeview_clear_drop(void *tree) {
     (void)tree;
 }
 
 /// @brief Check if the tree view selection changed since the last call (edge-triggered).
+/// @param tree Ignored TreeView handle.
+/// @return Always zero because no selection state exists.
 int64_t rt_treeview_was_selection_changed(void *tree) {
     (void)tree;
     return 0;
@@ -3608,24 +3891,34 @@ int64_t rt_treeview_was_activated(void *tree) {
 }
 
 /// @brief Stub: no lazy-child request edge exists without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Always zero.
 int64_t rt_treeview_was_load_children_requested(void *tree) {
     (void)tree;
     return 0;
 }
 
 /// @brief Stub: return an owned empty Option for a lazy-child request target.
+/// @param tree Ignored TreeView handle.
+/// @return Fresh owned `Zanna.Option.None` object.
 void *rt_treeview_get_load_requested_node_option(void *tree) {
     (void)tree;
     return rt_option_none();
 }
 
 /// @brief Stub: return an owned empty Option for an activation target.
+/// @param tree Ignored TreeView handle.
+/// @return Fresh owned `Zanna.Option.None` object.
 void *rt_treeview_get_activated_node_option(void *tree) {
     (void)tree;
     return rt_option_none();
 }
 
 /// @brief Stub: inline row editing never begins without graphics.
+/// @param tree Ignored TreeView handle.
+/// @param node Ignored tree-node handle.
+/// @param initial_text Ignored initial editor text.
+/// @return Always zero.
 int64_t rt_treeview_begin_edit_node(void *tree, void *node, rt_string initial_text) {
     (void)tree;
     (void)node;
@@ -3634,30 +3927,39 @@ int64_t rt_treeview_begin_edit_node(void *tree, void *node, rt_string initial_te
 }
 
 /// @brief Stub: no inline row edit is ever in progress without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Always zero.
 int64_t rt_treeview_is_editing(void *tree) {
     (void)tree;
     return 0;
 }
 
 /// @brief Stub: no inline-edit commit edge exists without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Always zero.
 int64_t rt_treeview_was_edit_committed(void *tree) {
     (void)tree;
     return 0;
 }
 
 /// @brief Stub: return empty committed inline-edit text without graphics.
+/// @param tree Ignored TreeView handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_treeview_get_edit_text(void *tree) {
     (void)tree;
     return rt_str_empty();
 }
 
 /// @brief Stub: return an owned empty Option for the edited node.
+/// @param tree Ignored TreeView handle.
+/// @return Fresh owned `Zanna.Option.None` object.
 void *rt_treeview_get_edited_node_option(void *tree) {
     (void)tree;
     return rt_option_none();
 }
 
 /// @brief Stub: ignore inline-edit cancellation without graphics.
+/// @param tree Ignored TreeView handle.
 void rt_treeview_cancel_edit(void *tree) {
     (void)tree;
 }
@@ -3670,79 +3972,105 @@ int64_t rt_treeview_get_revision(void *tree) {
     return 0;
 }
 
-/// @brief Get the display text of a tree node.
+/// @brief Stub: return empty tree-node display text without graphics.
+/// @param node Ignored tree-node handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_treeview_node_get_text(void *node) {
     (void)node;
     return rt_str_empty();
 }
 
 /// @brief Stub: ignore tree-node text changes without graphics.
+/// @param node Ignored tree-node handle.
+/// @param text Ignored display text.
 void rt_treeview_node_set_text(void *node, rt_string text) {
     (void)node;
     (void)text;
 }
 
 /// @brief Stub: ignore tree-node icon changes without graphics.
+/// @param node Ignored tree-node handle.
+/// @param icon Ignored icon text.
 void rt_treeview_node_set_icon(void *node, rt_string icon) {
     (void)node;
     (void)icon;
 }
 
 /// @brief Stub: return empty tree-node icon text without graphics.
+/// @param node Ignored tree-node handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_treeview_node_get_icon(void *node) {
     (void)node;
     return rt_str_empty();
 }
 
 /// @brief Stub: ignore lazy-child metadata without graphics.
+/// @param node Ignored tree-node handle.
+/// @param has_children Ignored advertised-child state.
 void rt_treeview_node_set_has_children(void *node, int64_t has_children) {
     (void)node;
     (void)has_children;
 }
 
 /// @brief Stub: report no children without graphics.
+/// @param node Ignored tree-node handle.
+/// @return Always zero.
 int64_t rt_treeview_node_has_children(void *node) {
     (void)node;
     return 0;
 }
 
 /// @brief Stub: ignore tree-node loading state without graphics.
+/// @param node Ignored tree-node handle.
+/// @param loading Ignored loading state.
 void rt_treeview_node_set_loading(void *node, int64_t loading) {
     (void)node;
     (void)loading;
 }
 
 /// @brief Stub: report no tree-node loading state without graphics.
+/// @param node Ignored tree-node handle.
+/// @return Always zero.
 int64_t rt_treeview_node_is_loading(void *node) {
     (void)node;
     return 0;
 }
 
 /// @brief Stub: ignore stable tree-node identifiers without graphics.
+/// @param node Ignored tree-node handle.
+/// @param stable_id Ignored stable identifier.
 void rt_treeview_node_set_stable_id(void *node, rt_string stable_id) {
     (void)node;
     (void)stable_id;
 }
 
 /// @brief Stub: return an empty stable tree-node identifier without graphics.
+/// @param node Ignored tree-node handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_treeview_node_get_stable_id(void *node) {
     (void)node;
     return rt_str_empty();
 }
 
-/// @brief Attach arbitrary string data to a tree node (replaces any previous data).
+/// @brief Stub: ignore tree-node data changes when graphics support is disabled.
+/// @param node Ignored tree-node handle.
+/// @param data Ignored runtime string.
 void rt_treeview_node_set_data(void *node, rt_string data) {
     (void)node;
     (void)data;
 }
 
-/// @brief Retrieve the string data previously attached to a tree node.
+/// @brief Stub: return empty tree-node data when graphics support is disabled.
+/// @param node Ignored tree-node handle.
+/// @return Canonical caller-owned empty runtime string.
 rt_string rt_treeview_node_get_data(void *node) {
     (void)node;
     return rt_str_empty();
 }
 
-/// @brief Check whether a tree node is currently in the expanded state.
+/// @brief Stub: report no expanded tree node when graphics support is disabled.
+/// @param node Ignored tree-node handle.
+/// @return Always zero.
 int64_t rt_treeview_node_is_expanded(void *node) {
     (void)node;
     return 0;

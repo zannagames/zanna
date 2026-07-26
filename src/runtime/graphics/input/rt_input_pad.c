@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_input_pad.c
+// File: src/runtime/graphics/input/rt_input_pad.c
 // Purpose: Gamepad and controller input backend for Zanna.Input. Manages state
 //   for up to ZANNA_PAD_MAX (4) simultaneously connected controllers, polling
 //   button press/release/held edges, analog stick axes, and triggers each frame.
@@ -29,9 +29,9 @@
 //   - Platform HID resources (IOKit manager on macOS) are allocated at init and
 //     released by rt_pad_shutdown().
 //
-// Links: src/runtime/graphics/rt_input.h (keyboard/mouse layer, frame lifecycle),
-//        src/runtime/graphics/rt_action.c (action mapping layer),
-//        src/runtime/graphics/rt_inputmgr.h (high-level input manager)
+// Links: src/runtime/graphics/input/rt_input.h (keyboard/mouse layer, frame lifecycle),
+//        src/runtime/graphics/2d/rt_action.c (action mapping layer),
+//        src/runtime/graphics/input/rt_inputmgr.h (high-level input manager)
 //
 //===----------------------------------------------------------------------===//
 
@@ -93,6 +93,7 @@ static bool g_pad_initialized = false;
 /// @details Platform backends call this when an OS device disappears or a slot has no
 ///          backing device. Keeping the clear operation shared ensures stale buttons,
 ///          axes, names, and vibration values do not survive disconnects.
+/// @param index Public gamepad slot in [0, `ZANNA_PAD_MAX`); invalid indices are ignored.
 static void pad_clear_logical_state(int index) {
     if (index < 0 || index >= ZANNA_PAD_MAX)
         return;
@@ -177,6 +178,7 @@ static bool g_mac_initialized = false;
 // ---------------------------------------------------------------------------
 
 /// @brief Release an axis's HID element ref and zero its calibration min/max.
+/// @param axis Axis binding to release; must be valid storage.
 static void mac_release_axis(mac_axis *axis) {
     if (axis->element)
         CFRelease(axis->element);
@@ -186,7 +188,8 @@ static void mac_release_axis(mac_axis *axis) {
 }
 
 /// @brief Drop every IOKit ref retained for one pad slot (device, axes, hat, buttons).
-/// Run before each rescan so re-plugging doesn't leak the prior device.
+/// @details Run before each rescan so re-plugging does not leak the prior device.
+/// @param pad macOS gamepad slot to clear.
 static void mac_clear_pad(mac_pad *pad) {
     if (pad->device)
         CFRelease(pad->device);
@@ -210,7 +213,9 @@ static void mac_clear_pad(mac_pad *pad) {
 }
 
 /// @brief Build a HID match dictionary for a given GenericDesktop usage (Joystick / GamePad).
-/// Used to constrain `IOHIDManagerSetDeviceMatchingMultiple` to gamepad-shaped devices only.
+/// @details Used to constrain `IOHIDManagerSetDeviceMatchingMultiple` to gamepad-shaped devices.
+/// @param usage GenericDesktop usage identifier to match.
+/// @return Owned mutable CoreFoundation dictionary, or NULL if any allocation fails.
 static CFMutableDictionaryRef mac_make_match(uint32_t usage) {
     CFMutableDictionaryRef dict = CFDictionaryCreateMutable(
         kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
@@ -234,6 +239,8 @@ static CFMutableDictionaryRef mac_make_match(uint32_t usage) {
 }
 
 /// @brief Capture an axis HID element + its calibration range for later normalisation.
+/// @param axis Destination binding; any previously retained element is released.
+/// @param element HID axis element to retain and inspect.
 static void mac_store_axis(mac_axis *axis, IOHIDElementRef element) {
     if (axis->element)
         CFRelease(axis->element);
@@ -244,7 +251,8 @@ static void mac_store_axis(mac_axis *axis, IOHIDElementRef element) {
 }
 
 /// @brief Map a HID Button usage code (1..11) to a Zanna `ZANNA_PAD_*` button index.
-/// Returns -1 for usages outside the standard 11-button gamepad layout.
+/// @param usage HID Button-page usage code.
+/// @return Public gamepad-button index, or -1 outside the standard 11-button layout.
 static int mac_button_index(uint32_t usage) {
     switch (usage) {
         case 1:
@@ -458,6 +466,10 @@ static void mac_init_manager(void) {
 }
 
 /// @brief Map a raw HID axis reading to the [-1, +1] range using device calibration.
+/// @param value Raw HID axis sample.
+/// @param min Calibrated logical minimum.
+/// @param max Calibrated logical maximum.
+/// @return Normalized axis value, or zero for a degenerate range.
 static double mac_normalize_axis(CFIndex value, CFIndex min, CFIndex max) {
     if (max == min)
         return 0.0;
@@ -466,6 +478,10 @@ static double mac_normalize_axis(CFIndex value, CFIndex min, CFIndex max) {
 }
 
 /// @brief Map a raw trigger HID reading to the [0, 1] range (triggers don't go negative).
+/// @param value Raw HID trigger sample.
+/// @param min Calibrated logical minimum.
+/// @param max Calibrated logical maximum.
+/// @return Trigger value clamped to [0,1], or zero for a degenerate range.
 static double mac_normalize_trigger(CFIndex value, CFIndex min, CFIndex max) {
     if (max == min)
         return 0.0;
@@ -478,7 +494,10 @@ static double mac_normalize_trigger(CFIndex value, CFIndex min, CFIndex max) {
 }
 
 /// @brief Read the current integer value of one HID element.
-/// Wraps `IOHIDDeviceGetValue` and copies out the integer payload.
+/// @details Wraps `IOHIDDeviceGetValue` and copies out the integer payload.
+/// @param device Borrowed HID device containing the element.
+/// @param element Borrowed HID element; NULL fails.
+/// @param out Destination for the integer payload on success.
 /// @return true on success, false if the element couldn't be read.
 static bool mac_read_value(IOHIDDeviceRef device, IOHIDElementRef element, CFIndex *out) {
     IOHIDValueRef value_ref = NULL;
@@ -495,6 +514,8 @@ static bool mac_read_value(IOHIDDeviceRef device, IOHIDElementRef element, CFInd
 /// HID hats encode 8 directions clockwise starting from "up = 0".
 /// We unpack each into the corresponding `up/down/left/right` button
 /// flags so callers don't see the raw hat encoding.
+/// @param pad Logical gamepad state to update.
+/// @param hat_value HID hat value, with values outside [0,7] treated as centered.
 static void mac_apply_hat(rt_pad_state *pad, int hat_value) {
     bool up = false;
     bool down = false;
@@ -654,6 +675,9 @@ static void platform_pad_poll(void) {
 ///   HID reports) that are not available through the generic IOHIDManager
 ///   interface used by this backend.  Parameters are silenced to avoid
 ///   compiler warnings.
+/// @param index Ignored public gamepad slot.
+/// @param left Ignored left-motor strength.
+/// @param right Ignored right-motor strength.
 static void platform_pad_vibrate(int64_t index, double left, double right) {
     (void)index;
     (void)left;
@@ -694,6 +718,9 @@ static bool g_linux_initialized = false;
 // ---------------------------------------------------------------------------
 
 /// @brief Test bit `bit` in a Linux ioctl bitset (EVIOCGBIT-shaped buffer).
+/// @param bits Borrowed ioctl bitset.
+/// @param bit Non-negative bit index to test.
+/// @return true when the requested capability bit is set.
 static bool linux_test_bit(const unsigned long *bits, int bit) {
     return (bits[bit / (int)(8 * sizeof(unsigned long))] >>
             (bit % (int)(8 * sizeof(unsigned long)))) &
@@ -706,6 +733,8 @@ static bool linux_test_bit(const unsigned long *bits, int bit) {
 /// plus at least one of the standard gamepad button keys
 /// (BTN_GAMEPAD/BTN_JOYSTICK/BTN_SOUTH/BTN_NORTH). Filters out
 /// keyboards, mice, and touchpads that share the /dev/input namespace.
+/// @param fd Open evdev file descriptor.
+/// @return true when capability queries identify a gamepad-like device.
 static bool linux_is_gamepad(int fd) {
     unsigned long ev_bits[(EV_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long))];
     unsigned long key_bits[(KEY_MAX + 8 * sizeof(unsigned long)) / (8 * sizeof(unsigned long))];
@@ -725,6 +754,7 @@ static bool linux_is_gamepad(int fd) {
 }
 
 /// @brief Close the device fd (if open) and reset the pad's calibration to defaults.
+/// @param pad Linux backend slot to close and reset.
 static void linux_reset_pad(linux_pad *pad) {
     if (pad->fd >= 0) {
         if (pad->rumble_id >= 0)
@@ -796,6 +826,10 @@ static int linux_open_evdev_nonblocking(const char *path, int writable) {
 }
 
 /// @brief Map a raw evdev axis reading to the [-1, +1] range using its absinfo range.
+/// @param value Raw evdev axis sample.
+/// @param min Device-reported absolute minimum.
+/// @param max Device-reported absolute maximum.
+/// @return Normalized axis value, or zero for a degenerate range.
 static double linux_normalize_axis(int value, int min, int max) {
     if (max == min)
         return 0.0;
@@ -804,6 +838,10 @@ static double linux_normalize_axis(int value, int min, int max) {
 }
 
 /// @brief Map a raw evdev trigger reading to [0, 1] (clamped — triggers can't go negative).
+/// @param value Raw evdev trigger sample.
+/// @param min Device-reported absolute minimum.
+/// @param max Device-reported absolute maximum.
+/// @return Trigger value clamped to [0,1], or zero for a degenerate range.
 static double linux_normalize_trigger(int value, int min, int max) {
     if (max == min)
         return 0.0;
@@ -816,7 +854,9 @@ static double linux_normalize_trigger(int value, int min, int max) {
 }
 
 /// @brief Translate an evdev D-pad axis (`ABS_HAT0X` or `ABS_HAT0Y`) into directional buttons.
-/// `is_x` selects which axis: true → left/right, false → up/down.
+/// @param pad Logical gamepad state to update.
+/// @param value Signed hat-axis value; negative and positive select opposite directions.
+/// @param is_x true for left/right, false for up/down.
 static void linux_apply_hat(rt_pad_state *pad, int value, bool is_x) {
     if (is_x) {
         pad->buttons[ZANNA_PAD_LEFT] = value < 0;
@@ -1072,6 +1112,9 @@ static void platform_pad_poll(void) {
 ///   the device was hot-unplugged), has_rumble is cleared so future calls
 ///   short-circuit immediately.  Index bounds are validated before dereferencing
 ///   g_linux_pads.
+/// @param index Public Linux gamepad slot.
+/// @param left Normalized strong/left motor strength.
+/// @param right Normalized weak/right motor strength.
 static void platform_pad_vibrate(int64_t index, double left, double right) {
     if (index < 0 || index >= ZANNA_PAD_MAX)
         return;
@@ -1135,6 +1178,9 @@ static void platform_pad_vibrate(int64_t index, double left, double right) {
 /// @details XInput devices report small noisy values near center. This helper zeroes
 ///          values within the SDK-provided deadzone, then rescales the remaining
 ///          signed range to preserve full [-1, 1] output at the physical extremes.
+/// @param value Raw signed XInput thumbstick component.
+/// @param deadzone Non-negative SDK deadzone magnitude.
+/// @return Rescaled component in [-1,1], or zero inside the deadzone.
 static double xinput_normalize_thumb(SHORT value, SHORT deadzone) {
     int raw = (int)value;
     int magnitude = raw < 0 ? -raw : raw;
@@ -1215,6 +1261,9 @@ static void platform_pad_poll(void) {
 ///   vibration motor — mapping left→wLeftMotorSpeed and right→wRightMotorSpeed
 ///   preserves the conventional strong/weak semantics.  Index bounds are
 ///   validated before the XInput call.
+/// @param index Public XInput gamepad slot.
+/// @param left Requested strong/left motor strength.
+/// @param right Requested weak/right motor strength.
 static void platform_pad_vibrate(int64_t index, double left, double right) {
     if (index < 0 || index >= ZANNA_PAD_MAX)
         return;
@@ -1252,6 +1301,9 @@ static void platform_pad_poll(void) {
 ///   Vibration output requires platform-specific APIs (IOKit FF, evdev FF_RUMBLE,
 ///   XInput) that are unavailable here.  Parameters are suppressed to avoid
 ///   unused-variable warnings.
+/// @param index Ignored public gamepad slot.
+/// @param left Ignored left-motor strength.
+/// @param right Ignored right-motor strength.
 static void platform_pad_vibrate(int64_t index, double left, double right) {
     (void)index;
     (void)left;
@@ -1292,7 +1344,11 @@ static double apply_radial_deadzone_component(double x, double y, int want_x) {
     return (component / mag) * scaled;
 }
 
-/// @brief Clamp value to valid range
+/// @brief Clamp one scalar value to an inclusive range.
+/// @param value Value to clamp.
+/// @param min_val Inclusive lower bound.
+/// @param max_val Inclusive upper bound.
+/// @return @p value constrained to [@p min_val, @p max_val].
 static double clamp_axis(double value, double min_val, double max_val) {
     if (value < min_val)
         return min_val;
@@ -1367,6 +1423,7 @@ void rt_pad_poll(void) {
 //=============================================================================
 
 /// @brief Get the number of currently connected gamepads.
+/// @return Connected public-slot count in [0, `ZANNA_PAD_MAX`].
 int64_t rt_pad_count(void) {
     RT_ASSERT_MAIN_THREAD();
     int64_t count = 0;
@@ -1378,6 +1435,8 @@ int64_t rt_pad_count(void) {
 }
 
 /// @brief Check whether a gamepad is connected at the given slot index.
+/// @param index Public controller slot.
+/// @return One when the slot is valid and connected, otherwise zero.
 int8_t rt_pad_is_connected(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1386,6 +1445,8 @@ int8_t rt_pad_is_connected(int64_t index) {
 }
 
 /// @brief Get the name of a connected gamepad (e.g., "Xbox Controller").
+/// @param index Public controller slot.
+/// @return Owned device name, or an owned empty string when disconnected or invalid.
 rt_string rt_pad_name(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX || !g_pads[index].connected)
@@ -1399,6 +1460,9 @@ rt_string rt_pad_name(int64_t index) {
 //=============================================================================
 
 /// @brief Check whether a gamepad button is currently held down.
+/// @param index Public controller slot.
+/// @param button Public `ZANNA_PAD_*` button code.
+/// @return One when the connected pad's button is down, otherwise zero.
 int8_t rt_pad_is_down(int64_t index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1412,6 +1476,9 @@ int8_t rt_pad_is_down(int64_t index, int64_t button) {
 }
 
 /// @brief Check whether a gamepad button is currently not held down.
+/// @param index Public controller slot.
+/// @param button Public `ZANNA_PAD_*` button code.
+/// @return One when the button is up; invalid and disconnected inputs also report up.
 int8_t rt_pad_is_up(int64_t index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1429,6 +1496,9 @@ int8_t rt_pad_is_up(int64_t index, int64_t button) {
 //=============================================================================
 
 /// @brief Check whether a gamepad button was pressed this frame (edge-triggered).
+/// @param index Public controller slot.
+/// @param button Public `ZANNA_PAD_*` button code.
+/// @return One when the button gained its down state this frame, otherwise zero.
 int8_t rt_pad_was_pressed(int64_t index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1442,6 +1512,9 @@ int8_t rt_pad_was_pressed(int64_t index, int64_t button) {
 }
 
 /// @brief Check whether a gamepad button was released this frame (edge-triggered).
+/// @param index Public controller slot.
+/// @param button Public `ZANNA_PAD_*` button code.
+/// @return One when the button lost its down state this frame, otherwise zero.
 int8_t rt_pad_was_released(int64_t index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1459,6 +1532,8 @@ int8_t rt_pad_was_released(int64_t index, int64_t button) {
 //=============================================================================
 
 /// @brief Get the left stick X axis value (-1.0 to 1.0, deadzone applied).
+/// @param index Public controller slot.
+/// @return Deadzone-adjusted horizontal component, or zero when unavailable.
 double rt_pad_left_x(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1472,6 +1547,8 @@ double rt_pad_left_x(int64_t index) {
 }
 
 /// @brief Get the left stick Y axis value (-1.0 to 1.0, deadzone applied).
+/// @param index Public controller slot.
+/// @return Deadzone-adjusted vertical component, or zero when unavailable.
 double rt_pad_left_y(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1485,6 +1562,8 @@ double rt_pad_left_y(int64_t index) {
 }
 
 /// @brief Get the right stick X axis value (-1.0 to 1.0, deadzone applied).
+/// @param index Public controller slot.
+/// @return Deadzone-adjusted horizontal component, or zero when unavailable.
 double rt_pad_right_x(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1498,6 +1577,8 @@ double rt_pad_right_x(int64_t index) {
 }
 
 /// @brief Get the right stick Y axis value (-1.0 to 1.0, deadzone applied).
+/// @param index Public controller slot.
+/// @return Deadzone-adjusted vertical component, or zero when unavailable.
 double rt_pad_right_y(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1511,6 +1592,8 @@ double rt_pad_right_y(int64_t index) {
 }
 
 /// @brief Get the left trigger value (0.0 = released, 1.0 = fully pressed).
+/// @param index Public controller slot.
+/// @return Trigger value clamped to [0,1], or zero when unavailable.
 double rt_pad_left_trigger(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1522,6 +1605,8 @@ double rt_pad_left_trigger(int64_t index) {
 }
 
 /// @brief Get the right trigger value (0.0 = released, 1.0 = fully pressed).
+/// @param index Public controller slot.
+/// @return Trigger value clamped to [0,1], or zero when unavailable.
 double rt_pad_right_trigger(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1537,12 +1622,14 @@ double rt_pad_right_trigger(int64_t index) {
 //=============================================================================
 
 /// @brief Set the analog stick deadzone radius (0.0 to 1.0, default 0.1).
+/// @param radius Requested deadzone, clamped to [0,1].
 void rt_pad_set_deadzone(double radius) {
     RT_ASSERT_MAIN_THREAD();
     g_pad_deadzone = clamp_axis(radius, 0.0, 1.0);
 }
 
 /// @brief Get the current analog stick deadzone radius.
+/// @return Current normalized radial deadzone.
 double rt_pad_get_deadzone(void) {
     RT_ASSERT_MAIN_THREAD();
     return g_pad_deadzone;
@@ -1553,6 +1640,9 @@ double rt_pad_get_deadzone(void) {
 //=============================================================================
 
 /// @brief Set gamepad vibration motor intensities (0.0 to 1.0; platform-dependent).
+/// @param index Public controller slot.
+/// @param left_motor Requested strong/left motor strength.
+/// @param right_motor Requested weak/right motor strength.
 void rt_pad_vibrate(int64_t index, double left_motor, double right_motor) {
     RT_ASSERT_MAIN_THREAD();
     if (index < 0 || index >= ZANNA_PAD_MAX)
@@ -1570,6 +1660,7 @@ void rt_pad_vibrate(int64_t index, double left_motor, double right_motor) {
 }
 
 /// @brief Stop all vibration on a gamepad.
+/// @param index Public controller slot.
 void rt_pad_stop_vibration(int64_t index) {
     RT_ASSERT_MAIN_THREAD();
     rt_pad_vibrate(index, 0.0, 0.0);
@@ -1586,76 +1677,91 @@ void rt_pad_stop_vibration(int64_t index) {
 // ===========================================================================
 
 /// @brief Return the integer index for the A (south face) button.
+/// @return `ZANNA_PAD_A`.
 int64_t rt_pad_button_a(void) {
     return ZANNA_PAD_A;
 }
 
 /// @brief Return the integer index for the B (east face) button.
+/// @return `ZANNA_PAD_B`.
 int64_t rt_pad_button_b(void) {
     return ZANNA_PAD_B;
 }
 
 /// @brief Return the integer index for the X (west face) button.
+/// @return `ZANNA_PAD_X`.
 int64_t rt_pad_button_x(void) {
     return ZANNA_PAD_X;
 }
 
 /// @brief Return the integer index for the Y (north face) button.
+/// @return `ZANNA_PAD_Y`.
 int64_t rt_pad_button_y(void) {
     return ZANNA_PAD_Y;
 }
 
 /// @brief Return the integer index for the left bumper (LB / L1) button.
+/// @return `ZANNA_PAD_LB`.
 int64_t rt_pad_button_lb(void) {
     return ZANNA_PAD_LB;
 }
 
 /// @brief Return the integer index for the right bumper (RB / R1) button.
+/// @return `ZANNA_PAD_RB`.
 int64_t rt_pad_button_rb(void) {
     return ZANNA_PAD_RB;
 }
 
 /// @brief Return the integer index for the Back / Select button.
+/// @return `ZANNA_PAD_BACK`.
 int64_t rt_pad_button_back(void) {
     return ZANNA_PAD_BACK;
 }
 
 /// @brief Return the integer index for the Start / Menu button.
+/// @return `ZANNA_PAD_START`.
 int64_t rt_pad_button_start(void) {
     return ZANNA_PAD_START;
 }
 
 /// @brief Return the integer index for the left-stick click (L3) button.
+/// @return `ZANNA_PAD_LSTICK`.
 int64_t rt_pad_button_lstick(void) {
     return ZANNA_PAD_LSTICK;
 }
 
 /// @brief Return the integer index for the right-stick click (R3) button.
+/// @return `ZANNA_PAD_RSTICK`.
 int64_t rt_pad_button_rstick(void) {
     return ZANNA_PAD_RSTICK;
 }
 
 /// @brief Return the integer index for the D-pad Up button.
+/// @return `ZANNA_PAD_UP`.
 int64_t rt_pad_button_up(void) {
     return ZANNA_PAD_UP;
 }
 
 /// @brief Return the integer index for the D-pad Down button.
+/// @return `ZANNA_PAD_DOWN`.
 int64_t rt_pad_button_down(void) {
     return ZANNA_PAD_DOWN;
 }
 
 /// @brief Return the integer index for the D-pad Left button.
+/// @return `ZANNA_PAD_LEFT`.
 int64_t rt_pad_button_left(void) {
     return ZANNA_PAD_LEFT;
 }
 
 /// @brief Return the integer index for the D-pad Right button.
+/// @return `ZANNA_PAD_RIGHT`.
 int64_t rt_pad_button_right(void) {
     return ZANNA_PAD_RIGHT;
 }
 
 /// @brief Return the integer index for the Guide / Home / Xbox button.
+/// @return `ZANNA_PAD_GUIDE`.
 int64_t rt_pad_button_guide(void) {
     return ZANNA_PAD_GUIDE;
 }

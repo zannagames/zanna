@@ -15,8 +15,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-/// @brief Read a line from connection (up to CRLF).
-/// @return Allocated line without CRLF, or NULL on error.
+/// @brief Read one bounded HTTP line from a connection.
+/// @details Reads through LF, removes a preceding CR, and caps native storage at
+///          64 KiB. EOF after some bytes returns the unterminated partial line;
+///          EOF before any byte and allocation/transport failure return NULL.
+/// @param conn Open HTTP connection.
+/// @return Newly allocated NUL-terminated line without CRLF, or NULL.
 static char *read_line_conn(http_conn_t *conn) {
     char *line = NULL;
     size_t len = 0;
@@ -68,8 +72,14 @@ static char *read_line_conn(http_conn_t *conn) {
     return line;
 }
 
-/// @brief Parse HTTP response status line.
-/// @return Status code, or -1 on error.
+/// @brief Parse a strict HTTP/1.0 or HTTP/1.1 response status line.
+/// @details Requires an exact three-digit status in [100, 599] and optionally
+///          duplicates the remaining reason phrase.
+/// @param line NUL-terminated status line without CRLF.
+/// @param http_minor_out Optional output receiving zero or one.
+/// @param status_text_out Optional output receiving a newly allocated reason
+///        phrase.
+/// @return Parsed status code, or -1 on syntax or allocation failure.
 static int parse_status_line(const char *line, int *http_minor_out, char **status_text_out) {
     // Format: HTTP/1.x STATUS_CODE STATUS_TEXT
     if (strncmp(line, "HTTP/1.", 7) != 0)
@@ -381,6 +391,15 @@ static void http_response_head_cleanup(
 ///          managed Map are all registered with one recovery frame. Managed
 ///          allocation traps are re-raised after cleanup; malformed or short
 ///          wire input returns zero without transferring partial ownership.
+///          Up to eight informational responses are skipped before publishing
+///          the final head; aggregate bytes and field count are bounded.
+/// @param conn Open connection positioned at a response status line.
+/// @param status_out Optional output for the final status code.
+/// @param http_minor_out Optional output for the HTTP/1 minor version.
+/// @param status_text_out Optional output receiving the owned reason phrase.
+/// @param headers_map_out Optional output receiving the owned lowercase Map.
+/// @param redirect_location_out Optional output receiving an owned first
+///        Location value.
 /// @return One on success; zero on malformed/short response or native OOM.
 static int read_response_head(http_conn_t *conn,
                               int *status_out,
@@ -531,7 +550,12 @@ static int read_response_head(http_conn_t *conn,
     return 0;
 }
 
-/// @brief Read response body with Content-Length.
+/// @brief Read an exact Content-Length response body.
+/// @param conn Open connection positioned at the body.
+/// @param content_length Promised body byte count, bounded by the global limit.
+/// @param out_len Receives the exact count, or zero on failure.
+/// @return Newly allocated owned body buffer, or NULL for zero length,
+///         oversized input, allocation failure, or premature EOF.
 static uint8_t *read_body_content_length_conn(http_conn_t *conn,
                                               size_t content_length,
                                               size_t *out_len) {
@@ -568,6 +592,13 @@ static uint8_t *read_body_content_length_conn(http_conn_t *conn,
     return body;
 }
 
+/// @brief Parse one HTTP chunk-size line.
+/// @details Accepts one or more hexadecimal digits, optional whitespace, and
+///          optional chunk extensions beginning with `;`, while rejecting
+///          overflow and other trailing syntax.
+/// @param size_line NUL-terminated line without CRLF.
+/// @param chunk_size_out Receives the parsed size.
+/// @return One on success, otherwise zero.
 static int parse_http_chunk_size_line(const char *size_line, size_t *chunk_size_out) {
     size_t chunk_size = 0;
     int saw_digit = 0;
@@ -630,7 +661,15 @@ static int drain_chunk_trailers_conn(http_conn_t *conn) {
     }
 }
 
-/// @brief Read chunked transfer encoding body.
+/// @brief Decode a complete chunked-transfer response body.
+/// @details Enforces aggregate body limits, exact chunk payload sizes, empty
+///          chunk terminator lines, and bounded trailers. Empty bodies still
+///          return a non-NULL owned sentinel buffer so success is distinguishable
+///          from failure.
+/// @param conn Open connection positioned at the first chunk-size line.
+/// @param out_len Receives decoded payload length, or zero on failure.
+/// @return Newly allocated decoded body buffer, or NULL on malformed input,
+///         size violation, allocation failure, or premature EOF.
 static uint8_t *read_body_chunked_conn(http_conn_t *conn, size_t *out_len) {
     size_t body_cap = HTTP_BUFFER_SIZE;
     size_t body_len = 0;

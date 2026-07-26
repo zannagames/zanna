@@ -33,6 +33,8 @@ bind Map = Zanna.Collections.Map;
 bind Path = Zanna.IO.Path;
 bind Str = Zanna.String;
 bind Clock = Zanna.Time.Clock;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
 
 // ============================================================================
 // MODULE: scene_tileset_2d
@@ -53,6 +55,8 @@ final MAX_SCENE_TILESET_PIXELS: Integer = 8388608;
 final MAX_SCALED_CACHE_PIXELS: Integer = 8388608;
 final MAX_PALETTE_TILES: Integer = 512;
 final MAX_SPRITE_ENTRIES: Integer = 64;
+final MAX_TRANSFORMED_SPRITE_AXIS: Integer = 4096;
+final TINT_NONE_2D: Integer = 4294967295;
 final PALETTE_COLUMNS: Integer = 8;
 final PALETTE_TILE_SIZE: Integer = 28;
 final PALETTE_STRIDE: Integer = 30;
@@ -430,6 +434,201 @@ class SceneTilesetLibrary2D {
             x,
             y,
             cellSize);
+    }
+
+    /// @brief Draw one sprite frame with the full ADR 0192 object transform.
+    /// @details The frame renders at its native size scaled by the display
+    ///          zoom (cellSize over the authored tile size) and the object
+    ///          scale, mirrored, tinted, and rotated about the normalized
+    ///          pivot; the untransformed footprint's top-left stays at the
+    ///          anchor so legacy defaults draw exactly like DrawSpriteFrame's
+    ///          one-cell placement never did — at true frame size.
+    ///          Transformed frames are composed per draw (no scaled-cache
+    ///          entry); the canvas re-renders only when marked dirty.
+    /// @return True when the frame was drawn.
+    expose func DrawSpriteFrameTransformed(destination: Pixels,
+                                           authoredPath: String,
+                                           frame: Integer,
+                                           anchorX: Integer,
+                                           anchorY: Integer,
+                                           cellSize: Integer,
+                                           tileWidth: Integer,
+                                           tileHeight: Integer,
+                                           scaleX: Number,
+                                           scaleY: Number,
+                                           rotation: Number,
+                                           flipX: Boolean,
+                                           flipY: Boolean,
+                                           tint: Integer,
+                                           pivotX: Number,
+                                           pivotY: Number) -> Boolean {
+        if destination == null or cellSize <= 0
+           or tileWidth <= 0 or tileHeight <= 0 {
+            return false;
+        }
+        var index = SpriteEntryIndex(authoredPath);
+        if index < 0 { return false; }
+        var entry = spriteEntries.get(index);
+        if entry == null or entry.pixels == null { return false; }
+        var tileId = frame + 1;
+        if tileId <= 0 or tileId > entry.tileCount { return false; }
+        var baseWidth =
+            entry.tileWidth * cellSize * 1.0 / tileWidth;
+        var baseHeight =
+            entry.tileHeight * cellSize * 1.0 / tileHeight;
+        var magnitudeX = scaleX;
+        if magnitudeX < 0.0 { magnitudeX = 0.0 - magnitudeX; }
+        var magnitudeY = scaleY;
+        if magnitudeY < 0.0 { magnitudeY = 0.0 - magnitudeY; }
+        var scaledWidth = Convert.NumToInt(
+            baseWidth * magnitudeX + 0.5);
+        var scaledHeight = Convert.NumToInt(
+            baseHeight * magnitudeY + 0.5);
+        if scaledWidth <= 0 or scaledHeight <= 0
+           or scaledWidth > MAX_TRANSFORMED_SPRITE_AXIS
+           or scaledHeight > MAX_TRANSFORMED_SPRITE_AXIS {
+            return false;
+        }
+        // Negative scale mirrors; an explicit flip mirrors again.
+        var mirrorX = flipX;
+        if scaleX < 0.0 { mirrorX = mirrorX == false; }
+        var mirrorY = flipY;
+        if scaleY < 0.0 { mirrorY = mirrorY == false; }
+        var working = ComposeSpriteStages(
+            entry, tileId, scaledWidth, scaledHeight,
+            mirrorX, mirrorY, tint);
+        if working == null { return false; }
+
+        // The pivot stays fixed through scaling: the scaled top-left is
+        // the anchor plus the pivot's base offset minus its scaled one.
+        var pivotCanvasX = anchorX + baseWidth * pivotX;
+        var pivotCanvasY = anchorY + baseHeight * pivotY;
+        if rotation == 0.0 {
+            CompositeRect(
+                destination, working,
+                Convert.NumToInt(pivotCanvasX - scaledWidth * pivotX),
+                Convert.NumToInt(pivotCanvasY - scaledHeight * pivotY),
+                scaledWidth, scaledHeight);
+            return true;
+        }
+
+        // Rotation happens about the image center; re-anchor so the
+        // pivot point stays fixed on the canvas.
+        var rotated = RotateSprite(working, rotation);
+        if rotated == null { return false; }
+        var rotatedWidth = rotated.Width;
+        var rotatedHeight = rotated.Height;
+        var centerOffsetX = scaledWidth * 0.5 - scaledWidth * pivotX;
+        var centerOffsetY = scaledHeight * 0.5 - scaledHeight * pivotY;
+        var radians = rotation * 3.14159265358979323846 / 180.0;
+        var cosine = Math.Cos(radians);
+        var sine = Math.Sin(radians);
+        var rotatedOffsetX =
+            centerOffsetX * cosine - centerOffsetY * sine;
+        var rotatedOffsetY =
+            centerOffsetX * sine + centerOffsetY * cosine;
+        CompositeRect(
+            destination, rotated,
+            Convert.NumToInt(
+                pivotCanvasX + rotatedOffsetX - rotatedWidth * 0.5),
+            Convert.NumToInt(
+                pivotCanvasY + rotatedOffsetY - rotatedHeight * 0.5),
+            rotatedWidth, rotatedHeight);
+        return true;
+    }
+
+    /// @brief Return one sprite's native frame width, or 0 when unloadable.
+    expose func SpriteNativeWidth(authoredPath: String) -> Integer {
+        var index = SpriteEntryIndex(authoredPath);
+        if index < 0 { return 0; }
+        var entry = spriteEntries.get(index);
+        if entry == null or entry.pixels == null { return 0; }
+        return entry.tileWidth;
+    }
+
+    /// @brief Return one sprite's native frame height, or 0 when unloadable.
+    expose func SpriteNativeHeight(authoredPath: String) -> Integer {
+        var index = SpriteEntryIndex(authoredPath);
+        if index < 0 { return 0; }
+        var entry = spriteEntries.get(index);
+        if entry == null or entry.pixels == null { return 0; }
+        return entry.tileHeight;
+    }
+
+    /// @brief Rotate one composed frame, or return null on failure.
+    hide func RotateSprite(source: Pixels, rotation: Number) -> Pixels {
+        try {
+            return source.Rotate(rotation);
+        } catch {
+            return null;
+        }
+        return null;
+    }
+
+    /// @brief Extract, scale, mirror, and tint one frame; null on failure.
+    /// @details Early-return style: every stage output is a fresh single
+    ///          assignment, which the IL verifier requires for object
+    ///          variables under exception scopes.
+    hide func ComposeSpriteStages(entry: TilesetEntry2D,
+                                  tileId: Integer,
+                                  scaledWidth: Integer,
+                                  scaledHeight: Integer,
+                                  mirrorX: Boolean,
+                                  mirrorY: Boolean,
+                                  tint: Integer) -> Pixels {
+        try {
+            var source = Pixels.New(entry.tileWidth, entry.tileHeight);
+            if source == null { return null; }
+            var sourceIndex = tileId - 1;
+            source.Copy(
+                0, 0, entry.pixels,
+                (sourceIndex % entry.columns) * entry.tileWidth,
+                (sourceIndex / entry.columns) * entry.tileHeight,
+                entry.tileWidth, entry.tileHeight);
+            var sized = source.Scale(scaledWidth, scaledHeight);
+            var mirrored = MirrorSprite(sized, mirrorX, mirrorY);
+            if tint != TINT_NONE_2D { return mirrored.Tint(tint); }
+            return mirrored;
+        } catch {
+            return null;
+        }
+        return null;
+    }
+
+    /// @brief Mirror one frame horizontally and/or vertically.
+    hide func MirrorSprite(source: Pixels,
+                           mirrorX: Boolean,
+                           mirrorY: Boolean) -> Pixels {
+        if mirrorX and mirrorY { return source.FlipH().FlipV(); }
+        if mirrorX { return source.FlipH(); }
+        if mirrorY { return source.FlipV(); }
+        return source;
+    }
+
+    /// @brief Source-over composite one arbitrary-size image region.
+    hide func CompositeRect(destination: Pixels,
+                            source: Pixels,
+                            destinationX: Integer,
+                            destinationY: Integer,
+                            width: Integer,
+                            height: Integer) {
+        var y = 0;
+        while y < height {
+            var x = 0;
+            while x < width {
+                var rgba = source.GetRgba(x, y);
+                var alpha = rgba % 256;
+                if alpha > 0 {
+                    destination.BlendPixel(
+                        destinationX + x,
+                        destinationY + y,
+                        rgba / 256,
+                        alpha);
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
     }
 
     /// @brief Return one cached sprite entry index, decoding on first use.

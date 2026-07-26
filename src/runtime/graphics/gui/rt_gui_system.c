@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_gui_system.c
+// File: src/runtime/graphics/gui/rt_gui_system.c
 // Purpose: System-level GUI services for the Zanna runtime: clipboard read/write,
 //   keyboard shortcut registration and frame-based polling, window management
 //   helpers (title, opacity, always-on-top, position, maximise/minimise), and
@@ -27,7 +27,7 @@
 //   - Clipboard text returned by vgfx_clipboard_get_text is malloc'd by the
 //     platform; this file frees it after converting to rt_string.
 //
-// Links: src/runtime/graphics/rt_gui_internal.h (internal types/globals),
+// Links: src/runtime/graphics/gui/rt_gui_internal.h (internal types/globals),
 //        src/lib/graphics/include/vgfx.h (clipboard and window management API),
 //        src/runtime/rt_platform.h (platform detection)
 //
@@ -62,6 +62,10 @@ static char *rt_gui_system_strdup(const char *text) {
 //=============================================================================
 
 /// @brief Copy text to the system clipboard.
+/// @details Converts the complete runtime display string to NUL-terminated GUI-safe UTF-8,
+///          delegates synchronously to the platform clipboard, and releases the temporary copy.
+///          Conversion failure leaves the clipboard unchanged.
+/// @param text Runtime text to publish; embedded NUL bytes become replacement characters.
 void rt_clipboard_set_text(rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     char *ctext = rt_string_to_gui_cstr(text);
@@ -72,6 +76,9 @@ void rt_clipboard_set_text(rt_string text) {
 }
 
 /// @brief Get the text of the clipboard.
+/// @details Copies the platform-owned NUL-terminated text into a runtime string and frees the
+///          platform allocation immediately; no clipboard storage is exposed to the caller.
+/// @return Runtime clipboard text, or the canonical empty string when text is unavailable.
 rt_string rt_clipboard_get_text(void) {
     RT_ASSERT_MAIN_THREAD();
     char *text = vgfx_clipboard_get_text();
@@ -83,6 +90,7 @@ rt_string rt_clipboard_get_text(void) {
 }
 
 /// @brief Has the text of the clipboard.
+/// @return One when the platform reports the text clipboard format, otherwise zero.
 int64_t rt_clipboard_has_text(void) {
     RT_ASSERT_MAIN_THREAD();
     return vgfx_clipboard_has_format(VGFX_CLIPBOARD_TEXT) ? 1 : 0;
@@ -99,12 +107,17 @@ void rt_clipboard_clear(void) {
 //=============================================================================
 
 /// @brief Pick the app whose shortcut table to operate on.
-/// Falls back to the active app if no current-app override is set.
+/// @details Prefers the widget-construction/current-app context and falls back to the app whose
+///          toolkit state is active. The pointer is borrowed and may be NULL.
+/// @return Borrowed shortcut-owning app, or NULL when no GUI app context exists.
 static rt_gui_app_t *rt_shortcuts_app(void) {
     return s_current_app ? s_current_app : rt_gui_get_active_app();
 }
 
 /// @brief Grow the shortcut table if it's full (doubles capacity, default 16).
+/// @details Uses checked geometric growth and publishes the reallocated table only on success.
+///          Invalid apps, available capacity, overflow, and allocation failure are no-ops.
+/// @param app App whose owned shortcut array may need one additional slot.
 static void rt_shortcuts_ensure_capacity(rt_gui_app_t *app) {
     if (!app || app->shortcut_count < app->shortcut_cap)
         return;
@@ -120,6 +133,10 @@ static void rt_shortcuts_ensure_capacity(rt_gui_app_t *app) {
     app->shortcut_cap = new_cap;
 }
 
+/// @brief Release every copied identifier in an app's ordered trigger queue.
+/// @details Frees the queue array and legacy last-triggered copy, then resets all counts,
+///          capacities, and pointers without changing registered shortcuts or chord state.
+/// @param app App whose transient trigger storage should be cleared; NULL is a no-op.
 static void rt_shortcuts_free_triggered_queue(rt_gui_app_t *app) {
     if (!app)
         return;
@@ -134,6 +151,13 @@ static void rt_shortcuts_free_triggered_queue(rt_gui_app_t *app) {
     app->triggered_shortcut_id = NULL;
 }
 
+/// @brief Append a copied shortcut identifier to the current frame's trigger queue.
+/// @details Grows the queue geometrically with overflow checks, appends an owned copy in activation
+///          order, and best-effort refreshes the legacy last-triggered identifier. A failure before
+///          append leaves the queue unchanged; failure of only the legacy copy does not undo it.
+/// @param app App owning transient shortcut state.
+/// @param id Borrowed non-NULL registered identifier to copy.
+/// @return One when the ordered queue accepted the identifier, otherwise zero.
 static int rt_shortcuts_record_triggered(rt_gui_app_t *app, const char *id) {
     if (!app || !id)
         return 0;
@@ -167,6 +191,9 @@ static int rt_shortcuts_record_triggered(rt_gui_app_t *app, const char *id) {
 enum { RT_SHORTCUT_CHORD_TIMEOUT_MS = 1500 };
 
 /// @brief Clear a partially entered shortcut chord for one app.
+/// @details Resets the pending flag, parsed prefix, and timeout origin without touching registered
+///          shortcuts or current-frame trigger results.
+/// @param app App whose chord state should be cancelled; NULL is a no-op.
 static void rt_shortcuts_cancel_chord(rt_gui_app_t *app) {
     if (!app)
         return;
@@ -453,6 +480,8 @@ void rt_shortcuts_unregister(rt_string id) {
 }
 
 /// @brief Remove all entries from the shortcuts.
+/// @details Frees every owned identifier, binding, and description plus both the registration and
+///          trigger arrays, then cancels any pending chord. No app context is a no-op.
 void rt_shortcuts_clear(void) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_shortcuts_app();
@@ -472,6 +501,11 @@ void rt_shortcuts_clear(void) {
 }
 
 /// @brief Check if any registered keyboard shortcut was triggered this frame.
+/// @details Compares the runtime identifier by exact bytes against the ordered trigger queue and
+///          legacy last-triggered copy without consuming either. Embedded NULs and invalid strings
+///          are rejected so C-string registrations cannot match truncated input.
+/// @param id Runtime shortcut identifier to query.
+/// @return One when that identifier fired in the current frame, otherwise zero.
 int64_t rt_shortcuts_was_triggered(rt_string id) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_shortcuts_app();
@@ -521,6 +555,9 @@ void rt_shortcuts_clear_triggered(rt_gui_app_t *app) {
 }
 
 /// @brief Compare two parsed strokes for exact key/modifier identity.
+/// @param left First normalized stroke.
+/// @param right Second normalized stroke.
+/// @return One when both non-NULL strokes have identical key and modifier fields, otherwise zero.
 static int rt_shortcut_strokes_equal(const rt_gui_shortcut_stroke_t *left,
                                      const rt_gui_shortcut_stroke_t *right) {
     return left && right && left->ctrl == right->ctrl && left->shift == right->shift &&
@@ -528,6 +565,13 @@ static int rt_shortcut_strokes_equal(const rt_gui_shortcut_stroke_t *left,
 }
 
 /// @brief Test one parsed stroke against a normalized input event.
+/// @param stroke Parsed registered stroke; an empty key never matches.
+/// @param key Normalized event key.
+/// @param ctrl Normalized Control flag.
+/// @param shift Normalized Shift flag.
+/// @param alt Normalized Alt flag.
+/// @param super Normalized Command/Super flag.
+/// @return One for an exact key/modifier match, otherwise zero.
 static int rt_shortcut_stroke_matches(
     const rt_gui_shortcut_stroke_t *stroke, int key, int ctrl, int shift, int alt, int super) {
     return stroke && stroke->key != 0 && stroke->key == key && stroke->ctrl == ctrl &&
@@ -535,6 +579,10 @@ static int rt_shortcut_stroke_matches(
 }
 
 /// @brief Return whether an app's pending chord exceeded its input window.
+/// @details Missing timing state is not expired; a monotonic-clock reversal is treated as timeout
+///          so stale prefix state cannot persist indefinitely.
+/// @param app App whose pending prefix timestamps should be compared.
+/// @return One when the chord is pending and older than 1.5 seconds, otherwise zero.
 static int rt_shortcuts_chord_timed_out(const rt_gui_app_t *app) {
     if (!app || !app->shortcut_chord_pending || app->shortcut_chord_started_ms == 0 ||
         app->last_event_time_ms == 0)
@@ -654,7 +702,11 @@ rt_string rt_shortcuts_get_triggered(void) {
     return rt_str_empty();
 }
 
-/// @brief Enable or disable global keyboard shortcut processing.
+/// @brief Enable or disable one registered keyboard shortcut.
+/// @details Performs an exact identifier lookup and normalizes @p enabled to Boolean. Invalid,
+///          embedded-NUL, missing, or allocation-failed identifiers leave the table unchanged.
+/// @param id Runtime identifier registered by @ref rt_shortcuts_register.
+/// @param enabled Non-zero to enable matching, zero to suppress this binding.
 void rt_shortcuts_set_enabled(rt_string id, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_shortcuts_app();
@@ -676,7 +728,9 @@ void rt_shortcuts_set_enabled(rt_string id, int64_t enabled) {
     free(cid);
 }
 
-/// @brief Check whether global keyboard shortcuts are currently enabled.
+/// @brief Check whether one registered keyboard shortcut is enabled.
+/// @param id Runtime identifier registered by @ref rt_shortcuts_register.
+/// @return One when the exact binding exists and is enabled, otherwise zero.
 int64_t rt_shortcuts_is_enabled(rt_string id) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_shortcuts_app();
@@ -729,6 +783,8 @@ int64_t rt_shortcuts_get_global_enabled(void) {
 /// @brief Validate `app` as a live app handle and return it, or NULL if invalid/destroyed.
 /// @details Thin wrapper around rt_gui_app_handle_checked that provides a
 ///          concise name for the window-management helpers in this file.
+/// @param app Candidate opaque runtime handle.
+/// @return Borrowed live app, or NULL for invalid, foreign, or destroyed input.
 static rt_gui_app_t *rt_app_checked(void *app) {
     return rt_gui_app_handle_checked(app);
 }
@@ -737,6 +793,8 @@ static rt_gui_app_t *rt_app_checked(void *app) {
 /// @details Used by window-size helpers to convert between logical and physical
 ///          pixels. Guards against zero/NaN scale values from unusual display
 ///          configurations.
+/// @param app Borrowed validated app; may be NULL or lack a window.
+/// @return Positive finite platform scale, with 1.0 as the fallback.
 static float rt_app_window_scale(rt_gui_app_t *app) {
     float scale = (app && app->window) ? vgfx_window_get_scale(app->window) : 1.0f;
     return (!isfinite(scale) || scale <= 0.0f) ? 1.0f : scale;
@@ -747,6 +805,9 @@ static float rt_app_window_scale(rt_gui_app_t *app) {
 ///          the logical-pixel cap is respected even on high-DPI displays. Does
 ///          NOT set a fixed size on the root widget — root sizing is driven by
 ///          the layout engine in rt_gui_app_render().
+/// @param app Borrowed validated app whose native window should be resized.
+/// @param w Requested logical width.
+/// @param h Requested logical height.
 static void rt_app_set_window_size_checked(rt_gui_app_t *app, int64_t w, int64_t h) {
     if (!app || !app->window)
         return;
@@ -769,6 +830,11 @@ static void rt_app_set_window_size_checked(rt_gui_app_t *app, int64_t w, int64_t
 }
 
 /// @brief Publish a logical native-window minimum after clamping to vgfx limits.
+/// @details Computes the largest representable logical dimensions from the current platform scale
+///          and clamps each request to the inclusive supported range.
+/// @param app Borrowed validated app whose native minimum should change.
+/// @param w Requested logical minimum width.
+/// @param h Requested logical minimum height.
 static void rt_app_set_minimum_size_checked(rt_gui_app_t *app, int64_t w, int64_t h) {
     if (!app || !app->window)
         return;
@@ -789,6 +855,10 @@ static void rt_app_set_minimum_size_checked(rt_gui_app_t *app, int64_t w, int64_
 }
 
 /// @brief Set the title of the app.
+/// @details Allocation-first conversion preserves the old title on failure. Success updates the
+///          native title, query copy, root accessible name, accessibility bridge, and native menu.
+/// @param app Candidate live GUI app handle.
+/// @param title Runtime display title; embedded NULs become replacement characters.
 void rt_app_set_title(void *app, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -817,6 +887,8 @@ void rt_app_set_title(void *app, rt_string title) {
 }
 
 /// @brief Get the title of the app.
+/// @param app Candidate live GUI app handle.
+/// @return Runtime copy of the stored title, or the canonical empty string when invalid/unset.
 rt_string rt_app_get_title(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -837,6 +909,8 @@ void rt_app_set_size(void *app, int64_t width, int64_t height) {
 }
 
 /// @brief Get the width of the app.
+/// @param app Candidate live GUI app handle.
+/// @return Current native window width in platform pixels, or zero when invalid.
 int64_t rt_app_get_width(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -850,6 +924,8 @@ int64_t rt_app_get_width(void *app) {
 }
 
 /// @brief Get the height of the app.
+/// @param app Candidate live GUI app handle.
+/// @return Current native window height in platform pixels, or zero when invalid.
 int64_t rt_app_get_height(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -866,6 +942,8 @@ int64_t rt_app_get_height(void *app) {
 /// @details Window width/height are reported in physical pixels; dividing by this
 ///          factor recovers the logical (point) dimensions used for layout
 ///          breakpoints. Mirrors the scaling already applied by the monitor getters.
+/// @param app Candidate live GUI app handle.
+/// @return Positive finite platform backing scale, or 1.0 when invalid.
 double rt_app_get_scale(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -875,6 +953,8 @@ double rt_app_get_scale(void *app) {
 }
 
 /// @brief Get the window width in logical (point) units (physical width / scale).
+/// @param app Candidate live GUI app handle.
+/// @return DPI-rounded logical width, or zero when invalid.
 int64_t rt_app_get_logical_width(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -886,6 +966,8 @@ int64_t rt_app_get_logical_width(void *app) {
 }
 
 /// @brief Get the window height in logical (point) units (physical height / scale).
+/// @param app Candidate live GUI app handle.
+/// @return DPI-rounded logical height, or zero when invalid.
 int64_t rt_app_get_logical_height(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -897,6 +979,9 @@ int64_t rt_app_get_logical_height(void *app) {
 }
 
 /// @brief Convert a physical-pixel value to logical units using the app's current scale.
+/// @param app Candidate live GUI app handle.
+/// @param physical Signed physical-pixel value to convert.
+/// @return DPI-rounded logical value, or @p physical unchanged for an invalid app.
 int64_t rt_app_to_logical(void *app, int64_t physical) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -906,6 +991,9 @@ int64_t rt_app_to_logical(void *app, int64_t physical) {
 }
 
 /// @brief Convert a logical value to physical pixels using the app's current scale.
+/// @param app Candidate live GUI app handle.
+/// @param logical Signed logical value to convert.
+/// @return DPI-rounded physical value, or @p logical unchanged for an invalid app.
 int64_t rt_app_to_physical(void *app, int64_t logical) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -914,14 +1002,11 @@ int64_t rt_app_to_physical(void *app, int64_t logical) {
     return rt_gui_dpi_to_physical(logical, (double)rt_app_window_scale(gui_app));
 }
 
-/// @brief Set the user UI zoom multiplier applied on top of the HiDPI scale.
-/// @details Scales typography, spacing, and control metrics together so the whole
-///          UI grows or shrinks as one. Clamped to a legible range. A changed
-///          value immediately rebuilds the per-app theme, reapplies logical font
-///          sizes, and invalidates layout/paint so an idle frame cannot hide it.
 /// @brief Enable or disable inertial smooth scrolling for the app (ADR 0137).
 /// @details Applies process-wide to scroll views and code editors; themes that
 ///          request reduced motion suppress easing regardless of this flag.
+/// @param app Reserved app handle; ignored because the setting is process-global.
+/// @param enabled Non-zero to request smooth scrolling, zero for immediate motion.
 void rt_app_set_smooth_scroll(void *app, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     (void)app;
@@ -929,12 +1014,19 @@ void rt_app_set_smooth_scroll(void *app, int64_t enabled) {
 }
 
 /// @brief Return whether inertial smooth scrolling is requested (ADR 0137).
+/// @param app Reserved app handle; ignored because the setting is process-global.
+/// @return One when smooth scrolling is requested, otherwise zero.
 int64_t rt_app_get_smooth_scroll(void *app) {
     RT_ASSERT_MAIN_THREAD();
     (void)app;
     return vg_smooth_scroll_enabled() ? 1 : 0;
 }
 
+/// @brief Set the user UI zoom multiplier applied on top of the HiDPI scale.
+/// @details Non-positive and NaN input becomes 1.0, then the value is clamped to [0.5, 3.0].
+///          A change refreshes theme/font metrics and invalidates dependent layout and paint.
+/// @param app Candidate live GUI app handle.
+/// @param scale Requested user zoom multiplier.
 void rt_app_set_ui_scale(void *app, double scale) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -956,6 +1048,8 @@ void rt_app_set_ui_scale(void *app, double scale) {
 ///        used by the code editor, list box, and output pane. The value is
 ///        clamped inside the gui library. The app handle is accepted for API
 ///        symmetry but the setting is process-global.
+/// @param app Reserved app handle; ignored.
+/// @param speed Requested wheel sensitivity forwarded to the toolkit sanitizer.
 void rt_app_set_wheel_speed(void *app, double speed) {
     RT_ASSERT_MAIN_THREAD();
     (void)app;
@@ -963,6 +1057,8 @@ void rt_app_set_wheel_speed(void *app, double speed) {
 }
 
 /// @brief `App.GetWheelSpeed` — return the global mouse-wheel scroll sensitivity.
+/// @param app Reserved app handle; ignored.
+/// @return Current process-global wheel sensitivity.
 double rt_app_get_wheel_speed(void *app) {
     RT_ASSERT_MAIN_THREAD();
     (void)app;
@@ -970,6 +1066,8 @@ double rt_app_get_wheel_speed(void *app) {
 }
 
 /// @brief Get the current user UI zoom multiplier (1.0 = default).
+/// @param app Candidate live GUI app handle.
+/// @return Positive stored user multiplier, or 1.0 for invalid/non-positive state.
 double rt_app_get_ui_scale(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -992,6 +1090,10 @@ double rt_app_get_effective_scale(void *app) {
 }
 
 /// @brief Move the app window to a specific screen position.
+/// @details Saturates each coordinate to the signed 32-bit platform domain.
+/// @param app Candidate live GUI app handle.
+/// @param x Requested screen-space X coordinate.
+/// @param y Requested screen-space Y coordinate.
 void rt_app_set_position(void *app, int64_t x, int64_t y) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1004,6 +1106,7 @@ void rt_app_set_position(void *app, int64_t x, int64_t y) {
 }
 
 /// @brief Return the x screen coordinate of the app window's top-left corner.
+/// @param app Candidate live GUI app handle.
 /// @return X position in screen pixels, or 0 if the app or window is invalid.
 int64_t rt_app_get_x(void *app) {
     RT_ASSERT_MAIN_THREAD();
@@ -1018,6 +1121,7 @@ int64_t rt_app_get_x(void *app) {
 }
 
 /// @brief Return the y screen coordinate of the app window's top-left corner.
+/// @param app Candidate live GUI app handle.
 /// @return Y position in screen pixels, or 0 if the app or window is invalid.
 int64_t rt_app_get_y(void *app) {
     RT_ASSERT_MAIN_THREAD();
@@ -1032,6 +1136,7 @@ int64_t rt_app_get_y(void *app) {
 }
 
 /// @brief Minimize the app.
+/// @param app Candidate live GUI app handle; invalid/windowless handles are ignored.
 void rt_app_minimize(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1042,6 +1147,7 @@ void rt_app_minimize(void *app) {
 }
 
 /// @brief Maximize the app.
+/// @param app Candidate live GUI app handle; invalid/windowless handles are ignored.
 void rt_app_maximize(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1052,6 +1158,7 @@ void rt_app_maximize(void *app) {
 }
 
 /// @brief Restore the app.
+/// @param app Candidate live GUI app handle; invalid/windowless handles are ignored.
 void rt_app_restore(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1062,6 +1169,8 @@ void rt_app_restore(void *app) {
 }
 
 /// @brief Check whether the app window is currently minimized.
+/// @param app Candidate live GUI app handle.
+/// @return Platform minimized state, or zero when invalid/windowless.
 int64_t rt_app_is_minimized(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1071,6 +1180,8 @@ int64_t rt_app_is_minimized(void *app) {
 }
 
 /// @brief Check whether the app window is currently maximized.
+/// @param app Candidate live GUI app handle.
+/// @return Platform maximized state, or zero when invalid/windowless.
 int64_t rt_app_is_maximized(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1092,6 +1203,8 @@ void rt_app_set_fullscreen(void *app, int64_t fullscreen) {
 }
 
 /// @brief Check whether the app window is in fullscreen mode.
+/// @param app Candidate live GUI app handle.
+/// @return Platform fullscreen state, or zero when invalid/windowless.
 int64_t rt_app_is_fullscreen(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1101,6 +1214,8 @@ int64_t rt_app_is_fullscreen(void *app) {
 }
 
 /// @brief Focus the app.
+/// @details Requests OS foreground activation without changing the runtime active-app pointer.
+/// @param app Candidate live GUI app handle.
 void rt_app_focus(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1111,11 +1226,14 @@ void rt_app_focus(void *app) {
 }
 
 /// @brief Activate the app as the foreground OS application/window.
+/// @param app Candidate live GUI app handle forwarded to @ref rt_app_focus.
 void rt_app_activate(void *app) {
     rt_app_focus(app);
 }
 
 /// @brief Check whether the app window currently has OS-level focus.
+/// @param app Candidate live GUI app handle.
+/// @return One when the native window is focused, otherwise zero.
 int64_t rt_app_is_focused(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1125,6 +1243,8 @@ int64_t rt_app_is_focused(void *app) {
 }
 
 /// @brief Count of frames that took the full-window repaint path (plan 07).
+/// @param app Candidate live GUI app handle.
+/// @return Monotonic full-repaint frame count, or zero when invalid.
 int64_t rt_app_get_paint_frames_full(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1132,6 +1252,8 @@ int64_t rt_app_get_paint_frames_full(void *app) {
 }
 
 /// @brief Count of frames that took the damage-region (partial) repaint path.
+/// @param app Candidate live GUI app handle.
+/// @return Monotonic partial-repaint frame count, or zero when invalid.
 int64_t rt_app_get_paint_frames_partial(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1141,6 +1263,8 @@ int64_t rt_app_get_paint_frames_partial(void *app) {
 /// @brief Enable or disable damage-region rendering at runtime (kill switch).
 /// @details Complements the ZANNA_GUI_FULL_REPAINT=1 env var. Passing 0 forces
 ///          every dirty frame through the full-window repaint path.
+/// @param app Candidate live GUI app handle.
+/// @param enabled Non-zero to permit partial repainting, zero to force full repaint.
 void rt_app_set_partial_paint(void *app, int64_t enabled) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1165,6 +1289,9 @@ void rt_app_set_prevent_close(void *app, int64_t prevent) {
 }
 
 /// @brief Check whether the window close was requested this frame.
+/// @details Consumes the app's close-request edge so one platform request is reported once.
+/// @param app Candidate live GUI app handle.
+/// @return One when a pending request was consumed, otherwise zero.
 int64_t rt_app_was_close_requested(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1176,6 +1303,8 @@ int64_t rt_app_was_close_requested(void *app) {
 }
 
 /// @brief Get the monitor width of the app.
+/// @param app Candidate live GUI app handle.
+/// @return Monitor width in logical units, or zero when invalid/windowless.
 int64_t rt_app_get_monitor_width(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1190,6 +1319,8 @@ int64_t rt_app_get_monitor_width(void *app) {
 }
 
 /// @brief Get the monitor height of the app.
+/// @param app Candidate live GUI app handle.
+/// @return Monitor height in logical units, or zero when invalid/windowless.
 int64_t rt_app_get_monitor_height(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
@@ -1213,12 +1344,16 @@ void rt_app_set_window_size(void *app, int64_t w, int64_t h) {
 }
 
 /// @brief Set the app window's persistent minimum logical dimensions.
+/// @param app Candidate live GUI app handle.
+/// @param w Requested logical minimum width.
+/// @param h Requested logical minimum height.
 void rt_app_set_minimum_size(void *app, int64_t w, int64_t h) {
     RT_ASSERT_MAIN_THREAD();
     rt_app_set_minimum_size_checked(rt_app_checked(app), w, h);
 }
 
 /// @brief Return the default font size for the app window in logical points.
+/// @param app Candidate live GUI app handle.
 /// @return Font size in logical points, defaulting to 14.0 if the app is invalid.
 double rt_app_get_font_size(void *app) {
     RT_ASSERT_MAIN_THREAD();
@@ -1279,6 +1414,7 @@ void rt_cursor_reset(void) {
 }
 
 /// @brief Show or hide the mouse cursor.
+/// @param visible Non-zero to show the active app cursor, zero to hide it.
 void rt_cursor_set_visible(int64_t visible) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_shortcuts_app();
@@ -1286,14 +1422,19 @@ void rt_cursor_set_visible(int64_t visible) {
         vgfx_set_cursor_visible(app->window, (int32_t)visible);
 }
 
-/// @note Cursor is global — not per-widget. The widget parameter is reserved for future use.
+/// @brief Set the process-global cursor while accepting a widget-shaped API.
+/// @details Cursor selection is currently active-app-wide; @p widget is reserved for future
+///          per-widget cursor policy.
+/// @param widget Reserved candidate widget handle; currently ignored.
+/// @param type Public cursor kind forwarded to @ref rt_cursor_set.
 void rt_widget_set_cursor(void *widget, int64_t type) {
     RT_ASSERT_MAIN_THREAD();
     (void)widget;
     rt_cursor_set(type);
 }
 
-/// @note Cursor is global — not per-widget. The widget parameter is reserved for future use.
+/// @brief Reset the process-global cursor while accepting a widget-shaped API.
+/// @param widget Reserved candidate widget handle; currently ignored.
 void rt_widget_reset_cursor(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     (void)widget;
@@ -1302,17 +1443,20 @@ void rt_widget_reset_cursor(void *widget) {
 
 #else /* !ZANNA_ENABLE_GRAPHICS */
 
-/// @brief Copy text to the system clipboard.
+/// @brief Stub: ignore clipboard writes when graphics is disabled.
+/// @param text Ignored runtime text.
 void rt_clipboard_set_text(rt_string text) {
     (void)text;
 }
 
-/// @brief Get the text of the clipboard.
+/// @brief Stub: report empty clipboard text when graphics is disabled.
+/// @return Canonical empty runtime string.
 rt_string rt_clipboard_get_text(void) {
     return rt_str_empty();
 }
 
-/// @brief Has the text of the clipboard.
+/// @brief Stub: report no clipboard text when graphics is disabled.
+/// @return Always zero.
 int64_t rt_clipboard_has_text(void) {
     return 0;
 }
@@ -1321,6 +1465,9 @@ int64_t rt_clipboard_has_text(void) {
 void rt_clipboard_clear(void) {}
 
 /// @brief Stub: graphics disabled — no-op; shortcut registration is silently ignored.
+/// @param id Ignored runtime identifier.
+/// @param keys Ignored binding text.
+/// @param description Ignored display description.
 void rt_shortcuts_register(rt_string id, rt_string keys, rt_string description) {
     (void)id;
     (void)keys;
@@ -1328,6 +1475,7 @@ void rt_shortcuts_register(rt_string id, rt_string keys, rt_string description) 
 }
 
 /// @brief Stub: graphics disabled — no-op; no shortcut table exists to remove from.
+/// @param id Ignored runtime identifier.
 void rt_shortcuts_unregister(rt_string id) {
     (void)id;
 }
@@ -1335,18 +1483,25 @@ void rt_shortcuts_unregister(rt_string id) {
 /// @brief Remove all entries from the shortcuts.
 void rt_shortcuts_clear(void) {}
 
-/// @brief Check if any registered keyboard shortcut was triggered this frame.
+/// @brief Stub: report no shortcut trigger when graphics is disabled.
+/// @param id Ignored runtime identifier.
+/// @return Always zero.
 int64_t rt_shortcuts_was_triggered(rt_string id) {
     (void)id;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no-op; no triggered shortcut state to clear.
+/// @param app Ignored app pointer.
 void rt_shortcuts_clear_triggered(rt_gui_app_t *app) {
     (void)app;
 }
 
 /// @brief Stub: graphics disabled — returns 0; no shortcut can be triggered without graphics.
+/// @param app Ignored app pointer.
+/// @param key Ignored key code.
+/// @param mods Ignored modifier mask.
+/// @return Always zero.
 int8_t rt_shortcuts_check_key(rt_gui_app_t *app, int key, int mods) {
     (void)app;
     (void)key;
@@ -1355,112 +1510,150 @@ int8_t rt_shortcuts_check_key(rt_gui_app_t *app, int key, int mods) {
 }
 
 /// @brief Stub: graphics disabled — returns empty string; no shortcut was triggered.
+/// @return Canonical empty runtime string.
 rt_string rt_shortcuts_get_triggered(void) {
     return rt_str_empty();
 }
 
 /// @brief Stub: graphics disabled — no-op; no shortcut to enable or disable.
+/// @param id Ignored runtime identifier.
+/// @param enabled Ignored enabled flag.
 void rt_shortcuts_set_enabled(rt_string id, int64_t enabled) {
     (void)id;
     (void)enabled;
 }
 
 /// @brief Stub: graphics disabled — returns 0; no shortcuts exist to query.
+/// @param id Ignored runtime identifier.
+/// @return Always zero.
 int64_t rt_shortcuts_is_enabled(rt_string id) {
     (void)id;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no-op; global shortcut flag has no effect.
+/// @param enabled Ignored global enabled flag.
 void rt_shortcuts_set_global_enabled(int64_t enabled) {
     (void)enabled;
 }
 
 /// @brief Stub: graphics disabled — returns 0; global shortcuts are always inactive.
+/// @return Always zero.
 int64_t rt_shortcuts_get_global_enabled(void) {
     return 0;
 }
 
-/// @brief Set the title of the app.
+/// @brief Stub: ignore app title changes when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @param title Ignored runtime title.
 void rt_app_set_title(void *app, rt_string title) {
     (void)app;
     (void)title;
 }
 
-/// @brief Get the title of the app.
+/// @brief Stub: return an empty app title when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Canonical empty runtime string.
 rt_string rt_app_get_title(void *app) {
     (void)app;
     return rt_str_empty();
 }
 
 /// @brief Stub: graphics disabled — no-op; no window exists to resize.
+/// @param app Ignored candidate app handle.
+/// @param width Ignored logical width.
+/// @param height Ignored logical height.
 void rt_app_set_size(void *app, int64_t width, int64_t height) {
     (void)app;
     (void)width;
     (void)height;
 }
 
-/// @brief Get the width of the app.
+/// @brief Stub: report zero app width when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_width(void *app) {
     (void)app;
     return 0;
 }
 
-/// @brief Get the height of the app.
+/// @brief Stub: report zero app height when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_height(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no HiDPI scaling, returns 1.0.
+/// @param app Ignored candidate app handle.
+/// @return Always 1.0.
 double rt_app_get_scale(void *app) {
     (void)app;
     return 1.0;
 }
 
 /// @brief Stub: graphics disabled — no window.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_logical_width(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no window.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_logical_height(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — scale 1.0, value passes through.
+/// @param app Ignored candidate app handle.
+/// @param physical Physical value returned unchanged.
+/// @return @p physical unchanged.
 int64_t rt_app_to_logical(void *app, int64_t physical) {
     (void)app;
     return physical;
 }
 
 /// @brief Stub: graphics disabled — scale 1.0, value passes through.
+/// @param app Ignored candidate app handle.
+/// @param logical Logical value returned unchanged.
+/// @return @p logical unchanged.
 int64_t rt_app_to_physical(void *app, int64_t logical) {
     (void)app;
     return logical;
 }
 
-/// @brief Stub: graphics disabled — UI zoom has no effect.
 /// @brief Graphics-disabled smooth-scroll setter stub.
+/// @param app Ignored candidate app handle.
+/// @param enabled Ignored enabled flag.
 void rt_app_set_smooth_scroll(void *app, int64_t enabled) {
     (void)app;
     (void)enabled;
 }
 
 /// @brief Graphics-disabled smooth-scroll getter stub.
+/// @param app Ignored candidate app handle.
+/// @return Always one, preserving the default requested policy.
 int64_t rt_app_get_smooth_scroll(void *app) {
     (void)app;
     return 1;
 }
 
+/// @brief Stub: ignore UI-scale changes when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @param scale Ignored user zoom multiplier.
 void rt_app_set_ui_scale(void *app, double scale) {
     (void)app;
     (void)scale;
 }
 
 /// @brief Stub: graphics disabled — returns 1.0.
+/// @param app Ignored candidate app handle.
+/// @return Always 1.0.
 double rt_app_get_ui_scale(void *app) {
     (void)app;
     return 1.0;
@@ -1477,18 +1670,25 @@ double rt_app_get_effective_scale(void *app) {
 }
 
 /// @brief Stub: `App.SetWheelSpeed` is a no-op without graphics.
+/// @param app Ignored candidate app handle.
+/// @param speed Ignored wheel sensitivity.
 void rt_app_set_wheel_speed(void *app, double speed) {
     (void)app;
     (void)speed;
 }
 
 /// @brief Stub: graphics disabled — returns 1.0.
+/// @param app Ignored candidate app handle.
+/// @return Always 1.0.
 double rt_app_get_wheel_speed(void *app) {
     (void)app;
     return 1.0;
 }
 
-/// @brief Move the app window to a specific screen position.
+/// @brief Stub: ignore window movement when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @param x Ignored X coordinate.
+/// @param y Ignored Y coordinate.
 void rt_app_set_position(void *app, int64_t x, int64_t y) {
     (void)app;
     (void)x;
@@ -1496,115 +1696,151 @@ void rt_app_set_position(void *app, int64_t x, int64_t y) {
 }
 
 /// @brief Stub: graphics disabled — returns 0; no window position exists.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_x(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — returns 0; no window position exists.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_y(void *app) {
     (void)app;
     return 0;
 }
 
-/// @brief Minimize the app.
+/// @brief Stub: ignore minimization when graphics is disabled.
+/// @param app Ignored candidate app handle.
 void rt_app_minimize(void *app) {
     (void)app;
 }
 
-/// @brief Maximize the app.
+/// @brief Stub: ignore maximization when graphics is disabled.
+/// @param app Ignored candidate app handle.
 void rt_app_maximize(void *app) {
     (void)app;
 }
 
-/// @brief Restore the app.
+/// @brief Stub: ignore window restoration when graphics is disabled.
+/// @param app Ignored candidate app handle.
 void rt_app_restore(void *app) {
     (void)app;
 }
 
-/// @brief Check whether the app window is currently minimized.
+/// @brief Stub: report window non-minimized when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_is_minimized(void *app) {
     (void)app;
     return 0;
 }
 
-/// @brief Check whether the app window is currently maximized.
+/// @brief Stub: report window non-maximized when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_is_maximized(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no-op; no window to enter or exit fullscreen.
+/// @param app Ignored candidate app handle.
+/// @param fullscreen Ignored fullscreen flag.
 void rt_app_set_fullscreen(void *app, int64_t fullscreen) {
     (void)app;
     (void)fullscreen;
 }
 
-/// @brief Check whether the app window is in fullscreen mode.
+/// @brief Stub: report window non-fullscreen when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_is_fullscreen(void *app) {
     (void)app;
     return 0;
 }
 
-/// @brief Focus the app.
+/// @brief Stub: ignore focus requests when graphics is disabled.
+/// @param app Ignored candidate app handle.
 void rt_app_focus(void *app) {
     (void)app;
 }
 
 /// @brief Stub: graphics disabled — no-op; no window to activate.
+/// @param app Ignored candidate app handle.
 void rt_app_activate(void *app) {
     (void)app;
 }
 
-/// @brief Check whether the app window currently has OS-level focus.
+/// @brief Stub: report app unfocused when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_is_focused(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no frames are ever painted.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_paint_frames_full(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no frames are ever painted.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_paint_frames_partial(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no-op; there is no render path to toggle.
+/// @param app Ignored candidate app handle.
+/// @param enabled Ignored partial-paint flag.
 void rt_app_set_partial_paint(void *app, int64_t enabled) {
     (void)app;
     (void)enabled;
 }
 
 /// @brief Stub: graphics disabled — no-op; no window close event can be intercepted.
+/// @param app Ignored candidate app handle.
+/// @param prevent Ignored close-prevention flag.
 void rt_app_set_prevent_close(void *app, int64_t prevent) {
     (void)app;
     (void)prevent;
 }
 
-/// @brief Check whether the window close was requested this frame.
+/// @brief Stub: report no close request when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_was_close_requested(void *app) {
     (void)app;
     return 0;
 }
 
-/// @brief Get the monitor width of the app.
+/// @brief Stub: report zero monitor width when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_monitor_width(void *app) {
     (void)app;
     return 0;
 }
 
-/// @brief Get the monitor height of the app.
+/// @brief Stub: report zero monitor height when graphics is disabled.
+/// @param app Ignored candidate app handle.
+/// @return Always zero.
 int64_t rt_app_get_monitor_height(void *app) {
     (void)app;
     return 0;
 }
 
 /// @brief Stub: graphics disabled — no-op; no window exists to resize.
+/// @param app Ignored candidate app handle.
+/// @param w Ignored logical width.
+/// @param h Ignored logical height.
 void rt_app_set_window_size(void *app, int64_t w, int64_t h) {
     (void)app;
     (void)w;
@@ -1612,6 +1848,9 @@ void rt_app_set_window_size(void *app, int64_t w, int64_t h) {
 }
 
 /// @brief Stub: graphics disabled — no-op; there is no native window to constrain.
+/// @param app Ignored candidate app handle.
+/// @param w Ignored logical minimum width.
+/// @param h Ignored logical minimum height.
 void rt_app_set_minimum_size(void *app, int64_t w, int64_t h) {
     (void)app;
     (void)w;
@@ -1619,6 +1858,8 @@ void rt_app_set_minimum_size(void *app, int64_t w, int64_t h) {
 }
 
 /// @brief Stub: graphics disabled — returns default 14.0 pt; no real app window exists.
+/// @param app Ignored candidate app handle.
+/// @return Always 14.0 logical points.
 double rt_app_get_font_size(void *app) {
     (void)app;
     return 14.0;
@@ -1635,12 +1876,15 @@ double rt_app_get_logical_font_size(void *app) {
 }
 
 /// @brief Stub: graphics disabled — no-op; no app window font size to set.
+/// @param app Ignored candidate app handle.
+/// @param size Ignored logical font size.
 void rt_app_set_font_size(void *app, double size) {
     (void)app;
     (void)size;
 }
 
 /// @brief Stub: graphics disabled — no-op; no window cursor to change.
+/// @param type Ignored cursor kind.
 void rt_cursor_set(int64_t type) {
     (void)type;
 }
@@ -1648,18 +1892,22 @@ void rt_cursor_set(int64_t type) {
 /// @brief Stub: graphics disabled — no-op; no window cursor to reset.
 void rt_cursor_reset(void) {}
 
-/// @brief Show or hide the mouse cursor.
+/// @brief Stub: ignore cursor visibility when graphics is disabled.
+/// @param visible Ignored visibility flag.
 void rt_cursor_set_visible(int64_t visible) {
     (void)visible;
 }
 
 /// @brief Stub: graphics disabled — no-op; no widget or cursor exists to change.
+/// @param widget Ignored candidate widget handle.
+/// @param type Ignored cursor kind.
 void rt_widget_set_cursor(void *widget, int64_t type) {
     (void)widget;
     (void)type;
 }
 
 /// @brief Stub: graphics disabled — no-op; no widget or cursor exists to reset.
+/// @param widget Ignored candidate widget handle.
 void rt_widget_reset_cursor(void *widget) {
     (void)widget;
 }
@@ -1671,16 +1919,19 @@ void rt_widget_reset_cursor(void *widget) {
 //=============================================================================
 
 /// @brief Copy text to the system clipboard via the canonical GUI clipboard backend.
+/// @param text Runtime text forwarded unchanged to @ref rt_clipboard_set_text.
 void rt_system_clipboard_set(rt_string text) {
     rt_clipboard_set_text(text);
 }
 
 /// @brief Read UTF-8 text from the system clipboard via the canonical GUI clipboard backend.
+/// @return Runtime clipboard text or the backend's canonical empty fallback.
 rt_string rt_system_clipboard_get(void) {
     return rt_clipboard_get_text();
 }
 
 /// @brief Check whether the system clipboard currently exposes text.
+/// @return One when the canonical backend reports text, otherwise zero.
 int64_t rt_system_clipboard_has_text(void) {
     return rt_clipboard_has_text() ? 1 : 0;
 }

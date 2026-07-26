@@ -39,6 +39,7 @@ bind "../core/document";
 bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
+bind "../ui/scene_clipboard";
 bind "../ui/scene_context_menus_2d";
 bind "../ui/scene_context_menus_3d";
 bind "../ui/scene_editor_2d";
@@ -169,6 +170,35 @@ func main() {
         Fail(shell, harness, "3D menu routing changed content or history");
         return;
     }
+
+    // Menu-created primitives spawn at the view target with the inline
+    // rename armed; Undo restores the exact canonical bytes.
+    editor3d.viewTargetX = 2.5;
+    var beforeNodes = editor3d.flatNodes.count();
+    if editor3d.AddPrimitiveFromMenu(
+           scene_editor_3d.PRIMITIVE_CYLINDER, false) == false
+       or editor3d.flatNodes.count() != beforeNodes + 1 {
+        Fail(shell, harness, "menu cylinder create did not add one node");
+        return;
+    }
+    var createdNode = editor3d.flatNodes.get(beforeNodes);
+    var spawnDeltaX = createdNode.WorldPosition.X - 2.5;
+    if spawnDeltaX < 0.0 { spawnDeltaX = 0.0 - spawnDeltaX; }
+    if createdNode.Mesh == null
+       or spawnDeltaX > 0.000001
+       or editor3d.hierarchyTree.IsEditing() == false {
+        Fail(shell, harness,
+             "menu create did not spawn a mesh at the view target with "
+             + "rename armed: x=" + createdNode.WorldPosition.X);
+        return;
+    }
+    editor3d.hierarchyTree.CancelEdit();
+    editor3d.viewTargetX = 0.0;
+    if editor3d.Undo() == false or doc3d.content != canonical {
+        Fail(shell, harness,
+             "undoing the menu-created cylinder did not restore bytes");
+        return;
+    }
     harness.UnbindApp();
     shell.Destroy();
 
@@ -247,6 +277,255 @@ func main() {
         Fail(shell, harness, "2D menu routing changed content");
         return;
     }
+
+    // "Add Object Here" enables over scene cells and creates one selected,
+    // rename-armed entity at the recorded click cell as one transaction.
+    var addCellX = editor2d.CanvasCellAtPointX(canvasX);
+    var addCellY = editor2d.CanvasCellAtPointY(canvasY);
+    if menus2d.canvasAddObjectHere.IsEnabled() == false
+       or addCellX < 0 or addCellY < 0 {
+        Fail(shell, harness,
+             "Add Object Here was not enabled over a scene cell: cell="
+             + addCellX + "," + addCellY);
+        return;
+    }
+    var beforeObjects = editor2d.scene.ObjectCount();
+    var created = editor2d.CreateObjectAtCanvasPoint(canvasX, canvasY);
+    if created != beforeObjects
+       or editor2d.scene.ObjectX(created)
+          != addCellX * editor2d.scene.TileWidth
+       or editor2d.scene.ObjectY(created)
+          != addCellY * editor2d.scene.TileHeight
+       or editor2d.selectedObject != created
+       or editor2d.objectTree.IsEditing() == false {
+        Fail(shell, harness,
+             "Add Object Here did not create a selected rename-armed "
+             + "entity at the click cell: index=" + created);
+        return;
+    }
+    editor2d.objectTree.CancelEdit();
+    if editor2d.Undo() == false or doc2d.content != canonical2d {
+        Fail(shell, harness,
+             "undoing Add Object Here did not restore canonical bytes");
+        return;
+    }
+
+    // Free placement math scales content pixels to scene pixels exactly:
+    // whole display cells map to whole tiles, and a half cell to a half
+    // tile (scaled before dividing, so no truncation applies).
+    if editor2d.CanvasFreePixelX(editor2d.displayCellSize)
+          != editor2d.scene.TileWidth
+       or editor2d.CanvasFreePixelY(editor2d.displayCellSize * 2)
+          != editor2d.scene.TileHeight * 2
+       or editor2d.CanvasFreePixelX(editor2d.displayCellSize * 3)
+          != editor2d.scene.TileWidth * 3 {
+        Fail(shell, harness,
+             "free-placement pixel math diverged from the tile scale: cell="
+             + editor2d.displayCellSize
+             + " tile=" + editor2d.scene.TileWidth
+             + " x1=" + editor2d.CanvasFreePixelX(
+                   editor2d.displayCellSize));
+        return;
+    }
+    // Tile region operations (2.1): paste records the region, copy encodes
+    // the exact block, delete clears as one transaction, undo restores.
+    var block = scene_clipboard.EncodeTileBlock(2, 1, [7, 8]);
+    if block == "" or scene_clipboard.HasTileBlock(block) == false {
+        Fail(shell, harness, "tile block encode failed");
+        return;
+    }
+    GUI.ClipboardText.SetText(block);
+    var regionBaseline = doc2d.content;
+    var regionUndo = editor2d.undoStack.count();
+    if editor2d.PasteTileBlockAt(1, 1) == false
+       or editor2d.scene.GetTile(0, 1, 1) != 7
+       or editor2d.scene.GetTile(0, 2, 1) != 8
+       or editor2d.undoStack.count() != regionUndo + 1
+       or editor2d.tileRegionMinX != 1 or editor2d.tileRegionMaxX != 2
+       or editor2d.tileRegionMinY != 1 or editor2d.tileRegionMaxY != 1 {
+        Fail(shell, harness,
+             "tile paste did not write one region transaction: t="
+             + editor2d.scene.GetTile(0, 1, 1) + ","
+             + editor2d.scene.GetTile(0, 2, 1)
+             + " region=" + editor2d.tileRegionMinX + ".."
+             + editor2d.tileRegionMaxX);
+        return;
+    }
+    GUI.ClipboardText.SetText("");
+    if editor2d.CopyTileRegion() == false {
+        Fail(shell, harness, "tile region copy failed");
+        return;
+    }
+    var copied = scene_clipboard.DecodeTileBlock(
+        GUI.ClipboardText.GetText());
+    if copied.valid == false or copied.width != 2 or copied.height != 1
+       or copied.tiles.get(0) != 7 or copied.tiles.get(1) != 8 {
+        Fail(shell, harness, "copied tile block did not round-trip");
+        return;
+    }
+    if editor2d.DeleteTileRegion() == false
+       or editor2d.scene.GetTile(0, 1, 1) != 0
+       or editor2d.undoStack.count() != regionUndo + 2 {
+        Fail(shell, harness, "tile region delete was not one transaction");
+        return;
+    }
+    if editor2d.Undo() == false
+       or editor2d.scene.GetTile(0, 1, 1) != 7
+       or editor2d.Undo() == false
+       or doc2d.content != regionBaseline {
+        Fail(shell, harness,
+             "undoing tile region edits did not restore exact bytes");
+        return;
+    }
+
+    // Region stamp (2.1b): adopt the region as a stamp, then one real
+    // paint click writes the whole grid-anchored block as one stroke.
+    GUI.ClipboardText.SetText(block);
+    if editor2d.PasteTileBlockAt(1, 1) == false
+       or editor2d.UseTileRegionAsStamp() == false
+       or editor2d.stampActive == false
+       or editor2d.stampWidth != 2 or editor2d.stampHeight != 1 {
+        Fail(shell, harness, "region stamp capture failed");
+        return;
+    }
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    var stampUndo = editor2d.undoStack.count();
+    var stampX = HarnessCoordinate(
+        shell,
+        editor2d.canvasImage.GetScreenX()
+        + 5 * editor2d.displayCellSize + 2.0);
+    var stampY = HarnessCoordinate(
+        shell,
+        editor2d.canvasImage.GetScreenY()
+        + 3 * editor2d.displayCellSize + 2.0);
+    harness.SendMouse("move", stampX, stampY, 0);
+    harness.SendMouse("down", stampX, stampY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("up", stampX, stampY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    editor2d.Pump(doc2d);
+    if editor2d.scene.GetTile(0, 4, 3) != 7
+       or editor2d.scene.GetTile(0, 5, 3) != 8
+       or editor2d.undoStack.count() != stampUndo + 1 {
+        Fail(shell, harness,
+             "stamp click did not write one anchored block: t="
+             + editor2d.scene.GetTile(0, 4, 3) + ","
+             + editor2d.scene.GetTile(0, 5, 3)
+             + " undo=" + editor2d.undoStack.count()
+             + "/" + (stampUndo + 1));
+        return;
+    }
+    editor2d.ClearTileStamp();
+    if editor2d.stampActive {
+        Fail(shell, harness, "stamp did not clear");
+        return;
+    }
+    if editor2d.Undo() == false or editor2d.Undo() == false
+       or doc2d.content != regionBaseline {
+        Fail(shell, harness,
+             "undoing stamp edits did not restore exact bytes");
+        return;
+    }
+
+    // Line and ellipse tools (2.1c): a real drag writes the rasterized
+    // shape as one transaction; undo restores exact bytes.
+    editor2d.SetToolMode(scene_editor_2d.MODE_LINE);
+    editor2d.tileSpinner.SetValue(9.0);
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    var shapeUndo = editor2d.undoStack.count();
+    var cell = editor2d.displayCellSize;
+    var canvasBaseX = editor2d.canvasImage.GetScreenX();
+    var canvasBaseY = editor2d.canvasImage.GetScreenY();
+    var lineStartX = HarnessCoordinate(shell, canvasBaseX + cell + 2.0);
+    var lineStartY = HarnessCoordinate(shell, canvasBaseY + cell + 2.0);
+    var lineEndX = HarnessCoordinate(
+        shell, canvasBaseX + 4 * cell + 2.0);
+    harness.SendMouse("move", lineStartX, lineStartY, 0);
+    harness.SendMouse("down", lineStartX, lineStartY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("move", lineEndX, lineStartY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("up", lineEndX, lineStartY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    if editor2d.scene.GetTile(0, 1, 1) != 9
+       or editor2d.scene.GetTile(0, 2, 1) != 9
+       or editor2d.scene.GetTile(0, 3, 1) != 9
+       or editor2d.scene.GetTile(0, 4, 1) != 9
+       or editor2d.undoStack.count() != shapeUndo + 1 {
+        Fail(shell, harness,
+             "line drag did not write one four-cell transaction: t="
+             + editor2d.scene.GetTile(0, 1, 1)
+             + editor2d.scene.GetTile(0, 2, 1)
+             + editor2d.scene.GetTile(0, 3, 1)
+             + editor2d.scene.GetTile(0, 4, 1)
+             + " undo=" + editor2d.undoStack.count());
+        return;
+    }
+    editor2d.SetToolMode(scene_editor_2d.MODE_ELLIPSE);
+    var ellipseStartX = HarnessCoordinate(
+        shell, canvasBaseX + cell + 2.0);
+    var ellipseStartY = HarnessCoordinate(
+        shell, canvasBaseY + cell + 2.0);
+    var ellipseEndX = HarnessCoordinate(
+        shell, canvasBaseX + 5 * cell + 2.0);
+    var ellipseEndY = HarnessCoordinate(
+        shell, canvasBaseY + 5 * cell + 2.0);
+    harness.SendMouse("move", ellipseStartX, ellipseStartY, 0);
+    harness.SendMouse("down", ellipseStartX, ellipseStartY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("move", ellipseEndX, ellipseEndY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    harness.SendMouse("up", ellipseEndX, ellipseEndY, 0);
+    harness.DispatchPending();
+    editor2d.Pump(doc2d);
+    shell.Poll();
+    shell.Render();
+    if editor2d.scene.GetTile(0, 1, 3) != 9
+       or editor2d.scene.GetTile(0, 5, 3) != 9
+       or editor2d.scene.GetTile(0, 3, 5) != 9
+       or editor2d.scene.GetTile(0, 3, 3) == 9
+       or editor2d.undoStack.count() != shapeUndo + 2 {
+        Fail(shell, harness,
+             "ellipse drag did not write its outline transaction: edge="
+             + editor2d.scene.GetTile(0, 1, 3)
+             + editor2d.scene.GetTile(0, 5, 3)
+             + editor2d.scene.GetTile(0, 3, 5)
+             + " center=" + editor2d.scene.GetTile(0, 3, 3)
+             + " undo=" + editor2d.undoStack.count());
+        return;
+    }
+    if editor2d.Undo() == false or editor2d.Undo() == false
+       or doc2d.content != regionBaseline {
+        Fail(shell, harness,
+             "undoing shape edits did not restore exact bytes");
+        return;
+    }
+
     harness.UnbindApp();
     shell.Destroy();
     Terminal.Say("RESULT: ok");

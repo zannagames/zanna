@@ -127,19 +127,33 @@ struct GitignoreCacheLockGuard {
 ///          process-local cursor cache lets independent IDE subsystems page
 ///          concurrently without resetting each other's traversal state.
 struct FileIndexPageCursorLockGuard {
+    /// @brief Acquire exclusive access to the file-index page cursor cache.
+    /// @details Spins with acquire ordering because protected operations only traverse or update
+    ///          the small process-local cursor list.
     FileIndexPageCursorLockGuard() {
         while (g_fileIndexPageCursorLock.test_and_set(std::memory_order_acquire)) {
         }
     }
 
+    /// @brief Release exclusive access to the file-index page cursor cache.
+    /// @details Release ordering publishes cursor insertion, repositioning, and eviction changes
+    ///          before another thread acquires the guard.
     ~FileIndexPageCursorLockGuard() {
         g_fileIndexPageCursorLock.clear(std::memory_order_release);
     }
 
+    /// @brief Prevent copying ownership of the active page-cursor cache lock.
     FileIndexPageCursorLockGuard(const FileIndexPageCursorLockGuard &) = delete;
+
+    /// @brief Prevent assigning ownership between active page-cursor cache guards.
     FileIndexPageCursorLockGuard &operator=(const FileIndexPageCursorLockGuard &) = delete;
 };
 
+/// @brief Copy a runtime string into an owning native string.
+/// @details Null, invalid, and empty runtime strings produce an empty result. Embedded NUL bytes
+///          are preserved because construction uses the runtime-reported byte length.
+/// @param s Borrowed runtime string handle.
+/// @return Native byte string copied from @p s.
 std::string toStd(rt_string s) {
     if (!s)
         return {};
@@ -167,30 +181,50 @@ bool objectToStdString(void *value, std::string &out) {
     return true;
 }
 
+/// @brief Copy a native byte string into a runtime-managed string.
+/// @param value Native bytes to copy, including any embedded NUL bytes.
+/// @return Runtime string created from the complete byte span.
 rt_string makeString(const std::string &value) {
     return rt_string_from_bytes(value.data(), value.size());
 }
 
+/// @brief Release an owned runtime object reference and destroy it at zero references.
+/// @param obj Runtime object reference to release; NULL is ignored.
 void releaseObject(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Store a copied native string under a constant key in a runtime map.
+/// @details Releases the temporary string reference after the map retains the value.
+/// @param map Runtime map to update.
+/// @param key Null-terminated constant key name.
+/// @param value Native byte string to copy into the map.
 void mapSetStr(void *map, const char *key, const std::string &value) {
     rt_string s = makeString(value);
     rt_map_set_str(map, rt_const_cstr(key), s);
     rt_string_unref(s);
 }
 
+/// @brief Store a sequence object under a constant key in a runtime map.
+/// @param map Runtime map to update.
+/// @param key Null-terminated constant key name.
+/// @param seq Borrowed sequence reference retained by the map.
 void mapSetSeq(void *map, const char *key, void *seq) {
     rt_map_set(map, rt_const_cstr(key), seq);
 }
 
+/// @brief Append an object to a runtime sequence and release the caller's reference.
+/// @param seq Runtime sequence that will retain @p obj.
+/// @param obj Owned runtime object reference to transfer into @p seq.
 void seqPushOwned(void *seq, void *obj) {
     rt_seq_push(seq, obj);
     releaseObject(obj);
 }
 
+/// @brief Remove leading and trailing locale-classified whitespace bytes.
+/// @param input Native text view to trim.
+/// @return Owning string containing the untrimmed middle span.
 std::string trim(std::string_view input) {
     size_t first = 0;
     while (first < input.size() && std::isspace(static_cast<unsigned char>(input[first])))
@@ -252,12 +286,18 @@ std::string rebaseGitignorePattern(const std::string &base_rel, const std::strin
     return rebased;
 }
 
+/// @brief Lowercase a native byte string using the active C locale.
+/// @param value String to transform in place.
+/// @return Lowercased string.
 std::string lower(std::string value) {
     for (char &ch : value)
         ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return value;
 }
 
+/// @brief Normalize path separators and strip repeated leading `./` components.
+/// @param value Path text to normalize.
+/// @return Path using forward slashes with no leading current-directory markers.
 std::string normalizeSlashes(std::string value) {
     for (char &ch : value) {
         if (ch == '\\')
@@ -268,6 +308,11 @@ std::string normalizeSlashes(std::string value) {
     return value;
 }
 
+/// @brief Split a comma-, semicolon-, or newline-delimited configuration list.
+/// @details Delimiters inside matching single or double quotes are preserved and quote bytes are
+///          removed. Each item is trimmed and empty items are discarded.
+/// @param value Serialized list text.
+/// @return Parsed nonempty items in source order.
 std::vector<std::string> splitList(const std::string &value) {
     std::vector<std::string> out;
     std::string cur;
@@ -294,6 +339,12 @@ std::vector<std::string> splitList(const std::string &value) {
     return out;
 }
 
+/// @brief Match a byte string against `*` and `?` wildcards without separator rules.
+/// @details Uses iterative last-star backtracking; `*` consumes any byte sequence and `?`
+///          consumes exactly one byte.
+/// @param text Candidate byte string.
+/// @param pattern Wildcard pattern.
+/// @return True when the complete text matches the complete pattern.
 bool wildcardMatchRec(std::string_view text, std::string_view pattern) {
     size_t ti = 0;
     size_t pi = 0;
@@ -318,6 +369,12 @@ bool wildcardMatchRec(std::string_view text, std::string_view pattern) {
     return pi == pattern.size();
 }
 
+/// @brief Match a normalized slash path against component-aware wildcards.
+/// @details A single `*` stays within one component, `?` consumes one byte, `**/` consumes zero
+///          or more complete components, and bare `**` may consume separators.
+/// @param text Normalized candidate path.
+/// @param pattern Normalized wildcard pattern.
+/// @return True when the complete path matches the complete pattern.
 bool pathGlobMatch(std::string_view text, std::string_view pattern) {
     std::vector<std::string_view> stackText{text};
     if (pattern.find("**") == std::string_view::npos)
@@ -372,6 +429,13 @@ bool pathGlobMatch(std::string_view text, std::string_view pattern) {
     return rec(0, 0);
 }
 
+/// @brief Evaluate one normalized gitignore-style pattern against a relative path.
+/// @details Handles escaped control markers, root anchoring, basename-only patterns, and
+///          directory-only trailing slashes. Negation is handled by the caller.
+/// @param pattern Pattern to normalize and evaluate.
+/// @param relativePath Workspace-relative candidate path.
+/// @param isDir True when the candidate itself is a directory.
+/// @return True when the pattern selects the candidate or its containing directory as applicable.
 bool patternMatchesPath(std::string pattern, const std::string &relativePath, bool isDir) {
     pattern = normalizeGitignorePattern(pattern);
     if (pattern.empty())
@@ -420,6 +484,11 @@ bool patternMatchesPath(std::string pattern, const std::string &relativePath, bo
     return pathGlobMatch(rel, pattern);
 }
 
+/// @brief Load active patterns from the `.gitignore` directly beneath a directory.
+/// @details Normalizes whitespace and discards blank and unescaped comment lines. An absent or
+///          unreadable file produces an empty vector.
+/// @param root Directory whose `.gitignore` should be read.
+/// @return Normalized non-comment patterns in file order.
 std::vector<std::string> readGitignorePatterns(const fs::path &root) {
     std::vector<std::string> patterns;
     std::ifstream in(root / ".gitignore");
@@ -460,6 +529,8 @@ static void pruneGitignoreCacheLocked() {
 
 /// @brief Return a file modification time truncated to whole seconds.
 /// @details Used for the human-facing `modified` field in enumeration maps.
+/// @param path Filesystem path to stat.
+/// @return Modification time in Unix epoch seconds, or -1 when metadata cannot be read.
 int64_t fileTimeSeconds(const fs::path &path) {
 #if RT_PLATFORM_WINDOWS
     struct _stat64 st{};
@@ -482,6 +553,8 @@ int64_t fileTimeSeconds(const fs::path &path) {
 ///          small, so reading them to hash is cheap. Returns -1 when the file
 ///          does not exist (so callers keep treating a negative result as "no
 ///          `.gitignore`").
+/// @param path Path of the `.gitignore` file to fingerprint.
+/// @return Nonnegative content identity for a readable file, or -1 when absent or unreadable.
 int64_t gitignoreCacheIdentity(const fs::path &path) {
     std::error_code ec;
     if (!fs::exists(path, ec) || ec)
@@ -581,6 +654,13 @@ uint64_t workspaceFingerprintEntry(
     return hash;
 }
 
+/// @brief Return cached normalized patterns for one directory's `.gitignore`.
+/// @details Keys entries by normalized absolute directory and content-derived identity. Cache
+///          misses are loaded outside the spin lock, then reconciled under the lock; allocation
+///          failure simply returns the uncached patterns. The bounded cache retains at most 64
+///          directory entries.
+/// @param root Directory whose `.gitignore` patterns are requested.
+/// @return Pattern vector copied from the cache or freshly read from disk.
 std::vector<std::string> cachedGitignorePatterns(const fs::path &root) {
     std::error_code ec;
     std::string key = normalizeSlashes(fs::absolute(root, ec).lexically_normal().string());
@@ -658,6 +738,14 @@ std::vector<std::string> gitignorePatternsForPath(const fs::path &root,
     return combined;
 }
 
+/// @brief Apply hard exclusions and ordered caller/gitignore patterns to one path.
+/// @details Hard exclusions cannot be negated. Remaining patterns are evaluated in order with
+///          last-match-wins behavior; leading `!` clears the ignored state for a matching path.
+/// @param relativePath Workspace-relative candidate path.
+/// @param isDir True when the candidate is a directory.
+/// @param extraPatterns Caller-supplied patterns evaluated before `.gitignore` patterns.
+/// @param gitignorePatterns Root-rebased `.gitignore` patterns.
+/// @return True when the candidate should be omitted.
 bool shouldIgnorePathWithPatterns(const std::string &relativePath,
                                   bool isDir,
                                   const std::vector<std::string> &extraPatterns,
@@ -697,6 +785,13 @@ bool shouldIgnorePathWithPatterns(const std::string &relativePath,
     return ignored;
 }
 
+/// @brief Determine whether a workspace path is excluded by configured ignore rules.
+/// @param root Workspace root used to locate nested `.gitignore` files.
+/// @param relativePath Candidate path relative to @p root.
+/// @param isDir True when the candidate is a directory.
+/// @param extraPatterns Caller-supplied exclusion and negation patterns.
+/// @param includeGitignore True to load root and nested `.gitignore` patterns.
+/// @return True when hard exclusions or the ordered patterns ignore the path.
 bool shouldIgnorePath(const fs::path &root,
                       const std::string &relativePath,
                       bool isDir,
@@ -708,6 +803,11 @@ bool shouldIgnorePath(const fs::path &root,
     return shouldIgnorePathWithPatterns(relativePath, isDir, extraPatterns, gitignorePatterns);
 }
 
+/// @brief Derive a deterministic positive identifier from normalized path text.
+/// @details Uses FNV-1a and clears the sign bit; this is a stable UI/index key rather than a
+///          collision-proof or cryptographic identity.
+/// @param path Path bytes to hash.
+/// @return Nonnegative 63-bit path identifier.
 int64_t stablePathId(const std::string &path) {
     uint64_t hash = 1469598103934665603ULL;
     for (unsigned char ch : path) {
@@ -717,6 +817,12 @@ int64_t stablePathId(const std::string &path) {
     return static_cast<int64_t>(hash & 0x7fffffffffffffffULL);
 }
 
+/// @brief Append one structured diagnostic map to a runtime sequence.
+/// @param seq Runtime sequence that will own the new diagnostic.
+/// @param message Human-readable diagnostic text.
+/// @param file Associated path, or an empty string when not file-specific.
+/// @param line One-based associated line number, or zero when unavailable.
+/// @param code Stable diagnostic code.
 void pushDiagnostic(void *seq,
                     const std::string &message,
                     const std::string &file,
@@ -741,6 +847,11 @@ struct WorkspaceFileIndexPageCursor {
 
 WorkspaceFileIndexPageCursor *g_fileIndexPageCursorHead = nullptr;
 
+/// @brief Parse and normalize a file-extension allow-list.
+/// @details Splits the serialized list, prepends a dot when absent, lowercases each extension,
+///          and deduplicates through an ordered set.
+/// @param extensionsCsv Comma-, semicolon-, or newline-delimited extension text.
+/// @return Normalized lowercase extension set; empty means no extension filtering.
 std::set<std::string> parseExtensionSet(const std::string &extensionsCsv) {
     std::set<std::string> extensions;
     for (std::string ext : splitList(extensionsCsv)) {
@@ -751,6 +862,12 @@ std::set<std::string> parseExtensionSet(const std::string &extensionsCsv) {
     return extensions;
 }
 
+/// @brief Build the private cache key for a paged file-index traversal.
+/// @param root Normalized workspace root.
+/// @param extensionsCsv Serialized extension filter.
+/// @param excludesCsv Serialized caller exclusion patterns.
+/// @param includeDirs True when directory entries are part of the traversal.
+/// @return Composite key containing normalized root and exact filter inputs.
 std::string fileIndexPageKey(const fs::path &root,
                              const std::string &extensionsCsv,
                              const std::string &excludesCsv,
@@ -889,6 +1006,15 @@ WorkspaceFileIndexPageCursor *startFileIndexPageCursor(const std::string &key,
     return cursor;
 }
 
+/// @brief Construct and append one workspace file-index entry map.
+/// @details Emits absolute and relative paths, name, extension, kind, directory flag, stable path
+///          ID, bounded file size, and modification time. The result sequence takes ownership of
+///          the newly created map.
+/// @param entries Runtime sequence receiving the entry.
+/// @param root Workspace root associated with the entry; retained for interface consistency.
+/// @param dirEntry Native directory entry supplying path and metadata.
+/// @param relativePath Normalized path relative to @p root.
+/// @param isDir True when @p dirEntry represents a directory.
 void emitFileIndexEntry(void *entries,
                         const fs::path &root,
                         const fs::directory_entry &dirEntry,
@@ -978,6 +1104,12 @@ int64_t scanFileIndexPageCursor(WorkspaceFileIndexPageCursor *cursor,
     return emitted;
 }
 
+/// @brief Create a structured runtime diagnostic map.
+/// @param message Human-readable diagnostic text.
+/// @param file Associated path, or an empty string.
+/// @param line One-based line number, or zero when unavailable.
+/// @param code Stable diagnostic code, or an empty string.
+/// @return Fresh runtime map containing `message`, `file`, `code`, and `line`.
 void *makeDiagnostic(const std::string &message,
                      const std::string &file = {},
                      int64_t line = 0,
@@ -990,6 +1122,12 @@ void *makeDiagnostic(const std::string &message,
     return diag;
 }
 
+/// @brief Append a newly constructed diagnostic map to an owning sequence.
+/// @param seq Runtime sequence that receives ownership of the map.
+/// @param message Human-readable diagnostic text.
+/// @param file Associated path, or an empty string.
+/// @param line One-based line number, or zero when unavailable.
+/// @param code Stable diagnostic code, or an empty string.
 void pushDiagnostic(void *seq,
                     const std::string &message,
                     const std::string &file = {},
@@ -999,6 +1137,9 @@ void pushDiagnostic(void *seq,
     seqPushOwned(seq, diag);
 }
 
+/// @brief Copy native strings into a fresh owning runtime sequence.
+/// @param items Native byte strings to convert in order.
+/// @return Fresh owning Seq of runtime strings.
 void *makeStringSeq(const std::vector<std::string> &items) {
     void *seq = rt_seq_new_owned();
     for (const auto &item : items) {
@@ -1009,6 +1150,10 @@ void *makeStringSeq(const std::vector<std::string> &items) {
     return seq;
 }
 
+/// @brief Copy a runtime map's string field into a native string.
+/// @param map Borrowed runtime map.
+/// @param key Null-terminated field name.
+/// @return Copied field bytes, or an empty string when the field is absent/invalid/empty.
 std::string mapGetString(void *map, const char *key) {
     rt_string value = rt_map_get_str(map, rt_const_cstr(key));
     std::string out = toStd(value);
@@ -1016,6 +1161,9 @@ std::string mapGetString(void *map, const char *key) {
     return out;
 }
 
+/// @brief Convert a watcher event code to its manifest-friendly name.
+/// @param type `RT_WATCH_EVENT_*` code.
+/// @return `created`, `modified`, `deleted`, `renamed`, `overflow`, or `none`.
 std::string eventTypeName(int64_t type) {
     switch (type) {
         case RT_WATCH_EVENT_CREATED:
@@ -1033,6 +1181,8 @@ std::string eventTypeName(int64_t type) {
     }
 }
 
+/// @brief Create a project-manifest map populated with runtime defaults.
+/// @return Fresh runtime map with scalar defaults and empty owning collections.
 void *newManifestMap() {
     void *map = rt_map_new();
     mapSetStr(map, "name", "");
@@ -1051,12 +1201,21 @@ void *newManifestMap() {
     return map;
 }
 
+/// @brief Replace a manifest field with a fresh owning sequence of strings.
+/// @param map Runtime manifest map to update.
+/// @param key Null-terminated field name.
+/// @param items Native strings to copy into the replacement sequence.
 void replaceStringSeq(void *map, const char *key, const std::vector<std::string> &items) {
     void *seq = makeStringSeq(items);
     rt_map_set(map, rt_const_cstr(key), seq);
     releaseObject(seq);
 }
 
+/// @brief Append a copied string to a sequence-valued map field.
+/// @details Creates and installs an owning sequence when the field is absent.
+/// @param map Runtime map containing the collection field.
+/// @param key Null-terminated field name.
+/// @param value Native string to copy and append.
 void appendToStringSeqField(void *map, const char *key, const std::string &value) {
     void *seq = rt_map_get(map, rt_const_cstr(key));
     if (!seq) {
@@ -1070,6 +1229,11 @@ void appendToStringSeqField(void *map, const char *key, const std::string &value
     rt_string_unref(s);
 }
 
+/// @brief Append a configuration map to a sequence-valued manifest field.
+/// @details Creates the owning sequence when absent; the sequence retains @p config.
+/// @param map Runtime manifest map containing the collection field.
+/// @param key Null-terminated field name.
+/// @param config Borrowed runtime configuration map to append.
 void appendConfigMap(void *map, const char *key, void *config) {
     void *seq = rt_map_get(map, rt_const_cstr(key));
     if (!seq) {
@@ -1081,6 +1245,11 @@ void appendConfigMap(void *map, const char *key, void *config) {
     rt_seq_push(seq, config);
 }
 
+/// @brief Split a manifest directive into trimmed key and value text.
+/// @details Prefers the earliest `=` or `:` separator, then falls back to the first horizontal
+///          whitespace. A line without any separator produces an empty value.
+/// @param line Directive line to parse.
+/// @return Pair containing trimmed key and value.
 std::pair<std::string, std::string> splitDirectiveLine(const std::string &line) {
     size_t eq = line.find('=');
     size_t colon = line.find(':');
@@ -1096,6 +1265,9 @@ std::pair<std::string, std::string> splitDirectiveLine(const std::string &line) 
             trim(std::string_view(line).substr(ws + 1))};
 }
 
+/// @brief Canonicalize a manifest key for spelling-insensitive dispatch.
+/// @param key Key text to normalize.
+/// @return Lowercase key with hyphens, underscores, and periods removed.
 std::string manifestKey(std::string key) {
     key = lower(key);
     key.erase(std::remove_if(
@@ -1104,6 +1276,11 @@ std::string manifestKey(std::string key) {
     return key;
 }
 
+/// @brief Split text into lines while normalizing CRLF endings.
+/// @details Removes a terminal carriage return from each `getline` result and preserves an empty
+///          final logical line when @p text ends with LF.
+/// @param text Complete manifest or source text.
+/// @return Lines in source order without LF/CRLF terminators.
 std::vector<std::string> readLines(const std::string &text) {
     std::vector<std::string> lines;
     std::stringstream ss(text);
@@ -1118,6 +1295,13 @@ std::vector<std::string> readLines(const std::string &text) {
     return lines;
 }
 
+/// @brief Convert a one-based byte line/column position to a string offset.
+/// @details LF advances the line and resets the column; all other bytes advance one column.
+///          Positions at end-of-input are accepted when they coincide with the requested cursor.
+/// @param text Source bytes to index.
+/// @param line One-based line number.
+/// @param column One-based byte column.
+/// @return Zero-based byte offset, or `std::nullopt` for invalid/out-of-range positions.
 std::optional<size_t> offsetForLineColumn(const std::string &text, int64_t line, int64_t column) {
     if (line < 1 || column < 1)
         return std::nullopt;
@@ -1208,6 +1392,13 @@ bool resolveEditTarget(const std::string &file,
     return true;
 }
 
+/// @brief Decode and perform structural validation on one workspace edit map.
+/// @param obj Runtime map expected to contain file, range, replacement, and optional version
+///            fields.
+/// @param[out] out Native edit record populated from valid fields.
+/// @param diagnostics Owning runtime sequence receiving validation diagnostics.
+/// @param index Edit index recorded as the diagnostic line surrogate.
+/// @return True when the object is a map with a nonempty file and positive one-based range.
 bool loadEditRecord(void *obj, EditRecord &out, void *diagnostics, int64_t index) {
     if (!obj || rt_obj_class_id(obj) != RT_MAP_CLASS_ID) {
         pushDiagnostic(diagnostics, "workspace edit entry is not a map", "", index, "edit.invalid");
@@ -1233,6 +1424,15 @@ bool loadEditRecord(void *obj, EditRecord &out, void *diagnostics, int64_t index
     return true;
 }
 
+/// @brief Resolve, load, version-check, range-check, and overlap-check an edit batch.
+/// @details Reads each target at most once into @p contents, converts ranges to byte offsets, then
+///          groups and sorts edits per file to reject overlap. All discovered failures append
+///          diagnostics so callers receive a complete validation report.
+/// @param[in,out] records Edit records whose paths and byte offsets are normalized on success.
+/// @param[out] contents Cache populated with the original bytes of each readable target.
+/// @param diagnostics Runtime sequence receiving structured failures.
+/// @param roots Optional canonical workspace roots constraining every target.
+/// @return True only when every record passes all batch validation checks.
 bool validateEditRecords(std::vector<EditRecord> &records,
                          std::unordered_map<std::string, std::string> &contents,
                          void *diagnostics,
@@ -1540,6 +1740,16 @@ void *rt_workspace_file_index_page(rt_string root_s,
     }
 }
 
+/// @brief Enumerate a filtered workspace tree into file-index entry maps.
+/// @details Traverses recursively with permission-denied entries skipped, applies hard exclusions,
+///          nested `.gitignore` rules, caller patterns, and an optional case-normalized extension
+///          allow-list. Directory entries are optional and output is capped at 100,000 maps.
+///          Invalid roots or caught C++ exceptions return an empty owning sequence.
+/// @param root_s Runtime string naming the workspace root.
+/// @param extensions_csv Delimited extension allow-list; empty includes every file extension.
+/// @param excludes_csv Delimited additional gitignore-style patterns.
+/// @param include_dirs Nonzero to include directory maps as well as file maps.
+/// @return Fresh owning Seq of workspace entry maps.
 void *rt_workspace_file_index_enumerate(rt_string root_s,
                                         rt_string extensions_csv,
                                         rt_string excludes_csv,
@@ -1735,6 +1945,14 @@ void *rt_workspace_file_index_status(rt_string root_s,
     }
 }
 
+/// @brief Evaluate workspace ignore rules for one relative path.
+/// @details Applies built-in exclusions, caller patterns, and root/nested `.gitignore` files. A
+///          trailing slash or backslash marks the candidate as a directory. An empty root uses
+///          the current directory; caught exceptions conservatively return false.
+/// @param root_s Runtime string naming the workspace root.
+/// @param relative_path Runtime string containing the candidate path relative to the root.
+/// @param patterns Delimited caller-supplied ignore and negation patterns.
+/// @return 1 when the path should be ignored; otherwise 0.
 int8_t rt_workspace_file_index_should_ignore(rt_string root_s,
                                              rt_string relative_path,
                                              rt_string patterns) {
@@ -1750,6 +1968,13 @@ int8_t rt_workspace_file_index_should_ignore(rt_string root_s,
     }
 }
 
+/// @brief Poll up to a bounded number of events from a workspace watcher.
+/// @details Converts each event into a map containing path, numeric/type-name fields, overflow
+///          count, and a rescan flag. Nonpositive limits default to 64; polling stops at the first
+///          `NONE` event. Null watchers and caught exceptions return an empty sequence.
+/// @param watcher Borrowed opaque watcher handle.
+/// @param max_events Maximum events to poll, or a nonpositive value for the default batch size.
+/// @return Fresh owning Seq of watcher event maps.
 void *rt_workspace_watcher_poll_batch(void *watcher, int64_t max_events) {
     try {
         void *events = rt_seq_new_owned();
@@ -1781,6 +2006,16 @@ void *rt_workspace_watcher_poll_batch(void *watcher, int64_t max_events) {
     }
 }
 
+/// @brief Resolve an asset reference against editor and runtime search locations.
+/// @details Tries an absolute asset path, the scene directory, project root, configured asset
+///          roots, then the mounted runtime asset registry. Relative scene and asset-root paths
+///          are anchored to the project root. The result map always reports path/display/source,
+///          found/exists flags, and a diagnostic.
+/// @param scene_path_s Runtime path of the referencing scene; may be empty.
+/// @param project_root_s Runtime project-root path; empty uses the current directory.
+/// @param asset_roots_csv Delimited configured asset-root paths.
+/// @param asset_path_s Runtime asset reference to resolve.
+/// @return Fresh result map describing the first match or a stable missing/error result.
 void *rt_asset_resolver_resolve(rt_string scene_path_s,
                                 rt_string project_root_s,
                                 rt_string asset_roots_csv,
@@ -1872,6 +2107,14 @@ void *rt_asset_resolver_resolve(rt_string scene_path_s,
     }
 }
 
+/// @brief Parse project-manifest directive text into a structured runtime map.
+/// @details Supports top-level project metadata, source/exclude/asset/scene lists, shorthand run
+///          declarations, and `[run.NAME]`/`[build.NAME]` sections. Blank/comment lines are
+///          ignored, an initial UTF-8 BOM is stripped, and unknown/malformed directives append
+///          diagnostics and mark the manifest invalid.
+/// @param text_s Borrowed runtime string containing the complete manifest text.
+/// @return Fresh manifest map with defaults, parsed fields, owning configuration/diagnostic
+///         sequences, and a `valid` flag.
 void *rt_project_manifest_parse_text(rt_string text_s) {
     try {
         void *manifest = newManifestMap();
@@ -1992,6 +2235,13 @@ void *rt_project_manifest_parse_text(rt_string text_s) {
     }
 }
 
+/// @brief Read and parse a project manifest from disk.
+/// @details Reads bytes in binary mode, delegates to rt_project_manifest_parse_text(), records the
+///          source path, and derives a default project name from the parent directory when the
+///          parser retained its generic name. Open/read exceptions produce an invalid manifest
+///          with diagnostics.
+/// @param path_s Borrowed runtime string naming the manifest file.
+/// @return Fresh parsed or error manifest map.
 void *rt_project_manifest_parse_file(rt_string path_s) {
     try {
         const std::string path = toStd(path_s);
@@ -2082,6 +2332,7 @@ struct PendingWorkspaceWrite {
 ///          sidecar names cannot be predicted or pre-created by another process
 ///          (VDOC-196). The counter guarantees uniqueness within the process;
 ///          the keyed hash guarantees unpredictability across processes.
+/// @return Nonce mixed from a unique process-local counter and keyed runtime hash.
 static uint64_t workspaceEditNonce() {
     uint64_t counter = ++g_workspaceEditTempCounter;
     return rt_keyed_hash_bytes(&counter, sizeof(counter)) ^ counter;
@@ -2114,6 +2365,9 @@ static fs::path workspaceEditTempPath(const fs::path &file, const char *suffix) 
 ///          `rename(target, backup)` clobber unrelated data (VDOC-196). The
 ///          reserved empty file is atomically replaced by the target during the
 ///          commit rename. Returns false after exhausting its retry budget.
+/// @param target Destination file whose parent will contain the reservation.
+/// @param[out] reserved Receives the selected backup path after exclusive creation.
+/// @return True when an empty backup placeholder was exclusively created; otherwise false.
 static bool reserveWorkspaceEditBackup(const fs::path &target, std::string &reserved) {
     for (int attempt = 0; attempt < 64; ++attempt) {
         fs::path candidate = workspaceEditTempPath(target, ".bak");
@@ -2432,6 +2686,12 @@ static void *workspace_edit_apply_impl(void *edits, const std::vector<fs::path> 
 
 extern "C" {
 
+/// @brief Validate an unrooted workspace edit batch without modifying files.
+/// @details Decodes every edit, resolves targets to absolute lexical paths, verifies optional
+///          mtime/size versions, converts one-based ranges to byte offsets, and rejects overlap.
+///          C++ exceptions are converted into a stable failed result map.
+/// @param edits Borrowed runtime Seq of edit maps.
+/// @return Fresh map containing `success`, accepted `editCount`, and owning `diagnostics`.
 void *rt_workspace_edit_validate(void *edits) {
     try {
         return workspace_edit_validate_impl(edits, nullptr);
@@ -2447,6 +2707,12 @@ void *rt_workspace_edit_validate(void *edits) {
     }
 }
 
+/// @brief Validate an edit batch constrained to one canonical workspace root.
+/// @details The root must be an existing directory. Relative targets resolve beneath it, and
+///          canonicalized targets that escape it are rejected before file contents are read.
+/// @param edits Borrowed runtime Seq of edit maps.
+/// @param root Borrowed runtime string naming the workspace root.
+/// @return Fresh validation result map with success, edit count, and diagnostics.
 void *rt_workspace_edit_validate_in_root(void *edits, rt_string root) {
     try {
         void *diagnostics = rt_seq_new_owned();
@@ -2475,6 +2741,12 @@ void *rt_workspace_edit_validate_in_root(void *edits, rt_string root) {
     }
 }
 
+/// @brief Transactionally apply an unrooted workspace edit batch.
+/// @details Revalidates the batch, stages complete replacement images beside each file, checks
+///          optimistic concurrency immediately before commit, and uses backups for best-effort
+///          batch rollback. C++ exceptions produce a failed stable-shape result.
+/// @param edits Borrowed runtime Seq of edit maps.
+/// @return Fresh result map containing validation fields and `appliedFiles`.
 void *rt_workspace_edit_apply(void *edits) {
     try {
         return workspace_edit_apply_impl(edits, nullptr);
@@ -2491,6 +2763,12 @@ void *rt_workspace_edit_apply(void *edits) {
     }
 }
 
+/// @brief Transactionally apply an edit batch constrained to one workspace root.
+/// @details Canonical root containment is validated before staging; commit, concurrency checks,
+///          permission preservation, and rollback follow workspace_edit_apply_impl().
+/// @param edits Borrowed runtime Seq of edit maps.
+/// @param root Borrowed runtime string naming an existing workspace directory.
+/// @return Fresh result map containing success, edit count, applied-file count, and diagnostics.
 void *rt_workspace_edit_apply_in_root(void *edits, rt_string root) {
     try {
         void *diagnostics = rt_seq_new_owned();
@@ -2521,6 +2799,12 @@ void *rt_workspace_edit_apply_in_root(void *edits, rt_string root) {
     }
 }
 
+/// @brief Validate one edit batch against multiple canonical workspace roots.
+/// @details Root strings are decoded and deduplicated first. With multiple roots, edit targets
+///          must be absolute; every canonical target must lie within at least one root.
+/// @param edits Borrowed runtime Seq of edit maps.
+/// @param roots Borrowed runtime Seq of string or boxed-string workspace roots.
+/// @return Fresh validation result map with success, edit count, and diagnostics.
 void *rt_workspace_edit_validate_in_roots(void *edits, void *roots) {
     try {
         void *diagnostics = rt_seq_new_owned();
@@ -2547,6 +2831,13 @@ void *rt_workspace_edit_validate_in_roots(void *edits, void *roots) {
     }
 }
 
+/// @brief Transactionally apply one edit batch spanning explicit workspace roots.
+/// @details Validates all canonical roots and target containment before staging. The shared apply
+///          transaction covers every file across roots and rolls back earlier replacements when
+///          a later commit fails.
+/// @param edits Borrowed runtime Seq of edit maps.
+/// @param roots Borrowed runtime Seq of string or boxed-string workspace roots.
+/// @return Fresh result map containing success, edit count, applied-file count, and diagnostics.
 void *rt_workspace_edit_apply_in_roots(void *edits, void *roots) {
     try {
         void *diagnostics = rt_seq_new_owned();

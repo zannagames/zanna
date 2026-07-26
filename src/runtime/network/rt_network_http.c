@@ -98,15 +98,19 @@ static int http_pool_mutex_init(http_pool_mutex_t *mutex) {
 ///          syntax through the parsed response value.
 #define HTTP_SET_COOKIE_JOIN_SEPARATOR "\037"
 
-/// @brief True if `host` is an IPv6 literal that needs `[…]` wrapping in a URL/Host header.
-///
-/// Detects bare IPv6 addresses (containing ':' but no leading '[')
-/// per RFC 3986 §3.2.2 — these must be bracketed when embedded in a
-/// URL or `Host:` header.
+/// @brief Test whether host text needs IPv6 brackets in an authority.
+/// @details A colon-containing host that does not already begin with `[` is
+///          treated as a bare IPv6 literal requiring RFC 3986 brackets.
+/// @param host Optional NUL-terminated host text.
+/// @return true when brackets must be added, otherwise false.
 static bool host_needs_brackets(const char *host) {
     return host && strchr(host, ':') != NULL && host[0] != '[';
 }
 
+/// @brief Detect HTTP-forbidden control or whitespace bytes.
+/// @param text NUL-terminated text to inspect; NULL is invalid.
+/// @return One when @p text is NULL or contains a byte at or below space or
+///         DEL, otherwise zero.
 static int http_contains_ctl_or_space(const char *text) {
     if (!text)
         return 1;
@@ -117,6 +121,11 @@ static int http_contains_ctl_or_space(const char *text) {
     return 0;
 }
 
+/// @brief Validate an HTTP method or field name as an RFC token.
+/// @details Rejects empty input, controls, whitespace, DEL, and every HTTP
+///          separator byte.
+/// @param method NUL-terminated candidate token.
+/// @return One for a nonempty valid token, otherwise zero.
 int http_method_is_token(const char *method) {
     static const char *kSeparators = "()<>@,;:\\\"/[]?={} \t";
     if (!method || !*method)
@@ -128,14 +137,24 @@ int http_method_is_token(const char *method) {
     return 1;
 }
 
+/// @brief Validate an HTTP header field name as a token.
+/// @param name NUL-terminated candidate field name.
+/// @return One when @p name satisfies the shared token grammar, otherwise zero.
 static int http_header_field_name_is_token(const char *name) {
     return http_method_is_token(name);
 }
 
+/// @brief Expose header-name token validation to focused runtime tests.
+/// @param name NUL-terminated candidate field name.
+/// @return One for a valid HTTP field name, otherwise zero.
 int rt_http_header_name_valid_for_test(const char *name) {
     return http_header_field_name_is_token(name);
 }
 
+/// @brief Test whether text contains any byte from a delimiter set.
+/// @param text NUL-terminated text to scan.
+/// @param chars NUL-terminated set of bytes to match.
+/// @return One on the first match, otherwise zero; NULL input yields zero.
 static int http_contains_any_char(const char *text, const char *chars) {
     if (!text || !chars)
         return 0;
@@ -148,6 +167,11 @@ static int http_contains_any_char(const char *text, const char *chars) {
     return 0;
 }
 
+/// @brief Detect a NUL byte inside a managed String's logical payload.
+/// @details NULL, unavailable storage, and nonpositive lengths report no
+///          embedded byte; callers validate the handle separately.
+/// @param text Managed runtime String to inspect.
+/// @return One when a NUL occurs before the logical end, otherwise zero.
 int http_rt_string_has_embedded_nul(rt_string text) {
     if (!text)
         return 0;
@@ -158,12 +182,20 @@ int http_rt_string_has_embedded_nul(rt_string text) {
     return memchr(cstr, '\0', (size_t)len64) != NULL;
 }
 
+/// @brief Validate host text for safe use in an HTTP authority.
+/// @param host Nonempty NUL-terminated hostname or numeric address.
+/// @return One when the host contains no controls, whitespace, URL authority
+///         delimiters, or backslash, otherwise zero.
 static int http_host_is_valid(const char *host) {
     if (!host || !*host || http_contains_ctl_or_space(host))
         return 0;
     return !http_contains_any_char(host, "/?#@\\");
 }
 
+/// @brief Validate an origin-form HTTP request target.
+/// @param target NUL-terminated target expected to begin with `/`.
+/// @return One when the target has origin form and contains no controls,
+///         whitespace, DEL, or backslash, otherwise zero.
 static int http_request_target_is_valid(const char *target) {
     if (!target || target[0] != '/')
         return 0;
@@ -214,7 +246,11 @@ typedef struct http_conn {
     char pool_key[320];     // Stable host/port/TLS key for reuse
 } http_conn_t;
 
-/// @brief Initialize HTTP connection for TCP.
+/// @brief Initialize an HTTP connection context around a plain TCP socket.
+/// @details Clears all buffered and pool state and records that @p socket_fd is
+///          owned directly by the context.
+/// @param conn Uninitialized connection context to populate.
+/// @param socket_fd Owned connected native socket.
 static void http_conn_init_tcp(http_conn_t *conn, socket_t socket_fd) {
     memset(conn, 0, sizeof(*conn));
     conn->socket_fd = socket_fd;
@@ -225,7 +261,11 @@ static void http_conn_init_tcp(http_conn_t *conn, socket_t socket_fd) {
     conn->timeout_ms = 0;
 }
 
-/// @brief Initialize HTTP connection for TLS.
+/// @brief Initialize an HTTP connection context around a TLS session.
+/// @details Clears all buffered and pool state and borrows the session's native
+///          descriptor for readiness operations. The context owns @p tls.
+/// @param conn Uninitialized connection context to populate.
+/// @param tls Owned TLS session, or NULL to initialize an invalid descriptor.
 static void http_conn_init_tls(http_conn_t *conn, rt_tls_session_t *tls) {
     memset(conn, 0, sizeof(*conn));
     conn->socket_fd = tls ? (socket_t)rt_tls_get_socket(tls) : INVALID_SOCK;
@@ -236,6 +276,11 @@ static void http_conn_init_tls(http_conn_t *conn, rt_tls_session_t *tls) {
     conn->timeout_ms = 0;
 }
 
+/// @brief Adapt TLS receive to the HTTP/2 transport read callback.
+/// @param ctx TLS session supplied as an opaque callback context.
+/// @param buf Writable destination buffer.
+/// @param len Maximum bytes to receive.
+/// @return TLS receive result, or -1 for invalid callback arguments.
 static long http2_tls_read(void *ctx, uint8_t *buf, size_t len) {
     rt_tls_session_t *tls = (rt_tls_session_t *)ctx;
     if (!tls || !buf)
@@ -243,6 +288,11 @@ static long http2_tls_read(void *ctx, uint8_t *buf, size_t len) {
     return rt_tls_recv(tls, buf, len);
 }
 
+/// @brief Adapt TLS send to the HTTP/2 all-or-failure write callback.
+/// @param ctx TLS session supplied as an opaque callback context.
+/// @param buf Source buffer, or NULL only for a zero length.
+/// @param len Exact bytes required by the HTTP/2 transport.
+/// @return One only when TLS writes exactly @p len bytes, otherwise zero.
 static int http2_tls_write(void *ctx, const uint8_t *buf, size_t len) {
     rt_tls_session_t *tls = (rt_tls_session_t *)ctx;
     long sent = 0;
@@ -252,7 +302,14 @@ static int http2_tls_write(void *ctx, const uint8_t *buf, size_t len) {
     return sent == (long)len;
 }
 
-/// @brief Send all data over HTTP connection.
+/// @brief Send an entire buffer over a plain or TLS HTTP connection.
+/// @details Loops over partial writes, chunks native plain-socket calls at
+///          @c INT_MAX, retries interrupted calls, and waits for writability
+///          after would-block using the request timeout.
+/// @param conn Initialized connection context.
+/// @param data Readable buffer containing @p len bytes.
+/// @param len Exact byte count to send.
+/// @return Zero after complete delivery, or -1 on transport failure.
 static int http_conn_send(http_conn_t *conn, const uint8_t *data, size_t len) {
     size_t total_sent = 0;
 
@@ -288,7 +345,14 @@ static int http_conn_send(http_conn_t *conn, const uint8_t *data, size_t len) {
     return 0;
 }
 
-/// @brief Receive data from HTTP connection (buffered).
+/// @brief Receive up to a requested count from an HTTP connection.
+/// @details Drains bytes previously buffered by single-byte parsing before one
+///          TLS or native socket read. Interrupted plain reads are retried.
+/// @param conn Initialized connection context.
+/// @param buf Writable destination buffer.
+/// @param len Maximum bytes to return.
+/// @return Nonnegative bytes copied, including zero for EOF, or a negative
+///         transport result when no buffered bytes preceded the failure.
 static long http_conn_recv(http_conn_t *conn, uint8_t *buf, size_t len) {
     size_t total = 0;
 
@@ -324,7 +388,13 @@ static long http_conn_recv(http_conn_t *conn, uint8_t *buf, size_t len) {
     return (long)total;
 }
 
-/// @brief Receive exactly one byte from HTTP connection.
+/// @brief Receive one byte through the connection's parsing buffer.
+/// @details Returns a buffered byte when available; otherwise refills the
+///          internal buffer. Plain sockets retry interruptions and wait after
+///          would-block using the request timeout.
+/// @param conn Initialized connection context.
+/// @param byte Receives the next byte on success.
+/// @return One when a byte is produced, otherwise zero for EOF or failure.
 static int http_conn_recv_byte(http_conn_t *conn, uint8_t *byte) {
     // Check buffer first
     if (conn->read_buf_pos < conn->read_buf_len) {
@@ -365,7 +435,10 @@ static int http_conn_recv_byte(http_conn_t *conn, uint8_t *byte) {
     return 1;
 }
 
-/// @brief Close HTTP connection.
+/// @brief Close and reset every transport owned by an HTTP connection.
+/// @details Releases HTTP/2 state first, then closes TLS or the directly owned
+///          socket, and clears buffered and pool-lease metadata.
+/// @param conn Initialized connection context to consume.
 static void http_conn_close(http_conn_t *conn) {
     if (conn->http2) {
         rt_http2_conn_free(conn->http2);
@@ -433,6 +506,18 @@ static int64_t http_pool_now_ms(void) {
     return rt_clock_ticks_us() / 1000;
 }
 
+/// @brief Format the stable origin and security identity of a pooled connection.
+/// @details Encodes plain/TLS mode, TLS verification policy, bracketed host,
+///          and numeric port so connections with different security contracts
+///          cannot share a slot.
+/// @param host Origin host text.
+/// @param port Origin port.
+/// @param use_tls Nonzero for a TLS transport.
+/// @param tls_verify Nonzero when peer verification was enabled.
+/// @param buf Destination key buffer.
+/// @param buf_len Capacity of @p buf in bytes.
+/// @return One when the complete key fits, otherwise zero after clearing the
+///         destination when possible.
 static int http_make_pool_key(
     const char *host, int port, int use_tls, int tls_verify, char *buf, size_t buf_len) {
     if (!buf || buf_len == 0)
@@ -453,6 +538,13 @@ static int http_make_pool_key(
     return 1;
 }
 
+/// @brief Probe whether an idle connection remains reusable.
+/// @details HTTP/2 delegates to its transport state. TLS buffered data counts
+///          as healthy, while unexpected readable TLS state is conservatively
+///          rejected. Plain sockets use zero-time readiness plus @c MSG_PEEK to
+///          distinguish live data/would-block from orderly close.
+/// @param conn Candidate idle connection.
+/// @return One when the connection can be reused, otherwise zero.
 static int http_conn_is_healthy(http_conn_t *conn) {
     if (!conn || conn->socket_fd == INVALID_SOCK)
         return 0;
@@ -485,6 +577,8 @@ static int http_conn_is_healthy(http_conn_t *conn) {
     }
 }
 
+/// @brief Destroy one pool entry and restore its vacant sentinel state.
+/// @param entry Entry whose transport and key ownership are consumed, or NULL.
 static void http_conn_pool_entry_reset(http_conn_pool_entry_t *entry) {
     if (!entry)
         return;
@@ -498,6 +592,8 @@ static void http_conn_pool_entry_reset(http_conn_pool_entry_t *entry) {
     entry->conn.pool_slot = -1;
 }
 
+/// @brief Remove vacant trailing slots from a locked pool's logical extent.
+/// @param pool Pool whose mutex is held by the caller.
 static void http_conn_pool_trim_locked(http_conn_pool_t *pool) {
     while (pool->count > 0) {
         http_conn_pool_entry_t *tail = &pool->entries[pool->count - 1];
@@ -510,6 +606,10 @@ static void http_conn_pool_trim_locked(http_conn_pool_t *pool) {
     }
 }
 
+/// @brief Finalize an HTTP connection pool.
+/// @details Closes every pooled transport, frees all keys, and destroys the
+///          platform mutex when initialization completed.
+/// @param obj Pool payload being finalized, or NULL.
 static void http_conn_pool_finalize(void *obj) {
     if (!obj)
         return;
@@ -520,6 +620,14 @@ static void http_conn_pool_finalize(void *obj) {
         HTTP_POOL_MUTEX_DESTROY(&pool->lock);
 }
 
+/// @brief Allocate an initialized managed HTTP connection pool.
+/// @details Positive sizes below the hard 64-entry limit are honored; zero,
+///          negative, and larger values select the hard limit. Every slot is
+///          initialized with invalid transport sentinels before the mutex is
+///          published.
+/// @param max_size Requested maximum idle/in-use entry count.
+/// @return Newly owned pool, or NULL after allocation or mutex initialization
+///         failure.
 void *rt_http_conn_pool_new(int64_t max_size) {
     http_conn_pool_t *pool = (http_conn_pool_t *)rt_obj_new_i64(RT_HTTP_CONN_POOL_CLASS_ID,
                                                                 (int64_t)sizeof(http_conn_pool_t));
@@ -543,6 +651,10 @@ void *rt_http_conn_pool_new(int64_t max_size) {
     return pool;
 }
 
+/// @brief Close and remove every entry from an HTTP connection pool.
+/// @details Takes a safe live retain before stable-identity validation, then
+///          resets all entries under the pool mutex. NULL is a no-op.
+/// @param obj Managed pool receiver, or NULL.
 void rt_http_conn_pool_clear(void *obj) {
     if (!obj)
         return;
@@ -654,6 +766,17 @@ static void http_conn_pool_evict_idle_locked(http_conn_pool_t *pool, int64_t now
     http_conn_pool_trim_locked(pool);
 }
 
+/// @brief Check out a healthy idle connection matching an origin key.
+/// @details Evicts expired entries while holding the mutex, discards unhealthy
+///          matches, and transfers the selected transport out of its reserved
+///          slot. The slot remains marked in use until release.
+/// @param obj Valid managed pool.
+/// @param host Origin host.
+/// @param port Origin port.
+/// @param use_tls Nonzero for TLS.
+/// @param tls_verify Nonzero for verified TLS.
+/// @param out_conn Receives the checked-out connection and pool lease metadata.
+/// @return One when a reusable match is acquired, otherwise zero.
 static int http_conn_pool_acquire(
     void *obj, const char *host, int port, int use_tls, int tls_verify, http_conn_t *out_conn) {
     if (!host || !out_conn || !rt_http_conn_pool_is_handle(obj))
@@ -695,6 +818,13 @@ static int http_conn_pool_acquire(
     return 0;
 }
 
+/// @brief Return or discard a checked-out pooled connection.
+/// @details Invalid pool metadata, an empty key, an explicit nonreusable
+///          result, or a failed health probe closes the transport. Otherwise
+///          the connection returns to its reserved slot with a fresh monotonic
+///          timestamp; missing key allocation also closes it.
+/// @param conn Checked-out connection, consumed and reset by this call.
+/// @param reusable Nonzero when HTTP framing permits another request.
 static void http_conn_pool_release(http_conn_t *conn, int reusable) {
     if (!conn)
         return;
@@ -802,6 +932,8 @@ static void http_conn_pool_release(http_conn_t *conn, int reusable) {
 
 static RT_THREAD_LOCAL char g_http_tls_open_error[256];
 
+/// @brief Store the current thread's TLS connection-opening diagnostic.
+/// @param msg Diagnostic to copy, or NULL/empty to clear the buffer.
 static void http_set_tls_open_error(const char *msg) {
     if (!msg || !*msg) {
         g_http_tls_open_error[0] = '\0';
@@ -814,15 +946,35 @@ static socket_t http_create_tcp_socket(const char *host, int port, int timeout_m
 static void rt_http_res_finalize(void *obj);
 rt_http_res_t *do_http_request(rt_http_req_t *req, int redirects_remaining);
 
+/// @brief Test whether a request is eligible to use its attached pool.
+/// @param req Candidate native request.
+/// @return One when keep-alive is enabled and the attached pool is valid,
+///         otherwise zero.
 static int http_request_wants_pool(const rt_http_req_t *req) {
     return req && req->keep_alive && rt_http_conn_pool_is_handle(req->connection_pool);
 }
 
+/// @brief Test whether a method may be retried after stale pooled reuse.
+/// @details Restricts automatic retry to the idempotent GET, HEAD, OPTIONS, and
+///          DELETE methods so a stale connection cannot duplicate a body
+///          mutation.
+/// @param method NUL-terminated method token.
+/// @return One for a retryable method, otherwise zero.
 static int http_method_retryable_on_stale_reuse(const char *method) {
     return method && (strcmp(method, "GET") == 0 || strcmp(method, "HEAD") == 0 ||
                       strcmp(method, "OPTIONS") == 0 || strcmp(method, "DELETE") == 0);
 }
 
+/// @brief Acquire or establish the transport for one HTTP request.
+/// @details First attempts a healthy origin/security-matched pool lease. New
+///          HTTPS transports configure verification, timeout, and ALPN, perform
+///          the TLS handshake, and create HTTP/2 state when `h2` is selected;
+///          plain HTTP adopts the connected TCP socket directly. Successful new
+///          connections are associated with the request pool when eligible.
+/// @param req Fully parsed native request configuration.
+/// @param conn Receives the initialized owned or pooled connection.
+/// @param err_out Optional classified runtime error code on failure.
+/// @return One on success, otherwise zero after releasing partial transports.
 static int http_open_connection(rt_http_req_t *req, http_conn_t *conn, int *err_out) {
     if (!req || !conn) {
         if (err_out)
@@ -946,7 +1098,8 @@ static int http_open_connection(rt_http_req_t *req, http_conn_t *conn, int *err_
     return 1;
 }
 
-/// @brief Free parsed URL.
+/// @brief Release all heap fields owned by a parsed HTTP URL.
+/// @param url Parsed URL whose host and path are freed and cleared.
 void free_parsed_url(parsed_url_t *url) {
     if (url->host)
         free(url->host);
@@ -960,7 +1113,11 @@ void free_parsed_url(parsed_url_t *url) {
 /// @details Accepts explicit `http://` and `https://` URLs. For compatibility
 ///          with earlier Zanna programs, a URL without any `://` scheme is
 ///          treated as an HTTP URL on port 80; unknown explicit schemes are
-///          rejected.
+///          rejected. IPv6 authorities may be bracketed, fragments are removed
+///          from the request target, and an omitted path becomes `/`.
+/// @param url_str Nonempty NUL-terminated URL without CR or LF.
+/// @param result Receives owned host/path fields and normalized port/TLS state;
+///        it is cleared before parsing.
 /// @return 0 on success, -1 on error.
 int parse_url(const char *url_str, parsed_url_t *result) {
     memset(result, 0, sizeof(*result));
@@ -1098,7 +1255,8 @@ int parse_url(const char *url_str, parsed_url_t *result) {
     return 0;
 }
 
-/// @brief Free header list.
+/// @brief Release a complete native HTTP header list.
+/// @param headers Owned list head; NULL is a no-op.
 void free_headers(http_header_t *headers) {
     while (headers) {
         http_header_t *next = headers->next;
@@ -1109,18 +1267,32 @@ void free_headers(http_header_t *headers) {
     }
 }
 
-/// @brief Enable TCP_NODELAY on a connected socket.
+/// @brief Best-effort enable TCP_NODELAY on a connected HTTP socket.
+/// @param sock Connected native TCP socket.
 static void http_set_nodelay(socket_t sock) {
     int flag = 1;
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&flag, sizeof(flag));
 }
 
-/// @brief Set or clear non-blocking mode for connect-with-timeout.
+/// @brief Set or clear native non-blocking mode for a connect operation.
+/// @param sock Native socket to configure.
+/// @param nonblocking true to enable non-blocking mode, false to restore it.
+/// @return true when the platform adapter succeeds, otherwise false.
 static bool http_set_nonblocking(socket_t sock, bool nonblocking) {
     return rt_socket_set_nonblocking(sock, nonblocking);
 }
 
-/// @brief Connect a socket with an optional timeout in milliseconds.
+/// @brief Connect a socket with an optional timeout.
+/// @details Positive timeouts use non-blocking connect, readiness waiting, and
+///          @c SO_ERROR before restoring blocking mode. Zero performs a normal
+///          blocking connect. The caller owns and closes the socket on failure.
+/// @param sock Unconnected native socket.
+/// @param addr Destination socket address.
+/// @param addrlen Size of @p addr.
+/// @param timeout_ms Nonnegative timeout in milliseconds; zero blocks.
+/// @param err_out Optional output for the native error, including
+///        @c ETIMEDOUT on readiness expiry.
+/// @return true when connected in blocking mode, otherwise false.
 static bool http_connect_socket_with_timeout(
     socket_t sock, const struct sockaddr *addr, socklen_t addrlen, int timeout_ms, int *err_out) {
     if (err_out)
@@ -1179,7 +1351,15 @@ static bool http_connect_socket_with_timeout(
     return true;
 }
 
-/// @brief Open a raw TCP socket to host:port without trapping.
+/// @brief Open a raw TCP socket to an HTTP origin without trapping.
+/// @details Resolves IPv4 and IPv6 candidates, applies the timeout to each
+///          attempt, suppresses SIGPIPE, and best-effort enables TCP_NODELAY on
+///          the first successful connection.
+/// @param host Origin hostname or numeric address.
+/// @param port Origin port.
+/// @param timeout_ms Per-address timeout in milliseconds; zero blocks.
+/// @param err_code Optional output for a classified runtime network error.
+/// @return Connected owned socket, or @c INVALID_SOCK on failure.
 static socket_t http_create_tcp_socket(const char *host, int port, int timeout_ms, int *err_code) {
     if (err_code)
         *err_code = Err_NetworkError;
@@ -1236,7 +1416,11 @@ static socket_t http_create_tcp_socket(const char *host, int port, int timeout_m
     return sock;
 }
 
-/// @brief Format and raise a TLS failure with the underlying TLS diagnostic when available.
+/// @brief Format and raise a classified TLS failure.
+/// @details Appends an explicit detail when supplied, otherwise uses the
+///          thread's latest TLS diagnostic, then raises @c Err_TlsError.
+/// @param prefix Stable high-level failure description.
+/// @param detail Optional operation-specific TLS diagnostic.
 static void http_trap_tls_error(const char *prefix, const char *detail) {
     const char *tls_err = detail && *detail ? detail : rt_tls_last_error();
     if (tls_err && *tls_err) {
@@ -1247,7 +1431,12 @@ static void http_trap_tls_error(const char *prefix, const char *detail) {
     rt_trap_net(prefix, Err_TlsError);
 }
 
-/// @brief Parse a decimal Content-Length value strictly.
+/// @brief Parse a strict decimal Content-Length value.
+/// @details Permits surrounding spaces or tabs but rejects signs, missing
+///          digits, trailing syntax, and @c size_t overflow.
+/// @param text NUL-terminated header value.
+/// @param out_len Receives the parsed length on success.
+/// @return Zero on success, otherwise -1.
 static int parse_content_length_strict(const char *text, size_t *out_len) {
     const unsigned char *p = (const unsigned char *)text;
     size_t value = 0;
@@ -1280,7 +1469,11 @@ static int parse_content_length_strict(const char *text, size_t *out_len) {
     return 0;
 }
 
-/// @brief Return 1 if the response is not allowed to carry a payload body.
+/// @brief Determine whether HTTP semantics forbid a response body.
+/// @param req Request whose method is examined.
+/// @param status Numeric response status.
+/// @return One for HEAD responses, informational responses, 204, or 304;
+///         otherwise zero.
 static int response_has_no_body(const rt_http_req_t *req, int status) {
     if (strcmp(req->method, "HEAD") == 0)
         return 1;
@@ -1289,7 +1482,13 @@ static int response_has_no_body(const rt_http_req_t *req, int status) {
     return 0;
 }
 
-/// @brief Build the absolute URL string for the current parsed request target.
+/// @brief Serialize a parsed request URL as an absolute URL.
+/// @details Selects HTTP/HTTPS, brackets bare IPv6 hosts, omits the scheme's
+///          default port, includes the request target, and checks every size
+///          accumulation for overflow.
+/// @param url Fully initialized parsed request URL.
+/// @return Newly allocated NUL-terminated URL, or NULL on overflow or
+///         allocation failure.
 static char *build_absolute_url(const parsed_url_t *url) {
     const char *scheme = url->use_tls ? "https" : "http";
     int default_port = url->use_tls ? 443 : 80;
@@ -1342,7 +1541,10 @@ static char *build_absolute_url(const parsed_url_t *url) {
     return full;
 }
 
-/// @brief Identify request headers that must not cross origin boundaries during redirects.
+/// @brief Identify credentials that must not cross redirect origin boundaries.
+/// @param name Header field name, compared case-insensitively.
+/// @return One for authorization, cookie, API-key, or access-token headers;
+///         otherwise zero.
 int8_t rt_http_header_is_sensitive_for_cross_origin_redirect(const char *name) {
     if (!name)
         return 0;
@@ -1353,6 +1555,13 @@ int8_t rt_http_header_is_sensitive_for_cross_origin_redirect(const char *name) {
            strcasecmp(name, "X-Access-Token") == 0;
 }
 
+/// @brief Compare two URL Strings by normalized HTTP origin.
+/// @details Parses both URLs and compares scheme and host case-insensitively
+///          plus the parsed numeric port. All temporary managed objects are
+///          released before return.
+/// @param lhs First URL String.
+/// @param rhs Second URL String.
+/// @return One when scheme, host, and port match, otherwise zero.
 int8_t rt_http_url_has_same_origin(rt_string lhs, rt_string rhs) {
     int same_origin = 0;
     void *lhs_parsed = NULL;
@@ -1445,6 +1654,13 @@ done:
     return cross_origin;
 }
 
+/// @brief Resolve an HTTP Location value against the current absolute URL.
+/// @details Absolute locations pass through, scheme-relative locations inherit
+///          the current scheme, and other references use the Url resolver.
+///          Empty Location returns an owned empty String.
+/// @param current_url Current absolute request URL.
+/// @param location Redirect Location reference.
+/// @return Newly owned absolute URL String.
 rt_string rt_http_resolve_redirect_url(rt_string current_url, rt_string location) {
     const char *location_cstr = rt_string_cstr(location);
     if (!location_cstr || !*location_cstr)
@@ -1490,7 +1706,13 @@ rt_string rt_http_resolve_redirect_url(rt_string current_url, rt_string location
     }
 }
 
-/// @brief Resolve an HTTP redirect target against the current URL and replace the request URL.
+/// @brief Resolve and transactionally replace a parsed redirect target.
+/// @details Serializes the current target, resolves @p location through the
+///          managed Url API, parses the result into independent native storage,
+///          and replaces @p current only after complete success.
+/// @param current Parsed URL to replace on success.
+/// @param location Nonempty raw Location header value.
+/// @return Zero on success, otherwise -1 with @p current unchanged.
 static int resolve_redirect_target(parsed_url_t *current, const char *location) {
     int ok = -1;
     char *current_full = NULL;
@@ -1528,10 +1750,10 @@ static int resolve_redirect_target(parsed_url_t *current, const char *location) 
     return ok;
 }
 
-/// @brief GC finalizer for an HttpRes object.
-///
-/// Frees the status text, body buffer, and decrements the headers
-/// map's refcount (releasing if it hits zero).
+/// @brief Finalize a managed HTTP response.
+/// @details Frees native status/body storage, releases the owned headers Map,
+///          and clears scalar state. NULL is a no-op.
+/// @param obj HttpRes payload being finalized, or NULL.
 static void rt_http_res_finalize(void *obj) {
     if (!obj)
         return;
@@ -1547,7 +1769,9 @@ static void rt_http_res_finalize(void *obj) {
     res->status = 0;
 }
 
-/// @brief Return true if the string contains CR or LF (HTTP injection guard).
+/// @brief Detect CR or LF bytes used in HTTP injection attempts.
+/// @param s Non-NULL NUL-terminated string.
+/// @return true when either line-break byte is present, otherwise false.
 static bool has_crlf(const char *s) {
     for (; *s; s++) {
         if (*s == '\r' || *s == '\n')
@@ -1584,7 +1808,11 @@ static http_header_t *http_header_new(const char *name, const char *value) {
     return h;
 }
 
-/// @brief Append a validated header while preserving request state on failure.
+/// @brief Prepend a validated header while preserving request state on failure.
+/// @param req Request that owns the header list.
+/// @param name HTTP field-name token.
+/// @param value Field value without CR or LF.
+/// @return One after publication, otherwise zero with the list unchanged.
 int add_header(rt_http_req_t *req, const char *name, const char *value) {
     if (!req)
         return 0;
@@ -1597,6 +1825,12 @@ int add_header(rt_http_req_t *req, const char *name, const char *value) {
 }
 
 /// @brief Atomically replace all case-insensitive matches for one header name.
+/// @details Allocates the replacement before removing old fields so validation
+///          or allocation failure leaves the request unchanged.
+/// @param req Request that owns the header list.
+/// @param name HTTP field-name token.
+/// @param value Replacement field value without CR or LF.
+/// @return One after replacement, otherwise zero with prior fields preserved.
 int set_header(rt_http_req_t *req, const char *name, const char *value) {
     if (!req)
         return 0;
@@ -1609,7 +1843,10 @@ int set_header(rt_http_req_t *req, const char *name, const char *value) {
     return 1;
 }
 
-/// @brief Check if header exists (case-insensitive).
+/// @brief Check whether a request contains a header name.
+/// @param req Request whose list is searched.
+/// @param name Header name compared case-insensitively.
+/// @return true on the first match, otherwise false.
 bool has_header(rt_http_req_t *req, const char *name) {
     if (!req || !name)
         return false;
@@ -1620,7 +1857,9 @@ bool has_header(rt_http_req_t *req, const char *name) {
     return false;
 }
 
-/// @brief Remove every request header whose name case-insensitively equals @p name.
+/// @brief Remove every request header matching a name case-insensitively.
+/// @param req Request whose owned list is mutated.
+/// @param name Header name to remove.
 void remove_header(rt_http_req_t *req, const char *name) {
     if (!req || !name)
         return;
@@ -1728,7 +1967,13 @@ int rt_http_header_map_set_ci(void *map, rt_string name, void *value) {
     return 1;
 }
 
-/// @brief Return true when a comma-separated HTTP header value contains @p token.
+/// @brief Test a comma-separated HTTP field value for a token.
+/// @details Ignores surrounding optional whitespace, compares
+///          case-insensitively, and ignores semicolon-delimited token
+///          parameters.
+/// @param value NUL-terminated field value.
+/// @param token Exact token to find.
+/// @return One when present, otherwise zero.
 int8_t rt_http_header_value_has_token(const char *value, const char *token) {
     size_t token_len;
     if (!value || !token)
@@ -1763,6 +2008,13 @@ int8_t rt_http_header_value_has_token(const char *value, const char *token) {
     return 0;
 }
 
+/// @brief Validate the supported Transfer-Encoding grammar.
+/// @details This runtime accepts exactly one `chunked` coding with optional
+///          surrounding whitespace and rejects duplicates, empty elements, and
+///          every unsupported coding.
+/// @param value NUL-terminated Transfer-Encoding field value.
+/// @param chunked_out Optional output, cleared first and set to one on success.
+/// @return One only for the supported chunked form, otherwise zero.
 static int parse_transfer_encoding_supported(const char *value, int *chunked_out) {
     const char *p = value;
     const char *end = value ? value + strlen(value) : NULL;
@@ -1813,10 +2065,20 @@ static int parse_transfer_encoding_supported(const char *value, int *chunked_out
     return 1;
 }
 
+/// @brief Expose Transfer-Encoding validation to focused runtime tests.
+/// @param value NUL-terminated field value.
+/// @param chunked_out Optional output receiving the parsed chunked flag.
+/// @return One for the supported grammar, otherwise zero.
 int rt_http_transfer_encoding_supported_for_test(const char *value, int *chunked_out) {
     return parse_transfer_encoding_supported(value, chunked_out);
 }
 
+/// @brief Copy a managed String into an empty native request body.
+/// @details Uses the String's exact logical byte length and leaves the request
+///          unchanged for NULL or empty input. Invalid lengths and allocation
+///          failure trap.
+/// @param req Native request that receives ownership of the copied buffer.
+/// @param body Managed String to copy.
 void set_request_body_from_string(rt_http_req_t *req, rt_string body) {
     const char *body_str = body ? rt_string_cstr(body) : NULL;
     int64_t body_len64 = 0;
@@ -1841,6 +2103,9 @@ void set_request_body_from_string(rt_http_req_t *req, rt_string body) {
     req->body_len = body_len;
 }
 
+/// @brief Remove every request header accepted by a predicate.
+/// @param req Request whose owned header list is filtered.
+/// @param predicate Field-name predicate; NULL removes nothing.
 static void remove_header_if(rt_http_req_t *req, int8_t (*predicate)(const char *)) {
     http_header_t **link = req ? &req->headers : NULL;
     while (link && *link) {
@@ -1855,6 +2120,10 @@ static void remove_header_if(rt_http_req_t *req, int8_t (*predicate)(const char 
     }
 }
 
+/// @brief Identify framing or representation headers tied to a request body.
+/// @param name Header field name.
+/// @return One for Content-Length, Content-Type, or Transfer-Encoding,
+///         otherwise zero.
 static int8_t is_body_specific_header(const char *name) {
     if (!name)
         return 0;
@@ -1862,10 +2131,14 @@ static int8_t is_body_specific_header(const char *name) {
            strcasecmp(name, "Transfer-Encoding") == 0;
 }
 
+/// @brief Remove credentials before following a cross-origin redirect.
+/// @param req Redirect request clone to sanitize.
 static void strip_sensitive_redirect_headers(rt_http_req_t *req) {
     remove_header_if(req, rt_http_header_is_sensitive_for_cross_origin_redirect);
 }
 
+/// @brief Remove body metadata after a redirect rewrites the method to GET.
+/// @param req Redirect request clone whose body was cleared.
 static void strip_redirect_body_headers(rt_http_req_t *req) {
     remove_header_if(req, is_body_specific_header);
 }
@@ -2202,14 +2475,27 @@ static int set_header_value(void *headers_map, const char *name, const char *val
     return 1;
 }
 
-/// @brief Update the response Content-Length to the decoded body size.
+/// @brief Replace a response Content-Length with a body size.
+/// @param headers_map Managed response-header Map.
+/// @param body_len Exact decoded body length.
+/// @return One after successful header publication, otherwise zero.
 static int set_content_length_header(void *headers_map, size_t body_len) {
     char len_buf[32];
     snprintf(len_buf, sizeof(len_buf), "%zu", body_len);
     return set_header_value(headers_map, "content-length", len_buf);
 }
 
-/// @brief Decode a gzip response body in-place when the response advertises Content-Encoding:gzip.
+/// @brief Decode an advertised gzip response body transactionally.
+/// @details When decoding is enabled and Content-Encoding contains `gzip`,
+///          converts the native body through managed compression Bytes, enforces
+///          the response size limit, removes Content-Encoding, updates
+///          Content-Length, and only then replaces the caller's native buffer.
+///          Temporary managed/native storage is recovered across traps.
+/// @param req Request containing the decode policy.
+/// @param headers_map Mutable managed response-header Map.
+/// @param body_io Receives the replacement owned native body buffer.
+/// @param body_len_io Receives the decoded byte length.
+/// @return One for no-op or successful decoding, otherwise zero.
 static int maybe_decode_gzip_body(const rt_http_req_t *req,
                                   void *headers_map,
                                   uint8_t **body_io,
@@ -2312,8 +2598,15 @@ static int maybe_decode_gzip_body(const rt_http_req_t *req,
     return 1;
 }
 
-/// @brief Build HTTP request string.
-/// @return Allocated string, caller must free.
+/// @brief Serialize an HTTP/1.1 request head.
+/// @details Validates method, host, and origin-form target; emits Host with
+///          bracketed IPv6 and a nondefault port; synthesizes Content-Length,
+///          Connection, and Accept-Encoding when needed; appends validated user
+///          headers; and checks all size arithmetic and formatting bounds.
+///          The request body is deliberately not included.
+/// @param req Fully initialized native request.
+/// @return Newly allocated NUL-terminated request head, or NULL on invalid
+///         state, overflow, formatting failure, or allocation failure.
 static char *build_request(rt_http_req_t *req) {
     if (!req || !http_method_is_token(req->method) || !http_host_is_valid(req->url.host) ||
         !http_request_target_is_valid(req->url.path)) {
@@ -2459,6 +2752,11 @@ static char *build_request(rt_http_req_t *req) {
 /// HTTP request path. All output pointers are optional. Strings
 /// returned via `host_out`/`path_out` are heap-allocated and must
 /// be `free()`d by the caller.
+/// @param url_str Candidate NUL-terminated HTTP URL.
+/// @param host_out Optional output for a newly allocated host copy.
+/// @param port_out Optional output for the parsed port.
+/// @param path_out Optional output for a newly allocated request-target copy.
+/// @param use_tls_out Optional output receiving one for HTTPS.
 /// @return 1 on success, 0 on parse failure (in which case no
 ///         outputs are written and no allocations leak).
 int rt_http_parse_url_for_test(
@@ -2493,6 +2791,10 @@ typedef enum http_body_read_status {
 /// @details EOF is a successful delimiter for this HTTP/1.0-style body mode.
 ///          `status_out` distinguishes EOF success from allocation, size-limit,
 ///          and transport failures.
+/// @param conn Open connection positioned at the response body.
+/// @param out_len Receives the exact body length, or zero on failure.
+/// @param status_out Optional detailed body-read status.
+/// @return Newly allocated owned body buffer, or NULL on failure.
 static uint8_t *read_body_until_close_conn(http_conn_t *conn,
                                            size_t *out_len,
                                            http_body_read_status_t *status_out) {
@@ -2582,7 +2884,12 @@ static uint8_t *read_body_until_close_conn(http_conn_t *conn,
     return body;
 }
 
-/// @brief Stream a Content-Length body directly into a file.
+/// @brief Stream an exact Content-Length body directly into a file.
+/// @param conn Open connection positioned at the response body.
+/// @param content_length Exact promised byte count.
+/// @param out Open writable destination stream.
+/// @param out_len Receives bytes written, or zero for transport/size failure.
+/// @return One only after every promised byte is written, otherwise zero.
 static int write_body_content_length_conn(http_conn_t *conn,
                                           size_t content_length,
                                           FILE *out,
@@ -2614,7 +2921,13 @@ static int write_body_content_length_conn(http_conn_t *conn,
     return 1;
 }
 
-/// @brief Stream a chunked body directly into a file.
+/// @brief Decode and stream a chunked response body into a file.
+/// @details Validates chunk-size lines, aggregate size, each chunk terminator,
+///          and bounded trailers while writing only decoded payload bytes.
+/// @param conn Open connection positioned at the first chunk-size line.
+/// @param out Open writable destination stream.
+/// @param out_len Receives payload bytes written before success or failure.
+/// @return One after the terminating chunk and valid trailers, otherwise zero.
 static int write_body_chunked_conn(http_conn_t *conn, FILE *out, size_t *out_len) {
     size_t total_written = 0;
     uint8_t buffer[HTTP_BUFFER_SIZE];
@@ -2669,7 +2982,12 @@ static int write_body_chunked_conn(http_conn_t *conn, FILE *out, size_t *out_len
     }
 }
 
-/// @brief Stream a close-delimited body directly into a file.
+/// @brief Stream a close-delimited response body into a file.
+/// @param conn Open connection positioned at the body.
+/// @param out Open writable destination stream.
+/// @param out_len Receives bytes written before success or failure.
+/// @return One when orderly EOF delimits a body within the size limit,
+///         otherwise zero.
 static int write_body_until_close_conn(http_conn_t *conn, FILE *out, size_t *out_len) {
     size_t total_written = 0;
     uint8_t buffer[HTTP_BUFFER_SIZE];
@@ -2697,6 +3015,10 @@ static int write_body_until_close_conn(http_conn_t *conn, FILE *out, size_t *out
     return 1;
 }
 
+/// @brief Duplicate the canonical reason phrase for a common status code.
+/// @param status Numeric HTTP response status.
+/// @return Newly allocated reason phrase, using `Unknown` for an unlisted code,
+///         or NULL on allocation failure.
 static char *http_status_text_dup(int status) {
     const char *text = NULL;
     switch (status) {
@@ -2773,6 +3095,11 @@ static char *http_status_text_dup(int status) {
     return strdup(text);
 }
 
+/// @brief Format the HTTP/2 `:authority` value for a parsed URL.
+/// @details Brackets bare IPv6 hosts and includes only nondefault ports.
+/// @param url Parsed HTTP/HTTPS URL.
+/// @return Newly allocated authority string, or NULL for invalid input or
+///         allocation failure.
 static char *http_format_authority(const parsed_url_t *url) {
     char buf[320];
     int default_port = 0;
@@ -2791,6 +3118,13 @@ static char *http_format_authority(const parsed_url_t *url) {
     return strdup(buf);
 }
 
+/// @brief Identify HTTP/1.x fields forbidden in HTTP/2.
+/// @details Filters connection management, upgrade, keep-alive, proxy
+///          connection, and transfer coding fields; TE is allowed only with
+///          the exact `trailers` value.
+/// @param name Header field name.
+/// @param value Header value used to validate TE.
+/// @return One when the field must be omitted from HTTP/2, otherwise zero.
 static int http2_header_is_connection_specific(const char *name, const char *value) {
     if (!name)
         return 0;
@@ -2804,6 +3138,14 @@ static int http2_header_is_connection_specific(const char *name, const char *val
     return 0;
 }
 
+/// @brief Build the ordered HTTP/2 header array for a request.
+/// @details Emits required pseudo-headers, filters connection-specific HTTP/1
+///          fields and duplicate Host/Content-Length fields, synthesizes body
+///          length and gzip acceptance as needed, and duplicates every name and
+///          value into owned array storage.
+/// @param req Fully initialized request.
+/// @param headers_out Receives an owned linked header list.
+/// @return One on success, otherwise zero after freeing partial header storage.
 static int http2_build_request_headers(rt_http_req_t *req, rt_http2_header_t **headers_out) {
     char content_len_buf[64];
     rt_http2_header_t *headers = NULL;
@@ -2969,6 +3311,15 @@ static rt_http_res_t *http_make_response_obj(
     return (rt_http_res_t *)res;
 }
 
+/// @brief Execute a request on an already negotiated HTTP/2 connection.
+/// @details Builds and submits one stream, translates response headers/body into
+///          managed HTTP/1-compatible response storage, applies redirect and
+///          gzip policies, enforces body limits, and returns or discards the
+///          connection pool lease according to HTTP/2 usability.
+/// @param req Request configuration.
+/// @param conn Open HTTP/2 connection, consumed into pool release paths.
+/// @param redirects_remaining Remaining redirect-hop budget.
+/// @return Newly owned managed response, or NULL after a returning trap.
 static rt_http_res_t *do_http2_request_opened(rt_http_req_t *req,
                                               http_conn_t *conn,
                                               int redirects_remaining) {
@@ -3125,7 +3476,15 @@ static rt_http_res_t *do_http2_request_opened(rt_http_req_t *req,
     return http_make_response_obj(status, status_text, headers_map, body, body_len);
 }
 
-/// @brief Perform HTTP request and return response.
+/// @brief Execute an HTTP request and construct its managed response.
+/// @details Opens or leases a transport, selects the HTTP/2 path when
+///          negotiated, otherwise serializes HTTP/1.1, permits one safe retry
+///          for an idempotent method on stale pooled reuse, parses bounded
+///          response framing, follows redirects, optionally decodes gzip, and
+///          returns reusable connections only after complete framed bodies.
+/// @param req Fully initialized request configuration.
+/// @param redirects_remaining Remaining redirect-hop budget.
+/// @return Newly owned managed HttpRes, or NULL after a returning trap.
 rt_http_res_t *do_http_request(rt_http_req_t *req, int redirects_remaining) {
     rt_net_init_wsa();
 
@@ -3530,8 +3889,15 @@ static int http_follow_download_redirect(rt_http_req_t *source,
     return ok;
 }
 
-/// @brief Execute an HTTP GET/download and stream the response body into an open file.
-/// @return 1 on success, 0 on any connection/protocol/write failure.
+/// @brief Execute an HTTP download and stream a successful response to a file.
+/// @details Supports HTTP/1.1 and HTTP/2, bounded redirects, Content-Length,
+///          chunked, and close-delimited bodies. Only 2xx responses succeed;
+///          transport, protocol, size-limit, allocation, and short-write
+///          failures return zero and release all connection resources.
+/// @param req Fully initialized download request.
+/// @param redirects_remaining Remaining redirect-hop budget.
+/// @param out Open writable destination stream owned by the caller.
+/// @return One after the complete 2xx body is written, otherwise zero.
 int do_http_download_request(rt_http_req_t *req, int redirects_remaining, FILE *out) {
     http_conn_t conn;
     char *request_str = NULL;

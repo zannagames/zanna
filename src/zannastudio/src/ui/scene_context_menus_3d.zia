@@ -53,6 +53,7 @@ class SceneContextMenus3D {
     expose GUI.MenuItem hierarchyCreateBox;
     expose GUI.MenuItem hierarchyCreateSphere;
     expose GUI.MenuItem hierarchyCreatePlane;
+    expose GUI.MenuItem hierarchyCreateCylinder;
     expose GUI.MenuItem hierarchyCreateLight;
     expose GUI.MenuItem hierarchyCreateCamera;
     expose GUI.MenuItem hierarchyRename;
@@ -63,6 +64,7 @@ class SceneContextMenus3D {
     expose GUI.MenuItem viewportCreateBox;
     expose GUI.MenuItem viewportCreateSphere;
     expose GUI.MenuItem viewportCreatePlane;
+    expose GUI.MenuItem viewportCreateCylinder;
     expose GUI.MenuItem viewportCreateLight;
     expose GUI.MenuItem viewportCreateCamera;
     expose GUI.MenuItem viewportFrameSelected;
@@ -78,6 +80,7 @@ class SceneContextMenus3D {
         hierarchyCreateBox = null;
         hierarchyCreateSphere = null;
         hierarchyCreatePlane = null;
+        hierarchyCreateCylinder = null;
         hierarchyCreateLight = null;
         hierarchyCreateCamera = null;
         hierarchyRename = null;
@@ -88,6 +91,7 @@ class SceneContextMenus3D {
         viewportCreateBox = null;
         viewportCreateSphere = null;
         viewportCreatePlane = null;
+        viewportCreateCylinder = null;
         viewportCreateLight = null;
         viewportCreateCamera = null;
         viewportFrameSelected = null;
@@ -104,6 +108,7 @@ class SceneContextMenus3D {
         hierarchyCreateBox = hierarchyMenu.AddItem("Create Box");
         hierarchyCreateSphere = hierarchyMenu.AddItem("Create Sphere");
         hierarchyCreatePlane = hierarchyMenu.AddItem("Create Plane");
+        hierarchyCreateCylinder = hierarchyMenu.AddItem("Create Cylinder");
         hierarchyCreateLight = hierarchyMenu.AddItem("Create Light");
         hierarchyCreateCamera = hierarchyMenu.AddItem("Create Camera");
         hierarchyMenu.AddSeparator();
@@ -118,6 +123,7 @@ class SceneContextMenus3D {
         viewportCreateBox = viewportMenu.AddItem("Create Box");
         viewportCreateSphere = viewportMenu.AddItem("Create Sphere");
         viewportCreatePlane = viewportMenu.AddItem("Create Plane");
+        viewportCreateCylinder = viewportMenu.AddItem("Create Cylinder");
         viewportCreateLight = viewportMenu.AddItem("Create Light");
         viewportCreateCamera = viewportMenu.AddItem("Create Camera");
         viewportMenu.AddSeparator();
@@ -201,20 +207,41 @@ class SceneContextMenus3D {
                 "Node " + editor.scene.NodeCount,
                 editor.selectedIndex) >= 0 or changed;
         }
-        if hierarchyCreateBox.WasClicked()
-           or viewportCreateBox.WasClicked() {
-            changed = editor.AddPrimitive(
+        if hierarchyCreateBox.WasClicked() {
+            changed = editor.AddPrimitiveFromMenu(
                 scene_editor_3d.PRIMITIVE_BOX, false) or changed;
         }
-        if hierarchyCreateSphere.WasClicked()
-           or viewportCreateSphere.WasClicked() {
-            changed = editor.AddPrimitive(
+        if viewportCreateBox.WasClicked() {
+            changed = editor.AddPrimitiveAtPointer(
+                scene_editor_3d.PRIMITIVE_BOX,
+                rightDownX, rightDownY) or changed;
+        }
+        if hierarchyCreateSphere.WasClicked() {
+            changed = editor.AddPrimitiveFromMenu(
                 scene_editor_3d.PRIMITIVE_SPHERE, false) or changed;
         }
-        if hierarchyCreatePlane.WasClicked()
-           or viewportCreatePlane.WasClicked() {
-            changed = editor.AddPrimitive(
+        if viewportCreateSphere.WasClicked() {
+            changed = editor.AddPrimitiveAtPointer(
+                scene_editor_3d.PRIMITIVE_SPHERE,
+                rightDownX, rightDownY) or changed;
+        }
+        if hierarchyCreatePlane.WasClicked() {
+            changed = editor.AddPrimitiveFromMenu(
                 scene_editor_3d.PRIMITIVE_PLANE, false) or changed;
+        }
+        if viewportCreatePlane.WasClicked() {
+            changed = editor.AddPrimitiveAtPointer(
+                scene_editor_3d.PRIMITIVE_PLANE,
+                rightDownX, rightDownY) or changed;
+        }
+        if hierarchyCreateCylinder.WasClicked() {
+            changed = editor.AddPrimitiveFromMenu(
+                scene_editor_3d.PRIMITIVE_CYLINDER, false) or changed;
+        }
+        if viewportCreateCylinder.WasClicked() {
+            changed = editor.AddPrimitiveAtPointer(
+                scene_editor_3d.PRIMITIVE_CYLINDER,
+                rightDownX, rightDownY) or changed;
         }
         if hierarchyCreateLight.WasClicked()
            or viewportCreateLight.WasClicked() {

@@ -17,7 +17,8 @@
 //   - Compression produces block type 0 (stored) or type 1 (fixed Huffman).
 //     Decompression consumes type 0, type 1, and type 2 (dynamic) blocks.
 //   - CRC32 is computed and validated for GZIP streams.
-//   - All functions are thread-safe (no global mutable state).
+//   - Fixed Huffman lookup tables are initialized exactly once with native
+//     one-time primitives and remain immutable afterward.
 //
 // Ownership/Lifetime:
 //   - Compressed and decompressed output is returned as a fresh rt_bytes
@@ -25,7 +26,7 @@
 //   - Input rt_bytes buffers are read-only and not retained by the functions.
 //
 // Links: src/runtime/io/rt_compress.h (public API),
-//        src/runtime/rt_crc32.h (CRC32 used for GZIP footer validation),
+//        src/runtime/core/rt_crc32.h (CRC32 used for GZIP footer validation),
 //        src/runtime/io/rt_archive.c (consumes this for ZIP DEFLATE entries)
 //
 //===----------------------------------------------------------------------===//
@@ -83,16 +84,26 @@ extern const char *rt_trap_get_error(void);
 // Internal Bytes Access
 //=============================================================================
 
-/// @brief Get raw pointer to bytes data
+/// @brief Borrow the raw storage of a runtime Bytes object.
+/// @param obj Runtime Bytes handle.
+/// @return Borrowed writable data pointer reported by the Bytes API.
 uint8_t *bytes_data(void *obj) {
     return rt_bytes_data(obj);
 }
 
-/// @brief Get bytes length
+/// @brief Query the signed length of a runtime Bytes object.
+/// @param obj Runtime Bytes handle.
+/// @return Byte count reported by the Bytes API.
 int64_t bytes_len(void *obj) {
     return rt_bytes_len(obj);
 }
 
+/// @brief Validate a Bytes input and borrow its contiguous storage.
+/// @param obj Candidate runtime Bytes object.
+/// @param what Diagnostic raised for invalid object state.
+/// @param out_len Receives the non-negative byte length when non-`NULL`.
+/// @return Borrowed data pointer, which may be `NULL` for an empty Bytes value;
+/// invalid input raises a trap and returns `NULL`.
 static const uint8_t *compress_bytes_view(void *obj, const char *what, int64_t *out_len) {
     if (!obj) {
         rt_trap(what);
@@ -114,16 +125,27 @@ static const uint8_t *compress_bytes_view(void *obj, const char *what, int64_t *
 }
 
 /// @brief Release a temporary GC object that is no longer needed.
+/// @param obj Temporary object; `NULL` is accepted. Storage is reclaimed
+/// immediately only when this release drops the final reference.
 void compress_release_temp_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Snapshot the active trap message or a fallback into a fixed buffer.
+/// @param buffer Writable destination.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Text copied when no active non-empty diagnostic exists.
 static void compress_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Compress a temporary Bytes conversion and release it transactionally.
+/// @param bytes Temporary Bytes object whose reference this helper consumes.
+/// @param gzip Nonzero to emit GZIP; zero to emit raw DEFLATE.
+/// @param fallback Diagnostic used if compression traps without a message.
+/// @return Fresh compressed Bytes object, or `NULL` after cleanup and failure.
 static void *compress_run_string_bytes(void *bytes, int gzip, const char *fallback) {
     void *volatile owned_bytes = bytes;
     void *result = NULL;
@@ -154,6 +176,11 @@ static void *compress_run_string_bytes(void *bytes, int gzip, const char *fallba
     return result;
 }
 
+/// @brief Convert temporary Bytes to a runtime string and release the Bytes.
+/// @param bytes Temporary Bytes object whose reference this helper consumes.
+/// @param fallback Diagnostic used if string conversion traps without a message.
+/// @return Fresh runtime string on success; failure propagates a trap and
+/// returns the runtime empty string only as a control-flow fallback.
 static rt_string compress_bytes_to_str_or_release(void *bytes, const char *fallback) {
     void *volatile owned_bytes = bytes;
     rt_string result = NULL;
@@ -195,6 +222,10 @@ typedef struct {
 /// `data` by pointer, so the caller must keep the buffer alive for the
 /// reader's lifetime. Bit reads pull from the LSB of `buffer`,
 /// refilled in 8-bit chunks from `data` on demand.
+///
+/// @param br Reader state to initialize.
+/// @param data Borrowed encoded byte buffer.
+/// @param len Number of accessible bytes in @p data.
 static void br_init(bit_reader_t *br, const uint8_t *data, size_t len) {
     br->data = data;
     br->len = len;
@@ -205,9 +236,13 @@ static void br_init(bit_reader_t *br, const uint8_t *data, size_t len) {
     br->error = false;
 }
 
-/// @brief Ensure at least n bits in buffer
-/// @note At end-of-stream, zero-fills remaining bits if some data exists (valid
-///       since DEFLATE padding is zeros). Fails if no bits available at all.
+/// @brief Refill the accumulator toward a requested bit count.
+/// @details At end-of-stream, returns true when any buffered bits remain even
+/// if fewer than requested; consuming helpers perform the exact-count check.
+/// @param br Bit reader to refill.
+/// @param n Desired number of buffered bits.
+/// @return `true` when at least one buffered bit remains or @p n bits are
+/// available; `false` only when no more bits exist.
 static bool br_fill(bit_reader_t *br, int n) {
     while (br->bits_in_buf < n) {
         if (br->pos >= br->len) {
@@ -219,7 +254,10 @@ static bool br_fill(bit_reader_t *br, int n) {
     return true;
 }
 
-/// @brief Read n bits (LSB first)
+/// @brief Read an exact number of bits in least-significant-bit-first order.
+/// @param br Reader whose cursor is advanced.
+/// @param n Bit count requested by the DEFLATE parser.
+/// @return Decoded low-order value, or 0 with `br->error` set when truncated.
 static uint32_t br_read(bit_reader_t *br, int n) {
     if (!br_fill(br, n) || br->bits_in_buf < n) {
         br->error = true;
@@ -231,14 +269,20 @@ static uint32_t br_read(bit_reader_t *br, int n) {
     return val;
 }
 
-/// @brief Peek n bits without consuming
+/// @brief Peek at low-order buffered bits without consuming them.
+/// @param br Reader to inspect.
+/// @param n Number of bits to mask from the accumulator.
+/// @return Masked value; missing high bits appear as zero when the stream ends
+/// before @p n bits are buffered.
 static uint32_t br_peek(bit_reader_t *br, int n) {
     if (!br_fill(br, n))
         return 0;
     return br->buffer & ((1U << n) - 1);
 }
 
-/// @brief Consume n bits
+/// @brief Consume a known number of buffered bits.
+/// @param br Reader whose accumulator is advanced.
+/// @param n Number of bits to discard.
 static void br_consume(bit_reader_t *br, int n) {
     if (n > br->bits_in_buf) {
         br->bits_in_buf = 0;
@@ -250,13 +294,16 @@ static void br_consume(bit_reader_t *br, int n) {
     br->bits_in_buf -= n;
 }
 
-/// @brief Align to byte boundary
+/// @brief Discard all buffered partial-byte state.
+/// @param br Reader to align before stored-block byte access.
 static void br_align(bit_reader_t *br) {
     br->buffer = 0;
     br->bits_in_buf = 0;
 }
 
-/// @brief Check if more data available
+/// @brief Check whether encoded bytes or buffered bits remain.
+/// @param br Reader to inspect.
+/// @return `true` while any unread input remains; otherwise `false`.
 static bool br_has_data(bit_reader_t *br) {
     return br->pos < br->len || br->bits_in_buf > 0;
 }
@@ -278,6 +325,10 @@ static bool br_has_data(bit_reader_t *br) {
 /// Short codes are replicated across all matching prefix slots so the
 /// table is a direct-mapped decoder. Returns false on invalid input
 /// (code length >15) or allocation failure.
+/// @param tree Caller-owned tree state that receives an allocated lookup table.
+/// @param lengths Per-symbol canonical code lengths.
+/// @param num_codes Number of entries in @p lengths.
+/// @return `true` for a complete non-oversubscribed table; otherwise `false`.
 static bool build_huffman_tree(huffman_tree_t *tree, const uint8_t *lengths, int num_codes) {
     // Count code lengths
     int bl_count[MAX_BITS + 1] = {0};
@@ -366,6 +417,9 @@ static bool build_huffman_tree(huffman_tree_t *tree, const uint8_t *lengths, int
 /// stored in the high 4 bits of the entry. Returns -1 if the stream
 /// runs dry or the entry is zero (invalid code — the canonical
 /// construction leaves unassigned prefixes as zero entries).
+/// @param tree Initialized direct-mapped Huffman table.
+/// @param br Bit reader positioned at the next code.
+/// @return Decoded symbol, or -1 for truncation or an unassigned prefix.
 static int decode_symbol(huffman_tree_t *tree, bit_reader_t *br) {
     if (!br_fill(br, tree->table_bits))
         return -1;
@@ -392,6 +446,7 @@ static int decode_symbol(huffman_tree_t *tree, bit_reader_t *br) {
 ///
 /// The tree struct itself is caller-owned; only the dynamically
 /// allocated `symbols` buffer is freed.
+/// @param tree Tree whose lookup allocation is released and nulled.
 static void free_huffman_tree(huffman_tree_t *tree) {
     free(tree->symbols);
     tree->symbols = NULL;
@@ -447,6 +502,10 @@ static void init_fixed_trees_impl(void) {
 
 #ifdef _WIN32
 /// @brief `InitOnce` callback that builds the fixed Huffman trees (Windows).
+/// @param InitOnce Windows one-time initialization token.
+/// @param Parameter Unused callback parameter.
+/// @param Context Unused callback result slot.
+/// @return `TRUE` after invoking the fixed-tree builder.
 static BOOL CALLBACK init_fixed_trees_once_cb(PINIT_ONCE InitOnce,
                                               PVOID Parameter,
                                               PVOID *Context) {
@@ -494,8 +553,12 @@ typedef struct {
 ///
 /// Allocates `initial_cap` bytes (clamped to a 256-byte minimum). Used
 /// to accumulate inflated output, which can be larger than the input
-/// by an arbitrary factor — `out_ensure` enforces a 256MB safety cap
-/// to prevent decompression-bomb attacks. Traps on OOM.
+/// by an arbitrary factor. `out_ensure` enforces the caller-supplied logical
+/// ceiling even when the minimum physical allocation is larger. Traps on OOM.
+/// @param out Buffer state to initialize.
+/// @param initial_cap Requested initial allocation estimate.
+/// @param max_output Maximum logical decoded length.
+/// @return 1 on success, or 0 after raising an allocation trap.
 static int out_init(output_buffer_t *out, size_t initial_cap, size_t max_output) {
     out->capacity = initial_cap > 256 ? initial_cap : 256;
     out->data = (uint8_t *)malloc(out->capacity);
@@ -534,12 +597,14 @@ static int out_init_fixed(output_buffer_t *out, uint8_t *data, size_t size) {
 /* S-20: Maximum decompressed output size (256 MB) to prevent decompression bombs */
 #define INFLATE_DEFAULT_MAX_OUTPUT (256u * 1024u * 1024u)
 
-/// @brief Grow the inflate output buffer enforcing the 256MB cap.
+/// @brief Ensure room for more decoded bytes without exceeding the configured cap.
 ///
-/// If the request would push total size past `INFLATE_MAX_OUTPUT`
-/// (256MB), traps with a "decompression bomb" message — protects
-/// against malicious inputs that inflate to many GB. Otherwise grows
-/// geometrically (capped at the limit) and traps on OOM.
+/// If the request would push total size past `out->max_output`, traps with an
+/// output-limit message. Otherwise grows owned storage geometrically; fixed
+/// caller-owned destinations never grow.
+/// @param out Output buffer to check or grow.
+/// @param need Additional decoded byte count.
+/// @return 1 when capacity is available; otherwise 0 after raising a trap.
 static int out_ensure(output_buffer_t *out, size_t need) {
     if (need > SIZE_MAX - out->len) {
         rt_trap("Inflate: output size overflow");
@@ -578,6 +643,9 @@ static int out_ensure(output_buffer_t *out, size_t need) {
 }
 
 /// @brief Append a single literal byte to the output buffer.
+/// @param out Output buffer receiving the byte.
+/// @param b Literal value.
+/// @return 1 on success, or 0 after a capacity/limit trap.
 static int out_byte(output_buffer_t *out, uint8_t b) {
     if (!out_ensure(out, 1))
         return 0;
@@ -592,6 +660,10 @@ static int out_byte(output_buffer_t *out, uint8_t b) {
 /// when `length > distance` (e.g., RLE-style "AAAAA" expansion), so the
 /// loop must walk byte-by-byte rather than `memcpy`. Caller has already
 /// validated that `distance <= out->len`.
+/// @param out Output buffer containing the already-decoded history window.
+/// @param distance Positive backward distance.
+/// @param length Positive number of bytes to reproduce.
+/// @return 1 on success, or 0 after a capacity/limit trap.
 static int out_copy(output_buffer_t *out, int distance, int length) {
     if (!out_ensure(out, length))
         return 0;
@@ -612,6 +684,11 @@ static int out_copy(output_buffer_t *out, int distance, int length) {
     return 1;
 }
 
+/// @brief Append an exact byte span to accumulated output.
+/// @param out Output buffer to extend.
+/// @param data Source bytes; may be `NULL` only when @p len is zero.
+/// @param len Number of bytes to append.
+/// @return 1 on success, or 0 after a capacity/limit trap.
 static int out_append(output_buffer_t *out, const uint8_t *data, size_t len) {
     if (!out_ensure(out, len))
         return 0;
@@ -622,6 +699,7 @@ static int out_append(output_buffer_t *out, const uint8_t *data, size_t len) {
 }
 
 /// @brief Release the output buffer's heap allocation.
+/// @param out Buffer to reset; borrowed fixed destinations are not freed.
 static void out_free(output_buffer_t *out) {
     if (out->owns_data)
         free(out->data);
@@ -642,6 +720,10 @@ static void out_free(output_buffer_t *out) {
 /// specified in RFC 1951 §3.2.4, then copies LEN bytes verbatim into
 /// the output. Returns false on truncated data or the LEN/NLEN check
 /// failing.
+/// @param br Reader positioned immediately after the stored block header.
+/// @param out Output buffer receiving the literal payload.
+/// @return `true` when the complete stored block is valid and copied;
+/// otherwise `false`.
 static bool inflate_stored(bit_reader_t *br, output_buffer_t *out) {
     // Align to byte boundary
     br_align(br);
@@ -682,6 +764,11 @@ static bool inflate_stored(bit_reader_t *br, output_buffer_t *out) {
 /// handles overlapping copies for RLE-style expansion). The two tree
 /// arguments are shared between fixed and dynamic callers — same loop,
 /// different trees.
+/// @param br Reader positioned at the first encoded symbol.
+/// @param out Output/history buffer.
+/// @param lit_tree Literal/length decode table.
+/// @param dist_tree Distance decode table.
+/// @return `true` after a valid end-of-block symbol; otherwise `false`.
 static bool inflate_huffman(bit_reader_t *br,
                             output_buffer_t *out,
                             huffman_tree_t *lit_tree,
@@ -749,6 +836,10 @@ static bool inflate_huffman(bit_reader_t *br,
 ///      trees, then delegate the symbol loop to `inflate_huffman`.
 /// Frees all transient trees on every exit path — traps aren't used
 /// here because the caller may need to fall back cleanly.
+/// @param br Reader positioned after the dynamic block header.
+/// @param out Output/history buffer.
+/// @return `true` when the dynamic tables and encoded block are valid;
+/// otherwise `false`.
 static bool inflate_dynamic(bit_reader_t *br, output_buffer_t *out) {
     // Read header
     int hlit = br_read(br, 5) + 257; // Number of literal/length codes
@@ -872,6 +963,19 @@ static bool inflate_dynamic(bit_reader_t *br, output_buffer_t *out) {
 /// 256MB decompression-bomb limit. After the final block, any residual
 /// non-zero bits in the byte-aligned tail are a stream corruption —
 /// not just padding — and also trap.
+/// @param data Borrowed raw RFC 1951 stream.
+/// @param len Number of accessible encoded bytes.
+/// @param max_output Maximum decoded bytes, and exact fixed-buffer capacity
+/// when @p fixed_output is non-`NULL`.
+/// @param out_len Receives the decoded byte count when non-`NULL`.
+/// @param consumed_bytes Receives the byte-aligned encoded member length when
+/// non-`NULL`.
+/// @param allow_trailing Permit caller-owned bytes after the final DEFLATE
+/// block, as required for wrapped formats.
+/// @param fixed_output Optional caller-owned exact destination; `NULL` selects
+/// a growable `malloc`-owned result.
+/// @return The fixed destination or a heap allocation on success; traps and
+/// returns `NULL` for malformed input, limit violations, or allocation failure.
 static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
                                           size_t len,
                                           size_t max_output,
@@ -972,6 +1076,13 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
 /// @brief Allocate and decode a bounded raw DEFLATE stream.
 /// @details Compatibility wrapper around the destination-aware driver. A NULL fixed destination
 ///          selects the original growable malloc-owned output behavior.
+/// @param data Borrowed raw RFC 1951 stream.
+/// @param len Number of accessible encoded bytes.
+/// @param max_output Maximum allowed decoded length.
+/// @param out_len Receives the decoded byte count.
+/// @param consumed_bytes Receives encoded member length when non-`NULL`.
+/// @param allow_trailing Whether bytes after the final block are permitted.
+/// @return `malloc`-owned decoded bytes on success, or `NULL` after a trap.
 static uint8_t *inflate_raw_limited_ex(const uint8_t *data,
                                        size_t len,
                                        size_t max_output,
@@ -982,6 +1093,15 @@ static uint8_t *inflate_raw_limited_ex(const uint8_t *data,
         data, len, max_output, out_len, consumed_bytes, allow_trailing, NULL);
 }
 
+/// @brief Inflate raw DEFLATE into a fresh runtime Bytes object.
+/// @details Converts the native decoder's temporary output into GC-managed
+/// storage and releases the native buffer.
+/// @param data Borrowed raw RFC 1951 stream.
+/// @param len Number of accessible encoded bytes.
+/// @param max_output Maximum allowed decoded length.
+/// @param consumed_bytes Receives encoded member length when non-`NULL`.
+/// @param allow_trailing Whether wrapped-format bytes may follow the stream.
+/// @return Fresh runtime Bytes object, or `NULL` on failure.
 static void *inflate_data_limited_ex(const uint8_t *data,
                                      size_t len,
                                      size_t max_output,
@@ -1003,10 +1123,19 @@ static void *inflate_data_limited_ex(const uint8_t *data,
     return result;
 }
 
+/// @brief Inflate one complete raw DEFLATE stream with an explicit ceiling.
+/// @param data Borrowed encoded bytes.
+/// @param len Encoded byte count.
+/// @param max_output Maximum decoded byte count.
+/// @return Fresh runtime Bytes object, or `NULL` on failure.
 static void *inflate_data_limited(const uint8_t *data, size_t len, size_t max_output) {
     return inflate_data_limited_ex(data, len, max_output, NULL, false);
 }
 
+/// @brief Inflate one complete raw DEFLATE stream using the default 256 MiB ceiling.
+/// @param data Borrowed encoded bytes.
+/// @param len Encoded byte count.
+/// @return Fresh runtime Bytes object, or `NULL` on failure.
 static void *inflate_data(const uint8_t *data, size_t len) {
     return inflate_data_limited(data, len, INFLATE_DEFAULT_MAX_OUTPUT);
 }
@@ -1019,6 +1148,12 @@ static void *inflate_data(const uint8_t *data, size_t len) {
 /// FHCRC (2-byte CRC16 of the header so far). After the DEFLATE stream
 /// ends, validates the 8-byte trailer (CRC32 of inflated data + ISIZE)
 /// against the actual inflated result. Traps on any mismatch.
+/// @param data Borrowed bytes beginning at a GZIP member header.
+/// @param len Number of accessible bytes, including any later concatenated
+/// members.
+/// @param member_len Receives this member's complete encoded byte length.
+/// @return Fresh Bytes containing this member's payload, or `NULL` after a
+/// format, checksum, limit, or allocation trap.
 static void *gunzip_member_data(const uint8_t *data, size_t len, size_t *member_len) {
     if (len < 18) {
         rt_trap("Gunzip: data too short");
@@ -1140,6 +1275,10 @@ static void *gunzip_member_data(const uint8_t *data, size_t len, size_t *member_
 }
 
 /// @brief Decode a possibly concatenated GZIP stream.
+/// @param data Borrowed complete GZIP byte stream.
+/// @param len Encoded byte count.
+/// @return Fresh Bytes containing all member payloads concatenated in order,
+/// or `NULL` after a validation, limit, or allocation trap.
 static void *gunzip_data(const uint8_t *data, size_t len) {
     if (len < 18) {
         rt_trap("Gunzip: data too short");
@@ -1238,6 +1377,11 @@ void *rt_compress_inflate(void *data) {
     return inflate_data(src, len);
 }
 
+/// @brief Inflate a complete raw DEFLATE stream under a caller-supplied ceiling.
+/// @param data Runtime Bytes containing RFC 1951 data.
+/// @param max_output Maximum decoded length; negative values trap.
+/// @return Fresh decoded Bytes, or `NULL` after invalid input, malformed data,
+/// output-limit, or allocation failure.
 void *rt_compress_inflate_limit(void *data, int64_t max_output) {
     int64_t len = 0;
     const uint8_t *src = compress_bytes_view(data, "Compress.InflateLimit: invalid data", &len);
@@ -1250,6 +1394,17 @@ void *rt_compress_inflate_limit(void *data, int64_t max_output) {
     return inflate_data_limited(src, len, (size_t)max_output);
 }
 
+/// @brief Inflate raw DEFLATE into caller-owned native output.
+/// @details Converts internal traps into a zero status so worker/native
+/// decoders can operate without allocating runtime objects.
+/// @param data Borrowed encoded bytes.
+/// @param len Encoded byte count.
+/// @param max_output Maximum decoded byte count.
+/// @param out_data Receives a `malloc`-owned buffer on success and `NULL` on
+/// failure.
+/// @param out_len Receives decoded length on success and zero on failure.
+/// @return 1 on success; 0 for invalid arguments, malformed data, limit
+/// violation, or allocation failure.
 int rt_compress_inflate_raw(
     const uint8_t *data, size_t len, size_t max_output, uint8_t **out_data, size_t *out_len) {
     jmp_buf recovery;
@@ -1331,6 +1486,12 @@ static int compress_validate_zlib_header(const uint8_t *data, size_t len) {
 ///          destination. Passing `allow_trailing=false` makes the raw decoder consume precisely
 ///          the bytes between CMF/FLG and Adler-32, so hidden bytes before the checksum cannot be
 ///          accepted as padding.
+/// @param data Complete RFC 1950 stream.
+/// @param len Encoded byte count.
+/// @param output Caller-owned destination.
+/// @param output_size Exact required decoded length and destination capacity.
+/// @return 1 only when framing, exact output length, raw stream, and Adler-32
+/// all validate; otherwise 0.
 int rt_compress_inflate_zlib_into(const uint8_t *data,
                                   size_t len,
                                   uint8_t *output,

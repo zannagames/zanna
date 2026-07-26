@@ -17,8 +17,9 @@
 //   - SortKey output is deterministic for a given (string, locale, strength,
 //     flags) combination. Byte-wise compare(SortKey(a), SortKey(b)) matches
 //     Compare(a, b).
-//   - Inputs longer than 1 MiB trap; sort keys grow as ~4 bytes per
-//     codepoint across levels, capped at 6 MiB worst-case before we trap.
+//   - Inputs longer than 1 MiB trap; raw sort-key allocation is bounded by
+//     eight bytes per collected character plus fixed separators, and the
+//     public hexadecimal form uses two output bytes per raw byte.
 //   - Locale patches are applied at construction via a small O(1) lookup
 //     per codepoint (linear scan over the patch list, which is <= 10 entries).
 //
@@ -71,23 +72,30 @@ typedef struct rt_collator {
 } rt_collator_t;
 
 /// @brief Unchecked cast of an opaque handle to the collator instance.
+/// @param obj Valid Collator payload.
+/// @return The same pointer interpreted as @ref rt_collator_t.
 static rt_collator_t *as_col(void *obj) {
     return (rt_collator_t *)obj;
 }
 
 /// @brief Emit a non-fatal collator warning to stderr (NULL message ignored).
+/// @param message Diagnostic text without the warning prefix; may be NULL.
 static void col_warn(const char *message) {
     if (message)
         fprintf(stderr, "warning: %s\n", message);
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
+/// @param obj Owned runtime-managed handle reference; NULL is a no-op.
 static void col_release_handle(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
 /// @brief GC finalizer: release the collator's locale data and locale handle.
+/// @details The data record and Locale handle were retained independently
+///          during construction and are each released exactly once.
+/// @param obj Collator payload being finalized; NULL is a no-op.
 static void col_finalizer(void *obj) {
     rt_collator_t *c = (rt_collator_t *)obj;
     if (!c)
@@ -108,6 +116,9 @@ static void col_finalizer(void *obj) {
 ///          tag (not the data record's) so e.g. Swedish ordering still applies
 ///          when no JSON locale file was loaded. Traps on allocation failure;
 ///          installs @ref col_finalizer.
+/// @param locale Optional Locale handle to retain; NULL selects the invariant
+///               locale data supplied by @ref rt_locale_get_data.
+/// @return Fresh GC-managed Collator, or NULL after an allocation trap.
 static void *col_alloc(void *locale) {
     rt_collator_t *c = (rt_collator_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_collator_t));
     if (!c) {
@@ -144,6 +155,10 @@ static void *col_alloc(void *locale) {
     return c;
 }
 
+/// @brief Create a Collator bound to the process's current Locale snapshot.
+/// @details The temporary reference returned by the locale manager is released
+///          after the Collator acquires its own Locale and data references.
+/// @return Fresh GC-managed Collator, or NULL after an allocation trap.
 void *rt_collator_new(void) {
     void *current = rt_locale_manager_current();
     void *col = col_alloc(current);
@@ -151,10 +166,17 @@ void *rt_collator_new(void) {
     return col;
 }
 
+/// @brief Create a Collator bound to a specified Locale handle.
+/// @param locale Locale to retain for the Collator lifetime; may be NULL for
+///               invariant fallback data.
+/// @return Fresh GC-managed Collator, or NULL after an allocation trap.
 void *rt_collator_for_locale(void *locale) {
     return col_alloc(locale);
 }
 
+/// @brief Get the Locale handle retained by a Collator.
+/// @param self Valid Collator handle; may be NULL.
+/// @return Borrowed Locale handle, or NULL when no Locale was supplied.
 void *rt_collator_get_locale(void *self) {
     return self ? as_col(self)->locale : NULL;
 }
@@ -163,10 +185,18 @@ void *rt_collator_get_locale(void *self) {
 // Property accessors
 //===----------------------------------------------------------------------===//
 
+/// @brief Get the active primary/secondary/tertiary comparison depth.
+/// @param self Valid Collator handle; may be NULL.
+/// @return Strength from 1 through 3, or the default 3 for NULL.
 int64_t rt_collator_get_strength(void *self) {
     return self ? (int64_t)as_col(self)->strength : 3;
 }
 
+/// @brief Clamp and set the active comparison strength.
+/// @details Values below 1 silently clamp to 1. Values above 3 emit a warning
+///          to stderr and clamp to 3 because quaternary strength is unsupported.
+/// @param self Valid Collator handle; NULL is a no-op.
+/// @param value Requested strength.
 void rt_collator_set_strength(void *self, int64_t value) {
     if (!self)
         return;
@@ -181,19 +211,31 @@ void rt_collator_set_strength(void *self, int64_t value) {
     as_col(self)->strength = (int)value;
 }
 
+/// @brief Test whether tertiary case weights are omitted.
+/// @param self Valid Collator handle; may be NULL.
+/// @return Normalized 1/0 flag, or 0 for NULL.
 int8_t rt_collator_get_ignore_case(void *self) {
     return self ? as_col(self)->ignore_case : 0;
 }
 
+/// @brief Enable or disable omission of tertiary case weights.
+/// @param self Valid Collator handle; NULL is a no-op.
+/// @param value Zero to preserve case differences, nonzero to ignore them.
 void rt_collator_set_ignore_case(void *self, int8_t value) {
     if (self)
         as_col(self)->ignore_case = value ? 1 : 0;
 }
 
+/// @brief Test whether secondary accent weights are omitted.
+/// @param self Valid Collator handle; may be NULL.
+/// @return Normalized 1/0 flag, or 0 for NULL.
 int8_t rt_collator_get_ignore_accents(void *self) {
     return self ? as_col(self)->ignore_accents : 0;
 }
 
+/// @brief Enable or disable omission of secondary accent weights.
+/// @param self Valid Collator handle; NULL is a no-op.
+/// @param value Zero to preserve accent differences, nonzero to ignore them.
 void rt_collator_set_ignore_accents(void *self, int8_t value) {
     if (self)
         as_col(self)->ignore_accents = value ? 1 : 0;
@@ -208,6 +250,10 @@ void rt_collator_set_ignore_accents(void *self, int8_t value) {
 /// @details Strict decoder: rejects overlong forms, surrogates (U+D800–DFFF),
 ///          and out-of-range scalars, yielding U+FFFD and advancing one byte
 ///          so a malformed stream still makes forward progress.
+/// @param s Bounded UTF-8 byte string.
+/// @param len Total readable bytes at @p s.
+/// @param pos In/out byte offset, advanced past the decoded or rejected sequence.
+/// @return Unicode scalar, U+FFFD for malformed input, or zero at end.
 static uint32_t col_decode(const char *s, size_t len, size_t *pos) {
     size_t i = *pos;
     if (i >= len)
@@ -263,6 +309,11 @@ static uint32_t col_decode(const char *s, size_t len, size_t *pos) {
 /// @details Locale tailoring patches win over the base classifier; otherwise
 ///          weights come from the shared collation table plus the combining-
 ///          mark accent weight. Outputs feed the multi-level sort key.
+/// @param col Collator providing locale-tailoring patches.
+/// @param cp Unicode code point to classify.
+/// @param pri Receives the primary ordering weight.
+/// @param sec Receives the secondary accent weight.
+/// @param ter Receives the tertiary case weight.
 static void get_weights(
     rt_collator_t *col, uint32_t cp, uint32_t *pri, uint16_t *sec, uint16_t *ter) {
     // Apply any locale patches first (they override the base classifier).
@@ -290,6 +341,8 @@ typedef struct sort_weight {
 ///          ordering so e.g. "é" sorts after "e" but before "f"; any other
 ///          combining mark in U+0300–U+036F gets a generic weight (9), all
 ///          else 0 (no secondary contribution).
+/// @param cp Unicode code point to classify.
+/// @return Stable secondary weight, or zero when not a recognized combining mark.
 static uint16_t combining_secondary(uint32_t cp) {
     switch (cp) {
         case 0x0300:
@@ -318,6 +371,14 @@ static uint16_t combining_secondary(uint32_t cp) {
 ///        collation key. Caller frees the returned array; @p out_count gets
 ///        the element count. Traps on the 1 MiB input cap or allocation
 ///        failure (returns NULL).
+/// @details Combining marks do not create elements: they raise the preceding
+///          element's secondary weight, while leading combining marks are ignored.
+///          Malformed UTF-8 contributes replacement-character fallback weights.
+/// @param col Collator supplying base and locale-tailored weights.
+/// @param s Bounded UTF-8 bytes.
+/// @param len Number of readable bytes at @p s.
+/// @param out_count Receives the number of collected non-combining elements.
+/// @return Malloc-owned weight array for the caller to free, or NULL after a trap.
 static sort_weight_t *collect_weights(rt_collator_t *col,
                                       const char *s,
                                       size_t len,
@@ -367,8 +428,15 @@ static sort_weight_t *collect_weights(rt_collator_t *col,
 
 /// @brief Build the raw sort key byte sequence for @p s. Each level's
 ///        weights are emitted in order with a 0x00 separator between levels.
-///        Big-endian 16-bit emission for primaries preserves ordering.
-/// @return Malloc'd byte buffer; caller frees. *out_len set to byte length.
+///        Big-endian 32-bit emission for primaries preserves numeric ordering.
+/// @details Secondary weights use two big-endian bytes and tertiary weights
+///          use their low byte. Strength and ignore flags determine which
+///          bands contain weights, but the two-byte band separators remain.
+/// @param col Collator whose configuration controls key levels.
+/// @param s Bounded UTF-8 input bytes.
+/// @param len Number of readable bytes at @p s.
+/// @param out_len Receives the raw key length on success.
+/// @return Malloc-owned key bytes for the caller to free, or NULL after a trap.
 static uint8_t *build_raw_key(rt_collator_t *col, const char *s, size_t len, size_t *out_len) {
     if (len > MAX_INPUT_BYTES) {
         rt_trap("Zanna.Localization.Collator: input exceeds 1 MiB cap");
@@ -440,6 +508,14 @@ static uint8_t *build_raw_key(rt_collator_t *col, const char *s, size_t len, siz
 // Compare / Equals
 //===----------------------------------------------------------------------===//
 
+/// @brief Compare two runtime strings using configured collation keys.
+/// @details NULL strings are treated as empty. Raw keys are compared bytewise
+///          and then by length, producing only the normalized values -1, 0,
+///          and 1. Key-generation failure returns 0 after cleanup.
+/// @param self Valid Collator handle; NULL compares equal.
+/// @param a First valid runtime string, or NULL for empty.
+/// @param b Second valid runtime string, or NULL for empty.
+/// @return -1 when @p a sorts first, 1 when @p b sorts first, otherwise 0.
 int64_t rt_collator_compare(void *self, rt_string a, rt_string b) {
     if (!self)
         return 0;
@@ -472,6 +548,11 @@ int64_t rt_collator_compare(void *self, rt_string a, rt_string b) {
     return 0;
 }
 
+/// @brief Test collation equality at the Collator's configured strength.
+/// @param self Valid Collator handle; NULL treats all inputs as equal.
+/// @param a First valid runtime string, or NULL for empty.
+/// @param b Second valid runtime string, or NULL for empty.
+/// @return 1 when @ref rt_collator_compare returns zero, otherwise 0.
 int8_t rt_collator_equals(void *self, rt_string a, rt_string b) {
     return rt_collator_compare(self, a, b) == 0 ? 1 : 0;
 }
@@ -480,6 +561,14 @@ int8_t rt_collator_equals(void *self, rt_string a, rt_string b) {
 // SortKey (hex-encoded)
 //===----------------------------------------------------------------------===//
 
+/// @brief Generate a persistent hexadecimal representation of a raw collation key.
+/// @details Lowercase two-digit hex encoding avoids embedded NUL while
+///          preserving raw byte ordering under bytewise string comparison.
+///          Invalid input, key failure, or builder failure returns a fresh
+///          empty runtime string.
+/// @param self Valid Collator handle.
+/// @param s Valid runtime string to encode.
+/// @return Fresh runtime string containing the deterministic hexadecimal key.
 rt_string rt_collator_sort_key(void *self, rt_string s) {
     if (!self || !s)
         return rt_string_from_bytes("", 0);
@@ -520,6 +609,14 @@ sort_key_error:
 // Sort (simple insertion sort — fine for lists up to a few thousand)
 //===----------------------------------------------------------------------===//
 
+/// @brief Return a stable collation-sorted copy of a runtime string List.
+/// @details One raw key is cached per item, then stable insertion sort
+///          preserves the relative order of equal keys. The input List is not
+///          mutated. NULL input/self and failures yield a fresh empty List
+///          after any applicable trap.
+/// @param self Valid Collator handle.
+/// @param items Runtime List whose elements are valid strings or NULL.
+/// @return Fresh runtime List containing retained elements in collation order.
 void *rt_collator_sort(void *self, void *items) {
     if (!self || !items)
         return rt_list_new();

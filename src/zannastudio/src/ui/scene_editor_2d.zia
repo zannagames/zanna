@@ -78,6 +78,7 @@ bind "scene_component_palette";
 bind "scene_component_schema";
 bind "scene_hierarchy_search";
 bind "scene_history";
+bind "inspector_rows";
 bind "scene_layout_2d";
 bind "scene_camera_lighting_2d";
 bind "property_rows";
@@ -114,6 +115,10 @@ bind Clock = Zanna.Time.Clock;
 // ============================================================================
 
 final MODE_SELECT: Integer = 0;
+final MODE_LINE: Integer = 7;
+final MODE_ELLIPSE: Integer = 8;
+final RECT_ROTATE_HANDLE_OFFSET: Number = 18.0;
+final RECT_HANDLE_RADIUS_SQUARED: Number = 36.0;
 final MODE_PAINT: Integer = 1;
 final MODE_ERASE: Integer = 2;
 final MODE_OBJECT: Integer = 3;
@@ -210,6 +215,40 @@ expose func UsesCompactLayout(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_2D_WIDTH;
 }
 
+/// @brief One object's transformed canvas footprint (ADR 0192).
+/// @details Axis-aligned bounds of the rotated sprite rectangle in canvas
+///          pixels, plus the pivot point the transform turns about.
+class ObjectFootprint2D {
+    expose Boolean valid;
+    expose Number minX;
+    expose Number minY;
+    expose Number maxX;
+    expose Number maxY;
+    expose Number pivotCanvasX;
+    expose Number pivotCanvasY;
+
+    expose func init() {
+        valid = false;
+        minX = 0.0;
+        minY = 0.0;
+        maxX = 0.0;
+        maxY = 0.0;
+        pivotCanvasX = 0.0;
+        pivotCanvasY = 0.0;
+    }
+}
+
+/// @brief One canvas-space point produced by rect-handle math.
+class CanvasPoint2D {
+    expose Number x;
+    expose Number y;
+
+    expose func init() {
+        x = 0.0;
+        y = 0.0;
+    }
+}
+
 /// @brief Persistent visual editor for one active 2D scene document.
 class SceneEditor2D {
     hide GUI.App guiApp;
@@ -222,6 +261,8 @@ class SceneEditor2D {
     expose GUI.Button paintButton;
     expose GUI.Button eraseButton;
     expose GUI.Button rectangleButton;
+    expose GUI.Button lineButton;
+    expose GUI.Button ellipseButton;
     expose GUI.Button fillButton;
     expose GUI.Button pickerButton;
     expose GUI.Button previewButton;
@@ -291,6 +332,15 @@ class SceneEditor2D {
     expose GUI.TextInput objectIdInput;
     expose GUI.Spinner objectXSpinner;
     expose GUI.Spinner objectYSpinner;
+    expose GUI.Flex objectTransformRow;
+    expose GUI.Spinner objectRotationSpinner;
+    expose GUI.Spinner objectScaleXSpinner;
+    expose GUI.Spinner objectScaleYSpinner;
+    expose GUI.Checkbox objectFlipXCheck;
+    expose GUI.Checkbox objectFlipYCheck;
+    expose GUI.Spinner objectPivotXSpinner;
+    expose GUI.Spinner objectPivotYSpinner;
+    expose GUI.TextInput objectTintInput;
     expose GUI.Button addObjectButton;
     expose GUI.Button addChildObjectButton;
     expose GUI.Button applyObjectButton;
@@ -328,6 +378,16 @@ class SceneEditor2D {
     expose Integer canvasMarqueeStartY;
     expose Integer canvasMarqueeCurrentX;
     expose Integer canvasMarqueeCurrentY;
+    expose Boolean stampActive;
+    expose Integer stampWidth;
+    expose Integer stampHeight;
+    hide List[Integer] stampTiles;
+    hide Integer hoverCellX;
+    hide Integer hoverCellY;
+    expose Integer tileRegionMinX;
+    expose Integer tileRegionMinY;
+    expose Integer tileRegionMaxX;
+    expose Integer tileRegionMaxY;
     expose Boolean tileRectangleActive;
     expose Integer tileRectangleStartX;
     expose Integer tileRectangleStartY;
@@ -364,6 +424,7 @@ class SceneEditor2D {
     hide Boolean paintStrokeChanged;
     hide String paintStrokeSnapshot;
     hide Integer tileRectangleTile;
+    hide Integer tileRectangleShape;
     hide Boolean objectDragActive;
     hide Boolean objectDragChanged;
     hide String objectDragSnapshot;
@@ -376,6 +437,19 @@ class SceneEditor2D {
     hide Boolean objectTransformDraftActive;
     hide Integer objectDraftOriginX;
     hide Integer objectDraftOriginY;
+    hide Number objectDraftOriginRotation;
+    hide Number objectDraftOriginScaleX;
+    hide Number objectDraftOriginScaleY;
+    hide Number objectDraftOriginPivotX;
+    hide Number objectDraftOriginPivotY;
+    hide Integer rectGestureMode;
+    hide Integer rectGestureHandle;
+    hide Number rectStartScaleX;
+    hide Number rectStartScaleY;
+    hide Number rectStartRotation;
+    hide Number rectStartLocalX;
+    hide Number rectStartLocalY;
+    hide Number rectStartAngle;
     hide Integer lastCanvasViewportWidth;
     hide Integer lastCanvasViewportHeight;
     hide Integer centerPadX;
@@ -406,6 +480,8 @@ class SceneEditor2D {
         paintButton = null;
         eraseButton = null;
         rectangleButton = null;
+        lineButton = null;
+        ellipseButton = null;
         fillButton = null;
         pickerButton = null;
         previewButton = null;
@@ -476,6 +552,28 @@ class SceneEditor2D {
         objectIdInput = null;
         objectXSpinner = null;
         objectYSpinner = null;
+        objectTransformRow = null;
+        objectRotationSpinner = null;
+        objectScaleXSpinner = null;
+        objectScaleYSpinner = null;
+        objectFlipXCheck = null;
+        objectFlipYCheck = null;
+        objectPivotXSpinner = null;
+        objectPivotYSpinner = null;
+        objectTintInput = null;
+        objectDraftOriginRotation = 0.0;
+        objectDraftOriginScaleX = 1.0;
+        objectDraftOriginScaleY = 1.0;
+        objectDraftOriginPivotX = 0.5;
+        objectDraftOriginPivotY = 0.5;
+        rectGestureMode = 0;
+        rectGestureHandle = -1;
+        rectStartScaleX = 1.0;
+        rectStartScaleY = 1.0;
+        rectStartRotation = 0.0;
+        rectStartLocalX = 0.0;
+        rectStartLocalY = 0.0;
+        rectStartAngle = 0.0;
         addObjectButton = null;
         addChildObjectButton = null;
         applyObjectButton = null;
@@ -514,6 +612,16 @@ class SceneEditor2D {
         canvasMarqueeStartY = -1;
         canvasMarqueeCurrentX = -1;
         canvasMarqueeCurrentY = -1;
+        tileRegionMinX = -1;
+        tileRegionMinY = -1;
+        tileRegionMaxX = -1;
+        tileRegionMaxY = -1;
+        stampActive = false;
+        stampWidth = 0;
+        stampHeight = 0;
+        stampTiles = [];
+        hoverCellX = -1;
+        hoverCellY = -1;
         tileRectangleActive = false;
         tileRectangleStartX = -1;
         tileRectangleStartY = -1;
@@ -620,6 +728,12 @@ class SceneEditor2D {
         rectangleButton = GUI.Button.New(toolbar, "Rectangle");
         rectangleButton.SetTooltip(
             "Drag an inclusive rectangle using the selected tile; tile 0 clears");
+        lineButton = GUI.Button.New(toolbar, "Line");
+        lineButton.SetTooltip(
+            "Drag a straight tile line using the selected tile; tile 0 clears");
+        ellipseButton = GUI.Button.New(toolbar, "Ellipse");
+        ellipseButton.SetTooltip(
+            "Drag an ellipse outline using the selected tile; tile 0 clears");
         fillButton = GUI.Button.New(toolbar, "Fill");
         fillButton.SetTooltip(
             "Replace the clicked four-connected active-layer region");
@@ -930,6 +1044,53 @@ class SceneEditor2D {
         objectYSpinner.SetStep(1.0);
         objectYSpinner.SetDecimals(0);
         applyObjectButton = GUI.Button.New(objectPositionRow, "Apply");
+        objectTransformRow = inspector_rows.NewWrapRow();
+        objectTabHost.AddChild(objectTransformRow);
+        GUI.Label.New(objectTransformRow, "Rot");
+        objectRotationSpinner = GUI.Spinner.New(objectTransformRow);
+        objectRotationSpinner.SetRange(0.0, 359.9);
+        objectRotationSpinner.SetStep(1.0);
+        objectRotationSpinner.SetDecimals(1);
+        objectRotationSpinner.SetTooltip(
+            "Rotation in degrees about the object pivot");
+        GUI.Label.New(objectTransformRow, "SX");
+        objectScaleXSpinner = GUI.Spinner.New(objectTransformRow);
+        objectScaleXSpinner.SetRange(-10000.0, 10000.0);
+        objectScaleXSpinner.SetStep(0.1);
+        objectScaleXSpinner.SetDecimals(2);
+        objectScaleXSpinner.SetTooltip("Horizontal scale factor");
+        GUI.Label.New(objectTransformRow, "SY");
+        objectScaleYSpinner = GUI.Spinner.New(objectTransformRow);
+        objectScaleYSpinner.SetRange(-10000.0, 10000.0);
+        objectScaleYSpinner.SetStep(0.1);
+        objectScaleYSpinner.SetDecimals(2);
+        objectScaleYSpinner.SetTooltip("Vertical scale factor");
+        objectFlipXCheck = GUI.Checkbox.New(objectTransformRow, "Flip X");
+        objectFlipXCheck.SetTooltip(
+            "Mirror horizontally about the pivot (one undoable edit)");
+        objectFlipYCheck = GUI.Checkbox.New(objectTransformRow, "Flip Y");
+        objectFlipYCheck.SetTooltip(
+            "Mirror vertically about the pivot (one undoable edit)");
+        GUI.Label.New(objectTransformRow, "PX");
+        objectPivotXSpinner = GUI.Spinner.New(objectTransformRow);
+        objectPivotXSpinner.SetRange(0.0, 1.0);
+        objectPivotXSpinner.SetStep(0.05);
+        objectPivotXSpinner.SetDecimals(2);
+        objectPivotXSpinner.SetTooltip(
+            "Normalized horizontal pivot within the sprite");
+        GUI.Label.New(objectTransformRow, "PY");
+        objectPivotYSpinner = GUI.Spinner.New(objectTransformRow);
+        objectPivotYSpinner.SetRange(0.0, 1.0);
+        objectPivotYSpinner.SetStep(0.05);
+        objectPivotYSpinner.SetDecimals(2);
+        objectPivotYSpinner.SetTooltip(
+            "Normalized vertical pivot within the sprite");
+        GUI.Label.New(objectTransformRow, "Tint");
+        objectTintInput = GUI.TextInput.New(objectTransformRow);
+        objectTintInput.SetPlaceholder("RRGGBBAA");
+        objectTintInput.SetTooltip(
+            "RGBA multiply tint in hex; FFFFFFFF means no tint. "
+            + "Enter commits one undoable edit.");
         objectArrangeRow = GUI.HBox.New();
         objectArrangeRow.SetSpacing(4.0);
         objectTabHost.AddChild(objectArrangeRow);
@@ -1056,6 +1217,8 @@ class SceneEditor2D {
         // Commit or cancel a pending live position edit before selection and
         // document handlers can observe uncommitted document state.
         changed = PumpObjectTransformDraft() or changed;
+        changed = PumpObjectFlipControls() or changed;
+        changed = PumpObjectTintInput() or changed;
         if newSceneButton.WasClicked() {
             changed = ReplaceScene(
                 Convert.NumToInt(sceneWidthSpinner.Value),
@@ -1118,6 +1281,8 @@ class SceneEditor2D {
         if paintButton.WasClicked() { SetMode(MODE_PAINT); }
         if eraseButton.WasClicked() { SetMode(MODE_ERASE); }
         if rectangleButton.WasClicked() { SetMode(MODE_RECTANGLE); }
+        if lineButton.WasClicked() { SetMode(MODE_LINE); }
+        if ellipseButton.WasClicked() { SetMode(MODE_ELLIPSE); }
         if fillButton.WasClicked() { SetMode(MODE_FILL); }
         if pickerButton.WasClicked() { SetMode(MODE_PICKER); }
         if previewButton.WasClicked() {
@@ -3661,18 +3826,35 @@ class SceneEditor2D {
     hide func DrawObjectSpritePreview(objectIndex: Integer,
                                       x: Integer,
                                       y: Integer) -> Boolean {
-        var path = Str.Trim(
-            scene.ObjectGetStr(objectIndex, "editor.sprite", ""));
+        var path = ObjectSpritePath(objectIndex);
+        if path == "" { return false; }
         var frame = scene.ObjectGetInt(objectIndex, "editor.frame", 0);
-        if path != ""
-           and tilesets.DrawSpriteFrame(
-               framePixels, path, frame, x, y, displayCellSize) {
+        // Sprite-true rendering (ADR 0192): native frame size at the
+        // current zoom with the object's full transform; the legacy
+        // one-cell draw remains the bounded fallback.
+        if tilesets.DrawSpriteFrameTransformed(
+               framePixels, path, frame, x, y,
+               displayCellSize, scene.TileWidth, scene.TileHeight,
+               scene.ObjectScaleX(objectIndex),
+               scene.ObjectScaleY(objectIndex),
+               scene.ObjectRotation(objectIndex),
+               scene.ObjectFlipX(objectIndex),
+               scene.ObjectFlipY(objectIndex),
+               scene.ObjectTint(objectIndex),
+               scene.ObjectPivotX(objectIndex),
+               scene.ObjectPivotY(objectIndex)) {
             return true;
         }
-        path = Str.Trim(scene.ObjectGetStr(objectIndex, "sprite", ""));
-        return path != ""
-            and tilesets.DrawSpriteFrame(
-                framePixels, path, frame, x, y, displayCellSize);
+        return tilesets.DrawSpriteFrame(
+            framePixels, path, frame, x, y, displayCellSize);
+    }
+
+    /// @brief Resolve one object's sprite reference (`editor.sprite` wins).
+    hide func ObjectSpritePath(objectIndex: Integer) -> String {
+        var path = Str.Trim(
+            scene.ObjectGetStr(objectIndex, "editor.sprite", ""));
+        if path != "" { return path; }
+        return Str.Trim(scene.ObjectGetStr(objectIndex, "sprite", ""));
     }
 
     /// @brief Draw workspace-only polylines for route objects (ADR 0179).
@@ -4759,7 +4941,7 @@ class SceneEditor2D {
 
     hide func SetMode(nextMode: Integer) {
         var normalizedMode = nextMode;
-        if nextMode < MODE_SELECT or nextMode > MODE_PICKER {
+        if nextMode < MODE_SELECT or nextMode > MODE_ELLIPSE {
             normalizedMode = MODE_SELECT;
         }
         if paintStrokeActive and normalizedMode != mode {
@@ -4790,6 +4972,8 @@ class SceneEditor2D {
         paintButton.SetStyle(0);
         eraseButton.SetStyle(0);
         rectangleButton.SetStyle(0);
+        lineButton.SetStyle(0);
+        ellipseButton.SetStyle(0);
         fillButton.SetStyle(0);
         pickerButton.SetStyle(0);
         objectButton.SetStyle(0);
@@ -4799,6 +4983,10 @@ class SceneEditor2D {
             eraseButton.SetStyle(1);
         } else if mode == MODE_RECTANGLE {
             rectangleButton.SetStyle(1);
+        } else if mode == MODE_LINE {
+            lineButton.SetStyle(1);
+        } else if mode == MODE_ELLIPSE {
+            ellipseButton.SetStyle(1);
         } else if mode == MODE_FILL {
             fillButton.SetStyle(1);
         } else if mode == MODE_PICKER {
@@ -4862,7 +5050,8 @@ class SceneEditor2D {
     ///          creating history. Canvas gestures own their own drafts.
     /// @return True when one canonical transaction committed this frame.
     hide func PumpObjectTransformDraft() -> Boolean {
-        if objectDragActive or paintStrokeActive or canvasMarqueeActive {
+        if objectDragActive or paintStrokeActive or canvasMarqueeActive
+           or rectGestureMode != 0 {
             return false;
         }
         if scene == null or selectedObjects.count() != 1
@@ -4882,34 +5071,196 @@ class SceneEditor2D {
             if nextX != currentX or nextY != currentY {
                 if objectTransformDraftActive == false {
                     objectTransformDraftActive = true;
-                    objectDraftOriginX = currentX;
-                    objectDraftOriginY = currentY;
+                    CaptureObjectDraftOrigins();
                 }
                 scene.SetObjectPosition(selectedObject, nextX, nextY);
                 renderDirty = true;
             }
         }
+        // Rotation/scale rows share the same one-gesture draft (ADR 0192);
+        // the epsilon guard keeps refresh echoes from opening a draft.
+        var transformEdited = objectRotationSpinner.WasChanged()
+            or objectScaleXSpinner.WasChanged()
+            or objectScaleYSpinner.WasChanged()
+            or objectPivotXSpinner.WasChanged()
+            or objectPivotYSpinner.WasChanged();
+        if transformEdited {
+            var nextRotation = objectRotationSpinner.Value;
+            var nextScaleX = objectScaleXSpinner.Value;
+            var nextScaleY = objectScaleYSpinner.Value;
+            var nextPivotX = objectPivotXSpinner.Value;
+            var nextPivotY = objectPivotYSpinner.Value;
+            if NumberDiffers(
+                   nextRotation, scene.ObjectRotation(selectedObject))
+               or NumberDiffers(
+                   nextScaleX, scene.ObjectScaleX(selectedObject))
+               or NumberDiffers(
+                   nextScaleY, scene.ObjectScaleY(selectedObject))
+               or NumberDiffers(
+                   nextPivotX, scene.ObjectPivotX(selectedObject))
+               or NumberDiffers(
+                   nextPivotY, scene.ObjectPivotY(selectedObject)) {
+                if objectTransformDraftActive == false {
+                    objectTransformDraftActive = true;
+                    CaptureObjectDraftOrigins();
+                }
+                scene.SetObjectRotation(selectedObject, nextRotation);
+                scene.SetObjectScale(
+                    selectedObject, nextScaleX, nextScaleY);
+                scene.SetObjectPivot(
+                    selectedObject, nextPivotX, nextPivotY);
+                renderDirty = true;
+            }
+        }
         if objectTransformDraftActive == false { return false; }
         var editingFocused = objectXSpinner.IsFocused()
-            or objectYSpinner.IsFocused();
+            or objectYSpinner.IsFocused()
+            or objectRotationSpinner.IsFocused()
+            or objectScaleXSpinner.IsFocused()
+            or objectScaleYSpinner.IsFocused()
+            or objectPivotXSpinner.IsFocused()
+            or objectPivotYSpinner.IsFocused();
         if editingFocused
            and Input.Keyboard.WasPressed(Input.Key.Escape) {
             scene.SetObjectPosition(
                 selectedObject, objectDraftOriginX, objectDraftOriginY);
+            scene.SetObjectRotation(
+                selectedObject, objectDraftOriginRotation);
+            scene.SetObjectScale(
+                selectedObject,
+                objectDraftOriginScaleX, objectDraftOriginScaleY);
+            scene.SetObjectPivot(
+                selectedObject,
+                objectDraftOriginPivotX, objectDraftOriginPivotY);
             objectTransformDraftActive = false;
             gestureEscapeConsumed = true;
             RefreshObjectFields();
             renderDirty = true;
-            toolbarStatus.SetText("Position edit canceled");
+            toolbarStatus.SetText("Transform edit canceled");
             return false;
         }
         // A completed value scrub commits its gesture immediately, mirroring
         // canvas-drag release; typed edits still commit when focus leaves.
         var scrubFinished = objectXSpinner.WasScrubFinished()
-            or objectYSpinner.WasScrubFinished();
+            or objectYSpinner.WasScrubFinished()
+            or objectRotationSpinner.WasScrubFinished()
+            or objectScaleXSpinner.WasScrubFinished()
+            or objectScaleYSpinner.WasScrubFinished()
+            or objectPivotXSpinner.WasScrubFinished()
+            or objectPivotYSpinner.WasScrubFinished();
         if editingFocused and scrubFinished == false { return false; }
         objectTransformDraftActive = false;
-        return CommitScene("Moved object");
+        return CommitScene("Transformed object");
+    }
+
+    /// @brief Capture every draft origin when a transform gesture opens.
+    hide func CaptureObjectDraftOrigins() {
+        objectDraftOriginX = scene.ObjectX(selectedObject);
+        objectDraftOriginY = scene.ObjectY(selectedObject);
+        objectDraftOriginRotation = scene.ObjectRotation(selectedObject);
+        objectDraftOriginScaleX = scene.ObjectScaleX(selectedObject);
+        objectDraftOriginScaleY = scene.ObjectScaleY(selectedObject);
+        objectDraftOriginPivotX = scene.ObjectPivotX(selectedObject);
+        objectDraftOriginPivotY = scene.ObjectPivotY(selectedObject);
+    }
+
+    /// @brief Format one raw RGBA tint as eight uppercase hex digits.
+    hide func TintHexText(rgba: Integer) -> String {
+        var digits = "0123456789ABCDEF";
+        var text = "";
+        var shift = 28;
+        while shift >= 0 {
+            var nibble = rgba / PowerOfTwo(shift) % 16;
+            text = text + Str.MidLen(digits, nibble, 1);
+            shift = shift - 4;
+        }
+        return text;
+    }
+
+    /// @brief Return 2^exponent for the nibble extraction above.
+    hide func PowerOfTwo(exponent: Integer) -> Integer {
+        var value = 1;
+        var step = 0;
+        while step < exponent {
+            value = value * 2;
+            step = step + 1;
+        }
+        return value;
+    }
+
+    /// @brief Parse tint text as RRGGBBAA (or RRGGBB = opaque); -1 invalid.
+    hide func TintFromHexText(text: String) -> Integer {
+        var clean = Str.Trim(text);
+        if Str.StartsWith(clean, "#") { clean = Str.Mid(clean, 1); }
+        if Str.get_Length(clean) == 6 { clean = clean + "FF"; }
+        if Str.get_Length(clean) != 8 { return -1; }
+        var parsed = Parse.IntRadix(clean, 16, -1);
+        if parsed < 0 { return -1; }
+        return parsed;
+    }
+
+    /// @brief Commit a submitted tint as one undoable transaction.
+    hide func PumpObjectTintInput() -> Boolean {
+        if scene == null or selectedObjects.count() != 1
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            return false;
+        }
+        if objectTintInput.WasSubmitted() == false { return false; }
+        var nextTint = TintFromHexText(objectTintInput.Text);
+        if nextTint < 0 {
+            detailLabel.SetText(
+                "Tint must be RRGGBBAA hex (FFFFFFFF clears it).");
+            RefreshObjectFields();
+            return false;
+        }
+        if nextTint == scene.ObjectTint(selectedObject) { return false; }
+        var previousTint = scene.ObjectTint(selectedObject);
+        scene.SetObjectTint(selectedObject, nextTint);
+        if CommitScene("Tinted object") == false {
+            scene.SetObjectTint(selectedObject, previousTint);
+            RefreshObjectFields();
+            return false;
+        }
+        detailLabel.SetText("");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Whether two authored numbers differ beyond echo noise.
+    hide func NumberDiffers(next: Number, current: Number) -> Boolean {
+        var delta = next - current;
+        if delta < 0.0 { delta = 0.0 - delta; }
+        return delta > 0.0005;
+    }
+
+    /// @brief Commit flip toggles as immediate one-transaction edits.
+    hide func PumpObjectFlipControls() -> Boolean {
+        if scene == null or selectedObjects.count() != 1
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            return false;
+        }
+        var toggledX = objectFlipXCheck.WasChanged();
+        var toggledY = objectFlipYCheck.WasChanged();
+        if toggledX == false and toggledY == false { return false; }
+        var nextFlipX = objectFlipXCheck.IsChecked();
+        var nextFlipY = objectFlipYCheck.IsChecked();
+        if nextFlipX == scene.ObjectFlipX(selectedObject)
+           and nextFlipY == scene.ObjectFlipY(selectedObject) {
+            return false;
+        }
+        var previousFlipX = scene.ObjectFlipX(selectedObject);
+        var previousFlipY = scene.ObjectFlipY(selectedObject);
+        scene.SetObjectFlip(selectedObject, nextFlipX, nextFlipY);
+        if CommitScene("Flipped object") == false {
+            scene.SetObjectFlip(
+                selectedObject, previousFlipX, previousFlipY);
+            RefreshObjectFields();
+            return false;
+        }
+        renderDirty = true;
+        return true;
     }
 
     /// @brief Consume stale object-spinner change edges after programmatic
@@ -4918,6 +5269,13 @@ class SceneEditor2D {
         if objectXSpinner == null { return; }
         objectXSpinner.WasChanged();
         objectYSpinner.WasChanged();
+        objectRotationSpinner.WasChanged();
+        objectScaleXSpinner.WasChanged();
+        objectScaleYSpinner.WasChanged();
+        objectPivotXSpinner.WasChanged();
+        objectPivotYSpinner.WasChanged();
+        objectFlipXCheck.WasChanged();
+        objectFlipYCheck.WasChanged();
     }
 
     /// @brief Show only inspector groups relevant to the current selection.
@@ -4945,6 +5303,8 @@ class SceneEditor2D {
         objectTypeInput.SetVisible(objectScope);
         objectIdInput.SetVisible(objectScope);
         objectPositionRow.SetVisible(objectScope);
+        objectTransformRow.SetVisible(
+            objectScope and selectedObjects.count() == 1);
         objectArrangeRow.SetVisible(objectScope);
         objectPropertyLabel.SetVisible(objectScope);
         objectProperties.host.SetVisible(objectScope);
@@ -5593,6 +5953,14 @@ class SceneEditor2D {
         objectIdInput.SetEnabled(hasSingle);
         objectXSpinner.SetEnabled(hasSingle);
         objectYSpinner.SetEnabled(hasSingle);
+        objectRotationSpinner.SetEnabled(hasSingle);
+        objectScaleXSpinner.SetEnabled(hasSingle);
+        objectScaleYSpinner.SetEnabled(hasSingle);
+        objectFlipXCheck.SetEnabled(hasSingle);
+        objectFlipYCheck.SetEnabled(hasSingle);
+        objectPivotXSpinner.SetEnabled(hasSingle);
+        objectPivotYSpinner.SetEnabled(hasSingle);
+        objectTintInput.SetEnabled(hasSingle);
         RefreshObjectParentTargets();
         RefreshObjectArrangeControls(hasSelection);
         removeObjectButton.SetText("Remove");
@@ -5604,6 +5972,14 @@ class SceneEditor2D {
             objectIdInput.SetText("");
             objectXSpinner.SetValue(0.0);
             objectYSpinner.SetValue(0.0);
+            objectRotationSpinner.SetValue(0.0);
+            objectScaleXSpinner.SetValue(1.0);
+            objectScaleYSpinner.SetValue(1.0);
+            objectFlipXCheck.SetChecked(false);
+            objectFlipYCheck.SetChecked(false);
+            objectPivotXSpinner.SetValue(0.5);
+            objectPivotYSpinner.SetValue(0.5);
+            objectTintInput.SetText("");
             selectedObjectProperty = -1;
             if hasSelection {
                 removeObjectButton.SetText(
@@ -5623,6 +5999,16 @@ class SceneEditor2D {
         objectIdInput.SetText(scene.ObjectId(selectedObject));
         objectXSpinner.SetValue(scene.ObjectX(selectedObject));
         objectYSpinner.SetValue(scene.ObjectY(selectedObject));
+        objectRotationSpinner.SetValue(
+            scene.ObjectRotation(selectedObject));
+        objectScaleXSpinner.SetValue(scene.ObjectScaleX(selectedObject));
+        objectScaleYSpinner.SetValue(scene.ObjectScaleY(selectedObject));
+        objectFlipXCheck.SetChecked(scene.ObjectFlipX(selectedObject));
+        objectFlipYCheck.SetChecked(scene.ObjectFlipY(selectedObject));
+        objectPivotXSpinner.SetValue(scene.ObjectPivotX(selectedObject));
+        objectPivotYSpinner.SetValue(scene.ObjectPivotY(selectedObject));
+        objectTintInput.SetText(
+            TintHexText(scene.ObjectTint(selectedObject)));
         RefreshObjectProperties();
         RefreshComponentPalette();
     }
@@ -6203,6 +6589,12 @@ class SceneEditor2D {
     }
 
     /// @brief Return whether conventional Control/Command selection is held.
+    /// @brief Return whether either Alt key is held (transient picker).
+    hide func CanvasAltDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftAlt)
+            or Input.Keyboard.IsDown(Input.Key.RightAlt);
+    }
+
     hide func CanvasPrimaryModifierDown() -> Boolean {
         return Input.Keyboard.IsDown(Input.Key.LeftControl)
             or Input.Keyboard.IsDown(Input.Key.RightControl)
@@ -6240,6 +6632,16 @@ class SceneEditor2D {
         canvasMarqueeStartY = -1;
         canvasMarqueeCurrentX = -1;
         canvasMarqueeCurrentY = -1;
+        tileRegionMinX = -1;
+        tileRegionMinY = -1;
+        tileRegionMaxX = -1;
+        tileRegionMaxY = -1;
+        stampActive = false;
+        stampWidth = 0;
+        stampHeight = 0;
+        stampTiles = [];
+        hoverCellX = -1;
+        hoverCellY = -1;
         canvasMarqueeAdditive = false;
         canvasMarqueeToggle = false;
         if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
@@ -6266,6 +6668,7 @@ class SceneEditor2D {
         var additive = canvasMarqueeAdditive;
         var toggle = canvasMarqueeToggle;
         ResetCanvasMarquee(true);
+        SetTileRegion(startX, startY, endX, endY);
         var changed = ApplyCanvasMarqueeSelection(
             startX, startY, endX, endY, additive, toggle);
         if selectedObjects.count() == 0 {
@@ -6284,6 +6687,9 @@ class SceneEditor2D {
     /// @brief Begin a non-destructive inclusive tile-rectangle preview.
     hide func BeginTileRectangle(cellX: Integer,
                                  cellY: Integer) {
+        tileRectangleShape = 0;
+        if mode == MODE_LINE { tileRectangleShape = 1; }
+        if mode == MODE_ELLIPSE { tileRectangleShape = 2; }
         tileRectangleActive = true;
         tileRectangleStartX = cellX;
         tileRectangleStartY = cellY;
@@ -6361,9 +6767,157 @@ class SceneEditor2D {
         var endX = tileRectangleCurrentX;
         var endY = tileRectangleCurrentY;
         var tile = tileRectangleTile;
+        var shape = tileRectangleShape;
         ResetTileRectangle(true);
+        if shape != 0 {
+            return ApplyTileShape(
+                shape, startX, startY, endX, endY, tile);
+        }
         return ApplyTileRectangle(
             activeLayer, startX, startY, endX, endY, tile);
+    }
+
+    /// @brief Cells covered by one line or ellipse gesture (x,y pairs).
+    /// @details The single source for previews and commits so the ghost
+    ///          always matches the written cells. Lines rasterize with the
+    ///          classic integer error walk; ellipses sample the boundary
+    ///          per column and per row of the inclusive drag rectangle.
+    hide func ShapeCells(shape: Integer,
+                         startX: Integer,
+                         startY: Integer,
+                         endX: Integer,
+                         endY: Integer) -> List[Integer] {
+        var cells: List[Integer] = [];
+        if shape == 1 {
+            var deltaX = endX - startX;
+            if deltaX < 0 { deltaX = 0 - deltaX; }
+            var deltaY = endY - startY;
+            if deltaY < 0 { deltaY = 0 - deltaY; }
+            var stepX = -1;
+            if endX > startX { stepX = 1; }
+            var stepY = -1;
+            if endY > startY { stepY = 1; }
+            var walkError = deltaX - deltaY;
+            var x = startX;
+            var y = startY;
+            var guardSteps = deltaX + deltaY + 1;
+            while guardSteps >= 0 {
+                cells.add(x);
+                cells.add(y);
+                if x == endX and y == endY { return cells; }
+                var doubled = walkError * 2;
+                if doubled > 0 - deltaY {
+                    walkError = walkError - deltaY;
+                    x = x + stepX;
+                }
+                if doubled < deltaX {
+                    walkError = walkError + deltaX;
+                    y = y + stepY;
+                }
+                guardSteps = guardSteps - 1;
+            }
+            return cells;
+        }
+        var minX = startX;
+        var maxX = endX;
+        if maxX < minX {
+            minX = endX;
+            maxX = startX;
+        }
+        var minY = startY;
+        var maxY = endY;
+        if maxY < minY {
+            minY = endY;
+            maxY = startY;
+        }
+        var centerX = (minX + maxX) * 0.5;
+        var centerY = (minY + maxY) * 0.5;
+        var radiusX = (maxX - minX) * 0.5;
+        var radiusY = (maxY - minY) * 0.5;
+        if radiusX < 0.5 or radiusY < 0.5 {
+            // Degenerate ellipses collapse to their bounding rectangle
+            // outline, which for a 1-cell-thick drag is the drag itself.
+            var x = minX;
+            while x <= maxX {
+                var y = minY;
+                while y <= maxY {
+                    cells.add(x);
+                    cells.add(y);
+                    y = y + 1;
+                }
+                x = x + 1;
+            }
+            return cells;
+        }
+        var column = minX;
+        while column <= maxX {
+            var normalized = (column - centerX) / radiusX;
+            var squared = 1.0 - normalized * normalized;
+            if squared < 0.0 { squared = 0.0; }
+            var offset = radiusY * Math.Sqrt(squared);
+            cells.add(column);
+            cells.add(Convert.NumToInt(centerY - offset + 0.5));
+            cells.add(column);
+            cells.add(Convert.NumToInt(centerY + offset + 0.5));
+            column = column + 1;
+        }
+        var row = minY;
+        while row <= maxY {
+            var normalized = (row - centerY) / radiusY;
+            var squared = 1.0 - normalized * normalized;
+            if squared < 0.0 { squared = 0.0; }
+            var offset = radiusX * Math.Sqrt(squared);
+            cells.add(Convert.NumToInt(centerX - offset + 0.5));
+            cells.add(row);
+            cells.add(Convert.NumToInt(centerX + offset + 0.5));
+            cells.add(row);
+            row = row + 1;
+        }
+        return cells;
+    }
+
+    /// @brief Write one line or ellipse of tiles as a single transaction.
+    hide func ApplyTileShape(shape: Integer,
+                             startX: Integer,
+                             startY: Integer,
+                             endX: Integer,
+                             endY: Integer,
+                             tile: Integer) -> Boolean {
+        if scene == null or activeLayer < 0
+           or activeLayer >= scene.LayerCount() {
+            return false;
+        }
+        var nextTile = tile;
+        if nextTile < 0 { nextTile = 0; }
+        var cells = ShapeCells(shape, startX, startY, endX, endY);
+        var changedCells = 0;
+        var index = 0;
+        while index < cells.count() {
+            var x = cells.get(index);
+            var y = cells.get(index + 1);
+            if x >= 0 and x < scene.Width
+               and y >= 0 and y < scene.Height
+               and scene.GetTile(activeLayer, x, y) != nextTile {
+                scene.SetTile(activeLayer, x, y, nextTile);
+                changedCells = changedCells + 1;
+            }
+            index = index + 2;
+        }
+        renderDirty = true;
+        if changedCells == 0 {
+            toolbarStatus.SetText(
+                "Shape already matches the selected tile");
+            return false;
+        }
+        var label = "Painted tile line";
+        if shape == 2 { label = "Painted tile ellipse"; }
+        if CommitScene(label) == false {
+            RestoreSceneSnapshot(currentSerialized);
+            return false;
+        }
+        toolbarStatus.SetText(
+            "Painted " + changedCells + " tile(s)");
+        return true;
     }
 
     /// @brief Reset one freehand stroke and optionally release its capture.
@@ -6460,6 +7014,9 @@ class SceneEditor2D {
         var relativeY = PhysicalPointerToUi(Input.Mouse.Y())
             - canvasImage.GetScreenY();
         if displayCellSize <= 0 { return false; }
+        if rectGestureMode != 0 {
+            return PumpRectGesture(relativeX, relativeY);
+        }
 
         var wheel = Input.Mouse.WheelYFloat();
         if wheel > 0.0 or wheel < 0.0 {
@@ -6477,6 +7034,14 @@ class SceneEditor2D {
             return false;
         }
 
+        if rectGestureMode != 0 {
+            return PumpRectGesture(relativeX, relativeY);
+        }
+        if stampActive and Input.Keyboard.WasPressed(Input.Key.Escape) {
+            ClearTileStamp();
+            gestureEscapeConsumed = true;
+            toolbarStatus.SetText("Stamp cleared");
+        }
         var contentX = Convert.NumToInt(relativeX) + viewOriginX;
         var contentY = Convert.NumToInt(relativeY) + viewOriginY;
         if contentX < 0 or contentY < 0 { return false; }
@@ -6501,6 +7066,14 @@ class SceneEditor2D {
             }
             return false;
         }
+        // Alt-hold is a transient eyedropper in every paint-family tool.
+        if (mode == MODE_PAINT or mode == MODE_ERASE
+            or mode == MODE_RECTANGLE or mode == MODE_FILL)
+           and CanvasAltDown()
+           and Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            PickSceneTile(activeLayer, cellX, cellY);
+            return false;
+        }
         if mode == MODE_PAINT or mode == MODE_ERASE {
             if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
                 paintStrokeActive = true;
@@ -6523,7 +7096,8 @@ class SceneEditor2D {
             return false;
         }
 
-        if mode == MODE_RECTANGLE {
+        if mode == MODE_RECTANGLE or mode == MODE_LINE
+           or mode == MODE_ELLIPSE {
             if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
                 BeginTileRectangle(cellX, cellY);
             }
@@ -6562,7 +7136,15 @@ class SceneEditor2D {
         }
 
         if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
-            var hitObject = FindObjectAtCell(cellX, cellY);
+            if RectToolEligible() {
+                var handleHit = RectHandleAtPoint(
+                    selectedObject, relativeX, relativeY);
+                if handleHit >= 0 {
+                    BeginRectGesture(handleHit, relativeX, relativeY);
+                    return false;
+                }
+            }
+            var hitObject = FindObjectAtCanvasPoint(relativeX, relativeY);
             var additive = CanvasShiftDown();
             var toggle = CanvasPrimaryModifierDown();
             if hitObject >= 0 {
@@ -6612,6 +7194,13 @@ class SceneEditor2D {
            and objectDragIndex < scene.ObjectCount() {
             var objectX = cellX * scene.TileWidth;
             var objectY = cellY * scene.TileHeight;
+            if CanvasPrimaryModifierDown() {
+                // Ctrl/Cmd-hold drops the tile grid: the drag follows the
+                // pointer at exact scene-pixel precision (positions are
+                // already pixel integers in the model).
+                objectX = CanvasFreePixelX(contentX);
+                objectY = CanvasFreePixelY(contentY);
+            }
             var deltaX = objectX - objectDragLastX;
             var deltaY = objectY - objectDragLastY;
             if deltaX != 0 or deltaY != 0 {
@@ -6755,6 +7344,585 @@ class SceneEditor2D {
             childY);
     }
 
+    /// @brief Create one entity at the scene cell under a physical point.
+    /// @details Shared by the canvas context menu's "Add Object Here": one
+    ///          undoable transaction, the new object selected, and its
+    ///          inline hierarchy rename armed so the id is typed first.
+    /// @param pointX Physical pointer x when the menu opened.
+    /// @param pointY Physical pointer y when the menu opened.
+    /// @return The new object index, or -1 when the point misses the scene.
+    expose func CreateObjectAtCanvasPoint(pointX: Number,
+                                          pointY: Number) -> Integer {
+        if scene == null { return -1; }
+        var cellX = CanvasCellAtPointX(pointX);
+        var cellY = CanvasCellAtPointY(pointY);
+        if cellX < 0 or cellY < 0 { return -1; }
+        var objectIndex = AddSceneObject(
+            "entity",
+            UniqueObjectId("object-" + (scene.ObjectCount() + 1)),
+            cellX * scene.TileWidth,
+            cellY * scene.TileHeight);
+        if objectIndex < 0 { return -1; }
+        BeginRenameSelectedObject();
+        return objectIndex;
+    }
+
+    /// @brief Compute one object's transformed canvas footprint (ADR 0192).
+    /// @details Sprite objects use their native frame size at the current
+    ///          zoom with scale applied about the pivot and the rotated
+    ///          rectangle's axis-aligned bounds; non-sprite objects fall
+    ///          back to their legacy one-cell footprint.
+    hide func ObjectCanvasFootprint(objectIndex: Integer)
+        -> ObjectFootprint2D {
+        var rect = ObjectScaledRect(objectIndex);
+        if rect.valid == false { return rect; }
+        var rotation = scene.ObjectRotation(objectIndex);
+        if rotation == 0.0 { return rect; }
+        var footprint = new ObjectFootprint2D();
+        footprint.pivotCanvasX = rect.pivotCanvasX;
+        footprint.pivotCanvasY = rect.pivotCanvasY;
+        var radians = rotation * 3.14159265358979323846 / 180.0;
+        var cosine = Math.Cos(radians);
+        var sine = Math.Sin(radians);
+        var corner = 0;
+        while corner < 4 {
+            var cornerX = rect.minX;
+            if corner == 1 or corner == 3 { cornerX = rect.maxX; }
+            var cornerY = rect.minY;
+            if corner == 2 or corner == 3 { cornerY = rect.maxY; }
+            var relativeX = cornerX - rect.pivotCanvasX;
+            var relativeY = cornerY - rect.pivotCanvasY;
+            var rotatedX = rect.pivotCanvasX
+                + relativeX * cosine - relativeY * sine;
+            var rotatedY = rect.pivotCanvasY
+                + relativeX * sine + relativeY * cosine;
+            if corner == 0 {
+                footprint.minX = rotatedX;
+                footprint.maxX = rotatedX;
+                footprint.minY = rotatedY;
+                footprint.maxY = rotatedY;
+            } else {
+                if rotatedX < footprint.minX { footprint.minX = rotatedX; }
+                if rotatedX > footprint.maxX { footprint.maxX = rotatedX; }
+                if rotatedY < footprint.minY { footprint.minY = rotatedY; }
+                if rotatedY > footprint.maxY { footprint.maxY = rotatedY; }
+            }
+            corner = corner + 1;
+        }
+        footprint.valid = true;
+        return footprint;
+    }
+
+    /// @brief The scale-only (unrotated) canvas rectangle for one object.
+    /// @details Sprite objects use their zoomed native frame scaled about
+    ///          the pivot; non-sprite objects keep the legacy one-cell
+    ///          footprint. Pure query — never mutates the model.
+    hide func ObjectScaledRect(objectIndex: Integer)
+        -> ObjectFootprint2D {
+        var footprint = new ObjectFootprint2D();
+        if scene == null or displayCellSize <= 0
+           or objectIndex < 0 or objectIndex >= scene.ObjectCount() {
+            return footprint;
+        }
+        var anchorX = scene.ObjectX(objectIndex) * displayCellSize * 1.0
+            / scene.TileWidth - viewOriginX;
+        var anchorY = scene.ObjectY(objectIndex) * displayCellSize * 1.0
+            / scene.TileHeight - viewOriginY;
+        var path = ObjectSpritePath(objectIndex);
+        var nativeWidth = 0;
+        var nativeHeight = 0;
+        if path != "" {
+            nativeWidth = tilesets.SpriteNativeWidth(path);
+            nativeHeight = tilesets.SpriteNativeHeight(path);
+        }
+        if nativeWidth <= 0 or nativeHeight <= 0 {
+            footprint.valid = true;
+            footprint.minX = anchorX;
+            footprint.minY = anchorY;
+            footprint.maxX = anchorX + displayCellSize;
+            footprint.maxY = anchorY + displayCellSize;
+            footprint.pivotCanvasX = anchorX + displayCellSize * 0.5;
+            footprint.pivotCanvasY = anchorY + displayCellSize * 0.5;
+            return footprint;
+        }
+        var baseWidth = nativeWidth * displayCellSize * 1.0
+            / scene.TileWidth;
+        var baseHeight = nativeHeight * displayCellSize * 1.0
+            / scene.TileHeight;
+        var magnitudeX = scene.ObjectScaleX(objectIndex);
+        if magnitudeX < 0.0 { magnitudeX = 0.0 - magnitudeX; }
+        var magnitudeY = scene.ObjectScaleY(objectIndex);
+        if magnitudeY < 0.0 { magnitudeY = 0.0 - magnitudeY; }
+        var scaledWidth = baseWidth * magnitudeX;
+        var scaledHeight = baseHeight * magnitudeY;
+        var pivotX = scene.ObjectPivotX(objectIndex);
+        var pivotY = scene.ObjectPivotY(objectIndex);
+        footprint.pivotCanvasX = anchorX + baseWidth * pivotX;
+        footprint.pivotCanvasY = anchorY + baseHeight * pivotY;
+        footprint.minX = footprint.pivotCanvasX - scaledWidth * pivotX;
+        footprint.minY = footprint.pivotCanvasY - scaledHeight * pivotY;
+        footprint.maxX = footprint.minX + scaledWidth;
+        footprint.maxY = footprint.minY + scaledHeight;
+        footprint.valid = true;
+        return footprint;
+    }
+
+    /// @brief Whether one canvas point is inside an object's rotated sprite.
+    /// @details Inverse-rotates the point about the pivot, then tests the
+    ///          unrotated rectangle — exact for any rotation and scale.
+    hide func ObjectFootprintContains(objectIndex: Integer,
+                                      canvasX: Number,
+                                      canvasY: Number) -> Boolean {
+        var footprint = ObjectCanvasFootprint(objectIndex);
+        if footprint.valid == false { return false; }
+        var rotation = scene.ObjectRotation(objectIndex);
+        if rotation == 0.0 {
+            return canvasX >= footprint.minX and canvasX <= footprint.maxX
+                and canvasY >= footprint.minY and canvasY <= footprint.maxY;
+        }
+        // Quick reject against the rotated bounds before the exact test.
+        if canvasX < footprint.minX or canvasX > footprint.maxX
+           or canvasY < footprint.minY or canvasY > footprint.maxY {
+            return false;
+        }
+        var radians = (0.0 - rotation) * 3.14159265358979323846 / 180.0;
+        var cosine = Math.Cos(radians);
+        var sine = Math.Sin(radians);
+        var relativeX = canvasX - footprint.pivotCanvasX;
+        var relativeY = canvasY - footprint.pivotCanvasY;
+        var localX = footprint.pivotCanvasX
+            + relativeX * cosine - relativeY * sine;
+        var localY = footprint.pivotCanvasY
+            + relativeX * sine + relativeY * cosine;
+        var unrotated = ObjectScaledRect(objectIndex);
+        return localX >= unrotated.minX and localX <= unrotated.maxX
+            and localY >= unrotated.minY and localY <= unrotated.maxY;
+    }
+
+    /// @brief Canvas position of one rect handle (0-3 corners, 4 rotate).
+    /// @details Corners follow the rotated scaled rectangle; the rotate
+    ///          handle floats above the rotated top-center. Order: 0 TL,
+    ///          1 TR, 2 BL, 3 BR (pre-rotation identities).
+    expose func RectHandlePoint(objectIndex: Integer,
+                                handle: Integer) -> CanvasPoint2D {
+        var point = new CanvasPoint2D();
+        var rect = ObjectScaledRect(objectIndex);
+        if rect.valid == false { return point; }
+        var localX = rect.minX;
+        var localY = rect.minY;
+        if handle == 1 or handle == 3 { localX = rect.maxX; }
+        if handle == 2 or handle == 3 { localY = rect.maxY; }
+        if handle == 4 {
+            localX = (rect.minX + rect.maxX) * 0.5;
+            localY = rect.minY - RECT_ROTATE_HANDLE_OFFSET;
+        }
+        var rotation = scene.ObjectRotation(objectIndex);
+        if rotation == 0.0 {
+            point.x = localX;
+            point.y = localY;
+            return point;
+        }
+        var radians = rotation * 3.14159265358979323846 / 180.0;
+        var cosine = Math.Cos(radians);
+        var sine = Math.Sin(radians);
+        var relativeX = localX - rect.pivotCanvasX;
+        var relativeY = localY - rect.pivotCanvasY;
+        point.x = rect.pivotCanvasX
+            + relativeX * cosine - relativeY * sine;
+        point.y = rect.pivotCanvasY
+            + relativeX * sine + relativeY * cosine;
+        return point;
+    }
+
+    /// @brief The rect handle under a canvas point, or -1.
+    hide func RectHandleAtPoint(objectIndex: Integer,
+                                pointX: Number,
+                                pointY: Number) -> Integer {
+        var handle = 0;
+        while handle <= 4 {
+            var handlePoint = RectHandlePoint(objectIndex, handle);
+            var deltaX = pointX - handlePoint.x;
+            var deltaY = pointY - handlePoint.y;
+            if deltaX * deltaX + deltaY * deltaY
+               <= RECT_HANDLE_RADIUS_SQUARED {
+                return handle;
+            }
+            handle = handle + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Whether the rect tool applies to the current selection.
+    hide func RectToolEligible() -> Boolean {
+        return mode == MODE_SELECT
+            and selectedObjects.count() == 1
+            and selectedObject >= 0
+            and selectedObject < scene.ObjectCount()
+            and ObjectSpritePath(selectedObject) != "";
+    }
+
+    /// @brief Begin a rect-handle gesture at one canvas point.
+    hide func BeginRectGesture(handle: Integer,
+                               pointX: Number,
+                               pointY: Number) {
+        var rect = ObjectScaledRect(selectedObject);
+        CaptureObjectDraftOrigins();
+        rectStartScaleX = scene.ObjectScaleX(selectedObject);
+        rectStartScaleY = scene.ObjectScaleY(selectedObject);
+        rectStartRotation = scene.ObjectRotation(selectedObject);
+        if handle == 4 {
+            rectGestureMode = 2;
+            rectStartAngle = Math.Atan2(
+                pointY - rect.pivotCanvasY, pointX - rect.pivotCanvasX);
+        } else {
+            rectGestureMode = 1;
+            rectGestureHandle = handle;
+            var local = RectGestureLocalPoint(pointX, pointY);
+            rectStartLocalX = local.x;
+            rectStartLocalY = local.y;
+        }
+    }
+
+    /// @brief A pointer position inverse-rotated into gesture-local space.
+    hide func RectGestureLocalPoint(pointX: Number,
+                                    pointY: Number) -> CanvasPoint2D {
+        var point = new CanvasPoint2D();
+        var rect = ObjectScaledRect(selectedObject);
+        var radians = (0.0 - rectStartRotation)
+            * 3.14159265358979323846 / 180.0;
+        var cosine = Math.Cos(radians);
+        var sine = Math.Sin(radians);
+        var relativeX = pointX - rect.pivotCanvasX;
+        var relativeY = pointY - rect.pivotCanvasY;
+        point.x = relativeX * cosine - relativeY * sine;
+        point.y = relativeX * sine + relativeY * cosine;
+        return point;
+    }
+
+    /// @brief Track and complete an active rect-handle gesture.
+    /// @return True when a completed gesture committed content.
+    hide func PumpRectGesture(pointX: Number, pointY: Number) -> Boolean {
+        if rectGestureMode == 0 { return false; }
+        if selectedObjects.count() != 1 or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            rectGestureMode = 0;
+            return false;
+        }
+        if Input.Keyboard.WasPressed(Input.Key.Escape) {
+            scene.SetObjectRotation(
+                selectedObject, objectDraftOriginRotation);
+            scene.SetObjectScale(
+                selectedObject,
+                objectDraftOriginScaleX, objectDraftOriginScaleY);
+            rectGestureMode = 0;
+            gestureEscapeConsumed = true;
+            RefreshObjectFields();
+            renderDirty = true;
+            toolbarStatus.SetText("Transform gesture canceled");
+            return false;
+        }
+        if Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+            var rect = ObjectScaledRect(selectedObject);
+            if rectGestureMode == 2 {
+                var angle = Math.Atan2(
+                    pointY - rect.pivotCanvasY,
+                    pointX - rect.pivotCanvasX);
+                var degrees = rectStartRotation
+                    + (angle - rectStartAngle)
+                      * 180.0 / 3.14159265358979323846;
+                scene.SetObjectRotation(selectedObject, degrees);
+            } else {
+                var local = RectGestureLocalPoint(pointX, pointY);
+                var nextScaleX = rectStartScaleX;
+                var nextScaleY = rectStartScaleY;
+                if rectStartLocalX > 0.5 or rectStartLocalX < -0.5 {
+                    nextScaleX = rectStartScaleX
+                        * local.x / rectStartLocalX;
+                }
+                if rectStartLocalY > 0.5 or rectStartLocalY < -0.5 {
+                    nextScaleY = rectStartScaleY
+                        * local.y / rectStartLocalY;
+                }
+                scene.SetObjectScale(
+                    selectedObject, nextScaleX, nextScaleY);
+            }
+            RefreshObjectFields();
+            renderDirty = true;
+            return false;
+        }
+        var wasRotate = rectGestureMode == 2;
+        rectGestureMode = 0;
+        renderDirty = true;
+        var label = "Scaled object";
+        if wasRotate { label = "Rotated object"; }
+        if NumberDiffers(
+               scene.ObjectRotation(selectedObject),
+               objectDraftOriginRotation) == false
+           and NumberDiffers(
+               scene.ObjectScaleX(selectedObject),
+               objectDraftOriginScaleX) == false
+           and NumberDiffers(
+               scene.ObjectScaleY(selectedObject),
+               objectDraftOriginScaleY) == false {
+            return false;
+        }
+        return CommitScene(label);
+    }
+
+    /// @brief Record one inclusive marquee rect as the active tile region.
+    hide func SetTileRegion(startX: Integer,
+                            startY: Integer,
+                            endX: Integer,
+                            endY: Integer) {
+        if scene == null or startX < 0 or startY < 0
+           or endX < 0 or endY < 0 {
+            ClearTileRegion();
+            return;
+        }
+        var minX = startX;
+        var maxX = endX;
+        if maxX < minX {
+            minX = endX;
+            maxX = startX;
+        }
+        var minY = startY;
+        var maxY = endY;
+        if maxY < minY {
+            minY = endY;
+            maxY = startY;
+        }
+        tileRegionMinX = ClampInt(minX, 0, scene.Width - 1);
+        tileRegionMaxX = ClampInt(maxX, 0, scene.Width - 1);
+        tileRegionMinY = ClampInt(minY, 0, scene.Height - 1);
+        tileRegionMaxY = ClampInt(maxY, 0, scene.Height - 1);
+        renderDirty = true;
+    }
+
+    /// @brief Clear the active tile region marker.
+    hide func ClearTileRegion() {
+        if tileRegionMinX < 0 { return; }
+        tileRegionMinX = -1;
+        tileRegionMinY = -1;
+        tileRegionMaxX = -1;
+        tileRegionMaxY = -1;
+        stampActive = false;
+        stampWidth = 0;
+        stampHeight = 0;
+        stampTiles = [];
+        hoverCellX = -1;
+        hoverCellY = -1;
+        renderDirty = true;
+    }
+
+    /// @brief Whether a tile region and a valid active layer both exist.
+    expose func HasTileRegion() -> Boolean {
+        return scene != null and tileRegionMinX >= 0
+            and activeLayer >= 0 and activeLayer < scene.LayerCount();
+    }
+
+    /// @brief Copy the active layer's region tiles to the clipboard.
+    expose func CopyTileRegion() -> Boolean {
+        if HasTileRegion() == false { return false; }
+        var tiles: List[Integer] = [];
+        var y = tileRegionMinY;
+        while y <= tileRegionMaxY {
+            var x = tileRegionMinX;
+            while x <= tileRegionMaxX {
+                tiles.add(scene.GetTile(activeLayer, x, y));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        var encoded = scene_clipboard.EncodeTileBlock(
+            tileRegionMaxX - tileRegionMinX + 1,
+            tileRegionMaxY - tileRegionMinY + 1,
+            tiles);
+        if encoded == "" {
+            detailLabel.SetText(
+                "The tile region exceeds Studio's clipboard limit.");
+            return false;
+        }
+        GUI.ClipboardText.SetText(encoded);
+        toolbarStatus.SetText(
+            "Copied " + tiles.count() + " tile(s)");
+        detailLabel.SetText("");
+        return true;
+    }
+
+    /// @brief Clear the region tiles on the active layer as one edit.
+    expose func DeleteTileRegion() -> Boolean {
+        if HasTileRegion() == false { return false; }
+        var changedCells = 0;
+        var y = tileRegionMinY;
+        while y <= tileRegionMaxY {
+            var x = tileRegionMinX;
+            while x <= tileRegionMaxX {
+                if scene.GetTile(activeLayer, x, y) != 0 {
+                    scene.SetTile(activeLayer, x, y, 0);
+                    changedCells = changedCells + 1;
+                }
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        if changedCells == 0 { return false; }
+        if CommitScene("Deleted tile region") == false {
+            RestoreSceneSnapshot(currentSerialized);
+            return false;
+        }
+        renderDirty = true;
+        toolbarStatus.SetText(
+            "Deleted " + changedCells + " tile(s)");
+        return true;
+    }
+
+    /// @brief Copy then clear the region tiles as one undoable edit.
+    expose func CutTileRegion() -> Boolean {
+        if CopyTileRegion() == false { return false; }
+        if DeleteTileRegion() == false {
+            toolbarStatus.SetText(
+                "Copied tiles; the region was already empty");
+            return false;
+        }
+        toolbarStatus.SetText("Cut tile region");
+        return true;
+    }
+
+    /// @brief Paste a clipboard tile block with its top-left at one cell.
+    /// @details One undoable transaction; cells falling outside the scene
+    ///          clip away. Zero tiles in the block DO paste (they erase),
+    ///          matching every tile editor's block-move behavior.
+    expose func PasteTileBlockAt(cellX: Integer,
+                                 cellY: Integer) -> Boolean {
+        if scene == null
+           or activeLayer < 0 or activeLayer >= scene.LayerCount() {
+            return false;
+        }
+        var payload = scene_clipboard.DecodeTileBlock(
+            GUI.ClipboardText.GetText());
+        if payload.valid == false {
+            detailLabel.SetText(payload.error);
+            return false;
+        }
+        var changedCells = 0;
+        var row = 0;
+        while row < payload.height {
+            var column = 0;
+            while column < payload.width {
+                var targetX = cellX + column;
+                var targetY = cellY + row;
+                if targetX >= 0 and targetX < scene.Width
+                   and targetY >= 0 and targetY < scene.Height {
+                    var tile = payload.tiles.get(
+                        row * payload.width + column);
+                    if scene.GetTile(activeLayer, targetX, targetY)
+                       != tile {
+                        scene.SetTile(
+                            activeLayer, targetX, targetY, tile);
+                        changedCells = changedCells + 1;
+                    }
+                }
+                column = column + 1;
+            }
+            row = row + 1;
+        }
+        if changedCells == 0 {
+            toolbarStatus.SetText("Paste changed no tiles");
+            return false;
+        }
+        if CommitScene("Pasted tile region") == false {
+            RestoreSceneSnapshot(currentSerialized);
+            return false;
+        }
+        SetTileRegion(
+            cellX, cellY,
+            cellX + payload.width - 1, cellY + payload.height - 1);
+        renderDirty = true;
+        toolbarStatus.SetText(
+            "Pasted " + changedCells + " tile(s)");
+        detailLabel.SetText("");
+        return true;
+    }
+
+    /// @brief Adopt the recorded tile region as the active paint stamp.
+    /// @details Stamps come from the canvas region rather than the palette
+    ///          because the palette's 8-column display grid does not match
+    ///          arbitrary atlas layouts; the region always captures the
+    ///          true arrangement. Switching tools or Escape clears it.
+    expose func UseTileRegionAsStamp() -> Boolean {
+        if HasTileRegion() == false { return false; }
+        stampTiles = [];
+        var y = tileRegionMinY;
+        while y <= tileRegionMaxY {
+            var x = tileRegionMinX;
+            while x <= tileRegionMaxX {
+                stampTiles.add(scene.GetTile(activeLayer, x, y));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        stampWidth = tileRegionMaxX - tileRegionMinX + 1;
+        stampHeight = tileRegionMaxY - tileRegionMinY + 1;
+        stampActive = true;
+        SetToolMode(MODE_PAINT);
+        toolbarStatus.SetText(
+            "Stamp " + stampWidth + "x" + stampHeight
+            + "; Escape or a tool switch clears it");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Clear the active paint stamp back to single-tile painting.
+    expose func ClearTileStamp() {
+        if stampActive == false { return; }
+        stampActive = false;
+        stampWidth = 0;
+        stampHeight = 0;
+        stampTiles = [];
+        renderDirty = true;
+    }
+
+    /// @brief Write the stamp block anchored to its tiling grid at one cell.
+    /// @details Cells align to floor(cell / stampSize) * stampSize so drag
+    ///          strokes tile the stamp seamlessly instead of smearing it.
+    hide func ApplyStampAt(cellX: Integer, cellY: Integer) -> Boolean {
+        var anchorX = cellX / stampWidth * stampWidth;
+        var anchorY = cellY / stampHeight * stampHeight;
+        var changed = false;
+        var row = 0;
+        while row < stampHeight {
+            var column = 0;
+            while column < stampWidth {
+                var targetX = anchorX + column;
+                var targetY = anchorY + row;
+                if targetX >= 0 and targetX < scene.Width
+                   and targetY >= 0 and targetY < scene.Height {
+                    changed = ApplyTileCell(
+                        activeLayer, targetX, targetY,
+                        stampTiles.get(row * stampWidth + column))
+                        or changed;
+                }
+                column = column + 1;
+            }
+            row = row + 1;
+        }
+        return changed;
+    }
+
+    /// @brief Scene-pixel x for one canvas content x (free placement).
+    /// @details The Ctrl/Cmd-hold drag path: content pixels scale to scene
+    ///          pixels by the authored tile size over the display cell size.
+    expose func CanvasFreePixelX(contentXValue: Integer) -> Integer {
+        if scene == null or displayCellSize <= 0 { return 0; }
+        return contentXValue * scene.TileWidth / displayCellSize;
+    }
+
+    /// @brief Scene-pixel y for one canvas content y (free placement).
+    expose func CanvasFreePixelY(contentYValue: Integer) -> Integer {
+        if scene == null or displayCellSize <= 0 { return 0; }
+        return contentYValue * scene.TileHeight / displayCellSize;
+    }
+
     /// @brief The scene cell at one physical point, or -1 outside the canvas.
     expose func CanvasCellAtPointX(pointX: Number) -> Integer {
         return CanvasCellAtPoint(pointX, 0.0, true);
@@ -6877,7 +8045,8 @@ class SceneEditor2D {
     /// @brief Switch the active canvas tool as workspace-only state.
     /// @details Shared by the toolbar buttons and the canvas context menu.
     expose func SetToolMode(nextMode: Integer) {
-        mode = ClampInt(nextMode, MODE_SELECT, MODE_PICKER);
+        mode = ClampInt(nextMode, MODE_SELECT, MODE_ELLIPSE);
+        if mode != MODE_PAINT { ClearTileStamp(); }
         UpdateModeButtons();
     }
 
@@ -6932,6 +8101,10 @@ class SceneEditor2D {
 
     /// @brief Mutate one cell inside the current uncommitted paint stroke.
     hide func ApplyStrokeCell(cellX: Integer, cellY: Integer) -> Boolean {
+        if mode == MODE_PAINT and stampActive
+           and stampWidth > 0 and stampHeight > 0 {
+            return ApplyStampAt(cellX, cellY);
+        }
         var tile = 0;
         if mode == MODE_PAINT {
             tile = Convert.NumToInt(tileSpinner.Value);
@@ -7046,6 +8219,25 @@ class SceneEditor2D {
         RestoreSceneSnapshot(snapshot);
         detailLabel.SetText("The object move could not be committed.");
         return false;
+    }
+
+    /// @brief Topmost object whose transformed sprite contains one point.
+    /// @details Later document order wins (drawn on top). Sprite objects
+    ///          test their exact rotated footprint (ADR 0192); markers keep
+    ///          their legacy one-cell footprint.
+    /// @param pointX Canvas-relative x in display pixels.
+    /// @param pointY Canvas-relative y in display pixels.
+    hide func FindObjectAtCanvasPoint(pointX: Number,
+                                      pointY: Number) -> Integer {
+        if scene == null { return -1; }
+        var index = scene.ObjectCount() - 1;
+        while index >= 0 {
+            if ObjectFootprintContains(index, pointX, pointY) {
+                return index;
+            }
+            index = index - 1;
+        }
+        return -1;
     }
 
     hide func FindObjectAtCell(cellX: Integer, cellY: Integer) -> Integer {
@@ -7450,9 +8642,40 @@ class SceneEditor2D {
                     ClampInt(displayCellSize / 2 + 3, 5, 24),
                     Color.RGB(255, 236, 150));
             }
-            framePixels.DrawFrame(objectX, objectY,
-                                  displayCellSize, displayCellSize,
-                                  objectColor);
+            // The outline follows the transformed sprite footprint
+            // (ADR 0192); markers keep their legacy one-cell frame.
+            if objectIndex == selectedObject and RectToolEligible() {
+                var handle = 0;
+                while handle <= 4 {
+                    var handlePoint =
+                        RectHandlePoint(objectIndex, handle);
+                    if handle == 4 {
+                        framePixels.DrawDisc(
+                            Convert.NumToInt(handlePoint.x),
+                            Convert.NumToInt(handlePoint.y),
+                            4, Color.RGB(170, 242, 255));
+                    } else {
+                        framePixels.DrawBox(
+                            Convert.NumToInt(handlePoint.x) - 3,
+                            Convert.NumToInt(handlePoint.y) - 3,
+                            7, 7, Color.RGB(255, 255, 255));
+                    }
+                    handle = handle + 1;
+                }
+            }
+            var outline = ObjectCanvasFootprint(objectIndex);
+            if outline.valid {
+                framePixels.DrawFrame(
+                    Convert.NumToInt(outline.minX),
+                    Convert.NumToInt(outline.minY),
+                    Convert.NumToInt(outline.maxX - outline.minX),
+                    Convert.NumToInt(outline.maxY - outline.minY),
+                    objectColor);
+            } else {
+                framePixels.DrawFrame(objectX, objectY,
+                                      displayCellSize, displayCellSize,
+                                      objectColor);
+            }
             objectIndex = objectIndex + 1;
         }
 
@@ -7466,32 +8689,73 @@ class SceneEditor2D {
                 displayCellSize + 1,
                 Color.RGB(255, 255, 255));
         }
+        if tileRegionMinX >= 0 {
+            framePixels.DrawFrame(
+                tileRegionMinX * displayCellSize - viewOriginX,
+                tileRegionMinY * displayCellSize - viewOriginY,
+                (tileRegionMaxX - tileRegionMinX + 1) * displayCellSize + 1,
+                (tileRegionMaxY - tileRegionMinY + 1) * displayCellSize + 1,
+                Color.RGB(255, 220, 120));
+        }
+        // Stamp ghost: the grid-anchored footprint the next click writes.
+        if stampActive and mode == MODE_PAINT
+           and stampWidth > 0 and stampHeight > 0
+           and selectedCellX >= 0 and selectedCellY >= 0 {
+            var ghostCellX = selectedCellX / stampWidth * stampWidth;
+            var ghostCellY = selectedCellY / stampHeight * stampHeight;
+            framePixels.DrawFrame(
+                ghostCellX * displayCellSize - viewOriginX,
+                ghostCellY * displayCellSize - viewOriginY,
+                stampWidth * displayCellSize + 1,
+                stampHeight * displayCellSize + 1,
+                Color.RGB(140, 235, 170));
+        }
 
         if tileRectangleActive
            and tileRectangleStartX >= 0
            and tileRectangleStartY >= 0
            and tileRectangleCurrentX >= 0
            and tileRectangleCurrentY >= 0 {
-            var minimumTileX = tileRectangleStartX;
-            var maximumTileX = tileRectangleCurrentX;
-            if maximumTileX < minimumTileX {
-                minimumTileX = tileRectangleCurrentX;
-                maximumTileX = tileRectangleStartX;
+            if tileRectangleShape != 0 {
+                // Line/ellipse previews frame the exact commit cells.
+                var previewCells = ShapeCells(
+                    tileRectangleShape,
+                    tileRectangleStartX, tileRectangleStartY,
+                    tileRectangleCurrentX, tileRectangleCurrentY);
+                var previewIndex = 0;
+                while previewIndex < previewCells.count() {
+                    framePixels.DrawFrame(
+                        previewCells.get(previewIndex)
+                            * displayCellSize - viewOriginX,
+                        previewCells.get(previewIndex + 1)
+                            * displayCellSize - viewOriginY,
+                        displayCellSize + 1,
+                        displayCellSize + 1,
+                        TILE_RECTANGLE_COLOR);
+                    previewIndex = previewIndex + 2;
+                }
+            } else {
+                var minimumTileX = tileRectangleStartX;
+                var maximumTileX = tileRectangleCurrentX;
+                if maximumTileX < minimumTileX {
+                    minimumTileX = tileRectangleCurrentX;
+                    maximumTileX = tileRectangleStartX;
+                }
+                var minimumTileY = tileRectangleStartY;
+                var maximumTileY = tileRectangleCurrentY;
+                if maximumTileY < minimumTileY {
+                    minimumTileY = tileRectangleCurrentY;
+                    maximumTileY = tileRectangleStartY;
+                }
+                framePixels.DrawFrame(
+                    minimumTileX * displayCellSize - viewOriginX,
+                    minimumTileY * displayCellSize - viewOriginY,
+                    (maximumTileX - minimumTileX + 1)
+                        * displayCellSize + 1,
+                    (maximumTileY - minimumTileY + 1)
+                        * displayCellSize + 1,
+                    TILE_RECTANGLE_COLOR);
             }
-            var minimumTileY = tileRectangleStartY;
-            var maximumTileY = tileRectangleCurrentY;
-            if maximumTileY < minimumTileY {
-                minimumTileY = tileRectangleCurrentY;
-                maximumTileY = tileRectangleStartY;
-            }
-            framePixels.DrawFrame(
-                minimumTileX * displayCellSize - viewOriginX,
-                minimumTileY * displayCellSize - viewOriginY,
-                (maximumTileX - minimumTileX + 1)
-                    * displayCellSize + 1,
-                (maximumTileY - minimumTileY + 1)
-                    * displayCellSize + 1,
-                TILE_RECTANGLE_COLOR);
         }
 
         if canvasMarqueeActive

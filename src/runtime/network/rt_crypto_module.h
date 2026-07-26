@@ -9,6 +9,21 @@
 // Purpose: Zero-dependency cryptographic module boundary, approved-mode state,
 //          self-tests, policy checks, and DRBG-backed random generation.
 //
+// Key invariants:
+//   - A process-global lock serializes initialization, self-tests, mode changes,
+//     policy snapshots, and HMAC-DRBG generation.
+//   - Any self-test or startup-entropy failure permanently pins the module in
+//     ERROR and denies every service.
+//   - APPROVED mode permits only the enumerated FIPS-aligned service subset.
+//
+// Ownership/Lifetime:
+//   - Module state and status literals have process lifetime.
+//   - Random output is written into caller-owned buffers; the managed status
+//     wrapper returns a runtime-owned string reference.
+//
+// Links: src/runtime/network/rt_crypto_module.c (implementation),
+//        src/runtime/network/rt_crypto.c (primitive and entropy dispatch).
+//
 //===----------------------------------------------------------------------===//
 #pragma once
 
@@ -81,16 +96,20 @@ int rt_crypto_module_init(void);
 int rt_crypto_module_self_test(void);
 
 /// @brief Switch between COMPAT and APPROVED mode.
-/// @details Transitions outside @c READY are rejected. Switching to
-///          APPROVED runs the self-tests again to guarantee the
-///          fingerprint of the running binary still matches.
+/// @details Switching to APPROVED initializes the module if necessary and
+///          then runs the self-tests again. A module pinned in ERROR rejects
+///          every transition. Non-APPROVED values follow the compatibility
+///          policy path.
+/// @param mode Requested operating mode.
 /// @return 1 on success; 0 when the transition is illegal.
 int rt_crypto_module_set_mode(rt_crypto_module_mode_t mode);
 
 /// @brief Return the module's current operating mode.
+/// @return Synchronized snapshot of the process-global mode.
 rt_crypto_module_mode_t rt_crypto_module_get_mode(void);
 
 /// @brief Return the module's lifecycle state.
+/// @return Synchronized snapshot of the process-global lifecycle state.
 rt_crypto_module_state_t rt_crypto_module_get_state(void);
 
 /// @brief Predicate: is the module currently in APPROVED mode?
@@ -101,17 +120,22 @@ int rt_crypto_module_is_approved_mode(void);
 /// @details Returns non-zero for services in COMPAT unless the module is pinned
 ///          in ERROR. In APPROVED, returns zero for legacy/non-approved services
 ///          so callers can fail or select an allowed operation.
+/// @param service Service identifier to check.
+/// @return Non-zero when current state and mode allow @p service; otherwise zero.
 int rt_crypto_module_service_allowed(rt_crypto_module_service_t service);
 
 /// @brief Return a static human-readable status banner for diagnostics.
 /// @details The string lives in static storage and is safe to embed in
 ///          log messages without copying.
+/// @return Process-lifetime status literal.
 const char *rt_crypto_module_status_cstr(void);
 
 /// @brief Fill @p buf with @p len cryptographically-secure random bytes.
 /// @details In COMPAT delegates to the OS RNG (`getrandom`,
 ///          `arc4random_buf`, `BCryptGenRandom`). In APPROVED routes through the
 ///          embedded HMAC-DRBG under the module's instantiate/reseed policy.
+/// @param buf Caller-owned output buffer, or NULL only when @p len is zero.
+/// @param len Number of random bytes requested; large requests are internally chunked.
 void rt_crypto_module_random_bytes(uint8_t *buf, size_t len);
 
 /// @brief Zia-callable wrapper: switch the module to APPROVED mode.
@@ -129,6 +153,7 @@ int8_t rt_crypto_module_is_approved_mode_zanna(void);
 /// @brief Zia-callable status banner returning a managed @c rt_string.
 /// @details Equivalent payload to @ref rt_crypto_module_status_cstr
 ///          but boxed for direct return into Zia code.
+/// @return Managed runtime string containing the current status banner.
 rt_string rt_crypto_module_status_text(void);
 
 #ifdef __cplusplus

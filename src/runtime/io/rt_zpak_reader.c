@@ -127,6 +127,7 @@ static void zpak_read_lock_free(void *opaque) {
 }
 
 /// @brief Decrement the refcount on a GC object and free it when it reaches zero.
+/// @param obj Owned runtime-managed object reference; NULL is a no-op.
 static void zpak_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
@@ -139,16 +140,22 @@ static const uint8_t kMagic[4] = {'Z', 'P', 'A', 'K'};
 // ─── Little-endian read helpers ─────────────────────────────────────────────
 
 /// @brief Read a 2-byte little-endian unsigned integer from an unaligned byte pointer.
+/// @param p Pointer to at least two readable bytes.
+/// @return Host-order 16-bit value decoded without alignment assumptions.
 static uint16_t read16LE(const uint8_t *p) {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
 }
 
 /// @brief Read a 4-byte little-endian unsigned integer from an unaligned byte pointer.
+/// @param p Pointer to at least four readable bytes.
+/// @return Host-order 32-bit value decoded without alignment assumptions.
 static uint32_t read32LE(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /// @brief Read an 8-byte little-endian unsigned integer from an unaligned byte pointer.
+/// @param p Pointer to at least eight readable bytes.
+/// @return Host-order 64-bit value decoded without alignment assumptions.
 static uint64_t read64LE(const uint8_t *p) {
     uint64_t v = 0;
     for (int i = 0; i < 8; ++i)
@@ -245,6 +252,9 @@ static int zpak_parse_header(const uint8_t *bytes, uint64_t archive_size, zpak_h
 /// @brief qsort comparator that orders entries by stored payload offset.
 /// @details Names break ties so validation order is deterministic even for
 ///          legal zero-length entries sharing one offset.
+/// @param a Pointer to the first @ref zpak_entry_t.
+/// @param b Pointer to the second @ref zpak_entry_t.
+/// @return Negative, zero, or positive according to offset then name ordering.
 static int entry_offset_cmp(const void *a, const void *b) {
     const zpak_entry_t *ea = (const zpak_entry_t *)a;
     const zpak_entry_t *eb = (const zpak_entry_t *)b;
@@ -256,6 +266,9 @@ static int entry_offset_cmp(const void *a, const void *b) {
 }
 
 /// @brief qsort comparator that orders entries lexicographically by name.
+/// @param a Pointer to the first @ref zpak_entry_t.
+/// @param b Pointer to the second @ref zpak_entry_t.
+/// @return Result of bytewise C-string comparison of the two validated names.
 static int entry_name_cmp(const void *a, const void *b) {
     const zpak_entry_t *ea = (const zpak_entry_t *)a;
     const zpak_entry_t *eb = (const zpak_entry_t *)b;
@@ -415,6 +428,12 @@ fail:
     return NULL;
 }
 
+/// @brief Measure a seekable archive file and rewind it to the beginning.
+/// @details Uses the platform's large-file seek/tell adapters. The output is
+///          modified only after both the end-position query and rewind succeed.
+/// @param file Open binary stream supporting seek and tell.
+/// @param out_size Receives the non-negative byte length on success.
+/// @return 1 when measured and rewound successfully, otherwise 0.
 static int zpak_file_size(FILE *file, uint64_t *out_size) {
     if (!file || !out_size)
         return 0;
@@ -435,6 +454,11 @@ static int zpak_file_size(FILE *file, uint64_t *out_size) {
 /// @details The buffer is borrowed, not copied — the caller must keep it alive
 ///          for the lifetime of the archive. The complete header, TOC, names,
 ///          flags, and payload layout are validated before publication.
+///          Entry metadata and names are copied into archive-owned storage.
+/// @param data Complete encoded archive bytes to borrow.
+/// @param size Number of readable bytes at @p data.
+/// @return Archive with one ownership reference, or NULL for malformed input
+///         or allocation failure.
 zpak_archive_t *zpak_open_memory(const uint8_t *data, size_t size) {
     if (!data || size < RT_ZPAK_HEADER_SIZE)
         return NULL;
@@ -483,6 +507,11 @@ zpak_archive_t *zpak_open_memory(const uint8_t *data, size_t size) {
 /// @brief Open a ZPAK archive from a .zpak file on disk.
 /// @details Reads the header and TOC into memory. Entry data is read on demand
 ///          via zpak_read_entry. The file handle is kept open until zpak_close.
+/// @param path NUL-terminated native UTF-8 file path.
+/// @param no_follow Non-zero to require a POSIX regular file and reject a final
+///                  symlink; ignored on Windows.
+/// @return Archive with one ownership reference, or NULL on path, format,
+///         I/O, mutex, or allocation failure.
 static zpak_archive_t *zpak_open_file_impl(const char *path, int no_follow) {
     if (!path)
         return NULL;
@@ -616,10 +645,21 @@ static zpak_archive_t *zpak_open_file_impl(const char *path, int no_follow) {
     return archive;
 }
 
+/// @brief Open and validate a file-backed ZPAK archive.
+/// @details The Unicode-aware platform adapter opens the file, its TOC is
+///          retained in memory, and payload reads share a per-archive mutex.
+/// @param path NUL-terminated native UTF-8 path to a ZPAK file.
+/// @return Archive with one ownership reference, or NULL on any failure.
 zpak_archive_t *zpak_open_file(const char *path) {
     return zpak_open_file_impl(path, 0);
 }
 
+/// @brief Open a regular ZPAK file while rejecting its final POSIX symlink.
+/// @details POSIX combines pre-open lstat, O_NOFOLLOW when available, and
+///          post-open fstat regular-file validation. Windows uses the normal
+///          Unicode file open because discovery rejects reparse points.
+/// @param path NUL-terminated native UTF-8 path to a candidate pack.
+/// @return Archive with one ownership reference, or NULL on any failure.
 zpak_archive_t *zpak_open_file_no_follow(const char *path) {
     return zpak_open_file_impl(path, 1);
 }
@@ -645,6 +685,12 @@ int zpak_retain(zpak_archive_t *archive) {
 // ─── zpak_find ───────────────────────────────────────────────────────────────
 
 /// @brief Find an entry by name using binary search on the sorted TOC.
+/// @details Archives with at most 16 entries use a linear scan; larger
+///          archives use binary search. The returned pointer borrows archive
+///          storage and is invalid after the final @ref zpak_close.
+/// @param archive Live parsed archive.
+/// @param name Exact NUL-terminated asset name to match bytewise.
+/// @return Borrowed entry metadata, or NULL when absent or input is invalid.
 const zpak_entry_t *zpak_find(const zpak_archive_t *archive, const char *name) {
     if (!archive || !name || archive->count == 0)
         return NULL;
@@ -700,7 +746,16 @@ static int zpak_entry_checksum_valid(const zpak_archive_t *archive,
 /// @details For compressed entries, reads the compressed data then inflates via
 ///          DEFLATE. For uncompressed entries, copies raw bytes from the archive.
 ///          Version 2 CRC-32 is verified over the resulting uncompressed bytes
-///          before ownership is returned to the caller.
+///          before ownership is returned to the caller. File-backed seek/read
+///          operations are serialized; memory-backed reads copy from the
+///          borrowed blob. A successful zero-length read still returns a
+///          freeable non-NULL allocation.
+/// @param archive Live archive that owns @p entry.
+/// @param entry Entry pointer obtained from @ref zpak_find on @p archive.
+/// @param out_size Receives the uncompressed byte count; set to zero before
+///                 fallible read/decompression work.
+/// @return Malloc-owned uncompressed bytes for the caller to free, or NULL on
+///         bounds, I/O, allocation, decompression, size, or checksum failure.
 uint8_t *zpak_read_entry(const zpak_archive_t *archive,
                          const zpak_entry_t *entry,
                          size_t *out_size) {
@@ -796,6 +851,11 @@ uint8_t *zpak_read_entry(const zpak_archive_t *archive,
 // ─── zpak_close ──────────────────────────────────────────────────────────────
 
 /// @brief Release an archive, destroying owned resources after the final reference.
+/// @details The atomic reference count permits concurrent owners. The final
+///          release frees entry names and metadata, closes a file backing,
+///          destroys its read mutex, and frees the archive structure; it never
+///          frees a memory-backed archive's borrowed blob.
+/// @param archive Owned archive reference to release; NULL is a no-op.
 void zpak_close(zpak_archive_t *archive) {
     if (!archive)
         return;

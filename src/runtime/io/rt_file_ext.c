@@ -13,7 +13,7 @@
 //          file and string utilities.
 //
 // Key invariants:
-//   - ReadAllText/ReadAllBytes read the entire file into memory in one call.
+//   - ReadAllText/ReadAllBytes size regular files up front and read their complete contents.
 //   - WriteAllText/WriteAllBytes/WriteLines replace files atomically.
 //   - Replacing an existing regular file preserves its permission mode.
 //   - Exists returns false for directories; use Dir.Exists for those.
@@ -22,7 +22,8 @@
 //   - Internal bytes layout is accessed directly to avoid per-byte overhead.
 //
 // Ownership/Lifetime:
-//   - Returned strings and bytes buffers are fresh allocations owned by callers.
+//   - Returned Bytes and Seq values are fresh runtime-managed objects; text reads return a
+//     runtime-managed string reference and may use the shared empty string.
 //   - Input strings are borrowed; this module does not retain string references.
 //
 // Links: src/runtime/io/rt_file_ext.h (public API),
@@ -98,16 +99,33 @@ void rt_trap_set_recovery(jmp_buf *buf);
 void rt_trap_clear_recovery(void);
 const char *rt_trap_get_error(void);
 
+/// @brief Release one owned reference and destroy the object when its count reaches zero.
+/// @details This cleanup helper is used on trap-recovery paths that temporarily own runtime
+///          containers. A null pointer is accepted and ignored.
+/// @param obj Runtime object whose owned reference should be released.
 static void rt_fileext_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
 }
 
+/// @brief Preserve the active trap message in a caller-provided buffer.
+/// @details Copies the runtime's current error when it is nonempty; otherwise copies @p fallback.
+///          The result is always formatted through `snprintf` and therefore null-terminated when
+///          @p buffer_size is nonzero.
+/// @param[out] buffer Destination for the preserved diagnostic.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Message to use when no active runtime error is available.
 static void rt_fileext_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Produce a nonce component for an atomic-write sidecar name.
+/// @details Mixes @p attempt into secure platform entropy. If entropy acquisition fails, the
+///          attempt number alone supplies a deterministic nonzero fallback for attempts after
+///          zero; callers reject a zero result and abandon that candidate.
+/// @param attempt Collision-retry index to mix into the high bits.
+/// @return The generated nonce, or zero when no usable value could be produced.
 static uint64_t rt_fileext_random_u64(unsigned attempt) {
     uint64_t value = 0;
     if (rt_entropy_platform_random_u64(&value) != 0)
@@ -121,6 +139,10 @@ static uint64_t rt_fileext_random_u64(unsigned attempt) {
 /// @details Combines the parent directory prefix, `prefix`, PID, random entropy,
 ///          and `attempt` counter to produce a collision-resistant name. Returns a
 ///          heap-allocated string; caller must free. Returns NULL on alloc failure.
+/// @param path Destination path whose parent directory should contain the sidecar.
+/// @param prefix Filename prefix to place before the PID and nonce.
+/// @param attempt Collision-retry index incorporated into the candidate name.
+/// @return Newly allocated candidate path, or NULL on overflow, allocation, or nonce failure.
 static char *rt_fileext_make_parent_temp_path(const char *path,
                                               const char *prefix,
                                               unsigned attempt) {
@@ -183,12 +205,20 @@ static char *rt_fileext_make_parent_temp_path(const char *path,
 // These wrappers suppress C4267 truncation warnings on MSVC.
 #if RT_PLATFORM_WINDOWS
 /// @brief POSIX-compatible `read` wrapper that clamps `count` to UINT_MAX to suppress MSVC C4267.
+/// @param fd CRT file descriptor to read.
+/// @param[out] buf Destination buffer.
+/// @param count Maximum requested byte count.
+/// @return Number of bytes read, zero at end of file, or -1 on error with `errno` set.
 static inline ssize_t rt_posix_read(int fd, void *buf, size_t count) {
     unsigned int chunk = count > (size_t)UINT_MAX ? UINT_MAX : (unsigned int)count;
     return read(fd, buf, chunk);
 }
 
 /// @brief POSIX-compatible `write` wrapper that clamps `count` to UINT_MAX to suppress MSVC C4267.
+/// @param fd CRT file descriptor to write.
+/// @param buf Bytes to write.
+/// @param count Requested byte count.
+/// @return Number of bytes written, or -1 on error with `errno` set.
 static inline ssize_t rt_posix_write(int fd, const void *buf, size_t count) {
     unsigned int chunk = count > (size_t)UINT_MAX ? UINT_MAX : (unsigned int)count;
     return write(fd, buf, chunk);
@@ -200,6 +230,11 @@ static inline ssize_t rt_posix_write(int fd, const void *buf, size_t count) {
 
 #if RT_PLATFORM_WINDOWS
 /// @brief Open a file at a UTF-8 path via `_wopen` (Windows), converting through wide-char.
+/// @details Adds `_O_NOINHERIT` so child processes do not inherit the returned descriptor.
+/// @param path Null-terminated UTF-8 filesystem path.
+/// @param flags CRT open flags.
+/// @param pmode Creation permissions used when @p flags contains `O_CREAT`.
+/// @return Open file descriptor, or -1 on conversion/open failure.
 static int rt_fileext_open(const char *path, int flags, int pmode) {
     wchar_t *wide = rt_file_path_utf8_to_wide(path);
     if (!wide)
@@ -212,6 +247,9 @@ static int rt_fileext_open(const char *path, int flags, int pmode) {
 /// @brief Acquire an exclusive whole-file lock for a Windows append descriptor.
 /// @details Serializes appends opened through separate CRT descriptors because
 ///          `_O_APPEND` does not make the seek-and-write sequence atomic on Windows.
+/// @param fd Open CRT descriptor whose underlying handle should be locked.
+/// @param[out] lock_state Receives the overlapped state required for unlocking.
+/// @return 1 when the lock was acquired; otherwise 0.
 static int rt_fileext_lock_append(int fd, OVERLAPPED *lock_state) {
     intptr_t raw_handle = _get_osfhandle(fd);
     if (raw_handle == -1)
@@ -224,6 +262,9 @@ static int rt_fileext_lock_append(int fd, OVERLAPPED *lock_state) {
 }
 
 /// @brief Release a whole-file append lock previously acquired on @p fd.
+/// @param fd CRT descriptor associated with the lock.
+/// @param lock_state Overlapped state initialized by rt_fileext_lock_append().
+/// @return 1 when the lock was released; otherwise 0.
 static int rt_fileext_unlock_append(int fd, OVERLAPPED *lock_state) {
     intptr_t raw_handle = _get_osfhandle(fd);
     if (raw_handle == -1)
@@ -232,6 +273,9 @@ static int rt_fileext_unlock_append(int fd, OVERLAPPED *lock_state) {
 }
 
 /// @brief Stat a file at a UTF-8 path via the 64-bit-size `_wstat64` variant (Windows).
+/// @param path Null-terminated UTF-8 filesystem path.
+/// @param[out] st Receives the file metadata.
+/// @return Zero on success, or -1 on conversion/stat failure.
 static int rt_fileext_stat_path(const char *path, rt_fileext_stat_t *st) {
     wchar_t *wide = rt_file_path_utf8_to_wide(path);
     if (!wide)
@@ -242,6 +286,8 @@ static int rt_fileext_stat_path(const char *path, rt_fileext_stat_t *st) {
 }
 
 /// @brief Delete a file at a UTF-8 path via `_wunlink` (Windows), converting through wide-char.
+/// @param path Null-terminated UTF-8 path to remove.
+/// @return Zero on success, or -1 on conversion/removal failure.
 static int rt_fileext_unlink(const char *path) {
     wchar_t *wide = rt_file_path_utf8_to_wide(path);
     if (!wide)
@@ -252,6 +298,9 @@ static int rt_fileext_unlink(const char *path) {
 }
 
 /// @brief Set file access/modification times at a UTF-8 path via `_wutime` (Windows).
+/// @param path Null-terminated UTF-8 path to update.
+/// @param times Requested access and modification times, or NULL to use the current time.
+/// @return Zero on success, or -1 on conversion/update failure.
 static int rt_fileext_utime(const char *path, struct _utimbuf *times) {
     wchar_t *wide = rt_file_path_utf8_to_wide(path);
     if (!wide)
@@ -261,13 +310,12 @@ static int rt_fileext_utime(const char *path, struct _utimbuf *times) {
     return rc;
 }
 
-/// @brief Write `len` bytes to `fd`, looping through short writes and EINTR.
-///
-/// `write()` may return fewer bytes than requested on regular files
-/// (rare) or fatal-signal interrupts (EINTR), so the loop retries
-/// from the running offset. A zero return (neither progress nor
-/// error) is treated as failure so we don't spin forever. Returns 1
-/// on a complete write, 0 on any error.
+/// @brief Write an entire byte span, retrying interruptions and short writes.
+/// @details A zero-byte write is treated as failure to avoid an infinite loop.
+/// @param fd Open descriptor to receive the bytes.
+/// @param data Byte span to write; may be NULL only when @p len is zero.
+/// @param len Number of bytes to write.
+/// @return 1 after all bytes are written; otherwise 0 with `errno` left by the failing write.
 static int rt_fileext_write_all_fd(int fd, const uint8_t *data, size_t len) {
     size_t written = 0;
     while (written < len) {
@@ -285,12 +333,18 @@ static int rt_fileext_write_all_fd(int fd, const uint8_t *data, size_t len) {
 }
 
 /// @brief Build the `.zanna-tmp.<pid>.<nonce>.<attempt>` sidecar path used by atomic writes.
+/// @param path Destination path beside which the sidecar will be created.
+/// @param attempt Collision-retry index incorporated into the name.
+/// @return Newly allocated candidate path, or NULL when it cannot be constructed.
 static char *rt_fileext_make_temp_path(const char *path, unsigned attempt) {
     return rt_fileext_make_parent_temp_path(path, ".zanna-tmp.", attempt);
 }
 
 /// @brief Atomically replace `dst` with `src` using MoveFileExW (Windows).
 /// @details Uses MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH for crash-safe overwrite.
+/// @param src UTF-8 path of the staged source file.
+/// @param dst UTF-8 destination path to replace.
+/// @return 1 on success; otherwise 0.
 static int rt_fileext_replace_utf8(const char *src, const char *dst) {
     wchar_t *wsrc = rt_file_path_utf8_to_wide(src);
     wchar_t *wdst = rt_file_path_utf8_to_wide(dst);
@@ -305,6 +359,12 @@ static int rt_fileext_replace_utf8(const char *src, const char *dst) {
     return ok ? 1 : 0;
 }
 #else
+/// @brief Open a POSIX path while preventing descriptor inheritance across `exec`.
+/// @details Uses `O_CLOEXEC` when available and otherwise applies `FD_CLOEXEC` after opening.
+/// @param path Null-terminated filesystem path.
+/// @param flags POSIX open flags.
+/// @param pmode Creation permissions used when @p flags contains `O_CREAT`.
+/// @return Open file descriptor, or -1 on failure with `errno` set.
 static int rt_fileext_open(const char *path, int flags, int pmode) {
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
@@ -324,13 +384,12 @@ static int rt_fileext_open(const char *path, int flags, int pmode) {
 #define rt_fileext_unlink unlink
 #define rt_fileext_utime utime
 
-/// @brief Write `len` bytes to `fd`, looping through short writes and EINTR.
-///
-/// `write()` may return fewer bytes than requested on regular files
-/// (rare) or fatal-signal interrupts (EINTR), so the loop retries
-/// from the running offset. A zero return (neither progress nor
-/// error) is treated as failure so we don't spin forever. Returns 1
-/// on a complete write, 0 on any error.
+/// @brief Write an entire byte span, retrying interruptions and short writes.
+/// @details A zero-byte write is treated as failure to avoid an infinite loop.
+/// @param fd Open descriptor to receive the bytes.
+/// @param data Byte span to write; may be NULL only when @p len is zero.
+/// @param len Number of bytes to write.
+/// @return 1 after all bytes are written; otherwise 0 with `errno` left by the failing write.
 static int rt_fileext_write_all_fd(int fd, const uint8_t *data, size_t len) {
     size_t written = 0;
     while (written < len) {
@@ -348,12 +407,18 @@ static int rt_fileext_write_all_fd(int fd, const uint8_t *data, size_t len) {
 }
 
 /// @brief Build the `.zanna-tmp.<pid>.<nonce>.<attempt>` sidecar path used by atomic writes.
+/// @param path Destination path beside which the sidecar will be created.
+/// @param attempt Collision-retry index incorporated into the name.
+/// @return Newly allocated candidate path, or NULL when it cannot be constructed.
 static char *rt_fileext_make_temp_path(const char *path, unsigned attempt) {
     return rt_fileext_make_parent_temp_path(path, ".zanna-tmp.", attempt);
 }
 
 /// @brief Atomically replace `dst` with `src` using `rename(2)` (POSIX).
 /// @details `rename` is atomic within a single filesystem by POSIX guarantee.
+/// @param src Path of the staged source file.
+/// @param dst Destination path to replace.
+/// @return 1 on success; otherwise 0 with `errno` set by `rename`.
 static int rt_fileext_replace_utf8(const char *src, const char *dst) {
     return rename(src, dst) == 0 ? 1 : 0;
 }
@@ -369,6 +434,10 @@ static int rt_fileext_replace_utf8(const char *src, const char *dst) {
 /// overwrites unconditionally. The link/unlink dance atomically
 /// reserves the new name and cleans up the source, rolling back on
 /// failure.
+/// @param src Path of the staged source file.
+/// @param dst Final destination path.
+/// @param replace Nonzero to replace an existing destination; zero to require a new name.
+/// @return 1 when the source was committed to @p dst; otherwise 0.
 static int rt_fileext_commit_utf8(const char *src, const char *dst, int replace) {
     if (replace)
         return rt_fileext_replace_utf8(src, dst);
@@ -405,6 +474,11 @@ static int rt_fileext_commit_utf8(const char *src, const char *dst, int replace)
 /// writes the chosen temp path into `*out_tmp` for the caller to rename
 /// (or unlink on error). Returns the open fd, or -1 on failure with
 /// errno preserved.
+/// @param path Final destination path used to choose the sidecar's parent directory.
+/// @param binary Nonzero to request the platform's binary descriptor mode.
+/// @param[out] out_tmp Receives the allocated sidecar path on success; may be NULL if the caller
+///                     does not need the name.
+/// @return Open exclusive descriptor on success, or -1 after exhaustion or an OS error.
 static int rt_fileext_open_temp_utf8(const char *path, int binary, char **out_tmp) {
     if (out_tmp)
         *out_tmp = NULL;
@@ -444,6 +518,8 @@ static int rt_fileext_open_temp_utf8(const char *path, int binary, char **out_tm
 /// (where supported) to avoid accidentally sync'ing a regular file.
 /// On Windows this is a no-op because `MoveFileExW | WRITE_THROUGH`
 /// already handles durability.
+/// @param path Destination path whose parent directory should be synchronized.
+/// @return 1 on success, including the Windows no-op; otherwise 0.
 static int rt_fileext_sync_parent_dir(const char *path) {
 #if RT_PLATFORM_WINDOWS
     (void)path;
@@ -488,11 +564,17 @@ static int rt_fileext_sync_parent_dir(const char *path) {
 }
 
 /// @brief Close `fd` and trap with `context` message if `close(2)` fails.
+/// @param fd Open descriptor to close.
+/// @param context Diagnostic passed to rt_trap() if closing fails.
 static void rt_fileext_close_or_trap(int fd, const char *context) {
     if (close(fd) != 0)
         rt_trap(context);
 }
 
+/// @brief Copy access and modification timestamps from a stat snapshot to a path.
+/// @param path Destination file to update.
+/// @param src_st Source metadata containing `st_atime` and `st_mtime`.
+/// @return 1 when both arguments are valid and the timestamp update succeeds; otherwise 0.
 static int rt_fileext_apply_timestamps(const char *path, const rt_fileext_stat_t *src_st) {
     if (!path || !src_st)
         return 0;
@@ -506,6 +588,12 @@ static int rt_fileext_apply_timestamps(const char *path, const rt_fileext_stat_t
     return rt_fileext_utime(path, &times) == 0 ? 1 : 0;
 }
 
+/// @brief Apply preserved permission bits to an open staging file.
+/// @details POSIX copies the low permission and special-mode bits with `fchmod`. Windows returns
+///          success here because mode preservation is applied by path after closing the file.
+/// @param fd Open staging-file descriptor.
+/// @param src_st Metadata snapshot supplying the original permission mode.
+/// @return 1 on success; otherwise 0.
 static int rt_fileext_apply_mode_to_open_file(int fd, const rt_fileext_stat_t *src_st) {
     if (!src_st)
         return 0;
@@ -517,6 +605,12 @@ static int rt_fileext_apply_mode_to_open_file(int fd, const rt_fileext_stat_t *s
 #endif
 }
 
+/// @brief Apply preserved permission bits to a staging or committed file by path.
+/// @details Windows preserves its supported read/write attributes; POSIX copies permission and
+///          special-mode bits with `chmod`.
+/// @param path Destination path to update.
+/// @param src_st Metadata snapshot supplying the original permission mode.
+/// @return 1 on success; otherwise 0.
 static int rt_fileext_apply_mode_to_path(const char *path, const rt_fileext_stat_t *src_st) {
     if (!path || !src_st)
         return 0;
@@ -540,6 +634,9 @@ static int rt_fileext_apply_mode_to_path(const char *path, const rt_fileext_stat
 /// (volume, fileIndexHigh, fileIndexLow). Returns 0 if either path
 /// can't be stat'd — treating inaccessible paths as distinct so the
 /// copy attempt can fail with a clearer error.
+/// @param src_path First existing path to compare.
+/// @param dst_path Second existing path to compare.
+/// @return 1 when both paths resolve to the same filesystem object; otherwise 0.
 static int rt_fileext_same_existing_file(const char *src_path, const char *dst_path) {
 #if RT_PLATFORM_WINDOWS
     wchar_t *wsrc = rt_file_path_utf8_to_wide(src_path);
@@ -598,6 +695,8 @@ static int rt_fileext_same_existing_file(const char *src_path, const char *dst_p
 }
 
 /// @brief Return 1 if `mode` (from stat) indicates a regular file; 0 otherwise.
+/// @param mode Platform stat mode bits to classify.
+/// @return 1 for a regular file; otherwise 0.
 static int rt_fileext_is_regular_mode(int mode) {
 #if RT_PLATFORM_WINDOWS
     return (mode & _S_IFREG) != 0;
@@ -629,6 +728,12 @@ static int rt_fileext_snapshot_replaced_file(const char *path, rt_fileext_stat_t
 /// _commit (Win32), close, atomically rename over the destination, and fsync the parent
 /// directory on POSIX so the name replacement is crash-durable. When the destination is an
 /// existing regular file, its permission mode is copied to the sidecar before replacement.
+/// @param path UTF-8 destination path to create or replace.
+/// @param data Byte span to write; may be NULL only when @p len is zero.
+/// @param len Number of bytes in @p data.
+/// @param binary Nonzero to open the Windows staging descriptor in binary mode.
+/// @return 1 after the durable replacement completes; otherwise 0 after removing the sidecar
+///         when possible.
 static int rt_fileext_write_atomic_utf8(const char *path,
                                         const uint8_t *data,
                                         size_t len,
@@ -679,10 +784,11 @@ static const char *rt_io_file_require_path(rt_string path, const char *context) 
     return cpath;
 }
 
-/// What: Return 1 if the file at @p path exists, 0 otherwise.
-/// Why:  Support Zanna.IO.File.Exists semantics from the runtime.
-/// How:  Converts @p path to a host path and calls stat().
-/// @brief Returns 1 if `path` exists (file or directory), 0 otherwise. Single `stat` call.
+/// @brief Test whether a runtime path names an existing regular file.
+/// @details This non-trapping predicate returns false for invalid paths, missing or inaccessible
+///          entries, directories, and other non-regular filesystem objects.
+/// @param path Runtime string containing the path to inspect.
+/// @return 1 when @p path can be statted as a regular file; otherwise 0.
 int64_t rt_io_file_exists(rt_string path) {
     const char *cpath = NULL;
     if (!rt_file_path_from_vstr(path, &cpath) || !cpath)
@@ -703,6 +809,9 @@ int64_t rt_io_file_exists(rt_string path) {
 ///          inaccessible, and non-regular paths simply compare unequal. The
 ///          underlying identity comparison follows symlinks and compares
 ///          volume/file IDs on Windows or device/inode pairs on POSIX.
+/// @param left First runtime path to compare.
+/// @param right Second runtime path to compare.
+/// @return 1 when both valid paths resolve to the same existing file; otherwise 0.
 int64_t rt_file_same(rt_string left, rt_string right) {
     const char *left_path = NULL;
     const char *right_path = NULL;
@@ -712,11 +821,14 @@ int64_t rt_file_same(rt_string left, rt_string right) {
     return rt_fileext_same_existing_file(left_path, right_path) ? 1 : 0;
 }
 
-/// What: Read entire file into a runtime string. Return empty on error.
-/// Why:  Provide a convenience API for small text files in examples/tests.
-/// How:  Opens the file, reads all bytes, returns an rt_string view of them.
-/// @brief Read the entire file as UTF-8 text. Atomically streams the file into a single
-/// rt_string allocation. Traps on NULL path or read failure.
+/// @brief Read an entire regular file into a runtime string.
+/// @details Sizes the allocation from `fstat`, then reads exactly that many bytes. No encoding
+///          validation or newline translation is performed. A size change that causes premature
+///          EOF, an oversized/non-regular file, or any open, read, close, or allocation failure
+///          traps. An empty file returns the shared empty runtime string.
+/// @param path Runtime string containing the file path.
+/// @return Runtime string containing the exact file bytes; control-flow fallback values after a
+///         trap are not successful results.
 rt_string rt_io_file_read_all_text(rt_string path) {
     const char *cpath =
         rt_io_file_require_path(path, "Zanna.IO.File.ReadAllText: invalid file path");
@@ -796,6 +908,11 @@ rt_string rt_io_file_read_all_text(rt_string path) {
 /// @brief Atomically write `contents` (UTF-8) to `path`, replacing any existing file. Uses
 /// `_write_atomic_utf8` so an interrupted write can never corrupt the destination — readers
 /// see either the old file or the new file, never a partial write.
+/// @details The runtime string's bytes are written verbatim without encoding validation. When
+///          replacing a regular file, its supported permission mode is preserved. Invalid
+///          arguments and any staging, flush, rename, or directory-sync failure trap.
+/// @param path Runtime string containing the destination path.
+/// @param contents Runtime string whose complete byte sequence should be stored.
 void rt_io_file_write_all_text(rt_string path, rt_string contents) {
     const char *cpath =
         rt_io_file_require_path(path, "Zanna.IO.File.WriteAllText: invalid file path");
@@ -825,6 +942,8 @@ void rt_io_file_write_all_text(rt_string path, rt_string contents) {
 ///          loop that CAN interleave with concurrent writers; for guaranteed
 ///          line-level atomicity across processes, use an explicit lock/record
 ///          protocol.
+/// @param path Runtime string containing the destination path.
+/// @param text Runtime string to append before the line-feed byte.
 void rt_io_file_append_line(rt_string path, rt_string text) {
     const char *cpath =
         rt_io_file_require_path(path, "Zanna.IO.File.AppendLine: invalid file path");
@@ -901,6 +1020,11 @@ void rt_io_file_append_line(rt_string path, rt_string text) {
 /// How:  Reads the file into a temporary buffer and copies it into a new Bytes.
 /// @brief Read the entire file as raw Bytes (no text decoding). Returns a Bytes object sized to
 /// match the actual file length on disk.
+/// @details The file must remain at least as large as its initial `fstat` size for the duration
+///          of the read. Invalid paths, non-regular or oversized files, premature EOF, and I/O
+///          or allocation failures trap.
+/// @param path Runtime string containing the file path.
+/// @return Fresh runtime Bytes object containing the exact file contents.
 void *rt_io_file_read_all_bytes(rt_string path) {
     const char *cpath =
         rt_io_file_require_path(path, "Zanna.IO.File.ReadAllBytes: invalid file path");
@@ -986,6 +1110,10 @@ void *rt_io_file_read_all_bytes(rt_string path) {
 /// How:  Writes bytes in chunks to avoid per-byte syscalls.
 /// @brief Atomically write raw Bytes to `path`. Same atomic-replace semantics as `_write_all_text`
 /// but skips text encoding conversion.
+/// @details A non-null Bytes object with a representable length is required. Existing regular-file
+///          permissions are preserved; invalid inputs and I/O failures trap.
+/// @param path Runtime string containing the destination path.
+/// @param bytes Runtime Bytes object whose complete payload should be written.
 void rt_io_file_write_all_bytes(rt_string path, void *bytes) {
     const char *cpath =
         rt_io_file_require_path(path, "Zanna.IO.File.WriteAllBytes: invalid file path");
@@ -1017,6 +1145,11 @@ void rt_io_file_write_all_bytes(rt_string path, void *bytes) {
 /// @brief Read a file, split on LF/CR/CRLF, return a Seq of rt_strings (one per line, no
 /// trailing newline). Empty trailing lines are preserved (a file ending in `\n\n` yields a
 /// trailing empty string).
+/// @details The returned sequence owns its string elements. Empty files produce an empty sequence.
+///          Invalid paths, non-regular or oversized files, concurrent truncation, I/O failures,
+///          and allocation failures trap.
+/// @param path Runtime string containing the file path.
+/// @return Fresh owning Seq of runtime strings with terminators removed.
 void *rt_io_file_read_all_lines(rt_string path) {
     const char *cpath =
         rt_io_file_require_path(path, "Zanna.IO.File.ReadAllLines: invalid file path");
@@ -1163,21 +1296,27 @@ void *rt_io_file_read_all_lines(rt_string path) {
 /// Why:  Allow simple cleanup without surfacing platform-specific APIs.
 /// How:  Converts to host path and calls unlink(); errors are ignored.
 /// @brief Delete a file. Trap if the path is null/empty; silently succeeds if the file is missing.
+/// @details Any removal failure other than `ENOENT`, including attempting to delete a directory,
+///          is reported through the runtime trap mechanism.
+/// @param path Runtime string containing the file path to delete.
 void rt_io_file_delete(rt_string path) {
     const char *cpath = rt_io_file_require_path(path, "Zanna.IO.File.Delete: invalid file path");
     if (rt_fileext_unlink(cpath) != 0 && errno != ENOENT)
         rt_trap("Zanna.IO.File.Delete: failed to delete file");
 }
 
-/// @brief Core file-copy routine used by `File.Copy` and `File.CopyOver`.
+/// @brief Copy a regular file through a durable staging sidecar.
 ///
 /// Copies via a staging temp file + atomic rename so a crash mid-copy
 /// never leaves a truncated destination. Path validation, same-file
 /// short-circuit, regular-file check, and non-clobber policing all
 /// happen up front before any write. The transfer itself uses an 8KB
 /// stack buffer — large enough to amortize syscall overhead on fast
-/// storage, small enough to keep stack use predictable. `replace` chooses
-/// between overwrite (`Copy`) and fail-if-exists (`CopyOver` inverted).
+/// storage, small enough to keep stack use predictable. Permission bits
+/// and access/modification timestamps are copied from the source.
+/// @param src Runtime string naming the source regular file.
+/// @param dst Runtime string naming the destination.
+/// @param replace Nonzero to replace an existing destination; zero to fail if it exists.
 static void rt_file_copy_impl(rt_string src, rt_string dst, int replace) {
     const char *src_path = rt_io_file_require_path(src, "File.Copy: invalid source path");
     const char *dst_path = rt_io_file_require_path(dst, "File.Copy: invalid destination path");
@@ -1311,13 +1450,22 @@ static void rt_file_copy_impl(rt_string src, rt_string dst, int replace) {
 /// How:  Reads src file and writes to dst file.
 /// @brief Copy file `src` to `dst`. Streams in chunks to avoid loading the whole file into RAM
 /// (important for large files). Traps if the destination already exists.
+/// @details The source must be a regular file distinct from @p dst. The committed copy preserves
+///          source permission bits and access/modification timestamps.
+/// @param src Runtime string naming the source file.
+/// @param dst Runtime string naming a destination that must not already exist.
 void rt_file_copy(rt_string src, rt_string dst) {
     rt_file_copy_impl(src, dst, 0);
 }
 
-/// What: Move/rename a file from @p src to @p dst.
-/// Why:  Allow file relocation without platform-specific APIs.
-/// How:  Uses rename(); falls back to copy+delete if needed.
+/// @brief Move a regular file, optionally replacing the destination.
+/// @details First attempts a same-filesystem rename. On a cross-device error, copies through an
+///          atomic staging file with source metadata preserved, then removes the source. Invalid
+///          paths, non-regular or identical operands, destination-policy violations, and any
+///          rename/copy/removal failure trap.
+/// @param src Runtime string naming the source file.
+/// @param dst Runtime string naming the destination.
+/// @param replace Nonzero to replace an existing destination; zero to require it to be absent.
 static void rt_file_move_impl(rt_string src, rt_string dst, int replace) {
     const char *src_path = rt_io_file_require_path(src, "Zanna.IO.File.Move: invalid source path");
     const char *dst_path =
@@ -1357,11 +1505,15 @@ static void rt_file_move_impl(rt_string src, rt_string dst, int replace) {
 }
 
 /// @brief Move file `src` to `dst` without replacing an existing destination.
+/// @param src Runtime string naming the source regular file.
+/// @param dst Runtime string naming a destination that must not already exist.
 void rt_file_move(rt_string src, rt_string dst) {
     rt_file_move_impl(src, dst, 0);
 }
 
 /// @brief Move file `src` to `dst`, replacing any existing destination.
+/// @param src Runtime string naming the source regular file.
+/// @param dst Runtime string naming the destination to create or replace.
 void rt_file_move_over(rt_string src, rt_string dst) {
     rt_file_move_impl(src, dst, 1);
 }
@@ -1370,6 +1522,10 @@ void rt_file_move_over(rt_string src, rt_string dst) {
 /// Why:  Allow querying file size without opening the file.
 /// How:  Uses stat() to get file size.
 /// @brief Return the size of `path` in bytes (via `stat`). -1 on missing/non-regular path.
+/// @details This query is non-trapping and follows the platform `stat` behavior for symlinks.
+/// @param path Runtime string containing the path to inspect.
+/// @return Nonnegative regular-file size, or -1 for an invalid, inaccessible, missing, or
+///         non-regular path.
 int64_t rt_file_size(rt_string path) {
     const char *cpath = NULL;
     if (!rt_file_path_from_vstr(path, &cpath) || !cpath)
@@ -1388,6 +1544,8 @@ int64_t rt_file_size(rt_string path) {
 /// Why:  Support binary file reading.
 /// How:  Opens file, reads all bytes, returns Bytes object.
 /// @brief Alias for `rt_io_file_read_all_bytes` — reads the whole file as a Bytes object.
+/// @param path Runtime string containing the file path.
+/// @return Fresh runtime Bytes object containing the complete file.
 void *rt_file_read_bytes(rt_string path) {
     return rt_io_file_read_all_bytes(path);
 }
@@ -1396,6 +1554,8 @@ void *rt_file_read_bytes(rt_string path) {
 /// Why:  Support binary file writing.
 /// How:  Opens file, writes all bytes from Bytes object using chunked writes.
 /// @brief Alias for `rt_io_file_write_all_bytes` — atomically write Bytes to disk.
+/// @param path Runtime string containing the destination path.
+/// @param bytes Runtime Bytes object to write.
 void rt_file_write_bytes(rt_string path, void *bytes) {
     rt_io_file_write_all_bytes(path, bytes);
 }
@@ -1404,6 +1564,8 @@ void rt_file_write_bytes(rt_string path, void *bytes) {
 /// Why:  Support line-by-line text file reading.
 /// How:  Reads file, splits by newlines, returns Seq of strings.
 /// @brief Alias for `rt_io_file_read_all_lines` — read the file split into lines.
+/// @param path Runtime string containing the file path.
+/// @return Fresh owning Seq of runtime strings with line terminators removed.
 void *rt_file_read_lines(rt_string path) {
     return rt_io_file_read_all_lines(path);
 }
@@ -1413,6 +1575,11 @@ void *rt_file_read_lines(rt_string path) {
 /// How:  Writes each string followed by newline.
 /// @brief Atomically write a Seq of strings as lines (joined with LF). Each element becomes one
 /// line; trailing newline is added to the final line so future appends concatenate correctly.
+/// @details Every element is validated before the sidecar is opened. An empty sequence writes an
+///          empty file. Existing regular-file permissions are preserved; invalid elements and
+///          I/O failures trap.
+/// @param path Runtime string containing the destination path.
+/// @param lines Non-null runtime Seq whose elements must all be strings.
 void rt_file_write_lines(rt_string path, void *lines) {
     const char *cpath =
         rt_io_file_require_path(path, "Zanna.IO.File.WriteLines: invalid file path");
@@ -1486,6 +1653,8 @@ void rt_file_write_lines(rt_string path, void *lines) {
 }
 
 /// @brief Alias for `rt_file_write_lines` using the Zanna.IO.File.WriteAllLines spelling.
+/// @param path Runtime string containing the destination path.
+/// @param lines Non-null runtime Seq whose elements must all be strings.
 void rt_io_file_write_all_lines(rt_string path, void *lines) {
     rt_file_write_lines(path, lines);
 }
@@ -1495,6 +1664,10 @@ void rt_io_file_write_all_lines(rt_string path, void *lines) {
 /// How:  Opens file with O_APPEND and writes text.
 /// @brief Append `text` (no newline added) to the end of a file. Like `_append_line` but doesn't
 /// add a trailing LF — useful for binary-style appends.
+/// @details Creates the file when absent and writes the runtime string's bytes verbatim. Invalid
+///          inputs and open, write, or close failures trap.
+/// @param path Runtime string containing the destination path.
+/// @param text Runtime string whose bytes should be appended.
 void rt_file_append(rt_string path, rt_string text) {
     const char *cpath = rt_io_file_require_path(path, "Zanna.IO.File.Append: invalid file path");
 
@@ -1519,6 +1692,10 @@ void rt_file_append(rt_string path, rt_string text) {
 /// Why:  Support querying when a file was last modified.
 /// How:  Uses stat() to get mtime.
 /// @brief Return the file's mtime as Unix epoch seconds (`stat.st_mtime`). -1 if missing.
+/// @details This query is non-trapping and rejects directories and other non-regular objects.
+/// @param path Runtime string containing the path to inspect.
+/// @return Modification time in Unix epoch seconds, or -1 for an invalid, inaccessible, missing,
+///         or non-regular path.
 int64_t rt_file_modified(rt_string path) {
     const char *cpath = NULL;
     if (!rt_file_path_from_vstr(path, &cpath) || !cpath)
@@ -1538,6 +1715,9 @@ int64_t rt_file_modified(rt_string path) {
 /// How:  Creates file if not exists, updates mtime if exists.
 /// @brief Update the file's mtime+atime to "now" (`utime(NULL)`). Creates an empty file if it
 /// doesn't exist. Mirrors the Unix `touch` command.
+/// @details Existing non-regular paths are rejected. Invalid paths and timestamp, creation, or
+///          close failures trap.
+/// @param path Runtime string containing the regular-file path to update or create.
 void rt_file_touch(rt_string path) {
     const char *cpath = rt_io_file_require_path(path, "Zanna.IO.File.Touch: invalid file path");
 

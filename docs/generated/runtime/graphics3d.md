@@ -1088,8 +1088,8 @@ Its public surface exposes properties such as `Distance`, `Point`, `Normal`.
 | Property | Type | Access |
 |---|---|---|
 | <a id="zanna-graphics3d-rayhit3d-distance"></a>`Distance` | `f64` | read-only |
-| <a id="zanna-graphics3d-rayhit3d-point"></a>`Point` | `obj` | read-only |
-| <a id="zanna-graphics3d-rayhit3d-normal"></a>`Normal` | `obj` | read-only |
+| <a id="zanna-graphics3d-rayhit3d-point"></a>`Point` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-rayhit3d-normal"></a>`Normal` | `obj<Zanna.Math.Vec3>` | read-only |
 | <a id="zanna-graphics3d-rayhit3d-triangleindex"></a>`TriangleIndex` | `i64` | read-only |
 
 <a id="zanna-graphics3d-soundlistener3d"></a>
@@ -3029,8 +3029,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-capsule3d-sphereoverlaps"></a>`Zanna.Graphics3D.Capsule3D.SphereOverlaps` | `i1(obj,obj,f64,obj,f64)` | `rt_capsule3d_sphere_overlaps` |
 | <a id="zanna-graphics3d-capsule3d-aabboverlaps"></a>`Zanna.Graphics3D.Capsule3D.AABBOverlaps` | `i1(obj,obj,f64,obj,obj)` | `rt_capsule3d_aabb_overlaps` |
 | <a id="zanna-graphics3d-rayhit3d-get-distance"></a>`Zanna.Graphics3D.RayHit3D.get_Distance` | `f64(obj)` | `rt_ray3d_hit_distance` |
-| <a id="zanna-graphics3d-rayhit3d-get-point"></a>`Zanna.Graphics3D.RayHit3D.get_Point` | `obj(obj)` | `rt_ray3d_hit_point` |
-| <a id="zanna-graphics3d-rayhit3d-get-normal"></a>`Zanna.Graphics3D.RayHit3D.get_Normal` | `obj(obj)` | `rt_ray3d_hit_normal` |
+| <a id="zanna-graphics3d-rayhit3d-get-point"></a>`Zanna.Graphics3D.RayHit3D.get_Point` | `obj<Zanna.Math.Vec3>(obj)` | `rt_ray3d_hit_point` |
+| <a id="zanna-graphics3d-rayhit3d-get-normal"></a>`Zanna.Graphics3D.RayHit3D.get_Normal` | `obj<Zanna.Math.Vec3>(obj)` | `rt_ray3d_hit_normal` |
 | <a id="zanna-graphics3d-rayhit3d-get-triangleindex"></a>`Zanna.Graphics3D.RayHit3D.get_TriangleIndex` | `i64(obj)` | `rt_ray3d_hit_triangle` |
 | `Zanna.Graphics3D.Camera3D.FirstPersonInit` | `void(obj)` | `rt_camera3d_fps_init` |
 | `Zanna.Graphics3D.Camera3D.FirstPersonUpdate` | `void(obj,f64,f64,f64,f64,f64,f64,f64)` | `rt_camera3d_fps_update` |

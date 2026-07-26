@@ -52,13 +52,16 @@ static void free_url(rt_url_t *url);
 // ---------------------------------------------------------------------------
 
 /// @brief Raise an `InvalidOperation` trap (e.g. operation on NULL Url).
-/// @brief Trap with `Err_InvalidOperation` (typed: caller did the wrong thing).
+/// @details Uses `Err_InvalidOperation` to distinguish caller misuse from parsing or runtime
+///          failures.
+/// @param msg Diagnostic passed to the trap dispatcher.
 static void rt_url_trap_invalid_operation(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_INVALID_OPERATION, Err_InvalidOperation, 0, msg);
 }
 
 /// @brief Raise a generic Runtime trap (e.g. memory allocation failure).
-/// @brief Trap with `Err_RuntimeError` (untyped runtime failure — usually OOM).
+/// @details Uses `Err_RuntimeError` for allocation and size-calculation failures.
+/// @param msg Diagnostic passed to the trap dispatcher.
 static void rt_url_trap_runtime(const char *msg) {
     rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR, Err_RuntimeError, 0, msg);
 }
@@ -67,6 +70,9 @@ static rt_url_t *rt_url_require_obj(void *obj, const char *context);
 
 /// @brief `malloc(size)` or trap with `context`.
 /// @details Returns NULL if a custom trap handler returns after an allocation failure.
+/// @param size Allocation size in bytes.
+/// @param context Diagnostic raised on allocation failure.
+/// @return Malloc-owned byte buffer, or null after a returning trap hook.
 static char *rt_url_alloc_or_trap(size_t size, const char *context) {
     char *buffer = (char *)malloc(size);
     if (!buffer) {
@@ -76,6 +82,10 @@ static char *rt_url_alloc_or_trap(size_t size, const char *context) {
     return buffer;
 }
 
+/// @brief Add a component length to a running URL size with overflow trapping.
+/// @param total Running size to update; null is treated as a runtime failure.
+/// @param value Length to add; `SIZE_MAX` is treated as an overflow sentinel.
+/// @param context Diagnostic raised on invalid state or overflow.
 static void rt_url_size_add_or_trap(size_t *total, size_t value, const char *context) {
     if (!total) {
         rt_url_trap_runtime(context);
@@ -94,6 +104,11 @@ static void rt_url_size_add_or_trap(size_t *total, size_t value, const char *con
 /// If allocation fails and `url` is non-NULL, the half-built URL is
 /// freed before raising the trap so the caller doesn't leak a
 /// partially-populated object.
+/// @param url Optional partially constructed URL to clear on failure.
+/// @param begin Source byte range.
+/// @param len Number of bytes to copy.
+/// @param context Diagnostic raised on invalid input or allocation failure.
+/// @return Malloc-owned null-terminated copy, or null after a returning trap hook.
 static char *rt_url_dup_slice_or_trap_cleanup(rt_url_t *url,
                                               const char *begin,
                                               size_t len,
@@ -117,14 +132,21 @@ static char *rt_url_dup_slice_or_trap_cleanup(rt_url_t *url,
 }
 
 /// @brief Duplicate a NUL-terminated string with cleanup-on-OOM (NULL `str` returns NULL).
-/// @brief strdup with cleanup: on OOM, calls `free_url(url)` first to avoid leaking a partially-
-/// populated URL before trapping. Use during incremental URL construction.
+/// @details On OOM, calls `free_url(url)` first to avoid leaking a
+///          partially populated URL during incremental construction.
+/// @param url Optional partially constructed URL to clear on failure.
+/// @param str Source C string; null returns null without trapping.
+/// @param context Diagnostic raised on allocation failure.
+/// @return Malloc-owned duplicate, null for a null source, or null after a returning trap hook.
 static char *rt_url_strdup_or_trap_cleanup(rt_url_t *url, const char *str, const char *context) {
     if (!str)
         return NULL;
     return rt_url_dup_slice_or_trap_cleanup(url, str, strlen(str), context);
 }
 
+/// @brief Detect embedded null bytes across a runtime String's logical length.
+/// @param value Runtime String to inspect; null is treated as empty.
+/// @return Nonzero when a null occurs before the logical end; zero otherwise.
 static int rt_url_string_has_embedded_nul(rt_string value) {
     if (!value)
         return 0;
@@ -135,6 +157,10 @@ static int rt_url_string_has_embedded_nul(rt_string value) {
     return memchr(str, '\0', (size_t)len64) != NULL;
 }
 
+/// @brief Convert a runtime String length to `size_t` with range validation.
+/// @param value Runtime String; null has length zero.
+/// @param context Diagnostic raised for a negative or host-unrepresentable length.
+/// @return Host-representable byte length, or zero after a returning trap hook.
 static size_t rt_url_string_len_or_trap(rt_string value, const char *context) {
     if (!value)
         return 0;
@@ -180,7 +206,10 @@ static int rt_url_component_is_valid(rt_string value, const char *forbidden, con
 }
 
 /// @brief Duplicate the C-string content of a Zanna rt_string into a heap C buffer.
-/// @brief Duplicate an rt_string argument as a heap-owned C string; trap on OOM.
+/// @details Rejects embedded nulls and traps on allocation failure.
+/// @param value Runtime String to copy; null produces null.
+/// @param context Diagnostic raised on invalid length or allocation failure.
+/// @return Malloc-owned null-terminated copy, or null for a null value or after a returning trap.
 static char *rt_url_dup_string_arg(rt_string value, const char *context) {
     const char *str = value ? rt_string_cstr(value) : NULL;
     size_t len = rt_url_string_len_or_trap(value, context);
@@ -192,7 +221,10 @@ static char *rt_url_dup_string_arg(rt_string value, const char *context) {
 }
 
 /// @brief Wrap raw bytes in an rt_string or trap on alloc failure.
-/// @brief Build an rt_string from raw bytes; trap with RUNTIME_ERROR if string allocation fails.
+/// @param bytes Source bytes.
+/// @param len Number of bytes to copy.
+/// @param context Diagnostic raised if managed String allocation fails.
+/// @return Owned runtime String, or null after a returning trap hook.
 static rt_string rt_url_string_from_bytes_or_trap(const char *bytes,
                                                   size_t len,
                                                   const char *context) {
@@ -205,6 +237,8 @@ static rt_string rt_url_string_from_bytes_or_trap(const char *bytes,
 }
 
 /// @brief Validate a URI scheme per RFC 3986 §3.1: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+/// @param scheme Length-delimited scheme bytes.
+/// @param len Number of bytes in @p scheme.
 /// @return 1 if valid, 0 otherwise.
 static int rt_url_scheme_is_valid(const char *scheme, size_t len) {
     if (!scheme || len == 0)
@@ -267,6 +301,7 @@ typedef struct {
 } rt_url_path_segment_span_t;
 
 /// @brief Get default port for a scheme.
+/// @param scheme Lowercase scheme name.
 /// @return Default port or 0 if unknown.
 static int64_t default_port_for_scheme(const char *scheme) {
     if (!scheme)
@@ -299,6 +334,8 @@ static int64_t default_port_for_scheme(const char *scheme) {
 }
 
 /// @brief Check if character is unreserved (RFC 3986).
+/// @param c Byte to classify.
+/// @return True for an ASCII letter, digit, hyphen, period, underscore, or tilde.
 static bool is_unreserved(char c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
            c == '.' || c == '_' || c == '~';
@@ -307,7 +344,11 @@ static bool is_unreserved(char c) {
 // Note: hex_char_to_int functionality provided by rt_hex_digit_value() in rt_internal.h
 
 /// @brief Percent-encode a byte span.
-/// @return Allocated string, caller must free.
+/// @param str Source bytes; null is treated as an empty span.
+/// @param len Number of source bytes.
+/// @param encode_slash True to escape `/`; false to preserve it.
+/// @param out_len Optional receiver for the encoded length excluding the terminator.
+/// @return Malloc-owned encoded string, or null on size overflow or allocation failure.
 static char *percent_encode_n(const char *str, size_t len, bool encode_slash, size_t *out_len) {
     if (out_len)
         *out_len = 0;
@@ -338,7 +379,13 @@ static char *percent_encode_n(const char *str, size_t len, bool encode_slash, si
 }
 
 /// @brief Percent-decode a byte span.
-/// @return Allocated string, caller must free.
+/// @details Valid `%HH` triplets are decoded; malformed percent sequences are
+///          preserved literally.
+/// @param str Source bytes; null is treated as an empty span.
+/// @param len Number of source bytes.
+/// @param plus_as_space True to decode `+` as a space.
+/// @param out_len Optional receiver for the decoded length excluding the terminator.
+/// @return Malloc-owned decoded bytes, or null on allocation failure.
 static char *percent_decode_internal_n(const char *str,
                                        size_t len,
                                        bool plus_as_space,
@@ -374,6 +421,12 @@ static char *percent_decode_internal_n(const char *str,
 }
 
 /// @brief Internal URL parsing.
+/// @details Parses hierarchical, network-path, relative, and selected
+///          authority-less scheme references into separately owned component
+///          fields. The output is zeroed first and any partial allocation is
+///          released on detected syntax failure.
+/// @param url_str Null-terminated URL reference.
+/// @param result Output URL payload.
 /// @return 0 on success, -1 on error.
 static int parse_url_full(const char *url_str, rt_url_t *result) {
     if (!result)
@@ -603,6 +656,7 @@ static int parse_url_full(const char *url_str, rt_url_t *result) {
 }
 
 /// @brief Free URL structure contents.
+/// @param url URL payload whose owned component strings are released.
 static void free_url(rt_url_t *url) {
     if (url->scheme)
         free(url->scheme);
@@ -626,6 +680,10 @@ static void free_url(rt_url_t *url) {
 /// Frees the prior value, dups the new one, and applies ASCII
 /// lowercasing if `lowercase != 0`. Used by every `set_*` accessor
 /// that updates a single component.
+/// @param slot Address of the owned field pointer.
+/// @param value Runtime String to copy, or null to clear the field.
+/// @param context Diagnostic raised on invalid input or allocation failure.
+/// @param lowercase Nonzero to lowercase ASCII letters after copying.
 static void rt_url_replace_field(char **slot, rt_string value, const char *context, int lowercase) {
     char *dup = NULL;
     if (value) {
@@ -648,6 +706,8 @@ static void rt_url_replace_field(char **slot, rt_string value, const char *conte
 /// Walks the segments left-to-right, pushing borrowed input spans onto a stack;
 /// `..` pops the previous segment, `.` is dropped, others accumulate. The result is a
 /// freshly-allocated path string (caller `free`s).
+/// @param path Null-terminated path; null or empty normalizes to `/`.
+/// @return Malloc-owned normalized path, or null after allocation or overflow failure.
 static char *normalize_path(const char *path) {
     if (!path || *path == '\0')
         return rt_url_strdup_or_trap_cleanup(NULL, "/", "URL.NormalizePath: allocation failed");
@@ -741,6 +801,7 @@ fail:
 }
 
 /// @brief GC finalizer — `free_url` releases every component string and the body buffer.
+/// @param obj URL payload being finalized; may be null.
 static void rt_url_finalize(void *obj) {
     if (!obj)
         return;
@@ -763,6 +824,9 @@ static void rt_url_finalize(void *obj) {
 /// backslashes with the same rules as IsValid and the component setters. It is
 /// still a reference parser, not a strict RFC 3986 validator — use
 /// rt_url_is_valid_absolute to require an absolute network URL.
+/// @param url_str Runtime String containing a URL reference.
+/// @return Owned managed URL object, or null after invalid input, allocation failure, or a
+///         returning trap hook.
 void *rt_url_parse(rt_string url_str) {
     const char *str = url_str ? rt_string_cstr(url_str) : NULL;
     if (!str) {
@@ -804,6 +868,7 @@ void *rt_url_parse(rt_string url_str) {
 }
 
 /// @brief Allocate an empty Url with all components NULL.
+/// @return Owned managed URL object, or null after allocation failure.
 void *rt_url_new(void) {
     rt_url_t *url = (rt_url_t *)rt_obj_new_i64(RT_URL_CLASS_ID, sizeof(rt_url_t));
     if (!url) {
@@ -825,6 +890,8 @@ void *rt_url_new(void) {
 // ---------------------------------------------------------------------------
 
 /// @brief Read the URL's scheme component (e.g. "https"). Empty string if unset.
+/// @param obj URL receiver.
+/// @return Owned scheme String, or an owned empty String when unset or after an invalid receiver.
 rt_string rt_url_scheme(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Scheme: null receiver");
     if (!url)
@@ -836,6 +903,9 @@ rt_string rt_url_scheme(void *obj) {
         url->scheme, strlen(url->scheme), "URL.Scheme: string allocation failed");
 }
 
+/// @brief Replace and ASCII-lowercase the URL scheme.
+/// @param obj URL receiver.
+/// @param scheme RFC 3986 scheme String, or null/empty to clear it.
 void rt_url_set_scheme(void *obj, rt_string scheme) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_Scheme: null receiver");
     if (!url)
@@ -854,6 +924,9 @@ void rt_url_set_scheme(void *obj, rt_string scheme) {
     rt_url_replace_field(&url->scheme, scheme, "URL.set_Scheme: allocation failed", 1);
 }
 
+/// @brief Read the stored host component without adding IPv6 brackets.
+/// @param obj URL receiver.
+/// @return Owned host String, or an owned empty String when unset or invalid.
 rt_string rt_url_host(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Host: null receiver");
     if (!url)
@@ -865,6 +938,9 @@ rt_string rt_url_host(void *obj) {
         url->host, strlen(url->host), "URL.Host: string allocation failed");
 }
 
+/// @brief Replace the host after rejecting component delimiters and unsafe bytes.
+/// @param obj URL receiver.
+/// @param host Host text to copy, or null to clear it.
 void rt_url_set_host(void *obj, rt_string host) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_Host: null receiver");
     if (!url)
@@ -874,11 +950,17 @@ void rt_url_set_host(void *obj, rt_string host) {
     rt_url_replace_field(&url->host, host, "URL.set_Host: allocation failed", 0);
 }
 
+/// @brief Read the explicit numeric port.
+/// @param obj URL receiver.
+/// @return Stored port in the range 0 through 65535; zero means unspecified or invalid receiver.
 int64_t rt_url_port(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Port: null receiver");
     return url ? url->port : 0;
 }
 
+/// @brief Set or clear the explicit numeric port.
+/// @param obj URL receiver.
+/// @param port Port from 0 through 65535; zero clears explicit port formatting.
 void rt_url_set_port(void *obj, int64_t port) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_Port: null receiver");
     if (!url)
@@ -892,10 +974,16 @@ void rt_url_set_port(void *obj, int64_t port) {
     url->port = port;
 }
 
+/// @brief Determine whether a stored colon-containing host needs IPv6-style brackets.
+/// @param host Stored host text.
+/// @return True when @p host contains a colon and does not already begin with `[`.
 static bool rt_url_host_needs_brackets(const char *host) {
     return host && host[0] != '[' && strchr(host, ':') != NULL;
 }
 
+/// @brief Compute a host's serialized length including any added brackets.
+/// @param host Stored host text; null has length zero.
+/// @return Formatted length, or `SIZE_MAX` on bracket-length overflow.
 static size_t rt_url_formatted_host_len(const char *host) {
     if (!host)
         return 0;
@@ -908,6 +996,11 @@ static size_t rt_url_formatted_host_len(const char *host) {
     return len;
 }
 
+/// @brief Append a host, adding brackets around an unbracketed colon form.
+/// @param p Current output cursor.
+/// @param end One-past-end pointer for the writable buffer.
+/// @param host Host text; null appends nothing.
+/// @return Cursor immediately after the formatted host.
 static char *rt_url_append_formatted_host(char *p, char *end, const char *host) {
     if (!host)
         return p;
@@ -918,6 +1011,9 @@ static char *rt_url_append_formatted_host(char *p, char *end, const char *host) 
     return p;
 }
 
+/// @brief Read the stored path component.
+/// @param obj URL receiver.
+/// @return Owned path String, or an owned empty String when unset or invalid.
 rt_string rt_url_path(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Path: null receiver");
     if (!url)
@@ -929,6 +1025,9 @@ rt_string rt_url_path(void *obj) {
         url->path, strlen(url->path), "URL.Path: string allocation failed");
 }
 
+/// @brief Replace the path after rejecting query and fragment delimiters.
+/// @param obj URL receiver.
+/// @param path Encoded path text to copy, or null to clear it.
 void rt_url_set_path(void *obj, rt_string path) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_Path: null receiver");
     if (!url)
@@ -938,6 +1037,9 @@ void rt_url_set_path(void *obj, rt_string path) {
     rt_url_replace_field(&url->path, path, "URL.set_Path: allocation failed", 0);
 }
 
+/// @brief Read the query component without its leading question mark.
+/// @param obj URL receiver.
+/// @return Owned query String, or an owned empty String when unset or invalid.
 rt_string rt_url_query(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Query: null receiver");
     if (!url)
@@ -949,6 +1051,9 @@ rt_string rt_url_query(void *obj) {
         url->query, strlen(url->query), "URL.Query: string allocation failed");
 }
 
+/// @brief Replace the query component without a leading question mark.
+/// @param obj URL receiver.
+/// @param query Encoded query text to copy, or null to clear it.
 void rt_url_set_query(void *obj, rt_string query) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_Query: null receiver");
     if (!url)
@@ -958,6 +1063,9 @@ void rt_url_set_query(void *obj, rt_string query) {
     rt_url_replace_field(&url->query, query, "URL.set_Query: allocation failed", 0);
 }
 
+/// @brief Read the fragment component without its leading hash.
+/// @param obj URL receiver.
+/// @return Owned fragment String, or an owned empty String when unset or invalid.
 rt_string rt_url_fragment(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Fragment: null receiver");
     if (!url)
@@ -969,6 +1077,9 @@ rt_string rt_url_fragment(void *obj) {
         url->fragment, strlen(url->fragment), "URL.Fragment: string allocation failed");
 }
 
+/// @brief Replace the fragment component.
+/// @param obj URL receiver.
+/// @param fragment Encoded fragment text to copy, or null to clear it.
 void rt_url_set_fragment(void *obj, rt_string fragment) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_Fragment: null receiver");
     if (!url)
@@ -978,6 +1089,9 @@ void rt_url_set_fragment(void *obj, rt_string fragment) {
     rt_url_replace_field(&url->fragment, fragment, "URL.set_Fragment: allocation failed", 0);
 }
 
+/// @brief Read the user component of URL userinfo.
+/// @param obj URL receiver.
+/// @return Owned user String, or an owned empty String when unset or invalid.
 rt_string rt_url_user(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.User: null receiver");
     if (!url)
@@ -989,6 +1103,9 @@ rt_string rt_url_user(void *obj) {
         url->user, strlen(url->user), "URL.User: string allocation failed");
 }
 
+/// @brief Replace the URL user component after delimiter validation.
+/// @param obj URL receiver.
+/// @param user Encoded user text to copy, or null to clear it.
 void rt_url_set_user(void *obj, rt_string user) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_User: null receiver");
     if (!url)
@@ -998,6 +1115,9 @@ void rt_url_set_user(void *obj, rt_string user) {
     rt_url_replace_field(&url->user, user, "URL.set_User: allocation failed", 0);
 }
 
+/// @brief Read the password component of URL userinfo.
+/// @param obj URL receiver.
+/// @return Owned password String, or an owned empty String when unset or invalid.
 rt_string rt_url_pass(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Pass: null receiver");
     if (!url)
@@ -1009,6 +1129,9 @@ rt_string rt_url_pass(void *obj) {
         url->pass, strlen(url->pass), "URL.Pass: string allocation failed");
 }
 
+/// @brief Replace the URL password component after delimiter validation.
+/// @param obj URL receiver.
+/// @param pass Encoded password text to copy, or null to clear it.
 void rt_url_set_pass(void *obj, rt_string pass) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.set_Pass: null receiver");
     if (!url)
@@ -1019,7 +1142,10 @@ void rt_url_set_pass(void *obj, rt_string pass) {
 }
 
 /// @brief Compose the userinfo + host + port part of the URL (e.g. `user:pass@host:port`).
-/// Each component is included only when set; returned as a fresh rt_string.
+/// @details Each component is included only when set; an unbracketed
+///          colon-containing host is bracketed.
+/// @param obj URL receiver.
+/// @return Owned authority String, or an owned empty String when no components are set.
 rt_string rt_url_authority(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Authority: null receiver");
     if (!url)
@@ -1071,8 +1197,10 @@ rt_string rt_url_authority(void *obj) {
 }
 
 /// @brief Compose just `host:port` (no userinfo, no scheme). IPv6 hosts are bracketed.
-/// @brief Format the `host:port` portion only (no scheme, no path). Default ports for the scheme
-/// (80 for http, 443 for https, etc.) are omitted. Useful for SNI / Host header construction.
+/// @details Default ports for the scheme are omitted. This form is suitable
+///          for SNI and Host-header construction.
+/// @param obj URL receiver.
+/// @return Owned formatted host/port String, or an owned empty String when the host is unset.
 rt_string rt_url_host_port(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.HostPort: null receiver");
     if (!url)
@@ -1110,7 +1238,10 @@ rt_string rt_url_host_port(void *obj) {
 }
 
 /// @brief Reconstruct the full URL string `scheme://authority/path?query#fragment`.
-/// Each component is included only if set; the result round-trips through `rt_url_parse`.
+/// @details Each component is included only if set; the result round-trips
+///          through `rt_url_parse`.
+/// @param obj URL receiver.
+/// @return Owned serialized URL String, or an owned empty String when every component is unset.
 rt_string rt_url_full(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Full: null receiver");
     if (!url)
@@ -1187,7 +1318,12 @@ rt_string rt_url_full(void *obj) {
 }
 
 /// @brief Set a query parameter (`?name=value`); replaces if it already exists.
-/// Re-encodes the URL's query string after mutation. Returns `obj` for chaining.
+/// @details Decodes the current query into a temporary Map, replaces the key,
+///          and re-encodes the full query. A null value stores an empty String.
+/// @param obj URL receiver.
+/// @param name Query parameter name.
+/// @param value Query parameter value, or null for an empty value.
+/// @return The original URL object for chaining.
 void *rt_url_set_query_param(void *obj, rt_string name, rt_string value) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.SetQueryParam: null receiver");
     if (!url)
@@ -1229,6 +1365,9 @@ void *rt_url_set_query_param(void *obj, rt_string name, rt_string value) {
 }
 
 /// @brief Read the value of one query parameter (URL-decoded). Empty string if missing.
+/// @param obj URL receiver.
+/// @param name Query parameter name.
+/// @return Owned decoded value String, or an owned empty String when absent.
 rt_string rt_url_get_query_param(void *obj, rt_string name) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.GetQueryParam: null receiver");
     if (!url)
@@ -1253,6 +1392,9 @@ rt_string rt_url_get_query_param(void *obj, rt_string name) {
 }
 
 /// @brief Predicate: is the named query parameter present at all?
+/// @param obj URL receiver.
+/// @param name Query parameter name.
+/// @return One when present; zero when absent, the query is unset, or the receiver is invalid.
 int8_t rt_url_has_query_param(void *obj, rt_string name) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.HasQueryParam: null receiver");
     if (!url)
@@ -1274,6 +1416,9 @@ int8_t rt_url_has_query_param(void *obj, rt_string name) {
 }
 
 /// @brief Remove a query parameter (no-op if missing). Returns `obj` for chaining.
+/// @param obj URL receiver.
+/// @param name Query parameter name to remove.
+/// @return The original URL object for chaining.
 void *rt_url_del_query_param(void *obj, rt_string name) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.DelQueryParam: null receiver");
     if (!url)
@@ -1307,7 +1452,9 @@ void *rt_url_del_query_param(void *obj, rt_string name) {
 }
 
 /// @brief Decode the URL's query string into a fresh `Map[String, String]`.
-/// Repeated keys collapse to the last-occurring value.
+/// @details Repeated keys collapse to the last-occurring value.
+/// @param obj URL receiver.
+/// @return Owned managed Map, empty when no query is set.
 void *rt_url_query_map(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.QueryMap: null receiver");
     if (!url)
@@ -1327,6 +1474,10 @@ void *rt_url_query_map(void *obj) {
 /// Handles all the standard cases: schemed (use as-is), authority-
 /// only (`//host/path`), absolute-path (`/path`), relative-path
 /// (`path`), and same-document (`#fragment`). Returns a fresh Url.
+/// @param obj Base URL receiver.
+/// @param relative URL reference to resolve; null or empty clones the base.
+/// @return Owned independently allocated resolved URL, or null after invalid input or allocation
+///         failure.
 void *rt_url_resolve(void *obj, rt_string relative) {
     rt_url_t *base = rt_url_require_obj(obj, "URL.Resolve: null receiver");
     if (!base)
@@ -1475,6 +1626,8 @@ void *rt_url_resolve(void *obj, rt_string relative) {
 }
 
 /// @brief Deep-copy a Url — every component string is duplicated so the clone is fully independent.
+/// @param obj URL receiver to clone.
+/// @return Owned independent URL object, or null after invalid input or allocation failure.
 void *rt_url_clone(void *obj) {
     rt_url_t *url = rt_url_require_obj(obj, "URL.Clone: null receiver");
     if (!url)
@@ -1507,7 +1660,9 @@ void *rt_url_clone(void *obj) {
 }
 
 /// @brief URL-encode (percent-escape) a string per RFC 3986 unreserved-characters rule.
-/// Reserved + non-ASCII bytes become `%XX` triples.
+/// @details Reserved and non-ASCII bytes become uppercase `%XX` triples.
+/// @param text Exact String bytes to encode; null is treated as empty.
+/// @return Owned encoded String, or an owned empty String after a returning allocation trap.
 rt_string rt_url_encode(rt_string text) {
     const char *str = text ? rt_string_cstr(text) : "";
     size_t text_len = rt_url_string_len_or_trap(text, "URL.Encode: invalid input length");
@@ -1525,6 +1680,8 @@ rt_string rt_url_encode(rt_string text) {
 }
 
 /// @brief URL-decode (unescape) `%XX` triples in `text`. Invalid escapes pass through verbatim.
+/// @param text Exact String bytes to decode; null is treated as empty.
+/// @return Owned decoded String preserving its exact byte length.
 rt_string rt_url_decode(rt_string text) {
     const char *str = text ? rt_string_cstr(text) : "";
     size_t text_len = rt_url_string_len_or_trap(text, "URL.Decode: invalid input length");
@@ -1548,6 +1705,8 @@ rt_string rt_url_decode(rt_string text) {
 ///          NULL encodes as the empty string. Any other object value traps with
 ///          `URL.EncodeQuery: unsupported value type` instead of being reinterpreted as a
 ///          string handle.
+/// @param map Managed Map whose keys are Strings and whose values use the supported scalar types.
+/// @return Owned percent-encoded query String, or an owned empty String for a null or empty Map.
 rt_string rt_url_encode_query(void *map) {
     if (!map)
         return rt_str_empty();
@@ -1723,7 +1882,12 @@ rt_string rt_url_encode_query(void *map) {
 }
 
 /// @brief Parse a `name=value&…` query string into a `Map[String,String]`. Inverse of
-/// `encode_query`.
+///        `encode_query`.
+/// @details Splits at ampersands and the first equals sign, decodes `%HH` and
+///          form-style plus characters, and lets later duplicate keys replace
+///          earlier values.
+/// @param query Encoded query String without a leading question mark.
+/// @return Owned managed Map, empty for null or empty input.
 void *rt_url_decode_query(rt_string query) {
     void *map = rt_map_new();
     const char *str = query ? rt_string_cstr(query) : NULL;
@@ -1767,8 +1931,11 @@ void *rt_url_decode_query(rt_string query) {
     return map;
 }
 
-/// @brief Quick syntactic check: is `url_str` parseable as a URL? Returns 1 if yes, 0 if no.
-/// Trap-guarded — won't propagate parse errors out to the caller.
+/// @brief Check whether a String is parseable by the runtime's URL-reference grammar.
+/// @details Rejects empty input, embedded nulls, unencoded whitespace, malformed
+///          scheme markers, and any syntax rejected by the component parser.
+/// @param url_str Candidate URL-reference String.
+/// @return One when parseable; zero otherwise.
 int8_t rt_url_is_valid(rt_string url_str) {
     const char *str = url_str ? rt_string_cstr(url_str) : NULL;
     if (!str || *str == '\0')
@@ -1818,6 +1985,8 @@ int8_t rt_url_is_valid(rt_string url_str) {
 ///        non-empty host. Relative references, scheme-less strings, and
 ///        authority-less forms such as `mailto:` return 0. Use this — not
 ///        IsValid — when validating URLs destined for network requests.
+/// @param url_str Candidate absolute network URL String.
+/// @return One when parsing yields both a nonempty scheme and host; zero otherwise.
 int8_t rt_url_is_valid_absolute(rt_string url_str) {
     if (!rt_url_is_valid(url_str))
         return 0;

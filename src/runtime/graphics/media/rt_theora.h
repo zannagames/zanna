@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_theora.h
+// File: src/runtime/graphics/media/rt_theora.h
 // Purpose: Theora video codec decoder (decode only, from Theora I spec).
 //   Supports I-frames and P-frames in OGG container.
 //
@@ -15,7 +15,16 @@
 //   - Three headers: identification (0x80), comment (0x81), setup (0x82).
 //   - Output: planar YCbCr planes, caller converts via rt_ycbcr.h.
 //
-// Links: rt_ycbcr.h, rt_videoplayer.h, Theora spec: https://www.theora.org/doc/Theora.pdf
+// Ownership/Lifetime:
+//   - theora_decoder_t owns its private tables and current/previous/golden plane buffers.
+//   - Packet bytes are borrowed only for the duration of each decode call.
+//   - Returned plane pointers remain decoder-owned and are overwritten by later frame decodes.
+//
+// Links: src/runtime/graphics/media/rt_theora.c (headers and entropy decoding),
+//        src/runtime/graphics/media/rt_theora_recon.c (frame reconstruction),
+//        src/runtime/graphics/media/rt_ycbcr.h (planar conversion),
+//        src/runtime/graphics/media/rt_videoplayer.h (consumer),
+//        Theora spec: https://www.theora.org/doc/Theora.pdf
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -69,24 +78,41 @@ typedef struct {
 } theora_decoder_t;
 
 /// @brief Initialize a Theora decoder context.
+/// @details Clears caller-owned storage; it does not release any pre-existing allocations. Call
+///          theora_decoder_free() before reinitializing an active decoder.
+/// @param dec Non-NULL decoder storage to initialize.
 void theora_decoder_init(theora_decoder_t *dec);
 
 /// @brief Free decoder resources.
+/// @details Releases private setup/layout data and all nine YCbCr frame planes, then zeros the
+///          context. Safe to call with NULL or on an already-freed decoder.
+/// @param dec Decoder to release.
 void theora_decoder_free(theora_decoder_t *dec);
 
 /// @brief Decode a Theora header packet (identification, comment, or setup).
-/// @param data Raw OGG packet data.
-/// @param len Packet length.
-/// @return 0 on success, -1 on error, 1 if this is a data packet (not a header).
+/// @details Dispatches packet types 0x80, 0x81, and 0x82. Callers must provide the required
+///          identification/comment/setup sequence before decoding video. Setup success allocates
+///          layout tables and current/reference/golden frame planes.
+/// @param dec Initialized decoder receiving header state.
+/// @param data Borrowed raw Ogg packet data.
+/// @param len Accessible packet length in bytes.
+/// @return 0 on parsed header success, 1 when the packet is not a Theora header, or -1 on invalid
+///         arguments, malformed syntax, unsupported geometry/format, or allocation failure.
 int theora_decode_header(theora_decoder_t *dec, const uint8_t *data, size_t len);
 
 /// @brief Decode a Theora data (video frame) packet.
-/// @param data Raw OGG packet data.
-/// @param len Packet length.
-/// @param out_y  Output Y plane pointer (set on success).
-/// @param out_cb Output Cb plane pointer (set on success).
-/// @param out_cr Output Cr plane pointer (set on success).
-/// @return 0 on success, -1 on error.
+/// @details Runs entropy decoding, DC restoration, inverse transform, motion compensation, loop
+///          filtering, and reference-frame updates. The first decoded frame must be intra. Mutable
+///          entropy state is restored if packet decoding fails; optional outputs are written only
+///          on success and remain owned by @p dec.
+/// @param dec Decoder with completed headers.
+/// @param data Borrowed compressed video packet.
+/// @param len Accessible packet length in bytes.
+/// @param out_y Optional destination for the decoder-owned luma plane.
+/// @param out_cb Optional destination for the decoder-owned Cb plane.
+/// @param out_cr Optional destination for the decoder-owned Cr plane.
+/// @return 0 on success, or -1 for invalid state, malformed/truncated data, or snapshot allocation
+///         failure.
 int theora_decode_frame(theora_decoder_t *dec,
                         const uint8_t *data,
                         size_t len,
@@ -95,6 +121,9 @@ int theora_decode_frame(theora_decoder_t *dec,
                         const uint8_t **out_cr);
 
 /// @brief Check if a packet is a Theora header (starts with 0x80-0x82 + "theora").
+/// @param data Borrowed packet bytes.
+/// @param len Accessible packet length.
+/// @return 1 for a bounded identification, comment, or setup signature, otherwise 0.
 int theora_is_header_packet(const uint8_t *data, size_t len);
 
 #ifdef __cplusplus

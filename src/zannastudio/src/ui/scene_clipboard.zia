@@ -39,9 +39,96 @@ bind Str = Zanna.String;
 // ============================================================================
 
 final CLIPBOARD_MAGIC: String = "ZANNA_STUDIO_SCENE_CLIPBOARD_V1";
+final TILE_BLOCK_MAGIC: String = "ZANNA_STUDIO_TILE_BLOCK_V1";
+final MAX_TILE_BLOCK_CELLS: Integer = 262144;
 final MAX_CLIPBOARD_CHARACTERS: Integer = 64020000;
 final MAX_CLIPBOARD_SELECTION: Integer = 1024;
 final MAX_INDEX_LINE_CHARACTERS: Integer = 16384;
+
+/// @brief Validated rectangular tile block from the clipboard.
+class TileBlockPayload {
+    expose Boolean valid;
+    expose Integer width;
+    expose Integer height;
+    expose List[Integer] tiles;
+    expose String error;
+
+    expose func init() {
+        valid = false;
+        width = 0;
+        height = 0;
+        tiles = [];
+        error = "Clipboard does not contain Studio tile data.";
+    }
+}
+
+/// @brief Encode one rectangular tile block for copying (2.1 tile suite).
+/// @return Empty when the dimensions or cell count are invalid.
+expose func EncodeTileBlock(width: Integer,
+                            height: Integer,
+                            tiles: List[Integer]) -> String {
+    if width <= 0 or height <= 0
+       or tiles.count() != width * height
+       or tiles.count() > MAX_TILE_BLOCK_CELLS {
+        return "";
+    }
+    var body = "";
+    var index = 0;
+    while index < tiles.count() {
+        if body != "" { body = body + ","; }
+        body = body + tiles.get(index);
+        index = index + 1;
+    }
+    return TILE_BLOCK_MAGIC + "\n" + width + "\n" + height + "\n" + body;
+}
+
+/// @brief Cheaply identify tile-block clipboard text.
+expose func HasTileBlock(text: String) -> Boolean {
+    if text == "" or Str.get_Length(text) > MAX_CLIPBOARD_CHARACTERS {
+        return false;
+    }
+    var firstBreak = Str.IndexOf(text, "\n");
+    if firstBreak == 0 { return false; }
+    return Str.Trim(Str.Left(text, firstBreak - 1)) == TILE_BLOCK_MAGIC;
+}
+
+/// @brief Decode and validate one rectangular tile block envelope.
+expose func DecodeTileBlock(text: String) -> TileBlockPayload {
+    var payload = new TileBlockPayload();
+    if HasTileBlock(text) == false { return payload; }
+    var lines = Str.Split(text, "\n");
+    if Seq.get_Count(lines) != 4 {
+        payload.error = "Tile clipboard data is malformed.";
+        return payload;
+    }
+    var width = Parse.IntOr(Seq.GetStr(lines, 1), 0);
+    var height = Parse.IntOr(Seq.GetStr(lines, 2), 0);
+    if width <= 0 or height <= 0
+       or width * height > MAX_TILE_BLOCK_CELLS {
+        payload.error = "Tile clipboard dimensions are invalid.";
+        return payload;
+    }
+    var cells = Str.Split(Seq.GetStr(lines, 3), ",");
+    if Seq.get_Count(cells) != width * height {
+        payload.error = "Tile clipboard cell count is invalid.";
+        return payload;
+    }
+    var index = 0;
+    while index < Seq.get_Count(cells) {
+        var tile = Parse.IntOr(Seq.GetStr(cells, index), -1);
+        if tile < 0 or tile > 1000000 {
+            payload.error = "Tile clipboard contains an invalid tile id.";
+            return payload;
+        }
+        payload.tiles.add(tile);
+        index = index + 1;
+    }
+    payload.width = width;
+    payload.height = height;
+    payload.valid = true;
+    payload.error = "";
+    return payload;
+}
 
 /// @brief Validated scene clipboard envelope.
 class SceneClipboardPayload {

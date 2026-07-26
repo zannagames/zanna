@@ -155,14 +155,17 @@ void *rt_http_server_process_request(void *server, rt_string raw_request);
 //=========================================================================
 
 /// @brief Copy the parsed HTTP method from a ServerReq.
+/// @param req Valid ServerReq handle; null produces an empty String.
 /// @return Caller-owned String, or an empty String for NULL.
 rt_string rt_server_req_method(void *req);
 
 /// @brief Copy the parsed path without its query component.
+/// @param req Valid ServerReq handle; null produces an empty String.
 /// @return Caller-owned String, or an empty String for NULL.
 rt_string rt_server_req_path(void *req);
 
 /// @brief Copy the exact request-body bytes, preserving embedded NULs.
+/// @param req Valid ServerReq handle; null produces an empty String.
 /// @return Caller-owned String, or an empty String when no body is present.
 rt_string rt_server_req_body(void *req);
 
@@ -189,12 +192,17 @@ rt_string rt_server_req_query(void *req, rt_string name);
 //=========================================================================
 
 /// @brief Set an HTTP status in the inclusive range 100..599.
+/// @param res Valid ServerRes handle.
+/// @param code HTTP status code.
 /// @return The same response handle for builder chaining.
 void *rt_server_res_status(void *res, int64_t code);
 
 /// @brief Transactionally set a non-framework response header.
 /// @details Header names are compared case-insensitively. Invalid field names,
 ///          CR/LF injection, and framework-owned framing headers are rejected.
+/// @param res Valid ServerRes handle.
+/// @param name Header field name.
+/// @param value Header field value.
 /// @return The same response handle for builder chaining.
 void *rt_server_res_header(void *res, rt_string name, rt_string value);
 

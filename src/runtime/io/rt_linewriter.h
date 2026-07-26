@@ -12,14 +12,18 @@
 // Key invariants:
 //   - Open mode 'append' preserves existing content; default mode truncates.
 //   - WriteLn appends the configured line ending (defaults to platform native).
-//   - The writer buffers output internally; Flush sends buffered data to disk.
+//   - The C stdio stream buffers output; Flush passes buffered bytes to the host descriptor but
+//     does not promise crash durability.
 //   - WriteChar accepts one integer byte value in the inclusive range 0..255.
 //   - Opaque receivers are validated for class and complete payload size.
 //   - Constructor and newline replacement allocations are transactional.
 //
 // Ownership/Lifetime:
-//   - LineWriter objects are heap-allocated; caller must close and free when done.
-//   - Returned strings from read operations are newly allocated; caller must release.
+//   - LineWriter objects are runtime-managed opaque handles. Callers should close promptly; the
+//     finalizer closes forgotten streams and releases the retained newline reference.
+//   - The writer retains its configured newline string. The newline getter returns an owned
+//     runtime string reference to the caller.
+//   - Path, receiver, and text arguments are borrowed for each call.
 //
 // Links: src/runtime/io/rt_linewriter.c (implementation), src/runtime/core/rt_string.h
 //
@@ -43,43 +47,54 @@ extern "C" {
 void *rt_linewriter_open(rt_string path);
 
 /// @brief Open a text file for appending (creates if needed).
+/// @details Uses binary append mode so configured newline bytes are written without translation.
 /// @param path File path as runtime string.
-/// @return LineWriter object or traps on failure.
+/// @return Owned LineWriter object; traps and returns NULL on failure.
 void *rt_linewriter_append(rt_string path);
 
-/// @brief Close the line writer and release resources.
-/// @param obj LineWriter object.
+/// @brief Close the line writer and flush its stdio stream.
+/// @details Idempotent for NULL/already-closed writers. A close failure traps; the runtime handle
+///          remains closed and its newline reference is released later by finalization.
+/// @param obj Borrowed LineWriter object; may be NULL.
 void rt_linewriter_close(void *obj);
 
 /// @brief Write a string without newline.
-/// @param obj LineWriter object.
-/// @param text String to write.
+/// @details Writes the exact runtime-string bytes and traps on invalid inputs, closed receivers,
+///          oversized lengths, or short writes.
+/// @param obj Borrowed open LineWriter object.
+/// @param text Borrowed non-null runtime string to write.
 void rt_linewriter_write(void *obj, rt_string text);
 
 /// @brief Write a string followed by newline.
-/// @param obj LineWriter object.
-/// @param text String to write.
+/// @details Writes @p text verbatim followed by the complete configured newline byte sequence.
+/// @param obj Borrowed open LineWriter object.
+/// @param text Borrowed non-null runtime string to write.
 void rt_linewriter_write_ln(void *obj, rt_string text);
 
 /// @brief Write a single character.
-/// @param obj LineWriter object.
-/// @param ch Character code (0-255).
+/// @param obj Borrowed open LineWriter object.
+/// @param ch Unsigned byte value in the inclusive range 0..255; other values trap.
 void rt_linewriter_write_char(void *obj, int64_t ch);
 
-/// @brief Flush buffered output to disk.
-/// @param obj LineWriter object.
+/// @brief Flush C stdio buffering to the host file descriptor.
+/// @details Calls `fflush`; this drains the C buffer to the host descriptor without promising
+///          crash durability. NULL/closed writers are ignored and flush failures trap.
+/// @param obj Borrowed LineWriter object; may be NULL.
 void rt_linewriter_flush(void *obj);
 
 /// @brief Get the current newline string.
-/// @param obj LineWriter object.
-/// @return Current newline string.
+/// @details Returns a retained reference to the configured value. NULL receivers receive a fresh
+///          platform-default string; closed valid receivers trap.
+/// @param obj Borrowed LineWriter object; may be NULL.
+/// @return Caller-owned runtime string reference containing the newline bytes.
 rt_string rt_linewriter_newline(void *obj);
 
 /// @brief Set the newline string transactionally.
 /// @details Retains or creates the replacement before releasing the current
 ///          value. If allocation traps, the existing newline remains installed.
-/// @param obj LineWriter object.
-/// @param nl New newline string.
+/// @param obj Borrowed open LineWriter object.
+/// @param nl Borrowed replacement newline string; NULL restores the platform default, and an empty
+///           string suppresses newline output.
 void rt_linewriter_set_newline(void *obj, rt_string nl);
 
 #ifdef __cplusplus

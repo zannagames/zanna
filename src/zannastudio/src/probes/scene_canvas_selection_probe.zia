@@ -43,7 +43,21 @@ bind Color = Zanna.Graphics.Color;
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
 bind Input = Zanna.Input;
+bind Str = Zanna.String;
 bind Terminal = Zanna.Terminal;
+
+func ClickWidget(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 widget: GUI.Widget) {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
 
 func HarnessCoordinate(shell: app_shell.AppShell,
                        logical: Number) -> Integer {
@@ -326,6 +340,58 @@ func main() {
     if editor.Undo() == false or sceneDoc.content != liveBaseline {
         Fail(shell, harness,
              "undoing the 2D live position edit did not restore exact bytes");
+        return;
+    }
+
+    // ADR 0192: rotation/scale spinners share the live-commit gesture and
+    // serialize as first-class object keys; Undo restores exact bytes.
+    editor.SelectSceneObjects([0], 0);
+    editor.Pump(sceneDoc);
+    var transformBaseline = sceneDoc.content;
+    var transformRevision = editor.GetRevision();
+    editor.objectRotationSpinner.SetValue(90.0);
+    if editor.Pump(sceneDoc) == false
+       or editor.GetRevision() != transformRevision + 1
+       or editor.scene.ObjectRotation(0) != 90.0
+       or Str.IndexOf(sceneDoc.content, "\"rotation\"") <= 0 {
+        Fail(shell, harness,
+             "a rotation edit did not live-commit a first-class key: rot="
+             + editor.scene.ObjectRotation(0));
+        return;
+    }
+    editor.objectScaleXSpinner.SetValue(2.0);
+    if editor.Pump(sceneDoc) == false
+       or editor.scene.ObjectScaleX(0) != 2.0
+       or Str.IndexOf(sceneDoc.content, "\"scaleX\"") <= 0 {
+        Fail(shell, harness, "a scale edit did not live-commit");
+        return;
+    }
+    if editor.Undo() == false or editor.Undo() == false
+       or sceneDoc.content != transformBaseline
+       or editor.scene.ObjectRotation(0) != 0.0
+       or editor.scene.ObjectScaleX(0) != 1.0 {
+        Fail(shell, harness,
+             "undoing transform edits did not restore default bytes");
+        return;
+    }
+
+    // Flip toggles commit immediately as one transaction each. The row
+    // must be scrolled into the inspector viewport to be clickable.
+    editor.inspectorScroll.ScrollTo(editor.objectFlipXCheck);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    ClickWidget(shell, harness, editor.objectFlipXCheck);
+    if editor.Pump(sceneDoc) == false
+       or editor.scene.ObjectFlipX(0) == false
+       or Str.IndexOf(sceneDoc.content, "\"flipX\"") <= 0 {
+        Fail(shell, harness, "a flip toggle did not commit one edit");
+        return;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != transformBaseline
+       or editor.scene.ObjectFlipX(0) {
+        Fail(shell, harness, "undoing the flip did not restore bytes");
         return;
     }
 

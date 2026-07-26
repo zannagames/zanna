@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_ycbcr.c
+// File: src/runtime/graphics/media/rt_ycbcr.c
 // Purpose: YCbCr planar to RGBA conversion using BT.601 coefficients.
 //   Integer-only arithmetic for performance (no floating point per pixel).
 //
@@ -17,13 +17,15 @@
 //   - Fixed-point: multiply by 298/256, 409/256, etc. (8-bit shift).
 //   - Chroma upsampling: nearest-neighbor for subsampled formats.
 //
-// Links: rt_ycbcr.h
+// Links: src/runtime/graphics/media/rt_ycbcr.h (public conversion API)
 //
 //===----------------------------------------------------------------------===//
 
 #include "rt_ycbcr.h"
 
 /// @brief Saturate an int32_t to the [0, 255] byte range.
+/// @param v Signed color-channel value.
+/// @return @p v clamped to the inclusive byte range.
 static inline int32_t clamp255(int32_t v) {
     if (v < 0)
         return 0;
@@ -128,6 +130,17 @@ void ycbcr420_to_rgba(const uint8_t *y_plane,
         y_plane, cb_plane, cr_plane, width, height, y_stride, c_stride, 1, 1, rgba_out);
 }
 
+/// @brief Convert a planar BT.601 YCbCr 4:2:2 image to packed opaque RGBA.
+/// @details Uses one chroma sample per two horizontal luma samples, with no vertical subsampling.
+///          Invalid pointers, dimensions, or strides are treated as a no-op.
+/// @param y_plane Luma plane at the visible crop origin.
+/// @param cb_plane Horizontally subsampled Cb plane.
+/// @param cr_plane Horizontally subsampled Cr plane.
+/// @param width Visible image width in pixels.
+/// @param height Visible image height in pixels.
+/// @param y_stride Luma row stride in bytes.
+/// @param c_stride Chroma row stride in bytes.
+/// @param rgba_out Output buffer for `width * height` packed `0xRRGGBBAA` pixels.
 void ycbcr422_to_rgba(const uint8_t *y_plane,
                       const uint8_t *cb_plane,
                       const uint8_t *cr_plane,
@@ -140,6 +153,17 @@ void ycbcr422_to_rgba(const uint8_t *y_plane,
         y_plane, cb_plane, cr_plane, width, height, y_stride, c_stride, 1, 0, rgba_out);
 }
 
+/// @brief Convert a planar BT.601 YCbCr 4:4:4 image to packed opaque RGBA.
+/// @details Uses one Cb and Cr sample per luma sample. Invalid pointers, dimensions, or strides are
+///          treated as a no-op.
+/// @param y_plane Full-resolution luma plane at the visible crop origin.
+/// @param cb_plane Full-resolution Cb plane.
+/// @param cr_plane Full-resolution Cr plane.
+/// @param width Visible image width in pixels.
+/// @param height Visible image height in pixels.
+/// @param y_stride Luma row stride in bytes.
+/// @param c_stride Chroma row stride in bytes.
+/// @param rgba_out Output buffer for `width * height` packed `0xRRGGBBAA` pixels.
 void ycbcr444_to_rgba(const uint8_t *y_plane,
                       const uint8_t *cb_plane,
                       const uint8_t *cr_plane,

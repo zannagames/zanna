@@ -13,9 +13,9 @@
 //          BiDi override marks for mixed-content strings.
 //
 // Key invariants:
-//   - The RTL range table matches the plan's v1 set: Hebrew, Arabic,
-//     Syriac, Thaana, N'Ko. All other scripts that contain characters
-//     outside the common punctuation/digit ranges are treated as LTR.
+//   - The RTL range table covers Hebrew, Arabic-family scripts and
+//     presentation forms, Syriac, Thaana, N'Ko, Samaritan, Mandaic, and
+//     selected historic RTL blocks. Other non-neutral code points are LTR.
 //   - "Mixed" result implies at least one strong codepoint of each
 //     direction somewhere in the string. Leading neutrals are ignored
 //     for FirstStrong.
@@ -46,6 +46,10 @@
 /// @brief Decode a single UTF-8 codepoint from @p s at offset @p *pos.
 /// @details Advances @p *pos by the codepoint's byte length on success. On
 ///          malformed input, advances by 1 and returns 0xFFFD (replacement).
+/// @param s Input UTF-8 byte sequence.
+/// @param len Number of available bytes in @p s.
+/// @param pos In/out byte offset. Advanced to the next decoding position.
+/// @return Decoded scalar value, U+FFFD for malformed input, or zero at end.
 static uint32_t decode_codepoint(const char *s, size_t len, size_t *pos) {
     size_t i = *pos;
     if (i >= len)
@@ -97,6 +101,7 @@ static uint32_t decode_codepoint(const char *s, size_t len, size_t *pos) {
 // Directional classification
 //===----------------------------------------------------------------------===//
 
+/// @brief Reduced strong-direction classification used by the scanner.
 typedef enum {
     DIR_NEUTRAL = 0,
     DIR_LTR,
@@ -104,9 +109,11 @@ typedef enum {
 } cp_dir_t;
 
 /// @brief Classify a codepoint's bidi direction.
-/// @details The table captures only the strong-RTL scripts relevant to v1.
-///          Everything below U+0590 is treated as LTR or neutral; everything
-///          above U+0800 (with minor Arabic Supplement handling) is LTR.
+/// @details Checks known weak/neutral marks before the fixed RTL script and
+///          presentation-form ranges. Common punctuation, controls, digits,
+///          and combining-mark blocks are neutral; remaining values are LTR.
+/// @param cp Unicode scalar value to classify.
+/// @return Strong LTR, strong RTL, or neutral according to the fixed table.
 static cp_dir_t classify(uint32_t cp) {
     // Weak and neutral characters inside the RTL blocks (VDOC-074): digits
     // with bidi class AN and combining marks (NSM) are not strong, so they
@@ -217,6 +224,7 @@ static int text_direction_append_checked(rt_string_builder *sb, const char *byte
 // Scanning helpers
 //===----------------------------------------------------------------------===//
 
+/// @brief Strong-direction counts and first-strong result for one scan.
 typedef struct {
     int64_t ltr_count;
     int64_t rtl_count;
@@ -225,6 +233,8 @@ typedef struct {
 
 /// @brief Single pass over a UTF-8 string tallying strong LTR/RTL codepoints
 ///        and recording the first strong direction (the UAX#9 P2/P3 input).
+/// @param s UTF-8 byte sequence to scan, or NULL.
+/// @param len Number of available bytes in @p s.
 /// @return Counts plus @c first_strong (DIR_NEUTRAL if no strong char appears).
 static scan_result_t scan(const char *s, size_t len) {
     scan_result_t r = {0, 0, DIR_NEUTRAL};
@@ -251,6 +261,10 @@ static scan_result_t scan(const char *s, size_t len) {
 // Public API
 //===----------------------------------------------------------------------===//
 
+/// @brief Return the direction declared by a locale-data record.
+/// @param locale Locale handle, or NULL for invariant locale data.
+/// @return Newly allocated `"ltr"` or locale-provided direction string;
+///         missing/empty data falls back to `"ltr"`.
 rt_string rt_text_direction_of_locale(void *locale) {
     const rt_locale_data_t *d = rt_locale_get_data(locale);
     const char *td = d->text_direction;
@@ -259,6 +273,11 @@ rt_string rt_text_direction_of_locale(void *locale) {
     return rt_string_from_bytes(td, strlen(td));
 }
 
+/// @brief Classify text from its aggregate strong directional content.
+/// @param s Runtime UTF-8 string to scan, or NULL.
+/// @return Newly allocated `"mixed"`, `"rtl"`, or `"ltr"`; NULL and empty
+///         inputs return an owned empty string, while all-neutral non-empty
+///         input defaults to `"ltr"`.
 rt_string rt_text_direction_detect(rt_string s) {
     if (!s)
         return rt_string_from_bytes("", 0);
@@ -277,6 +296,10 @@ rt_string rt_text_direction_detect(rt_string s) {
     return rt_string_from_bytes("ltr", 3);
 }
 
+/// @brief Test whether RTL strong code points strictly outnumber LTR ones.
+/// @param s Runtime UTF-8 string to scan, or NULL.
+/// @return 1 only for a strict RTL majority; ties, neutral, empty, and NULL
+///         inputs return 0.
 int8_t rt_text_direction_is_rtl(rt_string s) {
     if (!s)
         return 0;
@@ -288,6 +311,9 @@ int8_t rt_text_direction_is_rtl(rt_string s) {
     return (int8_t)(r.rtl_count > r.ltr_count ? 1 : 0);
 }
 
+/// @brief Test whether LTR strong code points equal or outnumber RTL ones.
+/// @param s Runtime UTF-8 string to scan, or NULL.
+/// @return 1 for an LTR majority, a tie, or neutral/empty/NULL input; otherwise 0.
 int8_t rt_text_direction_is_ltr(rt_string s) {
     if (!s)
         return 1; // empty -> LTR (matches Detect)
@@ -299,6 +325,9 @@ int8_t rt_text_direction_is_ltr(rt_string s) {
     return (int8_t)(r.ltr_count >= r.rtl_count ? 1 : 0);
 }
 
+/// @brief Report the direction of the first strong code point.
+/// @param s Runtime UTF-8 string to scan, or NULL.
+/// @return Newly allocated `"ltr"`, `"rtl"`, or `"neutral"`.
 rt_string rt_text_direction_first_strong(rt_string s) {
     if (!s)
         return rt_string_from_bytes("neutral", 7);
@@ -317,6 +346,13 @@ rt_string rt_text_direction_first_strong(rt_string s) {
     }
 }
 
+/// @brief Isolate RTL runs when a string contains both LTR and RTL content.
+/// @details Mixed input is copied with U+2067 RLI and U+2069 PDI around RTL
+///          runs. Pure or all-neutral input is retained and returned unchanged.
+///          Builder failure traps and returns an owned empty string if resumed.
+/// @param s Runtime UTF-8 string to process, or NULL.
+/// @return Owned bidi-safe string. This may be the same retained handle as
+///         @p s when isolation is unnecessary.
 rt_string rt_text_direction_bidi(rt_string s) {
     if (!s)
         return rt_string_from_bytes("", 0);

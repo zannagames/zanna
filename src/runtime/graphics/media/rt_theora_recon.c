@@ -39,6 +39,7 @@
 ///   in raster order (required by the spatial predictor) per plane. The three
 ///   `lastdc[rfi]` values track the most recent decoded DC per reference frame index
 ///   so that blocks referencing different frames accumulate their own DC histories.
+/// @param priv Private coded-block state whose DC coefficients are restored in place.
 static void undo_dc_prediction(theora_priv_t *priv) {
     int plane;
     for (plane = 0; plane < 3; plane++) {
@@ -308,8 +309,10 @@ static void idct_block(const int16_t in[64], int16_t out[64]) {
 ///   - General: builds a full 64-element coefficient array by dequantizing DC with
 ///     `qmat[qti][plane][qi_dc]` and AC with `qmat[qti][plane][qi_ac]`, then calls `idct_block`.
 ///   The quantization type `qti` is 0 for intra blocks (mode 1) and 1 for inter blocks.
-/// @param bi  Block index in [0, total_blocks).
-/// @param fh  Frame header supplying qi[] and nqi.
+/// @param dec Decoder supplying precomputed quantization matrices.
+/// @param priv Private block modes, selectors, and coefficients.
+/// @param bi Block index in [0, total_blocks).
+/// @param fh Frame header supplying qi[] and nqi.
 /// @param out 64-element output residual array.
 static void build_residual_block(const theora_decoder_t *dec,
                                  const theora_priv_t *priv,
@@ -346,10 +349,11 @@ static void build_residual_block(const theora_decoder_t *dec,
 ///   to the three per-plane buffer pointers and the correct stride (y_stride for luma,
 ///   c_stride for chroma). Used by `reconstruct_frame` and `apply_loop_filter` so
 ///   each does not need its own plane-dispatch switch.
-/// @param plane  0=Y, 1=Cb, 2=Cr.
-/// @param cur    Output: writable current-frame buffer.
-/// @param ref    Output: read-only reference (previous) frame buffer.
-/// @param gold   Output: read-only golden frame buffer.
+/// @param dec Decoder owning all plane buffers.
+/// @param plane 0=Y, 1=Cb, 2=Cr.
+/// @param cur Output: writable current-frame buffer.
+/// @param ref Output: read-only reference (previous) frame buffer.
+/// @param gold Output: read-only golden frame buffer.
 /// @param stride Output: row stride in bytes for this plane.
 static void select_plane_buffers(const theora_decoder_t *dec,
                                  int plane,
@@ -383,6 +387,8 @@ static void select_plane_buffers(const theora_decoder_t *dec,
 ///   The response is applied to the two pixels straddling a block boundary to reduce
 ///   DCT ringing artefacts. A limit of 0 (all pixels are unfiltered) short-circuits
 ///   the entire loop-filter pass.
+/// @param r Signed four-tap boundary residual.
+/// @param limit Non-negative filter strength limit.
 /// @return Signed correction delta to be added/subtracted from the two boundary pixels.
 static int loop_filter_limit_response(int r, int limit) {
     if (limit <= 0)
@@ -455,6 +461,9 @@ static void apply_vertical_filter(uint8_t *plane, int stride, int fx, int fy, in
 ///   - Bottom edge (if bottom neighbor is uncoded): vertical filter at by*8+6.
 ///   The limit is looked up from `dec->loop_filter_limits[fh->qi[0]]`; a limit of 0
 ///   skips the entire filter pass (no-op for very low bitrate / already-flat frames).
+/// @param dec Decoder supplying current planes and filter limits.
+/// @param priv Private block layout and coded flags.
+/// @param fh Current frame header selecting the quantizer/filter entry.
 static void apply_loop_filter(theora_decoder_t *dec,
                               const theora_priv_t *priv,
                               const theora_frame_header_t *fh) {
@@ -518,11 +527,15 @@ static void apply_loop_filter(theora_decoder_t *dec,
 /// @details Clamps the source coordinates to [0, max_w-1] / [0, max_h-1] at every
 ///   pixel to handle motion vectors that extend beyond the frame boundary. The
 ///   clamped-border padding matches the Theora spec's boundary extension rules.
-/// @param dst   8×8 output block (row-major, row stride = 8).
-/// @param src   Reference plane buffer.
+/// @param dst 8x8 output block (row-major, row stride = 8).
+/// @param src Reference plane buffer.
 /// @param stride Reference plane row stride.
-/// @param bw,bh Block width and height (may be < 8 at right/bottom frame edges).
-/// @param sx,sy Top-left reference coordinate (may be outside [0, max_w/h)).
+/// @param bw Block width, possibly less than 8 at the right edge.
+/// @param bh Block height, possibly less than 8 at the bottom edge.
+/// @param sx Top-left source x coordinate before clamping.
+/// @param sy Top-left source y coordinate before clamping.
+/// @param max_w Reference plane width.
+/// @param max_h Reference plane height.
 static void copy_pred_whole(uint8_t *dst,
                             const uint8_t *src,
                             int stride,
@@ -547,8 +560,17 @@ static void copy_pred_whole(uint8_t *dst,
 ///   effective MV has a fractional component. Both source coordinates are clamped
 ///   independently to the frame boundary. The rounding `(a + b + 1) >> 1` uses
 ///   round-half-up matching the Theora spec's half-pixel interpolation rule.
-/// @param x0,y0 Integer-pixel reference position A (top-left corner of the bw×bh region).
-/// @param x1,y1 Integer-pixel reference position B (one pixel away in the fractional direction).
+/// @param dst 8x8 output block with row stride 8.
+/// @param src Reference plane buffer.
+/// @param stride Reference plane row stride.
+/// @param bw Block width.
+/// @param bh Block height.
+/// @param x0 First source x coordinate.
+/// @param y0 First source y coordinate.
+/// @param x1 Second source x coordinate.
+/// @param y1 Second source y coordinate.
+/// @param max_w Reference plane width.
+/// @param max_h Reference plane height.
 static void copy_pred_half(uint8_t *dst,
                            const uint8_t *src,
                            int stride,
@@ -577,6 +599,8 @@ static void copy_pred_half(uint8_t *dst,
 ///   is `sign(mv) * floor(|mv| / 2)`. This function computes that value. For even MVs
 ///   this is exact; for odd MVs it gives the floor. Paired with `motion_trunc_away_zero`
 ///   for the second reference position in half-pixel interpolation.
+/// @param mv Signed half-pixel motion component.
+/// @return Full-pixel component truncated toward zero.
 static int motion_trunc_toward_zero(int mv) {
     int s = mv < 0 ? -1 : 1;
     int a = mv < 0 ? -mv : mv;
@@ -589,6 +613,8 @@ static int motion_trunc_toward_zero(int mv) {
 ///   direction of motion than the result of `motion_trunc_toward_zero`. For even MVs
 ///   both functions return the same value (no fractional component). The two functions
 ///   together construct the pair (x0, x1) passed to `copy_pred_half`.
+/// @param mv Signed half-pixel motion component.
+/// @return Full-pixel component rounded away from zero.
 static int motion_trunc_away_zero(int mv) {
     int s = mv < 0 ? -1 : 1;
     int a = mv < 0 ? -mv : mv;
@@ -609,6 +635,9 @@ static int motion_trunc_away_zero(int mv) {
 ///      - GOLDEN modes: same as INTER but references the golden frame buffer.
 ///   4. The 8-bit prediction is summed with the int16_t residual, clamped to [0,255],
 ///      and written back to the current plane at the block's raster position.
+/// @param dec Decoder owning current and reference planes.
+/// @param priv Private decoded block, coefficient, mode, and motion state.
+/// @param fh Current frame header selecting quantizer/filter values.
 static void reconstruct_frame(theora_decoder_t *dec,
                               const theora_priv_t *priv,
                               const theora_frame_header_t *fh) {
@@ -684,6 +713,14 @@ static void reconstruct_frame(theora_decoder_t *dec,
 ///   9. Update reference frames (and golden frame on intra).
 /// `out_y`/`out_cb`/`out_cr` receive pointers to the decoded planes
 /// (owned by the decoder). Returns 0 on success, -1 on any error.
+/// @param dec Decoder with completed headers and allocated frame state.
+/// @param data Borrowed compressed video packet.
+/// @param len Accessible packet length.
+/// @param out_y Optional destination for the decoder-owned luma plane.
+/// @param out_cb Optional destination for the decoder-owned Cb plane.
+/// @param out_cr Optional destination for the decoder-owned Cr plane.
+/// @return 0 on success, or -1 for invalid state, malformed/truncated data, or snapshot allocation
+///         failure.
 int theora_decode_frame(theora_decoder_t *dec,
                         const uint8_t *data,
                         size_t len,
